@@ -151,7 +151,14 @@ Only one story should be In progress at a time.
 
 #### Step 3 — Implement
 
-- Create a feature branch: `epic-N/story-N.N-short-description`
+- Create a feature branch using Graphite so it stacks on the current branch:
+
+```bash
+gt create epic-N/story-N.N-short-description
+```
+
+If the previous story's branch is still open (PR not yet merged), Graphite automatically stacks the new branch on top of it. If starting fresh from `main`, check out `main` first.
+
 - Read the full issue body for acceptance criteria and technical notes:
 
 ```bash
@@ -163,13 +170,30 @@ gh issue view <number> --repo galamdring/apeiron-cipher
 
 #### Step 4 — Create PR and move to In review
 
-- Push the branch and create a PR. The PR body _must_ include `Closes #<issue_number>` so that merging the PR automatically closes the issue.
-- If the story depends on a PR that has not yet merged, mark the new PR as dependent in the PR body (e.g., "Depends on #X"). Do not merge out of order.
+- Submit the branch (and any unstacked branches below it) as PRs using Graphite:
+
+```bash
+gt submit
+```
+
+Graphite creates or updates the GitHub PR for each branch in the stack. PRs are automatically targeted against their parent branch (not `main`), so reviewers see only that story's diff.
+
+- After submitting, manually add `Closes #<issue_number>` to the PR body if Graphite didn't include it (the PR body _must_ include it so merging automatically closes the issue).
 - Move the story to _In review_ on the project board:
 
 ```bash
 gh project item-edit --project-id PVT_kwHOACDmtc4BSN-c --id <ITEM_ID> --field-id PVTSSF_lAHOACDmtc4BSN-czg_0UHU --single-select-option-id aba860b9
 ```
+
+#### Handling change requests on stacked PRs
+
+When a reviewer requests changes on a lower branch in the stack:
+
+1. Check out the branch that needs changes: `gt checkout epic-N/story-N.N-...`
+2. Make fixes, commit, then sync the stack: `gt stack restack`
+3. Re-submit the entire stack: `gt submit`
+
+Graphite automatically rebases all branches above the changed one.
 
 #### Step 5 — Done (automated, never agent-triggered)
 
@@ -189,6 +213,16 @@ _An agent must NEVER move an issue to Done._ The Done transition happens automat
 | In review   | `aba860b9` | Agent (Step 4)                                        |
 | Done        | `98236657` | _Automation only_ — set when issue closes on PR merge |
 
+### PR Review Communication
+
+The agent replies to inline PR review comments directly on GitHub using the `gh` API. Because the CLI authenticates as the repo owner, all agent replies are prefixed with **[Indy]** to distinguish them from human comments.
+
+When asked to "check your open PRs for comments," the agent will:
+
+1. `gh pr list --state open` to find all open PRs
+2. `gh api repos/.../pulls/{n}/comments` for each PR to fetch inline comments
+3. Address each comment on its respective branch, reply with `[Indy]` prefix, push fixes
+
 ### Useful Commands
 
 ```bash
@@ -200,6 +234,21 @@ gh issue view <number> --repo galamdring/apeiron-cipher
 
 # Get the project item ID for a specific issue (needed for status updates)
 # Parse from item-list output, matching on issue number
+
+# Graphite: view the current stack
+gt log
+
+# Graphite: create a new stacked branch
+gt create <branch-name>
+
+# Graphite: submit all branches in the stack as PRs
+gt submit
+
+# Graphite: rebase the stack after a change to a lower branch
+gt stack restack
+
+# Graphite: sync with remote (after a PR is merged on GitHub)
+gt stack sync
 ```
 
 ## Usage Guidelines
