@@ -4,6 +4,7 @@ sensitivity_y = 0.3
 
 [bindings]
 Move = { up = "W", down = "S", left = "A", right = "D" }
+Look = "Mouse"
 Interact = ["E"]
 Examine = ["Q"]
 Place = ["R"]
