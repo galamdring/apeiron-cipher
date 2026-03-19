@@ -1,6 +1,8 @@
 [package]
-name = "opensky"
+name = "apeiron-cipher"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+# Bevy game engine — ECS-based 3D game framework
+bevy = "0.18.1"

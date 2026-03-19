@@ -10,7 +10,7 @@ documentCounts:
   projectDocs: 0
 workflowType: 'gdd'
 lastStep: 7
-project_name: 'opensky'
+project_name: 'apeiron-cipher'
 user_name: 'NullOperator'
 date: '2026-03-14'
 game_type: 'sandbox'

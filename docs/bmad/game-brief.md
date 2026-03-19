@@ -8,13 +8,13 @@ documentCounts:
   notes: 0
 workflowType: 'game-brief'
 lastStep: 8
-project_name: 'opensky'
+project_name: 'apeiron-cipher'
 user_name: 'NullOperator'
 date: '2026-03-13'
-game_name: 'OpenSky'
+game_name: 'Apeiron Cipher'
 ---
 
-# Game Brief: OpenSky
+# Game Brief: Apeiron Cipher
 
 **Date:** 2026-03-13
 **Author:** NullOperator
@@ -24,7 +24,7 @@ game_name: 'OpenSky'
 
 ## Executive Summary
 
-OpenSky is a procedurally generated open universe sandbox where understanding is earned, not given — and knowledge is the only power that matters.
+Apeiron Cipher is a procedurally generated open universe sandbox where understanding is earned, not given — and knowledge is the only power that matters.
 
 **Target Audience:** Players with an appetite for depth — system-mastery seekers across the space sandbox, factory sim, and emergent systems genres. Age 13+, casual through hardcore, unified by curiosity rather than genre loyalty.
 
@@ -50,7 +50,7 @@ An infinite procedurally generated universe that trusts you to figure it out. Le
 
 ### Vision Statement
 
-OpenSky is a universe that trusts its players — to learn, to think, to explore on their own terms. It gives genuine freedom without hand-holding, rewards the mad scientist in every player, and runs infinitely deep in every direction. No matter how you want to play, the game supports it. No matter how deep you go, there's always more to discover.
+Apeiron Cipher is a universe that trusts its players — to learn, to think, to explore on their own terms. It gives genuine freedom without hand-holding, rewards the mad scientist in every player, and runs infinitely deep in every direction. No matter how you want to play, the game supports it. No matter how deep you go, there's always more to discover.
 
 ---
 
@@ -85,7 +85,7 @@ Players with an appetite for depth — system-mastery seekers who want mechanics
 
 ### Market Context
 
-OpenSky isn't filling a gap in an existing market — it's creating a category. The first game to attempt procedural systems that teach themselves to the player, where depth is generated rather than authored, and content scales beyond any studio's imagination.
+Apeiron Cipher isn't filling a gap in an existing market — it's creating a category. The first game to attempt procedural systems that teach themselves to the player, where depth is generated rather than authored, and content scales beyond any studio's imagination.
 
 **Competitive Landscape:**
 - **No Man's Sky** — proved a massive audience exists for procedural space exploration but left depth-seekers unsatisfied. Everything is handed to you, progression is shallow, content is bounded by developer output. The most direct competitor.
@@ -102,7 +102,7 @@ No competitor in this space is open source, and no publicly traded game studio c
 Steam distribution at ~$20, with free binaries always available from the open source repository. Patreon for ongoing community support. The game is never gated behind a paywall — players pay to support development, not to access it. This mirrors the game's core philosophy: trust your players.
 
 **Player Data Sovereignty:**
-First-class, officially supported data export from player sessions into third-party apps and systems. EVE required hacks. NMS requires save-file reading on Windows. OpenSky treats player data as the player's property — extractable, portable, and fully supported. This is a competitive differentiator and a community-building tool: third-party apps, visualizations, wikis, and tools become part of the ecosystem.
+First-class, officially supported data export from player sessions into third-party apps and systems. EVE required hacks. NMS requires save-file reading on Windows. Apeiron Cipher treats player data as the player's property — extractable, portable, and fully supported. This is a competitive differentiator and a community-building tool: third-party apps, visualizations, wikis, and tools become part of the ecosystem.
 
 ---
 
@@ -118,7 +118,7 @@ First-class, officially supported data export from player sessions into third-pa
 
 4. **Emergent Limits** — Constraints come from what you've built and learned, never from arbitrary designer-imposed caps. Your fleet capacity is how many docking bays you've constructed. Your trade reach is how many languages you speak. The game's limits ARE the game.
 
-**Pillar Priority:** When pillars conflict: Learning First > Deeper > Systems > Emergent Limits. A system can temporarily stand alone if it's learnable and deep. Depth can be simplified if it serves learnability. But if the player isn't earning understanding, it's not OpenSky.
+**Pillar Priority:** When pillars conflict: Learning First > Deeper > Systems > Emergent Limits. A system can temporarily stand alone if it's learnable and deep. Depth can be simplified if it serves learnability. But if the player isn't earning understanding, it's not Apeiron Cipher.
 
 **Consequence Over Restriction:** Nothing is directly off limits. The game never forbids an action — it makes consequences real. A player who attacks others will face trade embargoes, police action, and an inability to sell ill-gotten goods. A player who builds a fight club is expressing themselves, and others can choose to engage. We don't restrict behavior — we control the value of actions that impact another player's experience.
 
@@ -141,7 +141,7 @@ All five verbs are equal onboarding points from the first moment of play. None a
 
 ### Player Experience Goals
 
-**Core Experience: Expression.** OpenSky is fundamentally about becoming who you want to be and expressing that through your choices, your structures, your knowledge, your relationships, and your legacy. Learning is the paint. Expression is the painting.
+**Core Experience: Expression.** Apeiron Cipher is fundamentally about becoming who you want to be and expressing that through your choices, your structures, your knowledge, your relationships, and your legacy. Learning is the paint. Expression is the painting.
 
 **Expression That Echoes:** Your expression isn't into a void — the universe responds. Alien races tell stories about you. Your reputation mutates across star systems. Legends form around your actions, sometimes accurate, sometimes distorted. The universe is a canvas that paints back, and its response becomes material for new expression. This transforms personal expression into dialogue with a living world.
 
@@ -180,7 +180,7 @@ Passion project with no external deadline. Milestones are defined by playable qu
 - **Marketing:** Minimal at launch. Open source repository and Steam presence are the primary channels. Word-of-mouth and community growth drive visibility.
 - **Platform fees:** Steam's 30% cut on the $20 price point. Open source binaries always available as a free alternative.
 
-**Budget constraint impact on design:** Favors systems-driven content over asset-driven content. Procedural generation, emergent behavior, and systemic depth are cheaper to build than handcrafted levels, scripted quests, or voice acting. OpenSky's design philosophy and its budget reality are aligned.
+**Budget constraint impact on design:** Favors systems-driven content over asset-driven content. Procedural generation, emergent behavior, and systemic depth are cheaper to build than handcrafted levels, scripted quests, or voice acting. Apeiron Cipher's design philosophy and its budget reality are aligned.
 
 ### Team Resources
 
@@ -226,7 +226,7 @@ This is a vast vision from a solo part-time developer. The brainstorming session
 
 ### Inspiration Games
 
-Each inspiration game proved something was possible and revealed something that was missing. OpenSky exists in the space between what these games achieved and what they promised.
+Each inspiration game proved something was possible and revealed something that was missing. Apeiron Cipher exists in the space between what these games achieved and what they promised.
 
 **No Man's Sky**
 - Taking: The embodiment experience — being physically present in a procedural universe, first-person exploration, the feeling of standing on an alien planet
@@ -255,14 +255,14 @@ Each inspiration game proved something was possible and revealed something that 
 
 **Direct Competitors:** NMS is the only direct genre competitor. No other exploration sandbox attempts this combination of embodiment, systemic depth, and player control.
 
-**Adjacent Competitors:** OpenSky pulls from five adjacent markets, each of which owns a piece of the value proposition:
+**Adjacent Competitors:** Apeiron Cipher pulls from five adjacent markets, each of which owns a piece of the value proposition:
 - **Puzzle/Language Games** — compete for the knowledge-as-progression dopamine hit (Baba Is You, Duolingo)
 - **Creative Platforms** — compete for the structures-as-identity expression drive (Minecraft, Terraria, Lego games)
 - **Factory Sims** — compete for the automation management loop (Factorio, Satisfactory, Dyson Sphere Program)
 - **Emergent Systems Games** — compete for the player-driven narrative (Dwarf Fortress, Rimworld, Crusader Kings)
 - **Deep Space Sims** — compete for the long-term investment player (EVE Online, Elite Dangerous)
 
-**The opportunity:** Nobody combines all five. OpenSky unifies these genres under one knowledge-progression roof. The competition isn't any single game — it's the player's habit of switching between five games to get what one game should provide.
+**The opportunity:** Nobody combines all five. Apeiron Cipher unifies these genres under one knowledge-progression roof. The competition isn't any single game — it's the player's habit of switching between five games to get what one game should provide.
 
 **What NMS Does Well:** Accessibility, visual spectacle, the initial wonder of landing on a new planet, low-friction multiplayer, consistent content updates.
 
@@ -282,7 +282,7 @@ Each inspiration game proved something was possible and revealed something that 
 
 4. **Open Source as Compounding Advantage** — The structural moat isn't any single element — it's the combination of open source + procedural depth + knowledge-as-progression. No existing competitor can follow into open source, and no new project can easily replicate all three simultaneously. Every contributor deepens how the universe teaches itself. Every player's discovery feeds back into the ecosystem. The advantage accelerates over time.
 
-**Unique Value Proposition:** OpenSky is the open source game where the community continuously deepens how the universe teaches itself to the player — every direction runs infinitely deep, understanding is the only progression that matters, and what gets built next is driven by the players who want it, not gated by the studio that owns it.
+**Unique Value Proposition:** Apeiron Cipher is the open source game where the community continuously deepens how the universe teaches itself to the player — every direction runs infinitely deep, understanding is the only progression that matters, and what gets built next is driven by the players who want it, not gated by the studio that owns it.
 
 ---
 
@@ -414,7 +414,7 @@ One full solar system with variation between planets, at least one alien race to
 
 ### Launch Goals
 
-There is no single "launch day." OpenSky moves from playable to polished on a gradient. The open source repository is public from early development. Milestones:
+There is no single "launch day." Apeiron Cipher moves from playable to polished on a gradient. The open source repository is public from early development. Milestones:
 
 1. **Proof of concept public:** LEARN → try → LEARN loop in its simplest form. Combine materials, observe results. The atom.
 2. **Steel thread public:** All core systems running thin, interactions proven.
