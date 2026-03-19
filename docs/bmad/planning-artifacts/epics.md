@@ -5,7 +5,7 @@ inputDocuments:
   - 'docs/bmad/game-brief.md'
   - 'docs/bmad/brainstorming/brainstorming-session-2026-03-13-1600.md'
 scope: 'POC — The Atom'
-project_name: 'opensky'
+project_name: 'apeiron-cipher'
 game_name: 'Apeiron Cipher'
 date: '2026-03-18'
 ---

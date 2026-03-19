@@ -1,7 +1,7 @@
 ---
 stepsCompleted: [1, 2, 3, 4]
 inputDocuments: []
-session_topic: 'OpenSky - procedurally generated open world space exploration game with true ownership, federated architecture, and no artificial limits'
+session_topic: 'Apeiron Cipher - procedurally generated open world space exploration game with true ownership, federated architecture, and no artificial limits'
 session_goals: 'Generate ideas across mechanics, systems, player experience, community dynamics, and technical opportunities that push beyond NMS-but-better into its own identity'
 selected_approach: 'ai-recommended'
 techniques_used: ['Morphological Analysis', 'Cross-Pollination', 'Emergent Thinking']
@@ -17,9 +17,9 @@ workflow_completed: true
 
 ## Session Overview
 
-**Topic:** OpenSky — a procedurally generated open-world space exploration game built in Rust/Bevy. Core philosophy: no artificial limits, true ownership, open federated ecosystem. Offline-first, peer-to-peer co-op, open source.
+**Topic:** Apeiron Cipher — a procedurally generated open-world space exploration game built in Rust/Bevy. Core philosophy: no artificial limits, true ownership, open federated ecosystem. Offline-first, peer-to-peer co-op, open source.
 
-**Goals:** Flesh out the design space across the full breadth of the vision — mechanics, systems, player experience, community dynamics, technical opportunities. Push past "NMS but fixed" into territory that makes OpenSky its own thing.
+**Goals:** Flesh out the design space across the full breadth of the vision — mechanics, systems, player experience, community dynamics, technical opportunities. Push past "NMS but fixed" into territory that makes Apeiron Cipher its own thing.
 
 **Approach:** AI-Recommended Techniques — Morphological Analysis → Cross-Pollination → Emergent Thinking
 
@@ -29,7 +29,7 @@ workflow_completed: true
 
 ## Core Design Principles
 
-These emerged organically from the session and define OpenSky's identity:
+These emerged organically from the session and define Apeiron Cipher's identity:
 
 ### Principle 1: Knowledge is earned, never given, always incomplete.
 Language, materials, culture, territory, your own equipment — understanding IS the progression system. The game never confirms, only reveals. You accumulate evidence until you're confident, and sometimes that confidence is misplaced.

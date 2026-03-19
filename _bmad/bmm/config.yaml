@@ -3,7 +3,7 @@
 # Version: 6.1.0
 # Date: 2026-03-13T15:38:28.782Z
 
-project_name: opensky
+project_name: apeiron-cipher
 user_skill_level: intermediate
 planning_artifacts: "{project-root}/docs/bmad/planning-artifacts"
 implementation_artifacts: "{project-root}/docs/bmad/implementation-artifacts"
