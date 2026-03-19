@@ -288,6 +288,16 @@ If inline reply posting fails due to permissions or readonly execution (for exam
 2. Prepare proposed responses prefixed with `[Indy]` in the handoff/output message.
 3. Flag the PR as needing a human to post the prepared replies.
 
+### PR Review Communication
+
+The agent replies to inline PR review comments directly on GitHub using the `gh` API. Because the CLI authenticates as the repo owner, all agent replies are prefixed with **[Indy]** to distinguish them from human comments.
+
+When asked to "check your open PRs for comments," the agent will:
+
+1. `gh pr list --state open` to find all open PRs
+2. `gh api repos/.../pulls/{n}/comments` for each PR to fetch inline comments
+3. Address each comment on its respective branch, reply with `[Indy]` prefix, push fixes
+
 ### Useful Commands
 
 ```bash
