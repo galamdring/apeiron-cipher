@@ -139,7 +139,7 @@ gh project item-list 1 --owner galamdring --format json
 
 Filter to items where `status == "Ready"` and `iteration` matches the current iteration. Read the issue body of each Ready story to find its _Implementation Order_ number. Pick the lowest-numbered story — that is the next story to implement.
 
-Skip a story if its dependency is not yet implementable — that is, the dependency is in Backlog, Ready, In progress, or Blocked. If the dependency is In Review or Done, proceed — the code exists on its branch and can be stacked on. The cascading block in Step 3a should have already moved downstream stories to Blocked when appropriate, but check defensively.
+Skip a story if its dependency is not yet implementable — that is, the dependency is in Backlog, Ready, In progress, or Blocked. If the dependency is In Review or Done, proceed — the code exists on its branch and can be stacked on.
 
 #### Step 2 — Move to In progress
 
@@ -343,4 +343,4 @@ gh pr view <pr_number> --json state,baseRefName,isDraft,mergedAt,body
 - Manage task status and priorities through the GitHub Project board, not by editing docs
 - Move stories from Backlog to Ready during sprint/iteration planning — agents pick up Ready stories
 
-Last Updated: 2026-03-20
+Last Updated: 2026-03-27
