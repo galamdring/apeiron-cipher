@@ -7,6 +7,7 @@
 
 use bevy::prelude::*;
 
+mod input;
 mod player;
 mod scene;
 
@@ -28,5 +29,7 @@ fn main() {
         .add_plugins(scene::ScenePlugin)
         // Player: entity hierarchy with camera. Movement comes in Story 1.3.
         .add_plugins(player::PlayerPlugin)
+        // Input: loads TOML config, maps raw inputs to named actions via leafwing.
+        .add_plugins(input::InputPlugin)
         .run();
 }

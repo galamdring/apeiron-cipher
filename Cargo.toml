@@ -6,3 +6,9 @@ edition = "2024"
 [dependencies]
 # Bevy game engine — ECS-based 3D game framework
 bevy = "0.18.1"
+# Action-based input mapping for Bevy — maps raw inputs to named actions
+leafwing-input-manager = "0.20.0"
+# Serialization framework — used for TOML config deserialization
+serde = { version = "1.0.228", features = ["derive"] }
+# TOML parser — used for player-editable config files
+toml = "1.0.7"

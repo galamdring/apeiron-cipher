@@ -1,0 +1,13 @@
+[mouse]
+sensitivity_x = 0.3
+sensitivity_y = 0.3
+
+[bindings]
+Move = { up = "W", down = "S", left = "A", right = "D" }
+Look = "Mouse"
+Interact = ["E"]
+Examine = ["Q"]
+Place = ["R"]
+ToggleJournal = ["J"]
+Activate = ["F"]
+Pause = ["Escape"]

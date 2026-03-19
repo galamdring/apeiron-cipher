@@ -4,10 +4,14 @@
 //! camera as a child (the "eyes"). This separation exists because mouse look
 //! will apply yaw to the body and pitch to the camera independently (Story 1.3).
 //!
-//! For now (Story 1.1) this just spawns the hierarchy at eye height.
-//! Movement, input, and look systems arrive in Stories 1.2 and 1.3.
+//! For now (Stories 1.1–1.2) this spawns the hierarchy at eye height with
+//! an `ActionState` so leafwing-input-manager can track action presses.
+//! Movement and look systems arrive in Story 1.3.
 
 use bevy::prelude::*;
+use leafwing_input_manager::prelude::*;
+
+use crate::input::InputAction;
 
 pub(crate) struct PlayerPlugin;
 
@@ -28,7 +32,7 @@ pub(crate) struct Player;
 #[derive(Component)]
 pub(crate) struct PlayerCamera;
 
-fn spawn_player(mut commands: Commands) {
+pub(crate) fn spawn_player(mut commands: Commands) {
     // The player root sits at 1.7m — approximate human eye height.
     // This entity holds the player's position and yaw rotation.
     // It has no mesh — the player is invisible to themselves.
@@ -37,6 +41,9 @@ fn spawn_player(mut commands: Commands) {
             Player,
             Transform::from_xyz(0.0, 1.7, 5.0),
             Visibility::default(),
+            // leafwing tracks which actions are active on this entity.
+            // The InputMap is attached separately by InputPlugin after spawn.
+            ActionState::<InputAction>::default(),
         ))
         .with_children(|parent| {
             // The camera is a child so it inherits the player's position and
