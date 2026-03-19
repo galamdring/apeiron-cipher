@@ -114,7 +114,7 @@ _This file contains critical rules and patterns that AI agents must follow when 
 
 - Epics are GitHub Issues labeled `epic` with stories linked as sub-issues
 - Stories are GitHub Issues labeled `story` with full acceptance criteria, technical notes, dependency links, and implementation order in their body
-- Use the project board (Status: Backlog → Ready → In progress → Blocked → In review → Done) to track progress
+- Use the project board (Status: Backlog → Ready → In progress → In review → Done) to track progress
 - Priority (P0/P1/P2) and Size (XS/S/M/L/XL) fields are available on the board for sprint planning
 
 ### Issue Map
@@ -140,8 +140,6 @@ gh project item-list 1 --owner galamdring --format json
 Filter to items where `status == "Ready"` and `iteration` matches the current iteration. Read the issue body of each Ready story to find its _Implementation Order_ number. Pick the lowest-numbered story — that is the next story to implement.
 
 Skip a story if its dependency is not yet implementable — that is, the dependency is in Backlog, Ready, In progress, or Blocked. If the dependency is In Review or Done, proceed — the code exists on its branch and can be stacked on. The cascading block in Step 3a should have already moved downstream stories to Blocked when appropriate, but check defensively.
-
-In pipeline mode, this step is reached automatically after completing the previous story. The agent does not wait for human instruction between stories.
 
 #### Step 2 — Move to In progress
 
@@ -329,4 +327,4 @@ gh pr view <pr_number> --json state,baseRefName,isDraft,mergedAt,body
 - Manage task status and priorities through the GitHub Project board, not by editing docs
 - Move stories from Backlog to Ready during sprint/iteration planning — agents pick up Ready stories
 
-Last Updated: 2026-03-18
+Last Updated: 2026-03-19
