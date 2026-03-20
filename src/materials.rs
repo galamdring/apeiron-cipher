@@ -11,7 +11,8 @@
 //! material with its seed, color, and property values.
 //!
 //! The [`MaterialCatalog`] resource holds every loaded definition, keyed by name.
-//! Later stories spawn material entities from this catalog.
+//! The `spawn_material_objects` system creates 3D entities from the catalog and
+//! distributes them across [`Surface`](crate::scene::Surface) shelves.
 
 use std::collections::HashMap;
 use std::fs;
@@ -20,11 +21,14 @@ use std::path::Path;
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 
+use crate::scene::Surface;
+
 pub(crate) struct MaterialPlugin;
 
 impl Plugin for MaterialPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(PreStartup, load_material_catalog);
+        app.add_systems(PreStartup, load_material_catalog)
+            .add_systems(Startup, spawn_material_objects);
     }
 }
 
@@ -77,6 +81,26 @@ pub(crate) struct GameMaterial {
     pub toxicity: MaterialProperty,
 }
 
+impl GameMaterial {
+    /// Converts the stored colour triple to a Bevy [`Color`].
+    pub(crate) fn bevy_color(&self) -> Color {
+        Color::srgb(self.color[0], self.color[1], self.color[2])
+    }
+
+    /// Chooses a mesh shape based on material density.
+    /// Light materials → sphere, heavy → cube, medium → capsule.
+    fn mesh_for_density(&self, meshes: &mut Assets<Mesh>) -> Handle<Mesh> {
+        let density = self.density.value;
+        if density < 0.3 {
+            meshes.add(Sphere::new(0.12).mesh().build())
+        } else if density < 0.7 {
+            meshes.add(Capsule3d::new(0.08, 0.18).mesh().build())
+        } else {
+            meshes.add(Cuboid::new(0.18, 0.18, 0.18))
+        }
+    }
+}
+
 // ── Catalog resource ─────────────────────────────────────────────────────
 
 /// All loaded material definitions, keyed by name.
@@ -86,6 +110,78 @@ pub(crate) struct GameMaterial {
 #[derive(Resource, Debug, Default)]
 pub(crate) struct MaterialCatalog {
     pub materials: HashMap<String, GameMaterial>,
+}
+
+// ── World-object marker ──────────────────────────────────────────────────
+
+/// Marks an entity as a material object that exists physically in the world.
+/// The material's data is on the same entity as a [`GameMaterial`] component.
+#[derive(Component, Debug)]
+pub(crate) struct MaterialObject;
+
+// ── Spawning ─────────────────────────────────────────────────────────────
+
+const OBJECT_SCALE: f32 = 1.0;
+
+/// Places a 3D entity for each material in the catalog onto the `Surface`
+/// entities created by the scene plugin. Materials are distributed across
+/// surfaces round-robin and offset so they don't overlap.
+fn spawn_material_objects(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut std_materials: ResMut<Assets<StandardMaterial>>,
+    catalog: Res<MaterialCatalog>,
+    surfaces: Query<&Transform, With<Surface>>,
+) {
+    let surface_transforms: Vec<&Transform> = surfaces.iter().collect();
+    if surface_transforms.is_empty() {
+        warn!("No Surface entities found — materials will not be spawned in the world");
+        return;
+    }
+
+    let mut sorted_names: Vec<&String> = catalog.materials.keys().collect();
+    sorted_names.sort();
+
+    for (i, name) in sorted_names.iter().enumerate() {
+        let mat = &catalog.materials[*name];
+        let surface_tf = surface_transforms[i % surface_transforms.len()];
+
+        let items_on_this_surface = sorted_names
+            .iter()
+            .enumerate()
+            .filter(|(j, _)| j % surface_transforms.len() == i % surface_transforms.len())
+            .position(|(j, _)| j == i)
+            .unwrap_or(0);
+
+        let x_offset = (items_on_this_surface as f32) * 0.3 - 0.3;
+
+        let mesh = mat.mesh_for_density(&mut meshes);
+        let render_mat = std_materials.add(StandardMaterial {
+            base_color: mat.bevy_color(),
+            perceptual_roughness: 0.5,
+            metallic: if mat.conductivity.value > 0.6 {
+                0.6
+            } else {
+                0.1
+            },
+            ..default()
+        });
+
+        commands.spawn((
+            MaterialObject,
+            mat.clone(),
+            Mesh3d(mesh),
+            MeshMaterial3d(render_mat),
+            Transform::from_xyz(
+                surface_tf.translation.x + x_offset,
+                surface_tf.translation.y + 0.15,
+                surface_tf.translation.z,
+            )
+            .with_scale(Vec3::splat(OBJECT_SCALE)),
+        ));
+
+        info!("Spawned material object '{}' on surface", mat.name);
+    }
 }
 
 // ── Loading ──────────────────────────────────────────────────────────────
