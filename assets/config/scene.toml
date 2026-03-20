@@ -66,19 +66,6 @@ output_height = 0.02
 # How long the fabrication process takes (seconds).
 process_seconds = 2.5
 
-[heat_source]
-# Offset from workbench center — sits on the right side of the bench.
-offset_x = 0.55
-offset_z = 0.0
-radius = 0.1
-# Materials within this distance of the burner are "in the heat zone".
-zone_radius = 1.0
-light_intensity = 40_000.0
-# Seconds of continuous exposure for a material to fully react.
-reaction_seconds = 2.5
-# Seconds of continuous exposure before thermal_resistance is revealed.
-reveal_seconds = 3.5
-
 # Scene tuning — room geometry, lighting, and player spawn.
 # Edit these values instead of changing Rust constants.
 
@@ -107,31 +94,6 @@ spot_inner_angle = 0.28
 spot_outer_angle = 0.48
 spot_height = 2.75
 spot_target_y = 0.45
-
-[furniture]
-workbench_width = 2.0
-workbench_height = 0.88
-workbench_depth = 1.0
-workbench_x = 0.0
-workbench_z = 0.0
-shelf_width = 1.35
-shelf_thickness = 0.07
-shelf_depth = 0.55
-
-[[shelves]]
-x = -3.15
-z = 0.7
-y = 0.92
-
-[[shelves]]
-x = 3.15
-z = -0.7
-y = 0.92
-
-[[shelves]]
-x = 0.6
-z = -3.15
-y = 0.92
 
 [heat_source]
 # Offset from workbench center — sits on the right side of the bench.
