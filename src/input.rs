@@ -15,7 +15,6 @@
 //! settings UI modifies bindings, it updates the resource; a reactive system
 //! rebuilds the `InputMap` and the config is saved back to disk.
 
-use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
@@ -100,12 +99,8 @@ fn default_sensitivity() -> f32 {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct BindingsConfig {
-    /// DualAxis movement keys: up/down/left/right.
     #[serde(default = "MoveBindings::default", rename = "Move")]
     pub movement: MoveBindings,
-    /// Mouse look — present for completeness but always "Mouse" in practice.
-    #[serde(default = "default_look", rename = "Look")]
-    pub look: String,
     #[serde(default = "default_interact", rename = "Interact")]
     pub interact: Vec<String>,
     #[serde(default = "default_examine", rename = "Examine")]
@@ -124,7 +119,6 @@ impl Default for BindingsConfig {
     fn default() -> Self {
         Self {
             movement: MoveBindings::default(),
-            look: default_look(),
             interact: default_interact(),
             examine: default_examine(),
             place: default_place(),
@@ -170,9 +164,6 @@ fn default_left() -> String {
 fn default_right() -> String {
     "D".into()
 }
-fn default_look() -> String {
-    "Mouse".into()
-}
 fn default_interact() -> Vec<String> {
     vec!["E".into()]
 }
@@ -192,63 +183,70 @@ fn default_pause() -> Vec<String> {
     vec!["Escape".into()]
 }
 
-// ── Key name → KeyCode mapping ──────────────────────────────────────────
+// ── Input name parsing ──────────────────────────────────────────────────
 
 /// Translates user-friendly key names from the TOML config into Bevy `KeyCode`s.
-/// Returns `None` for unrecognised names, which are logged as warnings.
 fn parse_key(name: &str) -> Option<KeyCode> {
-    // Lazily-built lookup table. Covers the keys players are likely to rebind.
-    // Extend as needed — this is the single place key names are resolved.
-    let map: HashMap<&str, KeyCode> = HashMap::from([
-        ("A", KeyCode::KeyA),
-        ("B", KeyCode::KeyB),
-        ("C", KeyCode::KeyC),
-        ("D", KeyCode::KeyD),
-        ("E", KeyCode::KeyE),
-        ("F", KeyCode::KeyF),
-        ("G", KeyCode::KeyG),
-        ("H", KeyCode::KeyH),
-        ("I", KeyCode::KeyI),
-        ("J", KeyCode::KeyJ),
-        ("K", KeyCode::KeyK),
-        ("L", KeyCode::KeyL),
-        ("M", KeyCode::KeyM),
-        ("N", KeyCode::KeyN),
-        ("O", KeyCode::KeyO),
-        ("P", KeyCode::KeyP),
-        ("Q", KeyCode::KeyQ),
-        ("R", KeyCode::KeyR),
-        ("S", KeyCode::KeyS),
-        ("T", KeyCode::KeyT),
-        ("U", KeyCode::KeyU),
-        ("V", KeyCode::KeyV),
-        ("W", KeyCode::KeyW),
-        ("X", KeyCode::KeyX),
-        ("Y", KeyCode::KeyY),
-        ("Z", KeyCode::KeyZ),
-        ("Space", KeyCode::Space),
-        ("Escape", KeyCode::Escape),
-        ("Tab", KeyCode::Tab),
-        ("ShiftLeft", KeyCode::ShiftLeft),
-        ("ShiftRight", KeyCode::ShiftRight),
-        ("ControlLeft", KeyCode::ControlLeft),
-        ("ControlRight", KeyCode::ControlRight),
-        ("Up", KeyCode::ArrowUp),
-        ("Down", KeyCode::ArrowDown),
-        ("Left", KeyCode::ArrowLeft),
-        ("Right", KeyCode::ArrowRight),
-        ("1", KeyCode::Digit1),
-        ("2", KeyCode::Digit2),
-        ("3", KeyCode::Digit3),
-        ("4", KeyCode::Digit4),
-        ("5", KeyCode::Digit5),
-        ("6", KeyCode::Digit6),
-        ("7", KeyCode::Digit7),
-        ("8", KeyCode::Digit8),
-        ("9", KeyCode::Digit9),
-        ("0", KeyCode::Digit0),
-    ]);
-    map.get(name).copied()
+    match name {
+        "A" => Some(KeyCode::KeyA),
+        "B" => Some(KeyCode::KeyB),
+        "C" => Some(KeyCode::KeyC),
+        "D" => Some(KeyCode::KeyD),
+        "E" => Some(KeyCode::KeyE),
+        "F" => Some(KeyCode::KeyF),
+        "G" => Some(KeyCode::KeyG),
+        "H" => Some(KeyCode::KeyH),
+        "I" => Some(KeyCode::KeyI),
+        "J" => Some(KeyCode::KeyJ),
+        "K" => Some(KeyCode::KeyK),
+        "L" => Some(KeyCode::KeyL),
+        "M" => Some(KeyCode::KeyM),
+        "N" => Some(KeyCode::KeyN),
+        "O" => Some(KeyCode::KeyO),
+        "P" => Some(KeyCode::KeyP),
+        "Q" => Some(KeyCode::KeyQ),
+        "R" => Some(KeyCode::KeyR),
+        "S" => Some(KeyCode::KeyS),
+        "T" => Some(KeyCode::KeyT),
+        "U" => Some(KeyCode::KeyU),
+        "V" => Some(KeyCode::KeyV),
+        "W" => Some(KeyCode::KeyW),
+        "X" => Some(KeyCode::KeyX),
+        "Y" => Some(KeyCode::KeyY),
+        "Z" => Some(KeyCode::KeyZ),
+        "Space" => Some(KeyCode::Space),
+        "Escape" => Some(KeyCode::Escape),
+        "Tab" => Some(KeyCode::Tab),
+        "ShiftLeft" => Some(KeyCode::ShiftLeft),
+        "ShiftRight" => Some(KeyCode::ShiftRight),
+        "ControlLeft" => Some(KeyCode::ControlLeft),
+        "ControlRight" => Some(KeyCode::ControlRight),
+        "Up" => Some(KeyCode::ArrowUp),
+        "Down" => Some(KeyCode::ArrowDown),
+        "Left" => Some(KeyCode::ArrowLeft),
+        "Right" => Some(KeyCode::ArrowRight),
+        "1" => Some(KeyCode::Digit1),
+        "2" => Some(KeyCode::Digit2),
+        "3" => Some(KeyCode::Digit3),
+        "4" => Some(KeyCode::Digit4),
+        "5" => Some(KeyCode::Digit5),
+        "6" => Some(KeyCode::Digit6),
+        "7" => Some(KeyCode::Digit7),
+        "8" => Some(KeyCode::Digit8),
+        "9" => Some(KeyCode::Digit9),
+        "0" => Some(KeyCode::Digit0),
+        _ => None,
+    }
+}
+
+/// Translates mouse button names from the TOML config into Bevy `MouseButton`s.
+fn parse_mouse_button(name: &str) -> Option<MouseButton> {
+    match name {
+        "MouseLeft" => Some(MouseButton::Left),
+        "MouseRight" => Some(MouseButton::Right),
+        "MouseMiddle" => Some(MouseButton::Middle),
+        _ => None,
+    }
 }
 
 // ── Systems ─────────────────────────────────────────────────────────────
@@ -301,18 +299,14 @@ pub(crate) fn attach_input_map_to_player(
 /// Separated from the system so it can be called when rebinding too.
 pub(crate) fn build_input_map(config: &InputConfig) -> InputMap<InputAction> {
     let bindings = &config.bindings;
+    let mut input_map = InputMap::default();
 
     let up = parse_key(&bindings.movement.up).unwrap_or(KeyCode::KeyW);
     let down = parse_key(&bindings.movement.down).unwrap_or(KeyCode::KeyS);
     let left = parse_key(&bindings.movement.left).unwrap_or(KeyCode::KeyA);
     let right = parse_key(&bindings.movement.right).unwrap_or(KeyCode::KeyD);
-
-    let mut input_map = InputMap::default();
-
-    // Movement: WASD as a virtual DPad producing a Vec2.
     input_map.insert_dual_axis(InputAction::Move, VirtualDPad::new(up, down, left, right));
 
-    // Mouse look: DualAxis from mouse motion with configurable sensitivity.
     input_map.insert_dual_axis(
         InputAction::Look,
         MouseMove::default()
