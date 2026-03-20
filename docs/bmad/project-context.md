@@ -221,6 +221,22 @@ When a reviewer requests changes on a lower branch in the stack:
 
 Graphite automatically rebases all branches above the changed one.
 
+#### In-review health check (story ↔ PR linkage)
+
+Run this check periodically (or when a story appears stuck in _In review_) to verify the close-link workflow is healthy:
+
+1. List project items and identify stories currently in _In review_:
+   - `gh project item-list 1 --owner galamdring --format json`
+2. For each story issue `#N`, find referencing PRs:
+   - `gh pr list --state all --search "Closes #N" --repo galamdring/apeiron-cipher`
+3. Validate each matching PR:
+   - `gh pr view <pr_number> --json state,baseRefName,isDraft,mergedAt,body`
+4. Triage results:
+   - No referencing PR found -> fix PR body (`Closes #N`) or open the missing PR.
+   - PR not targeting `main` -> correct base to `main`.
+   - Dependency not merged yet -> keep _In review_ and retain `Depends on #X`.
+   - PR merged but issue still open -> manually investigate issue automation and board sync.
+
 #### Step 5 — Done (automated, never agent-triggered)
 
 _An agent must NEVER move an issue to Done._ The Done transition happens automatically when the PR is merged and the issue is closed by GitHub. The project board has these automations enabled:
@@ -265,6 +281,12 @@ When asked to "check your open PRs for comments," the agent will:
 1. `gh pr list --state open` to find all open PRs
 2. `gh api repos/.../pulls/{n}/comments` for each PR to fetch inline comments
 3. Address each comment on its respective branch, reply with `[Indy]` prefix, push fixes
+
+If inline reply posting fails due to permissions or readonly execution (for example, HTTP 403/resource not accessible):
+
+1. Continue implementing fixes on the branch.
+2. Prepare proposed responses prefixed with `[Indy]` in the handoff/output message.
+3. Flag the PR as needing a human to post the prepared replies.
 
 ### Useful Commands
 
@@ -321,4 +343,4 @@ gh pr view <pr_number> --json state,baseRefName,isDraft,mergedAt,body
 - Manage task status and priorities through the GitHub Project board, not by editing docs
 - Move stories from Backlog to Ready during sprint/iteration planning — agents pick up Ready stories
 
-Last Updated: 2026-03-19
+Last Updated: 2026-03-20
