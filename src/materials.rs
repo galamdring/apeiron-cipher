@@ -21,14 +21,14 @@ use std::path::Path;
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::scene::Surface;
+use crate::scene::Shelf;
 
 pub(crate) struct MaterialPlugin;
 
 impl Plugin for MaterialPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(PreStartup, load_material_catalog)
-            .add_systems(Startup, spawn_material_objects);
+            .add_systems(PostStartup, spawn_material_objects);
     }
 }
 
@@ -131,11 +131,11 @@ fn spawn_material_objects(
     mut meshes: ResMut<Assets<Mesh>>,
     mut std_materials: ResMut<Assets<StandardMaterial>>,
     catalog: Res<MaterialCatalog>,
-    surfaces: Query<&Transform, With<Surface>>,
+    shelves: Query<&Transform, With<Shelf>>,
 ) {
-    let surface_transforms: Vec<&Transform> = surfaces.iter().collect();
-    if surface_transforms.is_empty() {
-        warn!("No Surface entities found — materials will not be spawned in the world");
+    let shelf_transforms: Vec<&Transform> = shelves.iter().collect();
+    if shelf_transforms.is_empty() {
+        warn!("No Shelf entities found — materials will not be spawned in the world");
         return;
     }
 
@@ -144,12 +144,12 @@ fn spawn_material_objects(
 
     for (i, name) in sorted_names.iter().enumerate() {
         let mat = &catalog.materials[*name];
-        let surface_tf = surface_transforms[i % surface_transforms.len()];
+        let surface_tf = shelf_transforms[i % shelf_transforms.len()];
 
         let items_on_this_surface = sorted_names
             .iter()
             .enumerate()
-            .filter(|(j, _)| j % surface_transforms.len() == i % surface_transforms.len())
+            .filter(|(j, _)| j % shelf_transforms.len() == i % shelf_transforms.len())
             .position(|(j, _)| j == i)
             .unwrap_or(0);
 
@@ -174,7 +174,7 @@ fn spawn_material_objects(
             MeshMaterial3d(render_mat),
             Transform::from_xyz(
                 surface_tf.translation.x + x_offset,
-                surface_tf.translation.y + 0.15,
+                surface_tf.translation.y + 0.1,
                 surface_tf.translation.z,
             )
             .with_scale(Vec3::splat(OBJECT_SCALE)),

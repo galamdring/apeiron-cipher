@@ -35,7 +35,10 @@ pub(crate) struct InteractionPlugin;
 
 impl Plugin for InteractionPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<InteractionTarget>()
+        app.add_message::<PickupIntent>()
+            .add_message::<PlaceIntent>()
+            .add_message::<ExamineIntent>()
+            .init_resource::<InteractionTarget>()
             .init_resource::<ExamineState>()
             .add_systems(
                 Update,
@@ -222,6 +225,12 @@ fn process_pickup(
     }
 }
 
+/// Small gap above the surface so objects sit on top without z-fighting.
+const PLACE_GAP: f32 = 0.1;
+/// Maximum XZ distance from the ray's intersection to a surface center for
+/// placement to be considered valid.
+const PLACE_REACH: f32 = 2.5;
+
 fn process_place(
     mut commands: Commands,
     mut reader: MessageReader<PlaceIntent>,
@@ -238,17 +247,7 @@ fn process_place(
             continue;
         };
 
-        let cam_pos = cam_gtf.translation();
-        let cam_forward = cam_gtf.forward();
-        let place_target = cam_pos + *cam_forward * 1.5;
-
-        let closest_surface = surfaces.iter().min_by(|(_, a), (_, b)| {
-            let da = a.translation().distance_squared(place_target);
-            let db = b.translation().distance_squared(place_target);
-            da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
-        });
-
-        let Some((_surface_entity, surface_gtf)) = closest_surface else {
+        let Some((_entity, surface_gtf)) = best_surface_for_ray(cam_gtf, &surfaces) else {
             continue;
         };
 
@@ -258,12 +257,59 @@ fn process_place(
             .remove_parent_in_place();
 
         let surface_pos = surface_gtf.translation();
+        let cam_pos = cam_gtf.translation();
+        let cam_fwd = *cam_gtf.forward();
+
+        // Place at the ray's XZ intersection with the surface Y, clamped to
+        // the surface center so objects don't land in mid-air past the edge.
+        let hit = ray_horizontal_intersection(cam_pos, cam_fwd, surface_pos.y);
+        let place_x = hit.map_or(surface_pos.x, |p| p.x);
+        let place_z = hit.map_or(surface_pos.z, |p| p.z);
+
         commands.entity(held_entity).insert(Transform::from_xyz(
-            surface_pos.x,
-            surface_pos.y + 0.15,
-            surface_pos.z,
+            place_x,
+            surface_pos.y + PLACE_GAP,
+            place_z,
         ));
     }
+}
+
+/// Intersect a ray with the horizontal plane at the given Y.
+/// Returns `None` if the ray is parallel or the intersection is behind the origin.
+fn ray_horizontal_intersection(origin: Vec3, direction: Vec3, plane_y: f32) -> Option<Vec3> {
+    if direction.y.abs() < 1e-6 {
+        return None;
+    }
+    let t = (plane_y - origin.y) / direction.y;
+    if t < 0.0 {
+        return None;
+    }
+    Some(origin + direction * t)
+}
+
+/// Pick the surface the player is most likely aiming at by intersecting the
+/// camera ray with each surface's horizontal plane and choosing the one whose
+/// center is closest to the intersection point.
+fn best_surface_for_ray<'a>(
+    cam_gtf: &GlobalTransform,
+    surfaces: &'a Query<(Entity, &GlobalTransform), With<Surface>>,
+) -> Option<(Entity, &'a GlobalTransform)> {
+    let origin = cam_gtf.translation();
+    let direction = *cam_gtf.forward();
+
+    surfaces
+        .iter()
+        .filter_map(|(entity, sgtf)| {
+            let s_pos = sgtf.translation();
+            let hit = ray_horizontal_intersection(origin, direction, s_pos.y)?;
+            let xz_dist = Vec2::new(hit.x - s_pos.x, hit.z - s_pos.z).length();
+            if xz_dist > PLACE_REACH {
+                return None;
+            }
+            Some((entity, sgtf, xz_dist))
+        })
+        .min_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|(entity, sgtf, _)| (entity, sgtf))
 }
 
 // ── Held item tracking ───────────────────────────────────────────────────
@@ -350,10 +396,11 @@ fn emit_examine_intent(
 fn process_examine(
     mut reader: MessageReader<ExamineIntent>,
     mut state: ResMut<ExamineState>,
+    target: Res<InteractionTarget>,
     held_query: Query<(), With<HeldItem>>,
 ) {
     for _intent in reader.read() {
-        if held_query.iter().next().is_some() {
+        if held_query.iter().next().is_some() || target.entity.is_some() {
             state.visible = !state.visible;
         } else {
             state.visible = false;
@@ -363,7 +410,9 @@ fn process_examine(
 
 fn update_examine_panel(
     state: Res<ExamineState>,
+    target: Res<InteractionTarget>,
     held_query: Query<&GameMaterial, With<HeldItem>>,
+    material_query: Query<&GameMaterial, With<MaterialObject>>,
     mut panel_query: Query<&mut Visibility, With<ExaminePanel>>,
     mut text_query: Query<&mut Text, With<ExamineText>>,
 ) {
@@ -379,7 +428,13 @@ fn update_examine_panel(
         return;
     }
 
-    let Some(mat) = held_query.iter().next() else {
+    // Prefer held item; fall back to whatever the player is looking at.
+    let mat = held_query
+        .iter()
+        .next()
+        .or_else(|| target.entity.and_then(|e| material_query.get(e).ok()));
+
+    let Some(mat) = mat else {
         *vis = Visibility::Hidden;
         return;
     };

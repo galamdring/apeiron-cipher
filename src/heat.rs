@@ -24,7 +24,7 @@ pub(crate) struct HeatPlugin;
 
 impl Plugin for HeatPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, spawn_heat_source).add_systems(
+        app.add_systems(PostStartup, spawn_heat_source).add_systems(
             Update,
             (
                 track_heat_exposure,
