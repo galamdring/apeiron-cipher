@@ -45,6 +45,8 @@ pub(crate) struct SceneConfig {
     pub lighting: LightingConfig,
     #[serde(default)]
     pub furniture: FurnitureConfig,
+    #[serde(default)]
+    pub heat_source: HeatSourceConfig,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -270,6 +272,64 @@ pub(crate) struct ShelfConfig {
     pub x: f32,
     pub z: f32,
     pub y: f32,
+}
+
+// ── Heat source config ──────────────────────────────────────────────────
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct HeatSourceConfig {
+    #[serde(default = "default_hs_offset_x")]
+    pub offset_x: f32,
+    #[serde(default = "default_hs_offset_z")]
+    pub offset_z: f32,
+    #[serde(default = "default_hs_radius")]
+    pub radius: f32,
+    #[serde(default = "default_hs_zone_radius")]
+    pub zone_radius: f32,
+    #[serde(default = "default_hs_light_intensity")]
+    pub light_intensity: f32,
+    /// Seconds of exposure before a material fully reacts.
+    #[serde(default = "default_hs_reaction_seconds")]
+    pub reaction_seconds: f32,
+    /// Seconds of exposure before thermal_resistance is revealed.
+    #[serde(default = "default_hs_reveal_seconds")]
+    pub reveal_seconds: f32,
+}
+
+fn default_hs_offset_x() -> f32 {
+    0.55
+}
+fn default_hs_offset_z() -> f32 {
+    0.0
+}
+fn default_hs_radius() -> f32 {
+    0.1
+}
+fn default_hs_zone_radius() -> f32 {
+    1.0
+}
+fn default_hs_light_intensity() -> f32 {
+    40_000.0
+}
+fn default_hs_reaction_seconds() -> f32 {
+    2.5
+}
+fn default_hs_reveal_seconds() -> f32 {
+    3.5
+}
+
+impl Default for HeatSourceConfig {
+    fn default() -> Self {
+        Self {
+            offset_x: default_hs_offset_x(),
+            offset_z: default_hs_offset_z(),
+            radius: default_hs_radius(),
+            zone_radius: default_hs_zone_radius(),
+            light_intensity: default_hs_light_intensity(),
+            reaction_seconds: default_hs_reaction_seconds(),
+            reveal_seconds: default_hs_reveal_seconds(),
+        }
+    }
 }
 
 // ── Load ────────────────────────────────────────────────────────────────

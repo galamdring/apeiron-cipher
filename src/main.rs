@@ -7,6 +7,7 @@
 
 use bevy::prelude::*;
 
+mod heat;
 mod input;
 mod interaction;
 mod materials;
@@ -37,5 +38,7 @@ fn main() {
         .add_plugins(materials::MaterialPlugin)
         // Interaction: raycast, pickup/place, crosshair UI.
         .add_plugins(interaction::InteractionPlugin)
+        // Heat: burner on workbench, thermal exposure → property revelation.
+        .add_plugins(heat::HeatPlugin)
         .run();
 }
