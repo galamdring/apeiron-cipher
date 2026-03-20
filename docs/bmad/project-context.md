@@ -314,6 +314,12 @@ When asked to "check your open PRs for comments," the agent will:
 2. `gh api repos/.../pulls/{n}/comments` for each PR to fetch inline comments
 3. Address each comment on its respective branch, reply with `[Indy]` prefix, push fixes
 
+If inline reply posting fails due to permissions or readonly execution (for example, HTTP 403/resource not accessible):
+
+1. Continue implementing fixes on the branch.
+2. Prepare proposed responses prefixed with `[Indy]` in the handoff/output message.
+3. Flag the PR as needing a human to post the prepared replies.
+
 ### Useful Commands
 
 ```bash
