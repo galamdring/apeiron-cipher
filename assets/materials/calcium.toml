@@ -1,0 +1,24 @@
+# Calcium — chalky mineral. Light, brittle under heat, reactive.
+name = "Calcium"
+seed = 1002
+color = [0.92, 0.91, 0.88]
+
+[density]
+value = 0.22
+visibility = "Observable"
+
+[thermal_resistance]
+value = 0.18
+visibility = "Hidden"
+
+[reactivity]
+value = 0.68
+visibility = "Hidden"
+
+[conductivity]
+value = 0.12
+visibility = "Hidden"
+
+[toxicity]
+value = 0.08
+visibility = "Hidden"

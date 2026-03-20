@@ -1,0 +1,24 @@
+# Volatite — barely-solid volatile substance. Extremely light and reactive.
+name = "Volatite"
+seed = 1007
+color = [0.90, 0.88, 0.58]
+
+[density]
+value = 0.08
+visibility = "Observable"
+
+[thermal_resistance]
+value = 0.05
+visibility = "Hidden"
+
+[reactivity]
+value = 0.92
+visibility = "Hidden"
+
+[conductivity]
+value = 0.15
+visibility = "Hidden"
+
+[toxicity]
+value = 0.35
+visibility = "Hidden"

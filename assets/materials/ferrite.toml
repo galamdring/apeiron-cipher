@@ -1,0 +1,24 @@
+# Ferrite — iron-like metal. Dense, thermally resilient, conductive.
+name = "Ferrite"
+seed = 1001
+color = [0.58, 0.55, 0.52]
+
+[density]
+value = 0.78
+visibility = "Observable"
+
+[thermal_resistance]
+value = 0.65
+visibility = "Hidden"
+
+[reactivity]
+value = 0.35
+visibility = "Hidden"
+
+[conductivity]
+value = 0.72
+visibility = "Hidden"
+
+[toxicity]
+value = 0.05
+visibility = "Hidden"

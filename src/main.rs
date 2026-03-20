@@ -8,6 +8,7 @@
 use bevy::prelude::*;
 
 mod input;
+mod materials;
 mod player;
 mod scene;
 
@@ -31,5 +32,7 @@ fn main() {
         .add_plugins(player::PlayerPlugin)
         // Input: loads TOML config, maps raw inputs to named actions via leafwing.
         .add_plugins(input::InputPlugin)
+        // Materials: data-driven material definitions with observable/hidden properties.
+        .add_plugins(materials::MaterialPlugin)
         .run();
 }

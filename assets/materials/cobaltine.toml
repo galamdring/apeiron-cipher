@@ -1,0 +1,24 @@
+# Cobaltine — copper-like metal. Warm hue, outstanding conductivity.
+name = "Cobaltine"
+seed = 1008
+color = [0.72, 0.48, 0.28]
+
+[density]
+value = 0.65
+visibility = "Observable"
+
+[thermal_resistance]
+value = 0.42
+visibility = "Hidden"
+
+[reactivity]
+value = 0.28
+visibility = "Hidden"
+
+[conductivity]
+value = 0.94
+visibility = "Hidden"
+
+[toxicity]
+value = 0.10
+visibility = "Hidden"
