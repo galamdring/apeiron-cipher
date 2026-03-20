@@ -25,7 +25,7 @@ fn main() {
                 ..default()
             }),
         )
-        // Scene setup: ground plane, lighting, static environment geometry.
+        // Scene setup: enclosed room, furniture markers, lighting (see scene.toml).
         .add_plugins(scene::ScenePlugin)
         // Player: entity hierarchy with camera. Movement comes in Story 1.3.
         .add_plugins(player::PlayerPlugin)

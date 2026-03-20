@@ -8,24 +8,20 @@
 //! Systems:
 //! - `cursor_grab`: captures the cursor on left-click, releases on Pause action
 //! - `player_look`: applies mouse delta to yaw (body) and pitch (camera)
-//! - `player_move`: WASD translation relative to facing, clamped to ground bounds
+//! - `player_move`: WASD translation relative to facing, clamped to room bounds
 
 use bevy::prelude::*;
 use bevy::window::{CursorGrabMode, CursorOptions};
 use leafwing_input_manager::prelude::*;
 
 use crate::input::InputAction;
+use crate::scene::SceneConfig;
 
-const MOVE_SPEED: f32 = 5.0;
 /// Converts the leafwing axis_pair output (pixels * config sensitivity) to radians.
 /// Tune by adjusting `sensitivity_x` / `sensitivity_y` in input.toml rather than
 /// changing this constant.
 const LOOK_SCALE: f32 = 0.003;
 const PITCH_LIMIT: f32 = std::f32::consts::FRAC_PI_2 * 0.99;
-const EYE_HEIGHT: f32 = 1.7;
-/// Half-extent of the 20×20 ground plane minus a small margin so the player
-/// doesn't clip through the visual edge.
-const BOUNDARY: f32 = 9.5;
 
 pub(crate) struct PlayerPlugin;
 
@@ -55,11 +51,15 @@ pub(crate) struct PlayerCamera;
 #[derive(Component, Default)]
 struct CameraPitch(f32);
 
-pub(crate) fn spawn_player(mut commands: Commands) {
+pub(crate) fn spawn_player(mut commands: Commands, scene: Res<SceneConfig>) {
     commands
         .spawn((
             Player,
-            Transform::from_xyz(0.0, EYE_HEIGHT, 5.0),
+            Transform::from_xyz(
+                scene.player.spawn_x,
+                scene.player.eye_height,
+                scene.player.spawn_z,
+            ),
             Visibility::default(),
             // leafwing tracks which actions are active on this entity.
             // The InputMap is attached separately by InputPlugin after spawn.
@@ -138,6 +138,7 @@ fn player_look(
 fn player_move(
     time: Res<Time>,
     cursor_options: Single<&CursorOptions>,
+    scene: Res<SceneConfig>,
     mut player_query: Query<(&ActionState<InputAction>, &mut Transform), With<Player>>,
 ) {
     if cursor_options.grab_mode != CursorGrabMode::Locked {
@@ -161,10 +162,13 @@ fn player_move(
     let right_xz = Vec3::new(right.x, 0.0, right.z).normalize_or_zero();
 
     let direction = (forward_xz * input.y + right_xz * input.x).normalize_or_zero();
-    transform.translation += direction * MOVE_SPEED * time.delta_secs();
+    transform.translation += direction * scene.player.move_speed * time.delta_secs();
 
-    // AABB collision — keep the player inside the ground plane.
-    transform.translation.x = transform.translation.x.clamp(-BOUNDARY, BOUNDARY);
-    transform.translation.z = transform.translation.z.clamp(-BOUNDARY, BOUNDARY);
-    transform.translation.y = EYE_HEIGHT;
+    // AABB collision — keep the player inside the room interior.
+    let m = scene.room.boundary_margin;
+    let bx = scene.room.half_extent_x - m;
+    let bz = scene.room.half_extent_z - m;
+    transform.translation.x = transform.translation.x.clamp(-bx, bx);
+    transform.translation.z = transform.translation.z.clamp(-bz, bz);
+    transform.translation.y = scene.player.eye_height;
 }
