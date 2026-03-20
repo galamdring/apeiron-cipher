@@ -114,7 +114,7 @@ _This file contains critical rules and patterns that AI agents must follow when 
 
 - Epics are GitHub Issues labeled `epic` with stories linked as sub-issues
 - Stories are GitHub Issues labeled `story` with full acceptance criteria, technical notes, dependency links, and implementation order in their body
-- Use the project board (Status: Backlog → Ready → In progress → In review → Done) to track progress
+- Use the project board (Status: Backlog → Ready → In progress → Blocked → In review → Done) to track progress
 - Priority (P0/P1/P2) and Size (XS/S/M/L/XL) fields are available on the board for sprint planning
 
 ### Issue Map
@@ -124,6 +124,17 @@ _This file contains critical rules and patterns that AI agents must follow when 
 | Epic 1: A Room to Stand In | [#2](https://github.com/galamdring/apeiron-cipher/issues/2)   | [#5](https://github.com/galamdring/apeiron-cipher/issues/5), [#6](https://github.com/galamdring/apeiron-cipher/issues/6), [#7](https://github.com/galamdring/apeiron-cipher/issues/7), [#8](https://github.com/galamdring/apeiron-cipher/issues/8)          |
 | Epic 2: Things to Touch    | [#3](https://github.com/galamdring/apeiron-cipher/issues/3)   | [#9](https://github.com/galamdring/apeiron-cipher/issues/9), [#10](https://github.com/galamdring/apeiron-cipher/issues/10), [#11](https://github.com/galamdring/apeiron-cipher/issues/11)                                                                   |
 | Epic 3: Try and Learn      | [#4](https://github.com/galamdring/apeiron-cipher/issues/4)   | [#12](https://github.com/galamdring/apeiron-cipher/issues/12), [#13](https://github.com/galamdring/apeiron-cipher/issues/13), [#14](https://github.com/galamdring/apeiron-cipher/issues/14), [#15](https://github.com/galamdring/apeiron-cipher/issues/15)  |
+
+### Pipeline Mode
+
+The agent can execute stories autonomously in a sequential pipeline.
+
+- **Trigger:** Human says "run the pipeline" (or similar).
+- **Behavior:** The agent loops Steps 1–4 of the Agent Story Workflow automatically. After completing Step 4 for one story, it immediately returns to Step 1 and picks the next Ready story.
+- **Stops when:** No Ready stories remain that the agent can start (all remaining are Backlog, Blocked, In review, or Done).
+- **Constraint:** One story In progress at a time — the pipeline is sequential, not parallel.
+- **Subagent isolation:** Each story is implemented by a `best-of-n-runner` subagent, which gets its own isolated git worktree and branch (managed by Cursor). This keeps the parent agent's context clean. If `best-of-n-runner` hits sandbox permission issues, fall back to a `generalPurpose` subagent working directly in the main repo on the story branch.
+- **Post-implementation:** After the subagent returns, the parent agent handles branch pushing, PR creation, and board status updates from the main repo (where Graphite, `gh`, and SSH all work).
 
 ### Agent Story Workflow
 
@@ -137,7 +148,11 @@ Query the current iteration for stories in _Ready_ status:
 gh project item-list 1 --owner galamdring --format json
 ```
 
-Filter to items where `status == "Ready"` and `iteration` matches the current iteration. Read the issue body of each Ready story to find its _Implementation Order_ number. Pick the lowest-numbered story — that is the next story to implement. If a story depends on another story that is not yet Done, skip it.
+Filter to items where `status == "Ready"` and `iteration` matches the current iteration. Read the issue body of each Ready story to find its _Implementation Order_ number. Pick the lowest-numbered story — that is the next story to implement.
+
+Skip a story if its dependency is not yet implementable — that is, the dependency is in Backlog, Ready, In progress, or Blocked. If the dependency is In Review or Done, proceed — the code exists on its branch and can be stacked on. The cascading block in Step 3a should have already moved downstream stories to Blocked when appropriate, but check defensively.
+
+In pipeline mode, this step is reached automatically after completing the previous story. The agent does not wait for human instruction between stories.
 
 #### Step 2 — Move to In progress
 
@@ -167,6 +182,31 @@ gh issue view <number> --repo galamdring/apeiron-cipher
 
 - Implement the story. All acceptance criteria must be satisfied. The epics doc (`docs/bmad/planning-artifacts/epics.md`) remains the canonical reference for acceptance criteria and requirements coverage.
 - Run `make check` (or `cargo fmt --check && cargo clippy -- -D warnings && cargo test`) before committing.
+
+#### Step 3a — Block (when the agent cannot proceed)
+
+If the agent cannot proceed without human input, it blocks the story and cascades to dependents.
+
+**When to block:** Architectural ambiguity, a question where multiple reasonable approaches exist (per "collaborate, don't decide"), an unresolvable build failure, or a dependency that is not available yet.
+
+**What NOT to block on:** Trivial implementation choices, clippy lint approaches, cosmetic tuning, sensitivity values — handle these and note them in the PR for review.
+
+**Procedure:**
+
+1. Post a comment on the story issue prefixed with `[Indy] Blocked:` explaining the specific question or blocker.
+2. Move the story to _Blocked_ on the project board:
+
+```bash
+gh project item-edit --project-id PVT_kwHOACDmtc4BSN-c --id <ITEM_ID> --field-id PVTSSF_lAHOACDmtc4BSN-czg_0UHU --single-select-option-id 68d6688a
+```
+
+3. **Cascade to dependents:** Read the issue body of every other Ready story. If any lists this blocked story as a dependency (`Depends on: #N`), cascade the block:
+   - Post a comment: `[Indy] Blocked: dependency #N is currently blocked. Moving to Blocked until it resolves.`
+   - Move the dependent story to Blocked.
+   - Repeat recursively — if a newly-blocked story is itself a dependency of another Ready story, cascade again.
+4. Return to Step 1 — pick the next Ready story that is not blocked or cascaded.
+
+**Resumption:** When the human answers the question and moves the root story back to Ready, they also move any cascaded dependents back to Ready. On the next pipeline pass, the agent reads all issue comments on a previously-blocked story to incorporate the human's answer before resuming implementation.
 
 #### Step 4 — Create PR and move to In review
 
@@ -224,13 +264,14 @@ _An agent must NEVER move an issue to Done._ The Done transition happens automat
 
 ### Status Field Reference
 
-| Status      | Option ID  | Who sets it                                           |
-| ----------- | ---------- | ----------------------------------------------------- |
-| Backlog     | `f75ad846` | Default / human                                       |
-| Ready       | `e18bf179` | Human (sprint planning)                               |
-| In progress | `47fc9ee4` | Agent (Step 2)                                        |
-| In review   | `aba860b9` | Agent (Step 4)                                        |
-| Done        | `98236657` | _Automation only_ — set when issue closes on PR merge |
+| Status      | Option ID  | Who sets it                                                       |
+| ----------- | ---------- | ----------------------------------------------------------------- |
+| Backlog     | `f75ad846` | Default / human                                                   |
+| Ready       | `e18bf179` | Human (sprint planning); human (unblocking a story)               |
+| In progress | `47fc9ee4` | Agent (Step 2)                                                    |
+| Blocked     | `68d6688a` | Agent (Step 3a — when blocked; also cascaded to dependents)       |
+| In review   | `aba860b9` | Agent (Step 4)                                                    |
+| Done        | `98236657` | _Automation only_ — set when issue closes on PR merge             |
 
 ### PR Review Communication
 
@@ -303,4 +344,4 @@ gh pr view <pr_number> --json state,baseRefName,isDraft,mergedAt,body
 - Manage task status and priorities through the GitHub Project board, not by editing docs
 - Move stories from Backlog to Ready during sprint/iteration planning — agents pick up Ready stories
 
-Last Updated: 2026-03-20
+Last Updated: 2026-03-18
