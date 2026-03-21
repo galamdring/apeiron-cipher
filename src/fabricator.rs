@@ -13,6 +13,7 @@
 
 use bevy::prelude::*;
 
+use crate::combination::CombinationRules;
 use crate::materials::{GameMaterial, MaterialObject, MaterialProperty, PropertyVisibility};
 use crate::scene::{SceneConfig, Workbench};
 
@@ -167,12 +168,13 @@ fn process_activation(
 // ── Processing timer ────────────────────────────────────────────────────
 
 // Bevy systems that handle completion need access to commands, time, config,
-// state, both slot types, material data, and mesh/material assets.
+// state, both slot types, material data, combination rules, and mesh/material assets.
 #[allow(clippy::too_many_arguments)]
 fn tick_processing(
     mut commands: Commands,
     time: Res<Time>,
     cfg: Res<SceneConfig>,
+    rules: Res<CombinationRules>,
     mut state: ResMut<FabricatorState>,
     mut slots: Query<&mut InputSlot>,
     material_query: Query<&GameMaterial, With<MaterialObject>>,
@@ -209,8 +211,8 @@ fn tick_processing(
         }
     }
 
-    // Placeholder combination: average all properties.
-    let output_mat = placeholder_combine(&input_mats[0], &input_mats[1]);
+    // Rule-driven combination.
+    let output_mat = rule_combine(&rules, &input_mats[0], &input_mats[1]);
 
     // Spawn the output material on the output slot.
     let Ok((output_gtf, mut out_slot)) = output_slot.single_mut() else {
@@ -272,16 +274,36 @@ fn apply_processing_visuals(
     }
 }
 
-// ── Placeholder combination (Story 3.2 replaces this) ──────────────────
+// ── Rule-driven combination ──────────────────────────────────────────────
 
-fn blend_prop(a: &MaterialProperty, b: &MaterialProperty) -> MaterialProperty {
-    MaterialProperty {
-        value: ((a.value + b.value) * 0.5).clamp(0.0, 1.0),
-        visibility: PropertyVisibility::Observable,
+use crate::combination::PropertyRule;
+
+/// Determines the output property visibility.
+/// If both inputs have been seen (Observable or Revealed), the output is Observable.
+/// Otherwise, the output is Hidden — the player must discover it again.
+fn output_visibility(a: PropertyVisibility, b: PropertyVisibility) -> PropertyVisibility {
+    match (a, b) {
+        (PropertyVisibility::Hidden, _) | (_, PropertyVisibility::Hidden) => {
+            PropertyVisibility::Hidden
+        }
+        _ => PropertyVisibility::Observable,
     }
 }
 
-fn placeholder_combine(a: &GameMaterial, b: &GameMaterial) -> GameMaterial {
+fn apply_rule(rule: &PropertyRule, a: &MaterialProperty, b: &MaterialProperty) -> MaterialProperty {
+    MaterialProperty {
+        value: rule.apply(a.value, b.value),
+        visibility: output_visibility(a.visibility, b.visibility),
+    }
+}
+
+pub(crate) fn rule_combine(
+    rules: &CombinationRules,
+    a: &GameMaterial,
+    b: &GameMaterial,
+) -> GameMaterial {
+    let pair_rules = rules.rules_for(&a.name, &b.name);
+
     let combined_seed = a.seed.wrapping_mul(31).wrapping_add(b.seed);
     let name = format!(
         "{}-{}",
@@ -299,11 +321,15 @@ fn placeholder_combine(a: &GameMaterial, b: &GameMaterial) -> GameMaterial {
         name,
         seed: combined_seed,
         color,
-        density: blend_prop(&a.density, &b.density),
-        thermal_resistance: blend_prop(&a.thermal_resistance, &b.thermal_resistance),
-        reactivity: blend_prop(&a.reactivity, &b.reactivity),
-        conductivity: blend_prop(&a.conductivity, &b.conductivity),
-        toxicity: blend_prop(&a.toxicity, &b.toxicity),
+        density: apply_rule(&pair_rules.density, &a.density, &b.density),
+        thermal_resistance: apply_rule(
+            &pair_rules.thermal_resistance,
+            &a.thermal_resistance,
+            &b.thermal_resistance,
+        ),
+        reactivity: apply_rule(&pair_rules.reactivity, &a.reactivity, &b.reactivity),
+        conductivity: apply_rule(&pair_rules.conductivity, &a.conductivity, &b.conductivity),
+        toxicity: apply_rule(&pair_rules.toxicity, &a.toxicity, &b.toxicity),
     }
 }
 
@@ -312,6 +338,7 @@ fn placeholder_combine(a: &GameMaterial, b: &GameMaterial) -> GameMaterial {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::combination::PairRuleSet;
 
     fn test_material(name: &str, seed: u64, density: f32) -> GameMaterial {
         let prop = |v: f32| MaterialProperty {
@@ -333,11 +360,16 @@ mod tests {
         }
     }
 
+    fn default_rules() -> CombinationRules {
+        CombinationRules::default()
+    }
+
     #[test]
-    fn placeholder_combine_averages_properties() {
+    fn rule_combine_default_averages_properties() {
+        let rules = default_rules();
         let a = test_material("Ferrite", 100, 0.8);
         let b = test_material("Silite", 200, 0.2);
-        let result = placeholder_combine(&a, &b);
+        let result = rule_combine(&rules, &a, &b);
 
         assert!((result.density.value - 0.5).abs() < f32::EPSILON);
         assert!((result.thermal_resistance.value - 0.4).abs() < f32::EPSILON);
@@ -345,46 +377,160 @@ mod tests {
     }
 
     #[test]
-    fn placeholder_combine_name_from_inputs() {
+    fn rule_combine_name_from_inputs() {
+        let rules = default_rules();
         let a = test_material("Ferrite", 100, 0.5);
         let b = test_material("Silite", 200, 0.5);
-        let result = placeholder_combine(&a, &b);
+        let result = rule_combine(&rules, &a, &b);
         assert_eq!(result.name, "Ferr-Sili");
     }
 
     #[test]
-    fn placeholder_combine_deterministic() {
+    fn rule_combine_deterministic() {
+        let rules = default_rules();
         let a = test_material("Ferrite", 100, 0.5);
         let b = test_material("Silite", 200, 0.5);
-        let r1 = placeholder_combine(&a, &b);
-        let r2 = placeholder_combine(&a, &b);
+        let r1 = rule_combine(&rules, &a, &b);
+        let r2 = rule_combine(&rules, &a, &b);
         assert_eq!(r1.seed, r2.seed);
         assert!((r1.density.value - r2.density.value).abs() < f32::EPSILON);
     }
 
     #[test]
-    fn placeholder_combine_output_properties_are_observable() {
-        let a = test_material("Ferrite", 100, 0.5);
-        let b = test_material("Silite", 200, 0.5);
-        let result = placeholder_combine(&a, &b);
-        assert_eq!(result.density.visibility, PropertyVisibility::Observable);
-        assert_eq!(
-            result.thermal_resistance.visibility,
-            PropertyVisibility::Observable
+    fn observable_inputs_produce_observable_output() {
+        let a = MaterialProperty {
+            value: 0.5,
+            visibility: PropertyVisibility::Observable,
+        };
+        let b = MaterialProperty {
+            value: 0.5,
+            visibility: PropertyVisibility::Observable,
+        };
+        let result = apply_rule(&PropertyRule::default(), &a, &b);
+        assert_eq!(result.visibility, PropertyVisibility::Observable);
+    }
+
+    #[test]
+    fn hidden_input_produces_hidden_output() {
+        let a = MaterialProperty {
+            value: 0.5,
+            visibility: PropertyVisibility::Observable,
+        };
+        let b = MaterialProperty {
+            value: 0.5,
+            visibility: PropertyVisibility::Hidden,
+        };
+        let result = apply_rule(&PropertyRule::default(), &a, &b);
+        assert_eq!(result.visibility, PropertyVisibility::Hidden);
+    }
+
+    #[test]
+    fn revealed_inputs_produce_observable_output() {
+        let a = MaterialProperty {
+            value: 0.5,
+            visibility: PropertyVisibility::Revealed,
+        };
+        let b = MaterialProperty {
+            value: 0.5,
+            visibility: PropertyVisibility::Revealed,
+        };
+        let result = apply_rule(&PropertyRule::default(), &a, &b);
+        assert_eq!(result.visibility, PropertyVisibility::Observable);
+    }
+
+    #[test]
+    fn catalyze_rule_exceeds_both_inputs() {
+        let rule = PropertyRule::Catalyze { multiplier: 1.5 };
+        let a = MaterialProperty {
+            value: 0.4,
+            visibility: PropertyVisibility::Observable,
+        };
+        let b = MaterialProperty {
+            value: 0.6,
+            visibility: PropertyVisibility::Observable,
+        };
+        let result = apply_rule(&rule, &a, &b);
+        assert!(
+            result.value > a.value && result.value > b.value,
+            "catalyze should exceed both inputs: got {}",
+            result.value
         );
     }
 
     #[test]
-    fn blend_prop_clamps_to_unit() {
+    fn inert_pair_produces_waste() {
+        let mut rules = default_rules();
+        rules
+            .pair_rules
+            .insert(("Alpha".into(), "Beta".into()), PairRuleSet::all_inert());
+
+        let a = test_material("Alpha", 1, 0.8);
+        let b = test_material("Beta", 2, 0.9);
+        let result = rule_combine(&rules, &a, &b);
+
+        assert!(
+            (result.density.value - 0.1).abs() < f32::EPSILON,
+            "inert density: {}",
+            result.density.value
+        );
+        assert!(
+            (result.thermal_resistance.value - 0.1).abs() < f32::EPSILON,
+            "inert thermal_resistance: {}",
+            result.thermal_resistance.value
+        );
+    }
+
+    #[test]
+    fn max_rule_picks_higher_value() {
+        let rule = PropertyRule::Max;
         let a = MaterialProperty {
-            value: 0.9,
-            visibility: PropertyVisibility::Hidden,
+            value: 0.3,
+            visibility: PropertyVisibility::Observable,
         };
         let b = MaterialProperty {
-            value: 0.95,
-            visibility: PropertyVisibility::Hidden,
+            value: 0.7,
+            visibility: PropertyVisibility::Observable,
         };
-        let result = blend_prop(&a, &b);
-        assert!(result.value <= 1.0);
+        let result = apply_rule(&rule, &a, &b);
+        assert!((result.value - 0.7).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn min_rule_picks_lower_value() {
+        let rule = PropertyRule::Min;
+        let a = MaterialProperty {
+            value: 0.3,
+            visibility: PropertyVisibility::Observable,
+        };
+        let b = MaterialProperty {
+            value: 0.7,
+            visibility: PropertyVisibility::Observable,
+        };
+        let result = apply_rule(&rule, &a, &b);
+        assert!((result.value - 0.3).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn pair_order_independent() {
+        let mut rules = default_rules();
+        rules.pair_rules.insert(
+            ("Alpha".into(), "Beta".into()),
+            PairRuleSet {
+                density: PropertyRule::Max,
+                thermal_resistance: PropertyRule::Min,
+                reactivity: PropertyRule::Catalyze { multiplier: 1.3 },
+                conductivity: PropertyRule::default(),
+                toxicity: PropertyRule::Inert,
+            },
+        );
+
+        let a = test_material("Alpha", 1, 0.8);
+        let b = test_material("Beta", 2, 0.3);
+        let r1 = rule_combine(&rules, &a, &b);
+        let r2 = rule_combine(&rules, &b, &a);
+
+        assert!((r1.density.value - r2.density.value).abs() < f32::EPSILON);
+        assert!((r1.thermal_resistance.value - r2.thermal_resistance.value).abs() < f32::EPSILON);
+        assert!((r1.toxicity.value - r2.toxicity.value).abs() < f32::EPSILON);
     }
 }
