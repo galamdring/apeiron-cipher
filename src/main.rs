@@ -7,6 +7,7 @@
 
 use bevy::prelude::*;
 
+mod combination;
 mod fabricator;
 mod heat;
 mod input;
@@ -44,5 +45,7 @@ fn main() {
         .add_plugins(heat::HeatPlugin)
         // Fabricator: input/output slots on the workbench for material combination.
         .add_plugins(fabricator::FabricatorPlugin)
+        // Combination: data-driven rules for material pair outcomes.
+        .add_plugins(combination::CombinationPlugin)
         .run();
 }

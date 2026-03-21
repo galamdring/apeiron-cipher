@@ -1,0 +1,65 @@
+# Combination rules — maps material pairs to per-property rule sets.
+#
+# Each [[rules]] entry names two materials (order doesn't matter) and
+# specifies a rule for each property. Missing properties use the default
+# rule (Blend with equal weights).
+#
+# Rule types:
+#   Blend { weight_a, weight_b }  — weighted average (predictable)
+#   Max                           — takes the higher value (predictable)
+#   Min                           — takes the lower value (predictable)
+#   Catalyze { multiplier }       — max of inputs × multiplier (emergent)
+#   Inert                         — produces waste: all properties → 0.1
+
+# Default rule applied when a pair has no entry here:
+[default_rule]
+type = "Blend"
+weight_a = 0.5
+weight_b = 0.5
+
+# ── Specific pair rules ──────────────────────────────────────────────────
+
+[[rules]]
+material_a = "Ferrite"
+material_b = "Phosphite"
+density = { type = "Max" }
+thermal_resistance = { type = "Catalyze", multiplier = 1.4 }
+reactivity = { type = "Blend", weight_a = 0.7, weight_b = 0.3 }
+conductivity = { type = "Min" }
+toxicity = { type = "Blend", weight_a = 0.5, weight_b = 0.5 }
+
+[[rules]]
+material_a = "Volatite"
+material_b = "Calcium"
+density = { type = "Blend", weight_a = 0.5, weight_b = 0.5 }
+thermal_resistance = { type = "Min" }
+reactivity = { type = "Catalyze", multiplier = 1.6 }
+conductivity = { type = "Blend", weight_a = 0.4, weight_b = 0.6 }
+toxicity = { type = "Max" }
+
+[[rules]]
+material_a = "Sulfurite"
+material_b = "Osmium"
+density = { type = "Inert" }
+thermal_resistance = { type = "Inert" }
+reactivity = { type = "Inert" }
+conductivity = { type = "Inert" }
+toxicity = { type = "Inert" }
+
+[[rules]]
+material_a = "Cobaltine"
+material_b = "Verdant"
+density = { type = "Blend", weight_a = 0.3, weight_b = 0.7 }
+thermal_resistance = { type = "Max" }
+reactivity = { type = "Blend", weight_a = 0.5, weight_b = 0.5 }
+conductivity = { type = "Catalyze", multiplier = 1.3 }
+toxicity = { type = "Min" }
+
+[[rules]]
+material_a = "Silite"
+material_b = "Prismate"
+density = { type = "Min" }
+thermal_resistance = { type = "Blend", weight_a = 0.6, weight_b = 0.4 }
+reactivity = { type = "Max" }
+conductivity = { type = "Blend", weight_a = 0.5, weight_b = 0.5 }
+toxicity = { type = "Catalyze", multiplier = 1.5 }
