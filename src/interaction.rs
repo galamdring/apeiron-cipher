@@ -21,6 +21,7 @@ use bevy::picking::mesh_picking::ray_cast::{MeshRayCast, MeshRayCastSettings, Ra
 use bevy::prelude::*;
 use bevy::window::CursorGrabMode;
 
+use crate::fabricator::InputSlot;
 use crate::input::InputAction;
 use crate::materials::{GameMaterial, MaterialObject, PropertyVisibility};
 use crate::player::{Player, PlayerCamera};
@@ -39,19 +40,25 @@ impl Plugin for InteractionPlugin {
             .add_message::<PlaceIntent>()
             .add_message::<ExamineIntent>()
             .init_resource::<InteractionTarget>()
+            .init_resource::<SlotTarget>()
             .init_resource::<ExamineState>()
             .add_systems(
                 Update,
                 (
                     update_interaction_target,
+                    update_slot_target,
                     emit_pickup_intent.after(update_interaction_target),
                     emit_place_intent.after(update_interaction_target),
                     emit_examine_intent.after(update_interaction_target),
                     process_pickup.after(emit_pickup_intent),
-                    process_place.after(emit_place_intent),
+                    process_place
+                        .after(emit_place_intent)
+                        .after(update_slot_target),
                     process_examine.after(emit_examine_intent),
                     update_held_position.after(process_pickup),
-                    update_crosshair.after(update_interaction_target),
+                    update_crosshair
+                        .after(update_interaction_target)
+                        .after(update_slot_target),
                     update_examine_panel.after(process_examine),
                 ),
             );
@@ -72,9 +79,15 @@ struct ExamineIntent;
 
 // ── State ────────────────────────────────────────────────────────────────
 
-/// Tracks what the player's center-screen ray is currently hitting.
+/// Tracks what the player's center-screen ray is currently hitting (material objects).
 #[derive(Resource, Default)]
 struct InteractionTarget {
+    entity: Option<Entity>,
+}
+
+/// Tracks whether the player's ray is hitting a fabricator input slot.
+#[derive(Resource, Default)]
+struct SlotTarget {
     entity: Option<Entity>,
 }
 
@@ -148,6 +161,43 @@ fn update_interaction_target(
     };
 
     let filter = |entity: Entity| material_query.contains(entity) && !held_query.contains(entity);
+    let settings = MeshRayCastSettings::default()
+        .with_filter(&filter)
+        .with_visibility(RayCastVisibility::Any);
+
+    let hits = ray_cast.cast_ray(ray, &settings);
+
+    if let Some(&(entity, ref hit)) = hits.first()
+        && hit.distance <= INTERACTION_RANGE
+    {
+        target.entity = Some(entity);
+    }
+}
+
+// ── Slot raycast ────────────────────────────────────────────────────────
+
+fn update_slot_target(
+    mut target: ResMut<SlotTarget>,
+    camera_query: Query<(&Camera, &GlobalTransform), With<PlayerCamera>>,
+    mut ray_cast: MeshRayCast,
+    slot_query: Query<(), With<InputSlot>>,
+) {
+    target.entity = None;
+
+    let Ok((camera, cam_gtf)) = camera_query.single() else {
+        return;
+    };
+
+    let Some(viewport_size) = camera.logical_viewport_size() else {
+        return;
+    };
+    let center = viewport_size * 0.5;
+
+    let Ok(ray) = camera.viewport_to_world(cam_gtf, center) else {
+        return;
+    };
+
+    let filter = |entity: Entity| slot_query.contains(entity);
     let settings = MeshRayCastSettings::default()
         .with_filter(&filter)
         .with_visibility(RayCastVisibility::Any);
@@ -237,12 +287,35 @@ fn process_place(
     held_query: Query<Entity, With<HeldItem>>,
     camera_query: Query<&GlobalTransform, With<PlayerCamera>>,
     surfaces: Query<(Entity, &GlobalTransform), With<Surface>>,
+    slot_target: Res<SlotTarget>,
+    mut slot_query: Query<(&GlobalTransform, &mut InputSlot)>,
 ) {
     for _intent in reader.read() {
         let Some(held_entity) = held_query.iter().next() else {
             continue;
         };
 
+        // Priority: if looking at an empty input slot, seat the material there.
+        if let Some(slot_entity) = slot_target.entity
+            && let Ok((slot_gtf, mut slot)) = slot_query.get_mut(slot_entity)
+            && slot.material.is_none()
+        {
+            let slot_pos = slot_gtf.translation();
+            slot.material = Some(held_entity);
+
+            commands
+                .entity(held_entity)
+                .remove::<HeldItem>()
+                .remove_parent_in_place()
+                .insert(Transform::from_xyz(
+                    slot_pos.x,
+                    slot_pos.y + PLACE_GAP,
+                    slot_pos.z,
+                ));
+            continue;
+        }
+
+        // Fallback: place on the nearest surface the player is looking at.
         let Ok(cam_gtf) = camera_query.single() else {
             continue;
         };
@@ -260,8 +333,6 @@ fn process_place(
         let cam_pos = cam_gtf.translation();
         let cam_fwd = *cam_gtf.forward();
 
-        // Place at the ray's XZ intersection with the surface Y, clamped to
-        // the surface center so objects don't land in mid-air past the edge.
         let hit = ray_horizontal_intersection(cam_pos, cam_fwd, surface_pos.y);
         let place_x = hit.map_or(surface_pos.x, |p| p.x);
         let place_z = hit.map_or(surface_pos.z, |p| p.z);
@@ -325,6 +396,7 @@ fn update_held_position(mut held_query: Query<&mut Transform, With<HeldItem>>) {
 
 fn update_crosshair(
     target: Res<InteractionTarget>,
+    slot_target: Res<SlotTarget>,
     held_query: Query<(), With<HeldItem>>,
     mut crosshair_query: Query<&mut TextColor, With<Crosshair>>,
 ) {
@@ -333,9 +405,13 @@ fn update_crosshair(
     };
 
     let holding = held_query.iter().next().is_some();
-    let targeting = target.entity.is_some();
+    let targeting_material = target.entity.is_some();
+    let targeting_slot = slot_target.entity.is_some();
 
-    color.0 = if targeting {
+    color.0 = if targeting_slot && holding {
+        // Slot + holding → ready to place into slot (cyan).
+        Color::srgba(0.3, 0.9, 1.0, 0.95)
+    } else if targeting_material {
         Color::srgba(0.2, 1.0, 0.4, 0.9)
     } else if holding {
         Color::srgba(1.0, 0.85, 0.3, 0.8)
