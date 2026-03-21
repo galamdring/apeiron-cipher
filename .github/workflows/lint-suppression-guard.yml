@@ -1,0 +1,74 @@
+name: Lint Suppression Guard
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  issues: write
+
+jobs:
+  check-lint-suppressions:
+    name: Audit lint suppressions
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run suppression check
+        id: check
+        run: |
+          set +e
+          ./scripts/check-lint-suppression.sh src /tmp/violations.txt
+          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+
+      - name: Find existing issue
+        id: find
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          issue_number=$(gh issue list \
+            --label lint-suppression \
+            --state open \
+            --json number \
+            --jq '.[0].number // empty')
+          echo "issue_number=${issue_number}" >> "$GITHUB_OUTPUT"
+
+      - name: Open or update issue
+        if: steps.check.outputs.exit_code != '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BODY="$(cat <<'HEADER'
+          ## Uncommented lint suppressions on main
+
+          The following `#[allow(...)]` / `#[expect(...)]` attributes lack an
+          explanatory comment. Add a `//` comment on the line above (or inline)
+          describing **why** the suppression is needed, then merge to main to
+          resolve this issue automatically.
+
+          HEADER
+          )
+          $(cat /tmp/violations.txt)
+
+          ---
+          *Updated by [lint-suppression-guard](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})*"
+
+          if [ -n "${{ steps.find.outputs.issue_number }}" ]; then
+            gh issue edit "${{ steps.find.outputs.issue_number }}" --body "$BODY"
+            echo "Updated issue #${{ steps.find.outputs.issue_number }}"
+          else
+            gh issue create \
+              --title "Uncommented lint suppressions on main" \
+              --label lint-suppression \
+              --body "$BODY"
+          fi
+
+      - name: Close resolved issue
+        if: steps.check.outputs.exit_code == '0' && steps.find.outputs.issue_number != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue close "${{ steps.find.outputs.issue_number }}" \
+            --comment "All lint suppressions now have comments. Closing automatically."
