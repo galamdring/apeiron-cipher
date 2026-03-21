@@ -53,6 +53,8 @@ pub(crate) struct SceneConfig {
     #[serde(default)]
     pub furniture: FurnitureConfig,
     #[serde(default)]
+    pub fabricator: FabricatorSceneConfig,
+    #[serde(default)]
     pub heat_source: HeatSourceConfig,
 }
 
@@ -279,6 +281,74 @@ pub(crate) struct ShelfConfig {
     pub x: f32,
     pub z: f32,
     pub y: f32,
+}
+
+// ── Fabricator config ────────────────────────────────────────────────────
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct FabricatorSceneConfig {
+    #[serde(default = "default_fab_slot_offset_x")]
+    pub slot_offset_x: f32,
+    #[serde(default = "default_fab_slot_spacing_z")]
+    pub slot_spacing_z: f32,
+    #[serde(default = "default_fab_slot_radius")]
+    pub slot_radius: f32,
+    #[serde(default = "default_fab_slot_height")]
+    pub slot_height: f32,
+    #[serde(default = "default_fab_output_offset_x")]
+    pub output_offset_x: f32,
+    #[serde(default = "default_fab_output_offset_z")]
+    pub output_offset_z: f32,
+    #[serde(default = "default_fab_output_radius")]
+    pub output_radius: f32,
+    #[serde(default = "default_fab_output_height")]
+    pub output_height: f32,
+    #[serde(default = "default_fab_process_seconds")]
+    pub process_seconds: f32,
+}
+
+fn default_fab_slot_offset_x() -> f32 {
+    -0.45
+}
+fn default_fab_slot_spacing_z() -> f32 {
+    0.3
+}
+fn default_fab_slot_radius() -> f32 {
+    0.07
+}
+fn default_fab_slot_height() -> f32 {
+    0.02
+}
+fn default_fab_output_offset_x() -> f32 {
+    0.0
+}
+fn default_fab_output_offset_z() -> f32 {
+    -0.25
+}
+fn default_fab_output_radius() -> f32 {
+    0.09
+}
+fn default_fab_output_height() -> f32 {
+    0.02
+}
+fn default_fab_process_seconds() -> f32 {
+    2.5
+}
+
+impl Default for FabricatorSceneConfig {
+    fn default() -> Self {
+        Self {
+            slot_offset_x: default_fab_slot_offset_x(),
+            slot_spacing_z: default_fab_slot_spacing_z(),
+            slot_radius: default_fab_slot_radius(),
+            slot_height: default_fab_slot_height(),
+            output_offset_x: default_fab_output_offset_x(),
+            output_offset_z: default_fab_output_offset_z(),
+            output_radius: default_fab_output_radius(),
+            output_height: default_fab_output_height(),
+            process_seconds: default_fab_process_seconds(),
+        }
+    }
 }
 
 // ── Heat source config ──────────────────────────────────────────────────

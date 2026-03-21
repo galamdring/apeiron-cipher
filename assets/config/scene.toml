@@ -52,6 +52,20 @@ x = 0.6
 z = -3.15
 y = 0.92
 
+[fabricator]
+# Input slots: left side of bench, spaced apart on the Z axis.
+slot_offset_x = -0.45
+slot_spacing_z = 0.3
+slot_radius = 0.07
+slot_height = 0.02
+# Output slot: center of bench, slightly forward.
+output_offset_x = 0.0
+output_offset_z = -0.25
+output_radius = 0.09
+output_height = 0.02
+# How long the fabrication process takes (seconds).
+process_seconds = 2.5
+
 [heat_source]
 # Offset from workbench center — sits on the right side of the bench.
 offset_x = 0.55
