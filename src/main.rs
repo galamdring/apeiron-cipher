@@ -13,6 +13,7 @@ mod heat;
 mod input;
 mod interaction;
 mod materials;
+mod observation;
 mod player;
 mod scene;
 
@@ -47,5 +48,7 @@ fn main() {
         .add_plugins(fabricator::FabricatorPlugin)
         // Combination: data-driven rules for material pair outcomes.
         .add_plugins(combination::CombinationPlugin)
+        // Observation: confidence tracking for player knowledge.
+        .add_plugins(observation::ObservationPlugin)
         .run();
 }
