@@ -69,7 +69,7 @@ _This file contains critical rules and patterns that AI agents must follow when 
 - **Module style:** Use filename-as-module (`src/materials.rs` as entry point, sub-modules in `src/materials/`). No `mod.rs` files. Consistent across the project.
 - **Data files:** All game data in `assets/` — materials in `assets/materials/`, configs in `assets/config/`. Never embed game data in Rust source.
 - **Constants:** Game-tuning values (interaction range, fabrication duration, heat zone radius) live in data files or as Bevy `Resource` structs loaded from config — not as `const` in source code. Only truly fixed values (like mathematical constants) are `const`.
-- **Comments:** Document *why*, not *what*. No narration comments. Doc comments (`///`) on all public items explaining purpose and constraints.
+- **Comments:** Document _why_, not _what_. No narration comments. Doc comments (`///`) on all public items explaining purpose and constraints.
 - **Module documentation:** Each plugin module has a top-level `//!` doc comment explaining what the plugin does and its responsibilities.
 - **No dead code:** No commented-out code blocks. No `#[allow(dead_code)]` without a tracking issue.
 - **Split for readability:** No hard file size limits. Split files when it improves readability and navigability.
@@ -106,7 +106,101 @@ _This file contains critical rules and patterns that AI agents must follow when 
 - **Project context (this file):** `docs/bmad/project-context.md`
 - **Game Design Document:** `docs/bmad/gdd.md` — design intent, game pillars, mechanics, the Accretion Model
 - **Game Brief:** `docs/bmad/game-brief.md` — scope decisions, target audience, competitive positioning, technical constraints
-- **Epics & Stories:** `docs/bmad/planning-artifacts/epics.md` — POC scope, story acceptance criteria, implementation order
+- **Epics & Stories (reference):** `docs/bmad/planning-artifacts/epics.md` — original POC scope breakdown with full acceptance criteria and technical notes
+
+## Task Management
+
+**All task tracking lives in the [Apeiron Cipher 0.1 GitHub Project](https://github.com/users/galamdring/projects/1).**
+
+- Epics are GitHub Issues labeled `epic` with stories linked as sub-issues
+- Stories are GitHub Issues labeled `story` with full acceptance criteria, technical notes, dependency links, and implementation order in their body
+- Use the project board (Status: Backlog → Ready → In progress → In review → Done) to track progress
+- Priority (P0/P1/P2) and Size (XS/S/M/L/XL) fields are available on the board for sprint planning
+
+### Issue Map
+
+| Epic                       | Issue                                                          | Stories                                                                                                                                                                                                                                                      |
+| -------------------------- | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Epic 1: A Room to Stand In | [#2](https://github.com/galamdring/apeiron-cipher/issues/2)   | [#5](https://github.com/galamdring/apeiron-cipher/issues/5), [#6](https://github.com/galamdring/apeiron-cipher/issues/6), [#7](https://github.com/galamdring/apeiron-cipher/issues/7), [#8](https://github.com/galamdring/apeiron-cipher/issues/8)          |
+| Epic 2: Things to Touch    | [#3](https://github.com/galamdring/apeiron-cipher/issues/3)   | [#9](https://github.com/galamdring/apeiron-cipher/issues/9), [#10](https://github.com/galamdring/apeiron-cipher/issues/10), [#11](https://github.com/galamdring/apeiron-cipher/issues/11)                                                                   |
+| Epic 3: Try and Learn      | [#4](https://github.com/galamdring/apeiron-cipher/issues/4)   | [#12](https://github.com/galamdring/apeiron-cipher/issues/12), [#13](https://github.com/galamdring/apeiron-cipher/issues/13), [#14](https://github.com/galamdring/apeiron-cipher/issues/14), [#15](https://github.com/galamdring/apeiron-cipher/issues/15)  |
+
+### Agent Story Workflow
+
+This is the mandatory workflow for implementing stories. Agents must follow these steps in order.
+
+#### Step 1 — Pick a story
+
+Query the current iteration for stories in _Ready_ status:
+
+```bash
+gh project item-list 1 --owner galamdring --format json
+```
+
+Filter to items where `status == "Ready"` and `iteration` matches the current iteration. Read the issue body of each Ready story to find its _Implementation Order_ number. Pick the lowest-numbered story — that is the next story to implement. If a story depends on another story that is not yet Done, skip it.
+
+#### Step 2 — Move to In progress
+
+Before writing any code, move the story to _In progress_ on the project board:
+
+```bash
+gh project item-edit --project-id PVT_kwHOACDmtc4BSN-c --id <ITEM_ID> --field-id PVTSSF_lAHOACDmtc4BSN-czg_0UHU --single-select-option-id 47fc9ee4
+```
+
+Only one story should be In progress at a time.
+
+#### Step 3 — Implement
+
+- Create a feature branch: `epic-N/story-N.N-short-description`
+- Read the full issue body for acceptance criteria and technical notes:
+
+```bash
+gh issue view <number> --repo galamdring/apeiron-cipher
+```
+
+- Implement the story. All acceptance criteria must be satisfied. The epics doc (`docs/bmad/planning-artifacts/epics.md`) remains the canonical reference for acceptance criteria and requirements coverage.
+- Run `make check` (or `cargo fmt --check && cargo clippy -- -D warnings && cargo test`) before committing.
+
+#### Step 4 — Create PR and move to In review
+
+- Push the branch and create a PR. The PR body _must_ include `Closes #<issue_number>` so that merging the PR automatically closes the issue.
+- If the story depends on a PR that has not yet merged, mark the new PR as dependent in the PR body (e.g., "Depends on #X"). Do not merge out of order.
+- Move the story to _In review_ on the project board:
+
+```bash
+gh project item-edit --project-id PVT_kwHOACDmtc4BSN-c --id <ITEM_ID> --field-id PVTSSF_lAHOACDmtc4BSN-czg_0UHU --single-select-option-id aba860b9
+```
+
+#### Step 5 — Done (automated, never agent-triggered)
+
+_An agent must NEVER move an issue to Done._ The Done transition happens automatically when the PR is merged and the issue is closed by GitHub. The project board has these automations enabled:
+
+- _Item closed_ — moves the issue to Done on the board
+- _Auto-close issue_ — closes the issue when its linked PR merges (via `Closes #N`)
+- _Pull request merged_ — updates the board status
+
+### Status Field Reference
+
+| Status      | Option ID  | Who sets it                                           |
+| ----------- | ---------- | ----------------------------------------------------- |
+| Backlog     | `f75ad846` | Default / human                                       |
+| Ready       | `e18bf179` | Human (sprint planning)                               |
+| In progress | `47fc9ee4` | Agent (Step 2)                                        |
+| In review   | `aba860b9` | Agent (Step 4)                                        |
+| Done        | `98236657` | _Automation only_ — set when issue closes on PR merge |
+
+### Useful Commands
+
+```bash
+# List all project items with status and iteration
+gh project item-list 1 --owner galamdring --format json
+
+# View a specific story's acceptance criteria
+gh issue view <number> --repo galamdring/apeiron-cipher
+
+# Get the project item ID for a specific issue (needed for status updates)
+# Parse from item-list output, matching on issue number
+```
 
 ## Usage Guidelines
 
@@ -115,7 +209,8 @@ _This file contains critical rules and patterns that AI agents must follow when 
 - Read this file before implementing any code
 - Follow ALL rules exactly as documented
 - When in doubt, prefer the more restrictive option
-- Reference the epics document for story acceptance criteria
+- Follow the Agent Story Workflow above — never skip steps or move issues to Done
+- Reference the GitHub Issue for story acceptance criteria
 - Reference the GDD for design intent when implementation choices arise
 
 **For Humans:**
@@ -124,5 +219,7 @@ _This file contains critical rules and patterns that AI agents must follow when 
 - Update when technology stack changes
 - Review periodically for outdated rules
 - Remove rules that become obvious over time
+- Manage task status and priorities through the GitHub Project board, not by editing docs
+- Move stories from Backlog to Ready during sprint/iteration planning — agents pick up Ready stories
 
-Last Updated: 2026-03-18
+Last Updated: 2026-03-19
