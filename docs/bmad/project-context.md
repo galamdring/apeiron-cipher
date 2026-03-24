@@ -83,7 +83,7 @@ _This file contains critical rules and patterns that AI agents must follow when 
 - **Commit messages (post-0.1):** Conventional Commits with plugin-scoped types for semantic versioning. Format: `feat(materials): add thermal resistance property`, `fix(fabricator): correct slot interaction raycasting`. Breaking changes use `!` suffix: `feat(materials)!: restructure property model`.
 - **One story per branch:** Each story gets its own branch merged to `main` on completion. No multi-story branches.
 - **Story definition of done:** A story is complete when its acceptance criteria from the epics document are satisfied, not just when the code compiles. The epics doc is the source of truth for "done."
-- **Story dependency order:** Stories are built in the order specified in the epics document. The constraint is dependency — a story cannot start until its dependencies are merged to `main`.
+- **Story dependency order:** Stories are built in the order specified in the epics document. The constraint is dependency — required dependency changes must exist on an ancestor branch before starting a dependent story. Every story PR is still opened against `main`, and dependencies must merge before the dependent PR merges.
 - **Makefile is the contract:** All build verification runs through the Makefile. Granular targets for the dev loop: `make build`, `make test`, `make lint`, `make fmt-check`, `make run`. Full gate: `make check` runs all verification. If a new check is added, it goes into the Makefile first — never CI-only.
 - **CI/CD:** GitHub Actions for multi-platform builds (macOS, Windows, Linux), invoking the same Makefile targets used locally. The pipeline never does something that `make` can't reproduce on a developer's machine.
 - **No premature optimization:** Build it correct first. Profile before optimizing. The POC performance target is 60fps — don't optimize until you're not hitting it.
@@ -151,7 +151,14 @@ Only one story should be In progress at a time.
 
 #### Step 3 — Implement
 
-- Create a feature branch: `epic-N/story-N.N-short-description`
+- Create a feature branch using Graphite so it stacks on the current branch:
+
+```bash
+gt create epic-N/story-N.N-short-description
+```
+
+If the previous story's branch is still open (PR not yet merged), Graphite automatically stacks the new branch on top of it. If starting fresh from `main`, check out `main` first.
+
 - Read the full issue body for acceptance criteria and technical notes:
 
 ```bash
@@ -163,13 +170,49 @@ gh issue view <number> --repo galamdring/apeiron-cipher
 
 #### Step 4 — Create PR and move to In review
 
-- Push the branch and create a PR. The PR body _must_ include `Closes #<issue_number>` so that merging the PR automatically closes the issue.
-- If the story depends on a PR that has not yet merged, mark the new PR as dependent in the PR body (e.g., "Depends on #X"). Do not merge out of order.
+- Submit the branch (and any unstacked branches below it) as PRs using Graphite:
+
+```bash
+gt submit
+```
+
+Graphite creates or updates the GitHub PR for each branch in the stack.
+
+- Every story PR must target `main` when created. Graphite branch ancestry is still used to model dependencies locally, but GitHub PR base must remain `main`.
+- If this story depends on an unmerged ancestor branch, add `Depends on #<dependency_pr_number>` in the PR body and do not merge out of dependency order.
+- The PR body _must_ include `Closes #<issue_number>` so merge to `main` auto-closes the story issue.
+- After a dependency PR merges, run `gt stack sync` and `gt submit`, then verify the dependent PR diff only contains that story's changes.
 - Move the story to _In review_ on the project board:
 
 ```bash
 gh project item-edit --project-id PVT_kwHOACDmtc4BSN-c --id <ITEM_ID> --field-id PVTSSF_lAHOACDmtc4BSN-czg_0UHU --single-select-option-id aba860b9
 ```
+
+#### Handling change requests on stacked PRs
+
+When a reviewer requests changes on a lower branch in the stack:
+
+1. Check out the branch that needs changes: `gt checkout epic-N/story-N.N-...`
+2. Make fixes, commit, then sync the stack: `gt stack restack`
+3. Re-submit the entire stack: `gt submit`
+
+Graphite automatically rebases all branches above the changed one.
+
+#### In-review health check (story ↔ PR linkage)
+
+Run this check periodically (or when a story appears stuck in _In review_) to verify the close-link workflow is healthy:
+
+1. List project items and identify stories currently in _In review_:
+   - `gh project item-list 1 --owner galamdring --format json`
+2. For each story issue `#N`, find referencing PRs:
+   - `gh pr list --state all --search "Closes #N" --repo galamdring/apeiron-cipher`
+3. Validate each matching PR:
+   - `gh pr view <pr_number> --json state,baseRefName,isDraft,mergedAt,body`
+4. Triage results:
+   - No referencing PR found -> fix PR body (`Closes #N`) or open the missing PR.
+   - PR not targeting `main` -> correct base to `main`.
+   - Dependency not merged yet -> keep _In review_ and retain `Depends on #X`.
+   - PR merged but issue still open -> manually investigate issue automation and board sync.
 
 #### Step 5 — Done (automated, never agent-triggered)
 
@@ -189,6 +232,22 @@ _An agent must NEVER move an issue to Done._ The Done transition happens automat
 | In review   | `aba860b9` | Agent (Step 4)                                        |
 | Done        | `98236657` | _Automation only_ — set when issue closes on PR merge |
 
+### PR Review Communication
+
+The agent replies to inline PR review comments directly on GitHub using the `gh` API. Because the CLI authenticates as the repo owner, all agent replies are prefixed with **[Indy]** to distinguish them from human comments.
+
+When asked to "check your open PRs for comments," the agent will:
+
+1. `gh pr list --state open` to find all open PRs
+2. `gh api repos/.../pulls/{n}/comments` for each PR to fetch inline comments
+3. Address each comment on its respective branch, reply with `[Indy]` prefix, push fixes
+
+If inline reply posting fails due to permissions or readonly execution (for example, HTTP 403/resource not accessible):
+
+1. Continue implementing fixes on the branch.
+2. Prepare proposed responses prefixed with `[Indy]` in the handoff/output message.
+3. Flag the PR as needing a human to post the prepared replies.
+
 ### Useful Commands
 
 ```bash
@@ -200,6 +259,27 @@ gh issue view <number> --repo galamdring/apeiron-cipher
 
 # Get the project item ID for a specific issue (needed for status updates)
 # Parse from item-list output, matching on issue number
+
+# Graphite: view the current stack
+gt log
+
+# Graphite: create a new stacked branch
+gt create <branch-name>
+
+# Graphite: submit all branches in the stack as PRs
+gt submit
+
+# Graphite: rebase the stack after a change to a lower branch
+gt stack restack
+
+# Graphite: sync with remote (after a PR is merged on GitHub)
+gt stack sync
+
+# Find PRs that reference a story issue
+gh pr list --state all --search "Closes #<issue_number>" --repo galamdring/apeiron-cipher
+
+# Verify PR base/state/body for in-review health checks
+gh pr view <pr_number> --json state,baseRefName,isDraft,mergedAt,body
 ```
 
 ## Usage Guidelines
@@ -222,4 +302,4 @@ gh issue view <number> --repo galamdring/apeiron-cipher
 - Manage task status and priorities through the GitHub Project board, not by editing docs
 - Move stories from Backlog to Ready during sprint/iteration planning — agents pick up Ready stories
 
-Last Updated: 2026-03-19
+Last Updated: 2026-03-20
