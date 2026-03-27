@@ -1,0 +1,24 @@
+# Osmium — ultra-dense heavy metal. Heat-resistant, toxic.
+name = "Osmium"
+seed = 1006
+color = [0.35, 0.38, 0.48]
+
+[density]
+value = 0.95
+visibility = "Observable"
+
+[thermal_resistance]
+value = 0.82
+visibility = "Hidden"
+
+[reactivity]
+value = 0.15
+visibility = "Hidden"
+
+[conductivity]
+value = 0.45
+visibility = "Hidden"
+
+[toxicity]
+value = 0.62
+visibility = "Hidden"

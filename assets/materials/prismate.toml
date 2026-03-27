@@ -1,0 +1,24 @@
+# Prismate — exotic crystalline lattice. Highly conductive, inert.
+name = "Prismate"
+seed = 1004
+color = [0.42, 0.38, 0.78]
+
+[density]
+value = 0.52
+visibility = "Observable"
+
+[thermal_resistance]
+value = 0.55
+visibility = "Hidden"
+
+[reactivity]
+value = 0.10
+visibility = "Hidden"
+
+[conductivity]
+value = 0.88
+visibility = "Hidden"
+
+[toxicity]
+value = 0.02
+visibility = "Hidden"

@@ -37,11 +37,6 @@ shelf_width = 1.35
 shelf_thickness = 0.07
 shelf_depth = 0.55
 
-
-[furniture]
-workbench_width = 2.0
-# ... other furniture fields ...
-
 [[furniture.shelves]]
 x = -3.15
 z = 0.7

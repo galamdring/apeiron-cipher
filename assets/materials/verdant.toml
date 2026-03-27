@@ -1,0 +1,24 @@
+# Verdant — organic compound. Light, fibrous, wilts under heat.
+name = "Verdant"
+seed = 1005
+color = [0.32, 0.62, 0.28]
+
+[density]
+value = 0.18
+visibility = "Observable"
+
+[thermal_resistance]
+value = 0.15
+visibility = "Hidden"
+
+[reactivity]
+value = 0.52
+visibility = "Hidden"
+
+[conductivity]
+value = 0.08
+visibility = "Hidden"
+
+[toxicity]
+value = 0.14
+visibility = "Hidden"
