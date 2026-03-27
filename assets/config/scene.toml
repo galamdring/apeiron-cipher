@@ -37,17 +37,18 @@ shelf_width = 1.35
 shelf_thickness = 0.07
 shelf_depth = 0.55
 
-[[shelves]]
+[[furniture.shelves]]
 x = -3.15
 z = 0.7
 y = 0.92
 
-[[shelves]]
+[[furniture.shelves]]
 x = 3.15
 z = -0.7
 y = 0.92
 
-[[shelves]]
+[[furniture.shelves]]
 x = 0.6
 z = -3.15
 y = 0.92
+
