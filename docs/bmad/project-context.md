@@ -289,6 +289,7 @@ gh pr view <pr_number> --json state,baseRefName,isDraft,mergedAt,body
 - Read this file before implementing any code
 - Follow ALL rules exactly as documented
 - When in doubt, prefer the more restrictive option
+- **Collaborate, don't decide.** PR review comments, architectural trade-offs, and any choice where more than one reasonable option exists must be discussed before implementation. Present the options, your analysis, and a recommendation — then wait for a decision. Never silently pick an approach and start coding.
 - Follow the Agent Story Workflow above — never skip steps or move issues to Done
 - Reference the GitHub Issue for story acceptance criteria
 - Reference the GDD for design intent when implementation choices arise
