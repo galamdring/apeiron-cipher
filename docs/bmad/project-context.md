@@ -1,7 +1,7 @@
 ---
 project_name: 'apeiron-cipher'
 user_name: 'NullOperator'
-date: '2026-03-18'
+date: '2026-03-27'
 sections_completed: ['technology_stack', 'language_rules', 'framework_rules', 'testing_rules', 'code_quality', 'workflow_rules', 'critical_rules']
 status: 'complete'
 rule_count: 46
@@ -114,7 +114,7 @@ _This file contains critical rules and patterns that AI agents must follow when 
 
 - Epics are GitHub Issues labeled `epic` with stories linked as sub-issues
 - Stories are GitHub Issues labeled `story` with full acceptance criteria, technical notes, dependency links, and implementation order in their body
-- Use the project board (Status: Backlog → Ready → In progress → In review → Done) to track progress
+- Use the project board (Status: Backlog → Ready → In progress → Blocked → In review → Done) to track progress
 - Priority (P0/P1/P2) and Size (XS/S/M/L/XL) fields are available on the board for sprint planning
 
 ### Issue Map
@@ -137,7 +137,11 @@ Query the current iteration for stories in _Ready_ status:
 gh project item-list 1 --owner galamdring --format json
 ```
 
-Filter to items where `status == "Ready"` and `iteration` matches the current iteration. Read the issue body of each Ready story to find its _Implementation Order_ number. Pick the lowest-numbered story — that is the next story to implement. If a story depends on another story that is not yet Done, skip it.
+Filter to items where `status == "Ready"` and `iteration` matches the current iteration. Read the issue body of each Ready story to find its _Implementation Order_ number. Pick the lowest-numbered story — that is the next story to implement.
+
+Skip a story if its dependency is not yet implementable — that is, the dependency is in Backlog, Ready, In progress, or Blocked. If the dependency is In Review or Done, proceed — the code exists on its branch and can be stacked on. The cascading block in Step 3a should have already moved downstream stories to Blocked when appropriate, but check defensively.
+
+In pipeline mode, this step is reached automatically after completing the previous story. The agent does not wait for human instruction between stories.
 
 #### Step 2 — Move to In progress
 
@@ -167,6 +171,27 @@ gh issue view <number> --repo galamdring/apeiron-cipher
 
 - Implement the story. All acceptance criteria must be satisfied. The epics doc (`docs/bmad/planning-artifacts/epics.md`) remains the canonical reference for acceptance criteria and requirements coverage.
 - Run `make check` (or `cargo fmt --check && cargo clippy -- -D warnings && cargo test`) before committing.
+
+#### Step 3a — Block (when the agent cannot proceed)
+
+If the agent cannot proceed without human input, it blocks the story.
+
+**When to block:** Architectural ambiguity, a question where multiple reasonable approaches exist (per "collaborate, don't decide"), an unresolvable build failure.
+
+**What NOT to block on:** Trivial implementation choices, clippy lint approaches, cosmetic tuning, sensitivity values — handle these and note them in the PR for review.
+
+**Procedure:**
+
+1. Post a comment on the story issue prefixed with `[Indy] Blocked:` explaining the specific question or blocker.
+2. Move the story to _Blocked_ on the project board:
+
+```bash
+gh project item-edit --project-id PVT_kwHOACDmtc4BSN-c --id <ITEM_ID> --field-id PVTSSF_lAHOACDmtc4BSN-czg_0UHU --single-select-option-id 68d6688a
+```
+
+4. Return to Step 1 — pick the next Ready story that is not blocked.
+
+**Resumption:** When the human answers the question, they move the root story back to Ready. On the next pipeline pass, the agent reads all issue comments on a previously-blocked story to incorporate the human's answer before resuming implementation.
 
 #### Step 4 — Create PR and move to In review
 
@@ -224,13 +249,14 @@ _An agent must NEVER move an issue to Done._ The Done transition happens automat
 
 ### Status Field Reference
 
-| Status      | Option ID  | Who sets it                                           |
-| ----------- | ---------- | ----------------------------------------------------- |
-| Backlog     | `f75ad846` | Default / human                                       |
-| Ready       | `e18bf179` | Human (sprint planning)                               |
-| In progress | `47fc9ee4` | Agent (Step 2)                                        |
-| In review   | `aba860b9` | Agent (Step 4)                                        |
-| Done        | `98236657` | _Automation only_ — set when issue closes on PR merge |
+| Status      | Option ID  | Who sets it                                                       |
+| ----------- | ---------- | ----------------------------------------------------------------- |
+| Backlog     | `f75ad846` | Default / human                                                   |
+| Ready       | `e18bf179` | Human (sprint planning); human (unblocking a story)               |
+| In progress | `47fc9ee4` | Agent (Step 2)                                                    |
+| Blocked     | `68d6688a` | Agent (Step 3a — when blocked; also cascaded to dependents)       |
+| In review   | `aba860b9` | Agent (Step 4)                                                    |
+| Done        | `98236657` | _Automation only_ — set when issue closes on PR merge             |
 
 ### PR Review Communication
 
@@ -303,4 +329,4 @@ gh pr view <pr_number> --json state,baseRefName,isDraft,mergedAt,body
 - Manage task status and priorities through the GitHub Project board, not by editing docs
 - Move stories from Backlog to Ready during sprint/iteration planning — agents pick up Ready stories
 
-Last Updated: 2026-03-20
+Last Updated: 2026-03-18
