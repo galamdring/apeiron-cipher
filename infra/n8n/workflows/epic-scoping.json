@@ -1,0 +1,154 @@
+{
+  "id": "EpicScoping01",
+  "name": "Epic Scoping",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "epic-scoping",
+        "options": {},
+        "responseMode": "onReceived",
+        "responseCode": 200
+      },
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [200, 300],
+      "webhookId": "epic-scoping"
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\nconst https = require('https');\n\nconst appId = $env.GITHUB_APP_ID;\nconst installationId = $env.GITHUB_INSTALLATION_ID;\nconst privateKeyBase64 = $env.GITHUB_PRIVATE_KEY_BASE64;\nconst privateKey = Buffer.from(privateKeyBase64, 'base64').toString('utf8');\n\nconst now = Math.floor(Date.now() / 1000);\nconst header = Buffer.from(JSON.stringify({ alg: 'RS256', typ: 'JWT' })).toString('base64url');\nconst payload = Buffer.from(JSON.stringify({ iat: now - 60, exp: now + 600, iss: appId })).toString('base64url');\nconst signature = crypto.sign('SHA256', Buffer.from(`${header}.${payload}`), privateKey).toString('base64url');\nconst jwt = `${header}.${payload}.${signature}`;\n\nconst token = await new Promise((resolve, reject) => {\n  const req = https.request({\n    hostname: 'api.github.com',\n    path: `/app/installations/${installationId}/access_tokens`,\n    method: 'POST',\n    headers: {\n      'Authorization': `Bearer ${jwt}`,\n      'Accept': 'application/vnd.github+json',\n      'User-Agent': 'n8n-orchestrator',\n      'Content-Length': 0\n    }\n  }, res => {\n    let body = '';\n    res.on('data', c => body += c);\n    res.on('end', () => {\n      if (res.statusCode !== 201) reject(new Error(`GitHub token request failed: ${res.statusCode} ${body}`));\n      else resolve(JSON.parse(body).token);\n    });\n  });\n  req.on('error', reject);\n  req.end();\n});\n\nreturn [{ json: { ...$input.first().json, githubToken: token } }];"
+      },
+      "name": "Get Installation Token",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [420, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.github.com/repos/{{ $json.body.repoOwner }}/{{ $json.body.repoName }}/issues/{{ $json.body.issueNumber }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Accept", "value": "application/vnd.github+json" },
+            { "name": "Authorization", "value": "=Bearer {{ $json.githubToken }}" }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Fetch Epic Body",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [660, 200]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.github.com/repos/{{ $('Get Installation Token').item.json.body.repoOwner }}/{{ $('Get Installation Token').item.json.body.repoName }}/issues/{{ $('Get Installation Token').item.json.body.issueNumber }}/comments?per_page=100",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Accept", "value": "application/vnd.github+json" },
+            { "name": "Authorization", "value": "=Bearer {{ $('Get Installation Token').item.json.githubToken }}" }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Fetch Issue Comments",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [660, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "const trigger = $('Get Installation Token').first().json.body;\nconst epicData = $('Fetch Epic Body').first().json;\nconst commentItems = $('Fetch Issue Comments').all().map(i => i.json);\n\nconst epicBody = epicData.body || trigger.issueBody || '';\n\nconst conversationHistory = commentItems.map(c => {\n  const role = c.user?.type === 'Bot' ? 'assistant' : 'user';\n  return { role, content: `**${c.user?.login}:** ${c.body}` };\n});\n\nconst systemPrompt = `You are in an ongoing scoping conversation about this epic in the Apeiron Cipher game project.\n\nThe epic description has already been enriched with project-context references from the initial refinement pass. Use those references — do NOT re-fetch or re-state the full GDD or project-context.\n\nRespond to the human's latest comment. Be concise.\n\nWhen the scope is becoming clear, propose a summary SOW. The human will apply the \"sow_ready\" label when satisfied.\n\nDo NOT reference the full GDD or project-context in your response — the relevant parts are already in the epic description.`;\n\nconst messages = [\n  { role: 'system', content: systemPrompt },\n  { role: 'user', content: `Epic: ${trigger.issueTitle}\\n\\n${epicBody}` },\n  ...conversationHistory\n];\n\nreturn [{\n  json: {\n    messages,\n    githubToken: $('Get Installation Token').first().json.githubToken,\n    repoOwner: trigger.repoOwner,\n    repoName: trigger.repoName,\n    issueNumber: trigger.issueNumber\n  }\n}];"
+      },
+      "name": "Build Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{ $env.OPENROUTER_API_KEY }}" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: $env.OPENROUTER_MODEL || 'stepfun/step-3.5-flash:free', messages: $json.messages, max_tokens: 4096 }) }}",
+        "options": {}
+      },
+      "name": "Call LLM",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1120, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const llmResponse = $input.first().json;\nconst prev = $('Build Prompt').first().json;\n\nconst content = llmResponse.choices?.[0]?.message?.content || 'Error: No response from model.';\n\nreturn [{\n  json: {\n    commentBody: content,\n    githubToken: prev.githubToken,\n    repoOwner: prev.repoOwner,\n    repoName: prev.repoName,\n    issueNumber: prev.issueNumber\n  }\n}];"
+      },
+      "name": "Extract Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1340, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.github.com/repos/{{ $json.repoOwner }}/{{ $json.repoName }}/issues/{{ $json.issueNumber }}/comments",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Accept", "value": "application/vnd.github+json" },
+            { "name": "Authorization", "value": "=Bearer {{ $json.githubToken }}" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ body: $json.commentBody }) }}",
+        "options": {}
+      },
+      "name": "Post Comment",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1560, 300]
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": {
+      "main": [[{ "node": "Get Installation Token", "type": "main", "index": 0 }]]
+    },
+    "Get Installation Token": {
+      "main": [
+        [
+          { "node": "Fetch Epic Body", "type": "main", "index": 0 },
+          { "node": "Fetch Issue Comments", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Fetch Epic Body": {
+      "main": [[{ "node": "Build Prompt", "type": "main", "index": 0 }]]
+    },
+    "Fetch Issue Comments": {
+      "main": [[{ "node": "Build Prompt", "type": "main", "index": 0 }]]
+    },
+    "Build Prompt": {
+      "main": [[{ "node": "Call LLM", "type": "main", "index": 0 }]]
+    },
+    "Call LLM": {
+      "main": [[{ "node": "Extract Response", "type": "main", "index": 0 }]]
+    },
+    "Extract Response": {
+      "main": [[{ "node": "Post Comment", "type": "main", "index": 0 }]]
+    }
+  },
+  "active": true,
+  "settings": { "executionOrder": "v1" }
+}

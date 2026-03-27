@@ -1,0 +1,173 @@
+{
+  "id": "TaskInitialRefinement01",
+  "name": "Task Initial Refinement",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "task-initial-refinement",
+        "options": {},
+        "responseMode": "onReceived",
+        "responseCode": 200
+      },
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        200,
+        300
+      ],
+      "webhookId": "task-initial-refinement"
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\nconst https = require('https');\n\nconst appId = $env.GITHUB_APP_ID;\nconst installationId = $env.GITHUB_INSTALLATION_ID;\nconst privateKeyBase64 = $env.GITHUB_PRIVATE_KEY_BASE64;\nconst privateKey = Buffer.from(privateKeyBase64, 'base64').toString('utf8');\n\nconst now = Math.floor(Date.now() / 1000);\nconst header = Buffer.from(JSON.stringify({ alg: 'RS256', typ: 'JWT' })).toString('base64url');\nconst payload = Buffer.from(JSON.stringify({ iat: now - 60, exp: now + 600, iss: appId })).toString('base64url');\nconst signature = crypto.sign('SHA256', Buffer.from(`${header}.${payload}`), privateKey).toString('base64url');\nconst jwt = `${header}.${payload}.${signature}`;\n\nconst token = await new Promise((resolve, reject) => {\n  const req = https.request({\n    hostname: 'api.github.com',\n    path: `/app/installations/${installationId}/access_tokens`,\n    method: 'POST',\n    headers: {\n      'Authorization': `Bearer ${jwt}`,\n      'Accept': 'application/vnd.github+json',\n      'User-Agent': 'n8n-orchestrator',\n      'Content-Length': 0\n    }\n  }, res => {\n    let body = '';\n    res.on('data', c => body += c);\n    res.on('end', () => {\n      if (res.statusCode !== 201) reject(new Error(`GitHub token request failed: ${res.statusCode} ${body}`));\n      else resolve(JSON.parse(body).token);\n    });\n  });\n  req.on('error', reject);\n  req.end();\n});\n\nreturn [{ json: { ...$input.first().json, githubToken: token } }];"
+      },
+      "name": "Get Installation Token",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        420,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.github.com/repos/{{ $json.body.repoOwner }}/{{ $json.body.repoName }}/contents/docs/bmad/project-context.md",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/vnd.github.raw+json"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $json.githubToken }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Fetch Project Context",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        660,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const trigger = $('Get Installation Token').first().json.body;\nconst contextRaw = $('Fetch Project Context').first().json;\nconst projectContext = typeof contextRaw === 'string' ? contextRaw : JSON.stringify(contextRaw);\n\nconst systemPrompt = `You are analyzing a new task for the first time in the Apeiron Cipher game project (Rust/Bevy ECS).\n\nIMPORTANT: This is a TASK, not an epic. Tasks are single-PR scope items. Keep your analysis focused on what can be done in ONE pull request.\n\nYour goal is NOT to create an SOW yet. Your goal is to understand the ask and surface questions.\n\nRead the task description. Cross-reference with the project context.\n\nIdentify:\n- What's clearly in scope for a single PR\n- What's ambiguous\n- What's missing\n- If the scope seems too large for a single PR, flag it \u2014 it might need to be an epic instead\n\nUpdate the task description to include relevant project-context references. Return this as a JSON field called \"enrichedDescription\".\n\nAlso write a comment with your questions and observations. Return this as a JSON field called \"comment\".\n\nKeep your response focused \u2014 this will be read on a phone.\n\nRespond with ONLY valid JSON in this format:\n{\"enrichedDescription\": \"...\", \"comment\": \"...\"}\n\n## Project Context\n${projectContext}`;\n\nconst messages = [\n  { role: 'system', content: systemPrompt },\n  { role: 'user', content: `Task: ${trigger.issueTitle}\\n\\n${trigger.issueBody}` }\n];\n\nreturn [{\n  json: {\n    messages,\n    githubToken: $('Get Installation Token').first().json.githubToken,\n    repoOwner: trigger.repoOwner,\n    repoName: trigger.repoName,\n    issueNumber: trigger.issueNumber\n  }\n}];"
+      },
+      "name": "Build Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        900,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.OPENROUTER_API_KEY }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: $env.OPENROUTER_MODEL || 'stepfun/step-3.5-flash:free', messages: $json.messages, max_tokens: 4096 }) }}",
+        "options": {}
+      },
+      "name": "Call LLM",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1120,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const https = require('https');\nconst llmResponse = $input.first().json;\nconst prev = $('Build Prompt').first().json;\nconst token = prev.githubToken;\nconst owner = prev.repoOwner;\nconst repo = prev.repoName;\nconst issueNumber = prev.issueNumber;\n\nconst rawContent = llmResponse.choices?.[0]?.message?.content || '';\n\nlet enrichedDescription = '';\nlet comment = '';\ntry {\n  let jsonStr = rawContent.trim();\n  // Strip code fences only if they wrap the entire response\n  if (jsonStr.startsWith('```json') && jsonStr.endsWith('```')) {\n    jsonStr = jsonStr.slice(jsonStr.indexOf('\\n') + 1, jsonStr.lastIndexOf('```')).trim();\n  }\n  const parsed = JSON.parse(jsonStr);\n  enrichedDescription = parsed.enrichedDescription || '';\n  comment = parsed.comment || rawContent;\n} catch (e) {\n  comment = rawContent || 'Error: No response from model.';\n}\n\n// --- Shared REST helper with retry/rate-limit logic ---\nfunction _rawRequest(method, path, body, tkn) {\n  return new Promise((resolve, reject) => {\n    const bodyStr = body ? JSON.stringify(body) : '';\n    const headers = {\n      'Authorization': `Bearer ${tkn}`,\n      'Accept': 'application/vnd.github+json',\n      'User-Agent': 'n8n-orchestrator',\n      'X-GitHub-Api-Version': '2022-11-28'\n    };\n    if (body) {\n      headers['Content-Type'] = 'application/json';\n      headers['Content-Length'] = Buffer.byteLength(bodyStr);\n    }\n    const req = https.request({ hostname: 'api.github.com', path, method, headers }, res => {\n      let d = '';\n      res.on('data', c => d += c);\n      res.on('end', () => {\n        let parsed;\n        try { parsed = JSON.parse(d); } catch(e) { parsed = d; }\n        resolve({ status: res.statusCode, data: parsed, headers: res.headers });\n      });\n    });\n    req.on('error', reject);\n    if (bodyStr) req.write(bodyStr);\n    req.end();\n  });\n}\n\nasync function githubRest(method, path, body, maxRetries = 3) {\n  for (let attempt = 0; attempt <= maxRetries; attempt++) {\n    const result = await _rawRequest(method, path, body, token);\n    if (result.status >= 200 && result.status < 300) return result;\n    if (result.status === 403 || result.status === 429) {\n      const retryAfter = result.headers['retry-after'];\n      const rateLimitReset = result.headers['x-ratelimit-reset'];\n      let waitMs;\n      if (retryAfter) waitMs = parseInt(retryAfter, 10) * 1000;\n      else if (rateLimitReset) waitMs = Math.max((parseInt(rateLimitReset, 10) * 1000) - Date.now(), 1000);\n      else waitMs = Math.pow(2, attempt) * 1000;\n      if (attempt < maxRetries) { await new Promise(r => setTimeout(r, waitMs)); continue; }\n    }\n    if (result.status >= 400 && result.status < 500) throw new Error(`GitHub API ${result.status}: ${JSON.stringify(result.data)}`);\n    if (result.status >= 500 && attempt < maxRetries) { await new Promise(r => setTimeout(r, Math.pow(2, attempt) * 1000)); continue; }\n    throw new Error(`GitHub API failed after ${maxRetries + 1} attempts: ${result.status}`);\n  }\n}\n\n// 1. Update task body with enriched description (if AI provided one)\nif (enrichedDescription) {\n  await githubRest('PATCH', `/repos/${owner}/${repo}/issues/${issueNumber}`, { body: enrichedDescription });\n}\n\n// 2. Post the AI comment\nawait githubRest('POST', `/repos/${owner}/${repo}/issues/${issueNumber}/comments`, { body: comment });\n\n// 3. Swap needs_refinement \u2192 in_scoping\ntry {\n  await githubRest('DELETE', `/repos/${owner}/${repo}/issues/${issueNumber}/labels/${encodeURIComponent('needs_refinement')}`);\n} catch (e) { if (!e.message.includes('404')) throw e; }\nawait githubRest('POST', `/repos/${owner}/${repo}/issues/${issueNumber}/labels`, { labels: ['in_scoping'] });\n\nreturn [{ json: { success: true, issueNumber, enrichedDescription: !!enrichedDescription, commentPosted: true, labelSwapped: 'needs_refinement -> in_scoping' } }];"
+      },
+      "name": "Apply Changes",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1340,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "Get Installation Token",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Installation Token": {
+      "main": [
+        [
+          {
+            "node": "Fetch Project Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Project Context": {
+      "main": [
+        [
+          {
+            "node": "Build Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Prompt": {
+      "main": [
+        [
+          {
+            "node": "Call LLM",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call LLM": {
+      "main": [
+        [
+          {
+            "node": "Apply Changes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
