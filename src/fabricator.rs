@@ -278,18 +278,6 @@ fn apply_processing_visuals(
 
 use crate::combination::PropertyRule;
 
-/// Determines the output property visibility.
-/// If both inputs have been seen (Observable or Revealed), the output is Observable.
-/// Otherwise, the output is Hidden — the player must discover it again.
-fn output_visibility(a: PropertyVisibility, b: PropertyVisibility) -> PropertyVisibility {
-    match (a, b) {
-        (PropertyVisibility::Hidden, _) | (_, PropertyVisibility::Hidden) => {
-            PropertyVisibility::Hidden
-        }
-        _ => PropertyVisibility::Observable,
-    }
-}
-
 /// Deterministic pseudo-random float in \[-1.0, 1.0\] from a seed+channel.
 /// Splitmix64 single iteration — fast, deterministic, no external crate needed.
 fn seeded_noise(seed: u64, channel: u64) -> f32 {
@@ -323,7 +311,7 @@ fn apply_rule_with_perturbation(
     };
     MaterialProperty {
         value,
-        visibility: output_visibility(a.visibility, b.visibility),
+        visibility: PropertyVisibility::Hidden,
     }
 }
 
@@ -398,13 +386,16 @@ pub(crate) fn rule_combine(
         name,
         seed: combined_seed,
         color,
-        density: apply_rule_with_perturbation(
-            &pair_rules.density,
-            &a.density,
-            &b.density,
-            combined_seed,
-            0,
-        ),
+        density: MaterialProperty {
+            visibility: PropertyVisibility::Observable,
+            ..apply_rule_with_perturbation(
+                &pair_rules.density,
+                &a.density,
+                &b.density,
+                combined_seed,
+                0,
+            )
+        },
         thermal_resistance: apply_rule_with_perturbation(
             &pair_rules.thermal_resistance,
             &a.thermal_resistance,
@@ -598,20 +589,6 @@ mod tests {
     }
 
     #[test]
-    fn observable_inputs_produce_observable_output() {
-        let a = MaterialProperty {
-            value: 0.5,
-            visibility: PropertyVisibility::Observable,
-        };
-        let b = MaterialProperty {
-            value: 0.5,
-            visibility: PropertyVisibility::Observable,
-        };
-        let result = apply_rule_with_perturbation(&PropertyRule::default(), &a, &b, 1, 0);
-        assert_eq!(result.visibility, PropertyVisibility::Observable);
-    }
-
-    #[test]
     fn hidden_input_produces_hidden_output() {
         let a = MaterialProperty {
             value: 0.5,
@@ -626,17 +603,34 @@ mod tests {
     }
 
     #[test]
-    fn revealed_inputs_produce_observable_output() {
+    fn non_surface_output_properties_remain_hidden_even_if_inputs_were_known() {
         let a = MaterialProperty {
             value: 0.5,
-            visibility: PropertyVisibility::Revealed,
+            visibility: PropertyVisibility::Observable,
         };
         let b = MaterialProperty {
             value: 0.5,
             visibility: PropertyVisibility::Revealed,
         };
         let result = apply_rule_with_perturbation(&PropertyRule::default(), &a, &b, 1, 0);
-        assert_eq!(result.visibility, PropertyVisibility::Observable);
+        assert_eq!(result.visibility, PropertyVisibility::Hidden);
+    }
+
+    #[test]
+    fn fabricated_density_remains_surface_observable() {
+        let rules = default_rules();
+        let a = test_material("Ferrite", 100, 0.8);
+        let b = test_material("Silite", 200, 0.2);
+        let result = rule_combine(&rules, &a, &b);
+
+        assert_eq!(result.density.visibility, PropertyVisibility::Observable);
+        assert_eq!(
+            result.thermal_resistance.visibility,
+            PropertyVisibility::Hidden
+        );
+        assert_eq!(result.reactivity.visibility, PropertyVisibility::Hidden);
+        assert_eq!(result.conductivity.visibility, PropertyVisibility::Hidden);
+        assert_eq!(result.toxicity.visibility, PropertyVisibility::Hidden);
     }
 
     #[test]

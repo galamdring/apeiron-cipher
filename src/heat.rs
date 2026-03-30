@@ -18,6 +18,7 @@ use bevy::prelude::*;
 
 use crate::interaction::HeldItem;
 use crate::materials::{GameMaterial, MaterialObject, PropertyVisibility};
+use crate::observation::ConfidenceTracker;
 use crate::scene::{SceneConfig, Workbench};
 
 pub(crate) struct HeatPlugin;
@@ -58,6 +59,10 @@ impl HeatExposure {
         }
     }
 }
+
+/// Prevents a single material entity from incrementing confidence more than once.
+#[derive(Component)]
+struct ThermalObservationRecorded;
 
 // ── Spawn ───────────────────────────────────────────────────────────────
 
@@ -219,19 +224,40 @@ fn apply_thermal_reaction(
 // ── Property revelation ─────────────────────────────────────────────────
 
 fn reveal_thermal_property(
+    mut commands: Commands,
     cfg: Res<SceneConfig>,
-    mut material_query: Query<(&HeatExposure, &mut GameMaterial), With<MaterialObject>>,
+    mut tracker: ResMut<ConfidenceTracker>,
+    mut material_query: Query<
+        (
+            Entity,
+            &HeatExposure,
+            &mut GameMaterial,
+            Option<&ThermalObservationRecorded>,
+        ),
+        With<MaterialObject>,
+    >,
 ) {
     let reveal_secs = cfg.heat_source.reveal_seconds;
 
-    for (exp, mut mat) in &mut material_query {
-        if exp.elapsed >= reveal_secs
-            && mat.thermal_resistance.visibility == PropertyVisibility::Hidden
-        {
+    for (entity, exp, mut mat, recorded) in &mut material_query {
+        if exp.elapsed < reveal_secs {
+            continue;
+        }
+
+        if mat.thermal_resistance.visibility == PropertyVisibility::Hidden {
             mat.thermal_resistance.visibility = PropertyVisibility::Revealed;
             info!(
                 "'{}' thermal resistance revealed after {:.1}s exposure",
                 mat.name, exp.elapsed
+            );
+        }
+
+        if recorded.is_none() {
+            let count = tracker.record(mat.seed, "thermal_resistance");
+            commands.entity(entity).insert(ThermalObservationRecorded);
+            info!(
+                "'{}' thermal observation recorded (count = {})",
+                mat.name, count
             );
         }
     }
