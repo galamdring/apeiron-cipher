@@ -66,6 +66,21 @@ output_height = 0.02
 # How long the fabrication process takes (seconds).
 process_seconds = 2.5
 
+# Scene tuning — room geometry, lighting, and player spawn.
+# Edit these values instead of changing Rust constants.
+
+[lighting]
+ambient_brightness = 14.0
+directional_illuminance = 1100.0
+directional_shadows = true
+# Spot above workbench — lumens (Bevy PBR units).
+spot_intensity = 280_000.0
+spot_range = 12.0
+spot_inner_angle = 0.28
+spot_outer_angle = 0.48
+spot_height = 2.75
+spot_target_y = 0.45
+
 [heat_source]
 # Offset from workbench center — sits on the right side of the bench.
 offset_x = 0.55
