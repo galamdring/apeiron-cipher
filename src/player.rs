@@ -6,7 +6,7 @@
 //! stay level while the camera tilts up and down.
 //!
 //! Systems:
-//! - `cursor_grab`: captures the cursor on left-click, releases on Pause action
+//! - `cursor_grab`: captures the cursor on CaptureCursor action, releases on Pause
 //! - `player_look`: applies mouse delta to yaw (body) and pitch (camera)
 //! - `player_move`: WASD translation relative to facing, clamped to room bounds
 
@@ -70,22 +70,19 @@ pub(crate) fn spawn_player(mut commands: Commands, scene: Res<SceneConfig>) {
         });
 }
 
-/// Captures the cursor on left-click, releases it when the Pause action fires.
-/// Left-click is a raw input because "capture the window" is a UI interaction,
-/// not a game action — it doesn't go through the action mapping.
+/// Captures the cursor when the mapped CaptureCursor action fires, releases it
+/// when the Pause action fires.
 fn cursor_grab(
     mut cursor_options: Single<&mut CursorOptions>,
-    mouse: Res<ButtonInput<MouseButton>>,
     player_query: Query<&ActionState<InputAction>, With<Player>>,
 ) {
-    if mouse.just_pressed(MouseButton::Left) {
-        cursor_options.visible = false;
-        cursor_options.grab_mode = CursorGrabMode::Locked;
-    }
-
     let Ok(action_state) = player_query.single() else {
         return;
     };
+    if action_state.just_pressed(&InputAction::CaptureCursor) {
+        cursor_options.visible = false;
+        cursor_options.grab_mode = CursorGrabMode::Locked;
+    }
     if action_state.just_pressed(&InputAction::Pause) {
         cursor_options.visible = true;
         cursor_options.grab_mode = CursorGrabMode::None;
