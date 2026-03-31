@@ -39,8 +39,6 @@ pub(crate) enum PropertyRule {
 }
 
 impl PropertyRule {
-    /// Used by the fabricator in the next PR to compute output property values.
-    #[allow(dead_code)]
     pub(crate) fn apply(&self, a: f32, b: f32) -> f32 {
         match self {
             PropertyRule::Blend { weight_a, weight_b } => {
@@ -79,7 +77,7 @@ pub(crate) struct PairRuleSet {
 }
 
 impl PairRuleSet {
-    /// Constructor used by tests and future combination logic.
+    /// Used in tests and by future waste-detection visuals (e.g. grey-out output).
     #[allow(dead_code)]
     pub(crate) fn all_inert() -> Self {
         Self {
@@ -91,7 +89,7 @@ impl PairRuleSet {
         }
     }
 
-    /// Used by the fabricator to detect waste outputs.
+    /// Used in tests and by future waste-detection visuals.
     #[allow(dead_code)]
     pub(crate) fn is_inert(&self) -> bool {
         self.density == PropertyRule::Inert
@@ -140,8 +138,6 @@ fn pair_key(a: &str, b: &str) -> (String, String) {
 }
 
 /// Loaded combination rules, keyed by sorted material name pairs.
-/// Fields read by the fabricator in the next PR.
-#[allow(dead_code)]
 #[derive(Resource, Debug, Default)]
 pub(crate) struct CombinationRules {
     pub default_rule: PropertyRule,
@@ -150,8 +146,6 @@ pub(crate) struct CombinationRules {
 
 impl CombinationRules {
     /// Look up the rule set for a pair, falling back to the default for each property.
-    /// Used by the fabricator's tick_processing system in the next PR.
-    #[allow(dead_code)]
     pub(crate) fn rules_for(&self, name_a: &str, name_b: &str) -> PairRuleSet {
         let key = pair_key(name_a, name_b);
         if let Some(rules) = self.pair_rules.get(&key) {
