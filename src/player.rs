@@ -27,6 +27,10 @@ pub(crate) fn cursor_is_captured(grab_mode: CursorGrabMode) -> bool {
     grab_mode != CursorGrabMode::None
 }
 
+fn enforce_eye_height(translation: &mut Vec3, eye_height: f32) {
+    translation.y = eye_height;
+}
+
 pub(crate) struct PlayerPlugin;
 
 impl Plugin for PlayerPlugin {
@@ -152,6 +156,8 @@ fn player_move(
         return;
     };
 
+    enforce_eye_height(&mut transform.translation, scene.player.eye_height);
+
     let input = action_state.clamped_axis_pair(&InputAction::Move);
     if input == Vec2::ZERO {
         return;
@@ -173,7 +179,7 @@ fn player_move(
     let bz = scene.room.half_extent_z - m;
     transform.translation.x = transform.translation.x.clamp(-bx, bx);
     transform.translation.z = transform.translation.z.clamp(-bz, bz);
-    transform.translation.y = scene.player.eye_height;
+    enforce_eye_height(&mut transform.translation, scene.player.eye_height);
 }
 
 #[cfg(test)]
@@ -193,5 +199,12 @@ mod tests {
     #[test]
     fn cursor_is_not_captured_for_none_mode() {
         assert!(!cursor_is_captured(CursorGrabMode::None));
+    }
+
+    #[test]
+    fn enforce_eye_height_overwrites_vertical_drift() {
+        let mut translation = Vec3::new(1.0, 9.0, -2.0);
+        enforce_eye_height(&mut translation, 1.7);
+        assert!((translation.y - 1.7).abs() < f32::EPSILON);
     }
 }
