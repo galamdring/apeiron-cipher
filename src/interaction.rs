@@ -21,7 +21,7 @@ use bevy::picking::mesh_picking::ray_cast::{MeshRayCast, MeshRayCastSettings, Ra
 use bevy::prelude::*;
 use bevy::window::CursorGrabMode;
 
-use crate::fabricator::InputSlot;
+use crate::fabricator::{ActivateIntent, InputSlot};
 use crate::input::InputAction;
 use crate::materials::{GameMaterial, MaterialObject, PropertyVisibility};
 use crate::player::{Player, PlayerCamera};
@@ -50,6 +50,7 @@ impl Plugin for InteractionPlugin {
                     emit_pickup_intent.after(update_interaction_target),
                     emit_place_intent.after(update_interaction_target),
                     emit_examine_intent.after(update_interaction_target),
+                    emit_activate_intent,
                     process_pickup.after(emit_pickup_intent),
                     process_place
                         .after(emit_place_intent)
@@ -242,6 +243,22 @@ fn emit_place_intent(
     };
     if action.just_pressed(&InputAction::Place) {
         writer.write(PlaceIntent);
+    }
+}
+
+fn emit_activate_intent(
+    player_query: Query<&ActionState<InputAction>, With<Player>>,
+    cursor_options: Single<&bevy::window::CursorOptions>,
+    mut writer: MessageWriter<ActivateIntent>,
+) {
+    if cursor_options.grab_mode != CursorGrabMode::Locked {
+        return;
+    }
+    let Ok(action) = player_query.single() else {
+        return;
+    };
+    if action.just_pressed(&InputAction::Activate) {
+        writer.write(ActivateIntent);
     }
 }
 

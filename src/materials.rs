@@ -89,7 +89,7 @@ impl GameMaterial {
 
     /// Chooses a mesh shape based on material density.
     /// Light materials → sphere, heavy → cube, medium → capsule.
-    fn mesh_for_density(&self, meshes: &mut Assets<Mesh>) -> Handle<Mesh> {
+    pub(crate) fn mesh_for_density(&self, meshes: &mut Assets<Mesh>) -> Handle<Mesh> {
         let density = self.density.value;
         if density < 0.3 {
             meshes.add(Sphere::new(0.12).mesh().build())
