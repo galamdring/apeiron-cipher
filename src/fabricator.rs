@@ -24,10 +24,10 @@ impl Plugin for FabricatorPlugin {
 
 /// Marks a fabricator input receptacle. `index` distinguishes slot 0 from slot 1.
 /// `material` holds the entity of the material currently seated in this slot.
-// Fields read by interaction routing (PR b) and activation state machine (PR c).
-#[allow(dead_code)]
 #[derive(Component, Debug)]
 pub(crate) struct InputSlot {
+    // Read by the activation state machine (PR c) to distinguish which slot is which.
+    #[allow(dead_code)]
     pub index: usize,
     pub material: Option<Entity>,
 }
