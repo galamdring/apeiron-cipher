@@ -57,6 +57,7 @@ pub(crate) enum InputAction {
     /// Mouse delta — produces a Vec2 look offset.
     #[actionlike(DualAxis)]
     Look,
+    CaptureCursor,
     Interact,
     Examine,
     Place,
@@ -103,6 +104,8 @@ pub(crate) struct BindingsConfig {
     pub movement: MoveBindings,
     #[serde(default = "default_interact", rename = "Interact")]
     pub interact: Vec<String>,
+    #[serde(default = "default_capture_cursor", rename = "CaptureCursor")]
+    pub capture_cursor: Vec<String>,
     #[serde(default = "default_examine", rename = "Examine")]
     pub examine: Vec<String>,
     #[serde(default = "default_place", rename = "Place")]
@@ -120,6 +123,7 @@ impl Default for BindingsConfig {
         Self {
             movement: MoveBindings::default(),
             interact: default_interact(),
+            capture_cursor: default_capture_cursor(),
             examine: default_examine(),
             place: default_place(),
             toggle_journal: default_toggle_journal(),
@@ -166,6 +170,9 @@ fn default_right() -> String {
 }
 fn default_interact() -> Vec<String> {
     vec!["E".into()]
+}
+fn default_capture_cursor() -> Vec<String> {
+    vec!["MouseLeft".into()]
 }
 fn default_examine() -> Vec<String> {
     vec!["Q".into()]
@@ -315,6 +322,11 @@ pub(crate) fn build_input_map(config: &InputConfig) -> InputMap<InputAction> {
     );
 
     insert_bindings(&mut input_map, InputAction::Interact, &bindings.interact);
+    insert_bindings(
+        &mut input_map,
+        InputAction::CaptureCursor,
+        &bindings.capture_cursor,
+    );
     insert_bindings(&mut input_map, InputAction::Examine, &bindings.examine);
     insert_bindings(&mut input_map, InputAction::Place, &bindings.place);
     insert_bindings(
@@ -351,6 +363,12 @@ mod tests {
         assert!(
             input_map.get_buttonlike(&InputAction::Interact).is_some(),
             "Interact should have bindings"
+        );
+        assert!(
+            input_map
+                .get_buttonlike(&InputAction::CaptureCursor)
+                .is_some(),
+            "CaptureCursor should have bindings"
         );
         assert!(
             input_map.get_buttonlike(&InputAction::Pause).is_some(),
@@ -409,10 +427,12 @@ sensitivity_y = 0.4
 [bindings]
 Move = { up = "I", down = "K", left = "J", right = "L" }
 Interact = ["F"]
+CaptureCursor = ["MouseRight"]
 "#;
         let config: InputConfig = toml::from_str(custom).expect("parse custom");
         assert_eq!(config.bindings.movement.up, "I");
         assert_eq!(config.bindings.interact, vec!["F"]);
+        assert_eq!(config.bindings.capture_cursor, vec!["MouseRight"]);
 
         let input_map = build_input_map(&config);
         let interact_bindings = input_map
@@ -433,17 +453,32 @@ Interact = ["F"]
             1,
             "Default config should bind exactly one key (E) to Interact"
         );
+        let default_capture = default_map
+            .get_buttonlike(&InputAction::CaptureCursor)
+            .expect("Default CaptureCursor should have bindings");
+        assert_eq!(
+            default_capture.len(),
+            1,
+            "Default config should bind exactly one input to CaptureCursor"
+        );
     }
 
     #[test]
     fn mouse_button_bindings_in_config() {
         let config_str = r#"
 [bindings]
+CaptureCursor = ["MouseLeft"]
 Interact = ["MouseLeft"]
 Examine = ["MouseRight"]
 "#;
         let config: InputConfig = toml::from_str(config_str).expect("parse mouse config");
         let input_map = build_input_map(&config);
+        assert!(
+            input_map
+                .get_buttonlike(&InputAction::CaptureCursor)
+                .is_some(),
+            "CaptureCursor should accept MouseButton bindings"
+        );
         assert!(
             input_map.get_buttonlike(&InputAction::Interact).is_some(),
             "Interact should accept MouseButton bindings"
