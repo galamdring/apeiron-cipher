@@ -19,14 +19,13 @@
 
 use bevy::picking::mesh_picking::ray_cast::{MeshRayCast, MeshRayCastSettings, RayCastVisibility};
 use bevy::prelude::*;
-use bevy::window::CursorGrabMode;
 
 use crate::fabricator::{ActivateIntent, InputSlot};
 use crate::input::InputAction;
 use crate::journal::RecordEncounter;
 use crate::materials::{GameMaterial, MaterialObject, PropertyVisibility};
 use crate::observation::{ConfidenceTracker, describe_thermal_observation};
-use crate::player::{Player, PlayerCamera};
+use crate::player::{Player, PlayerCamera, cursor_is_captured};
 use crate::scene::Surface;
 
 use leafwing_input_manager::prelude::*;
@@ -221,7 +220,7 @@ fn emit_pickup_intent(
     cursor_options: Single<&bevy::window::CursorOptions>,
     mut writer: MessageWriter<PickupIntent>,
 ) {
-    if cursor_options.grab_mode != CursorGrabMode::Locked {
+    if !cursor_is_captured(cursor_options.grab_mode) {
         return;
     }
     let Ok(action) = player_query.single() else {
@@ -237,7 +236,7 @@ fn emit_place_intent(
     cursor_options: Single<&bevy::window::CursorOptions>,
     mut writer: MessageWriter<PlaceIntent>,
 ) {
-    if cursor_options.grab_mode != CursorGrabMode::Locked {
+    if !cursor_is_captured(cursor_options.grab_mode) {
         return;
     }
     let Ok(action) = player_query.single() else {
@@ -253,7 +252,7 @@ fn emit_activate_intent(
     cursor_options: Single<&bevy::window::CursorOptions>,
     mut writer: MessageWriter<ActivateIntent>,
 ) {
-    if cursor_options.grab_mode != CursorGrabMode::Locked {
+    if !cursor_is_captured(cursor_options.grab_mode) {
         return;
     }
     let Ok(action) = player_query.single() else {
@@ -475,7 +474,7 @@ fn emit_examine_intent(
     cursor_options: Single<&bevy::window::CursorOptions>,
     mut writer: MessageWriter<ExamineIntent>,
 ) {
-    if cursor_options.grab_mode != CursorGrabMode::Locked {
+    if !cursor_is_captured(cursor_options.grab_mode) {
         return;
     }
     let Ok(action) = player_query.single() else {
