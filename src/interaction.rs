@@ -215,18 +215,28 @@ fn update_slot_target(
 
 // ── Intent emission ──────────────────────────────────────────────────────
 
+fn should_emit_pickup(interact_pressed: bool, holding: bool) -> bool {
+    interact_pressed && !holding
+}
+
+fn should_emit_place(interact_pressed: bool, place_pressed: bool, holding: bool) -> bool {
+    holding && (place_pressed || interact_pressed)
+}
+
 fn emit_pickup_intent(
     player_query: Query<&ActionState<InputAction>, With<Player>>,
     cursor_options: Single<&bevy::window::CursorOptions>,
+    held_query: Query<(), With<HeldItem>>,
     mut writer: MessageWriter<PickupIntent>,
 ) {
     if !cursor_is_captured(cursor_options.grab_mode) {
         return;
     }
+    let holding = held_query.iter().next().is_some();
     let Ok(action) = player_query.single() else {
         return;
     };
-    if action.just_pressed(&InputAction::Interact) {
+    if should_emit_pickup(action.just_pressed(&InputAction::Interact), holding) {
         writer.write(PickupIntent);
     }
 }
@@ -234,15 +244,21 @@ fn emit_pickup_intent(
 fn emit_place_intent(
     player_query: Query<&ActionState<InputAction>, With<Player>>,
     cursor_options: Single<&bevy::window::CursorOptions>,
+    held_query: Query<(), With<HeldItem>>,
     mut writer: MessageWriter<PlaceIntent>,
 ) {
     if !cursor_is_captured(cursor_options.grab_mode) {
         return;
     }
+    let holding = held_query.iter().next().is_some();
     let Ok(action) = player_query.single() else {
         return;
     };
-    if action.just_pressed(&InputAction::Place) {
+    if should_emit_place(
+        action.just_pressed(&InputAction::Interact),
+        action.just_pressed(&InputAction::Place),
+        holding,
+    ) {
         writer.write(PlaceIntent);
     }
 }
@@ -730,5 +746,20 @@ mod tests {
         tracker.record(mat.seed, "thermal_resistance");
         let confident = build_examine_text(&mat, &tracker);
         assert!(confident.contains("Heat response: Reliably hold together under heat"));
+    }
+
+    #[test]
+    fn interact_picks_up_only_when_not_holding() {
+        assert!(should_emit_pickup(true, false));
+        assert!(!should_emit_pickup(false, false));
+        assert!(!should_emit_pickup(true, true));
+    }
+
+    #[test]
+    fn interact_or_place_can_drop_when_holding() {
+        assert!(should_emit_place(true, false, true));
+        assert!(should_emit_place(false, true, true));
+        assert!(!should_emit_place(false, false, true));
+        assert!(!should_emit_place(true, false, false));
     }
 }
