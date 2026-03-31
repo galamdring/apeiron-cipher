@@ -24,6 +24,7 @@ impl Plugin for JournalPlugin {
         app.add_message::<RecordEncounter>()
             .add_message::<RecordFabrication>()
             .add_message::<RecordThermalObservation>()
+            .add_message::<ToggleJournalIntent>()
             .init_resource::<JournalUiState>()
             .add_systems(
                 Startup,
