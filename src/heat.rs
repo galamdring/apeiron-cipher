@@ -61,6 +61,14 @@ impl HeatExposure {
     }
 }
 
+fn update_exposure_elapsed(elapsed: f32, in_zone: bool, delta_secs: f32) -> f32 {
+    if in_zone {
+        elapsed + delta_secs
+    } else {
+        (elapsed - delta_secs).max(0.0)
+    }
+}
+
 /// Prevents a single material entity from incrementing confidence more than once.
 #[derive(Component)]
 struct ThermalObservationRecorded;
@@ -142,9 +150,7 @@ fn track_heat_exposure(
         match exposure {
             Some(mut exp) => {
                 exp.in_zone = inside;
-                if inside {
-                    exp.elapsed += dt;
-                }
+                exp.elapsed = update_exposure_elapsed(exp.elapsed, inside, dt);
             }
             None if inside => {
                 commands.entity(entity).insert(HeatExposure::new());
@@ -300,6 +306,24 @@ mod tests {
     fn reaction_intensity_clamped_to_one() {
         let result = reaction_intensity(2.0, 0.0);
         assert!((result - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn exposure_elapsed_accumulates_in_zone() {
+        let elapsed = update_exposure_elapsed(0.5, true, 0.25);
+        assert!((elapsed - 0.75).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn exposure_elapsed_cools_when_outside_zone() {
+        let elapsed = update_exposure_elapsed(0.5, false, 0.25);
+        assert!((elapsed - 0.25).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn exposure_elapsed_never_goes_below_zero() {
+        let elapsed = update_exposure_elapsed(0.1, false, 0.25);
+        assert!(elapsed.abs() < f32::EPSILON);
     }
 
     #[test]
