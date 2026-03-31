@@ -249,17 +249,6 @@ fn parse_mouse_button(name: &str) -> Option<MouseButton> {
     }
 }
 
-/// Translates mouse button names from the TOML config into Bevy `MouseButton`s.
-fn parse_mouse_button(name: &str) -> Option<MouseButton> {
-    match name {
-        "MouseLeft" => Some(MouseButton::Left),
-        "MouseRight" => Some(MouseButton::Right),
-        "MouseMiddle" => Some(MouseButton::Middle),
-        _ => None,
-    }
-}
-
-
 // ── Systems ─────────────────────────────────────────────────────────────
 
 const CONFIG_PATH: &str = "assets/config/input.toml";

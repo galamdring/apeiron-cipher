@@ -290,12 +290,96 @@ fn output_visibility(a: PropertyVisibility, b: PropertyVisibility) -> PropertyVi
     }
 }
 
-fn apply_rule(rule: &PropertyRule, a: &MaterialProperty, b: &MaterialProperty) -> MaterialProperty {
+/// Deterministic pseudo-random float in \[-1.0, 1.0\] from a seed+channel.
+/// Splitmix64 single iteration — fast, deterministic, no external crate needed.
+fn seeded_noise(seed: u64, channel: u64) -> f32 {
+    let mut z = seed.wrapping_add(channel.wrapping_mul(0x9E37_79B9_7F4A_7C15));
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^= z >> 31;
+    // Map to [-1.0, 1.0]
+    (z as i64 as f64 / i64::MAX as f64) as f32
+}
+
+/// Small perturbation magnitude applied to default-blend results so that
+/// repeated experiments with the same pair are identical but not perfectly
+/// averaged — gives the player a reason to measure outputs.
+const PERTURBATION_SCALE: f32 = 0.04;
+
+fn apply_rule_with_perturbation(
+    rule: &PropertyRule,
+    a: &MaterialProperty,
+    b: &MaterialProperty,
+    seed: u64,
+    channel: u64,
+) -> MaterialProperty {
+    let base = rule.apply(a.value, b.value);
+    let value = match rule {
+        PropertyRule::Blend { .. } => {
+            let noise = seeded_noise(seed, channel) * PERTURBATION_SCALE;
+            (base + noise).clamp(0.0, 1.0)
+        }
+        _ => base,
+    };
     MaterialProperty {
-        value: rule.apply(a.value, b.value),
+        value,
         visibility: output_visibility(a.visibility, b.visibility),
     }
 }
+
+// ── Procedural naming ────────────────────────────────────────────────────
+
+const PREFIXES: &[&str] = &[
+    "Neo", "Aur", "Vex", "Cor", "Nyx", "Zel", "Pyr", "Lux", "Thal", "Kyn", "Ven", "Dra", "Sol",
+    "Mor", "Cyn", "Vir",
+];
+
+const SUFFIXES: &[&str] = &[
+    "ite", "ium", "ite", "ane", "ene", "oid", "ate", "ide", "yne", "ase", "ose", "ine", "ile",
+    "ore", "ux", "al",
+];
+
+fn procedural_name(seed: u64) -> String {
+    let prefix_idx = ((seed >> 8) as usize) % PREFIXES.len();
+    let suffix_idx = ((seed >> 16) as usize) % SUFFIXES.len();
+    format!("{}{}", PREFIXES[prefix_idx], SUFFIXES[suffix_idx])
+}
+
+// ── Color blending ───────────────────────────────────────────────────────
+
+fn has_catalytic_rule(rules: &crate::combination::PairRuleSet) -> bool {
+    matches!(rules.density, PropertyRule::Catalyze { .. })
+        || matches!(rules.thermal_resistance, PropertyRule::Catalyze { .. })
+        || matches!(rules.reactivity, PropertyRule::Catalyze { .. })
+        || matches!(rules.conductivity, PropertyRule::Catalyze { .. })
+        || matches!(rules.toxicity, PropertyRule::Catalyze { .. })
+}
+
+/// Shift hue by rotating the RGB channels toward a warmer/cooler tone.
+/// This is a simplified rotation, not a full HSL transform.
+fn hue_shift(color: [f32; 3], amount: f32) -> [f32; 3] {
+    let (r, g, b) = (color[0], color[1], color[2]);
+    [
+        (r + amount * (1.0 - r)).clamp(0.0, 1.0),
+        (g - amount * g * 0.5).clamp(0.0, 1.0),
+        (b + amount * (1.0 - b) * 0.3).clamp(0.0, 1.0),
+    ]
+}
+
+fn blend_color(a: &[f32; 3], b: &[f32; 3], catalytic: bool) -> [f32; 3] {
+    let blended = [
+        (a[0] + b[0]) * 0.5,
+        (a[1] + b[1]) * 0.5,
+        (a[2] + b[2]) * 0.5,
+    ];
+    if catalytic {
+        hue_shift(blended, 0.15)
+    } else {
+        blended
+    }
+}
+
+// ── Main combine function ────────────────────────────────────────────────
 
 pub(crate) fn rule_combine(
     rules: &CombinationRules,
@@ -305,31 +389,50 @@ pub(crate) fn rule_combine(
     let pair_rules = rules.rules_for(&a.name, &b.name);
 
     let combined_seed = a.seed.wrapping_mul(31).wrapping_add(b.seed);
-    let name = format!(
-        "{}-{}",
-        &a.name[..a.name.len().min(4)],
-        &b.name[..b.name.len().min(4)]
-    );
+    let name = procedural_name(combined_seed);
 
-    let color = [
-        (a.color[0] + b.color[0]) * 0.5,
-        (a.color[1] + b.color[1]) * 0.5,
-        (a.color[2] + b.color[2]) * 0.5,
-    ];
+    let catalytic = has_catalytic_rule(&pair_rules);
+    let color = blend_color(&a.color, &b.color, catalytic);
 
     GameMaterial {
         name,
         seed: combined_seed,
         color,
-        density: apply_rule(&pair_rules.density, &a.density, &b.density),
-        thermal_resistance: apply_rule(
+        density: apply_rule_with_perturbation(
+            &pair_rules.density,
+            &a.density,
+            &b.density,
+            combined_seed,
+            0,
+        ),
+        thermal_resistance: apply_rule_with_perturbation(
             &pair_rules.thermal_resistance,
             &a.thermal_resistance,
             &b.thermal_resistance,
+            combined_seed,
+            1,
         ),
-        reactivity: apply_rule(&pair_rules.reactivity, &a.reactivity, &b.reactivity),
-        conductivity: apply_rule(&pair_rules.conductivity, &a.conductivity, &b.conductivity),
-        toxicity: apply_rule(&pair_rules.toxicity, &a.toxicity, &b.toxicity),
+        reactivity: apply_rule_with_perturbation(
+            &pair_rules.reactivity,
+            &a.reactivity,
+            &b.reactivity,
+            combined_seed,
+            2,
+        ),
+        conductivity: apply_rule_with_perturbation(
+            &pair_rules.conductivity,
+            &a.conductivity,
+            &b.conductivity,
+            combined_seed,
+            3,
+        ),
+        toxicity: apply_rule_with_perturbation(
+            &pair_rules.toxicity,
+            &a.toxicity,
+            &b.toxicity,
+            combined_seed,
+            4,
+        ),
     }
 }
 
@@ -365,24 +468,31 @@ mod tests {
     }
 
     #[test]
-    fn rule_combine_default_averages_properties() {
+    fn rule_combine_default_near_average_with_perturbation() {
         let rules = default_rules();
         let a = test_material("Ferrite", 100, 0.8);
         let b = test_material("Silite", 200, 0.2);
         let result = rule_combine(&rules, &a, &b);
 
-        assert!((result.density.value - 0.5).abs() < f32::EPSILON);
-        assert!((result.thermal_resistance.value - 0.4).abs() < f32::EPSILON);
-        assert!((result.reactivity.value - 0.6).abs() < f32::EPSILON);
+        // With perturbation, values should be near average (within PERTURBATION_SCALE)
+        assert!((result.density.value - 0.5).abs() < PERTURBATION_SCALE + f32::EPSILON);
+        assert!((result.thermal_resistance.value - 0.4).abs() < PERTURBATION_SCALE + f32::EPSILON);
+        assert!((result.reactivity.value - 0.6).abs() < PERTURBATION_SCALE + f32::EPSILON);
     }
 
     #[test]
-    fn rule_combine_name_from_inputs() {
+    fn rule_combine_procedural_name() {
         let rules = default_rules();
         let a = test_material("Ferrite", 100, 0.5);
         let b = test_material("Silite", 200, 0.5);
         let result = rule_combine(&rules, &a, &b);
-        assert_eq!(result.name, "Ferr-Sili");
+        // Procedural name should not be empty and should not contain a dash
+        assert!(!result.name.is_empty());
+        assert!(
+            !result.name.contains('-'),
+            "procedural names should not use dash format: {}",
+            result.name
+        );
     }
 
     #[test]
@@ -393,7 +503,98 @@ mod tests {
         let r1 = rule_combine(&rules, &a, &b);
         let r2 = rule_combine(&rules, &a, &b);
         assert_eq!(r1.seed, r2.seed);
+        assert_eq!(r1.name, r2.name);
         assert!((r1.density.value - r2.density.value).abs() < f32::EPSILON);
+        assert!((r1.thermal_resistance.value - r2.thermal_resistance.value).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn seeded_noise_deterministic() {
+        let a = seeded_noise(12345, 0);
+        let b = seeded_noise(12345, 0);
+        assert!((a - b).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn seeded_noise_varies_by_channel() {
+        let a = seeded_noise(12345, 0);
+        let b = seeded_noise(12345, 1);
+        assert!(
+            (a - b).abs() > f32::EPSILON,
+            "different channels should produce different noise"
+        );
+    }
+
+    #[test]
+    fn procedural_name_deterministic() {
+        assert_eq!(procedural_name(42), procedural_name(42));
+    }
+
+    #[test]
+    fn procedural_name_varies_by_seed() {
+        assert_ne!(procedural_name(1000), procedural_name(999_999));
+    }
+
+    #[test]
+    fn catalytic_pair_shifts_color_hue() {
+        let mut rules = default_rules();
+        rules.pair_rules.insert(
+            ("Aaa".into(), "Bbb".into()),
+            PairRuleSet {
+                density: PropertyRule::Catalyze { multiplier: 1.5 },
+                thermal_resistance: PropertyRule::default(),
+                reactivity: PropertyRule::default(),
+                conductivity: PropertyRule::default(),
+                toxicity: PropertyRule::default(),
+            },
+        );
+
+        let a = test_material("Aaa", 1, 0.5);
+        let b = test_material("Bbb", 2, 0.5);
+        let result = rule_combine(&rules, &a, &b);
+
+        let plain_blend = [
+            (a.color[0] + b.color[0]) * 0.5,
+            (a.color[1] + b.color[1]) * 0.5,
+            (a.color[2] + b.color[2]) * 0.5,
+        ];
+        let shifted = result.color != plain_blend;
+        assert!(
+            shifted,
+            "catalytic pair should shift color hue from plain blend"
+        );
+    }
+
+    #[test]
+    fn non_catalytic_pair_blends_color_evenly() {
+        let rules = default_rules();
+        let a = test_material("Xxx", 1, 0.5);
+        let b = test_material("Yyy", 2, 0.5);
+        let result = rule_combine(&rules, &a, &b);
+
+        for i in 0..3 {
+            let expected = (a.color[i] + b.color[i]) * 0.5;
+            assert!(
+                (result.color[i] - expected).abs() < f32::EPSILON,
+                "channel {i}: expected {expected}, got {}",
+                result.color[i]
+            );
+        }
+    }
+
+    #[test]
+    fn perturbation_not_applied_to_non_blend_rules() {
+        let rule = PropertyRule::Max;
+        let a = MaterialProperty {
+            value: 0.3,
+            visibility: PropertyVisibility::Observable,
+        };
+        let b = MaterialProperty {
+            value: 0.7,
+            visibility: PropertyVisibility::Observable,
+        };
+        let result = apply_rule_with_perturbation(&rule, &a, &b, 42, 0);
+        assert!((result.value - 0.7).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -406,7 +607,7 @@ mod tests {
             value: 0.5,
             visibility: PropertyVisibility::Observable,
         };
-        let result = apply_rule(&PropertyRule::default(), &a, &b);
+        let result = apply_rule_with_perturbation(&PropertyRule::default(), &a, &b, 1, 0);
         assert_eq!(result.visibility, PropertyVisibility::Observable);
     }
 
@@ -420,7 +621,7 @@ mod tests {
             value: 0.5,
             visibility: PropertyVisibility::Hidden,
         };
-        let result = apply_rule(&PropertyRule::default(), &a, &b);
+        let result = apply_rule_with_perturbation(&PropertyRule::default(), &a, &b, 1, 0);
         assert_eq!(result.visibility, PropertyVisibility::Hidden);
     }
 
@@ -434,7 +635,7 @@ mod tests {
             value: 0.5,
             visibility: PropertyVisibility::Revealed,
         };
-        let result = apply_rule(&PropertyRule::default(), &a, &b);
+        let result = apply_rule_with_perturbation(&PropertyRule::default(), &a, &b, 1, 0);
         assert_eq!(result.visibility, PropertyVisibility::Observable);
     }
 
@@ -449,7 +650,7 @@ mod tests {
             value: 0.6,
             visibility: PropertyVisibility::Observable,
         };
-        let result = apply_rule(&rule, &a, &b);
+        let result = apply_rule_with_perturbation(&rule, &a, &b, 1, 0);
         assert!(
             result.value > a.value && result.value > b.value,
             "catalyze should exceed both inputs: got {}",
@@ -491,7 +692,7 @@ mod tests {
             value: 0.7,
             visibility: PropertyVisibility::Observable,
         };
-        let result = apply_rule(&rule, &a, &b);
+        let result = apply_rule_with_perturbation(&rule, &a, &b, 1, 0);
         assert!((result.value - 0.7).abs() < f32::EPSILON);
     }
 
@@ -506,7 +707,7 @@ mod tests {
             value: 0.7,
             visibility: PropertyVisibility::Observable,
         };
-        let result = apply_rule(&rule, &a, &b);
+        let result = apply_rule_with_perturbation(&rule, &a, &b, 1, 0);
         assert!((result.value - 0.3).abs() < f32::EPSILON);
     }
 
