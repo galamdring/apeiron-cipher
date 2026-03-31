@@ -1,0 +1,48 @@
+{
+  "id": "StoryCloseCheck01",
+  "name": "Story Close Check",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "story-close-check",
+        "options": {},
+        "responseMode": "onReceived",
+        "responseCode": 200
+      },
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [200, 300],
+      "webhookId": "story-close-check"
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\nconst https = require('https');\n\nconst appId = $env.GITHUB_APP_ID;\nconst installationId = $env.GITHUB_INSTALLATION_ID;\nconst privateKeyBase64 = $env.GITHUB_PRIVATE_KEY_BASE64;\nconst privateKey = Buffer.from(privateKeyBase64, 'base64').toString('utf8');\n\nconst now = Math.floor(Date.now() / 1000);\nconst header = Buffer.from(JSON.stringify({ alg: 'RS256', typ: 'JWT' })).toString('base64url');\nconst payload = Buffer.from(JSON.stringify({ iat: now - 60, exp: now + 600, iss: appId })).toString('base64url');\nconst signature = crypto.sign('SHA256', Buffer.from(`${header}.${payload}`), privateKey).toString('base64url');\nconst jwt = `${header}.${payload}.${signature}`;\n\nconst token = await new Promise((resolve, reject) => {\n  const req = https.request({\n    hostname: 'api.github.com',\n    path: `/app/installations/${installationId}/access_tokens`,\n    method: 'POST',\n    headers: {\n      'Authorization': `Bearer ${jwt}`,\n      'Accept': 'application/vnd.github+json',\n      'User-Agent': 'n8n-orchestrator',\n      'Content-Length': 0\n    }\n  }, res => {\n    let body = '';\n    res.on('data', c => body += c);\n    res.on('end', () => {\n      if (res.statusCode !== 201) reject(new Error(`GitHub token request failed: ${res.statusCode} ${body}`));\n      else resolve(JSON.parse(body).token);\n    });\n  });\n  req.on('error', reject);\n  req.end();\n});\n\nreturn [{ json: { ...$input.first().json, githubToken: token } }];"
+      },
+      "name": "Get Installation Token",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [420, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const https = require('https');\nconst data = $input.first().json;\nconst token = data.githubToken;\nconst owner = data.body.repoOwner;\nconst repo = data.body.repoName;\nconst labels = data.body.labels || data.labels || [];\n\n// Extract epic number from epic-N label\nconst epicNLabel = labels.find(l => /^epic-\\d+$/.test(l)) || data.body.epicNLabel || '';\nconst epicNumberMatch = epicNLabel.match(/^epic-(\\d+)$/);\nif (!epicNumberMatch) {\n  return [{ json: { skipped: true, reason: 'No epic-N label found' } }];\n}\nconst epicNumber = parseInt(epicNumberMatch[1], 10);\n\n// --- Shared REST helper with retry/rate-limit logic ---\nfunction _rawRequest(method, path, body, tkn) {\n  return new Promise((resolve, reject) => {\n    const bodyStr = body ? JSON.stringify(body) : '';\n    const headers = {\n      'Authorization': `Bearer ${tkn}`,\n      'Accept': 'application/vnd.github+json',\n      'User-Agent': 'n8n-orchestrator',\n      'X-GitHub-Api-Version': '2022-11-28'\n    };\n    if (body) {\n      headers['Content-Type'] = 'application/json';\n      headers['Content-Length'] = Buffer.byteLength(bodyStr);\n    }\n    const req = https.request({ hostname: 'api.github.com', path, method, headers }, res => {\n      let d = '';\n      res.on('data', c => d += c);\n      res.on('end', () => {\n        let parsed;\n        try { parsed = JSON.parse(d); } catch(e) { parsed = d; }\n        resolve({ status: res.statusCode, data: parsed, headers: res.headers });\n      });\n    });\n    req.on('error', reject);\n    if (bodyStr) req.write(bodyStr);\n    req.end();\n  });\n}\n\nasync function githubRest(method, path, body, maxRetries = 3) {\n  for (let attempt = 0; attempt <= maxRetries; attempt++) {\n    const result = await _rawRequest(method, path, body, token);\n    if (result.status >= 200 && result.status < 300) return result;\n    if (result.status === 403 || result.status === 429) {\n      const retryAfter = result.headers['retry-after'];\n      const rateLimitReset = result.headers['x-ratelimit-reset'];\n      let waitMs;\n      if (retryAfter) waitMs = parseInt(retryAfter, 10) * 1000;\n      else if (rateLimitReset) waitMs = Math.max((parseInt(rateLimitReset, 10) * 1000) - Date.now(), 1000);\n      else waitMs = Math.pow(2, attempt) * 1000;\n      if (attempt < maxRetries) { await new Promise(r => setTimeout(r, waitMs)); continue; }\n    }\n    if (result.status >= 400 && result.status < 500) throw new Error(`GitHub API ${result.status}: ${JSON.stringify(result.data)}`);\n    if (result.status >= 500 && attempt < maxRetries) { await new Promise(r => setTimeout(r, Math.pow(2, attempt) * 1000)); continue; }\n    throw new Error(`GitHub API failed after ${maxRetries + 1} attempts: ${result.status}`);\n  }\n}\n\nasync function transitionStatus(issueNum, newStatus) {\n  const current = await githubRest('GET', `/repos/${owner}/${repo}/issues/${issueNum}/labels`);\n  const currentLabels = current.data.map(l => l.name);\n  const oldStatuses = currentLabels.filter(l => l.startsWith('status:'));\n  for (const old of oldStatuses) {\n    try { await githubRest('DELETE', `/repos/${owner}/${repo}/issues/${issueNum}/labels/${encodeURIComponent(old)}`); }\n    catch (e) { if (!e.message.includes('404')) throw e; }\n  }\n  await githubRest('POST', `/repos/${owner}/${repo}/issues/${issueNum}/labels`, { labels: [newStatus] });\n}\n\n// === Get all issues with this epic-N label (open + closed) ===\nlet allStories = [];\nfor (const state of ['open', 'closed']) {\n  let page = 1;\n  while (true) {\n    const result = await githubRest('GET', `/repos/${owner}/${repo}/issues?labels=${encodeURIComponent(epicNLabel)}&state=${state}&per_page=100&page=${page}`);\n    if (result.data.length === 0) break;\n    allStories = allStories.concat(result.data.filter(i => !i.pull_request && i.number !== epicNumber));\n    if (result.data.length < 100) break;\n    page++;\n  }\n}\n\nconst openStories = allStories.filter(s => s.state === 'open');\nconst closedStories = allStories.filter(s => s.state === 'closed');\n\n// Categorize open stories by status\nconst openByStatus = {};\nfor (const story of openStories) {\n  const storyLabels = story.labels.map(l => l.name);\n  const status = storyLabels.find(l => l.startsWith('status:')) || 'unknown';\n  if (!openByStatus[status]) openByStatus[status] = [];\n  openByStatus[status].push(story.number);\n}\n\nconst inProgress = openByStatus['status:in-progress'] || [];\nconst ready = openByStatus['status:ready'] || [];\nconst inReview = openByStatus['status:in-review'] || [];\nconst blocked = openByStatus['status:blocked'] || [];\n\n// === Decision logic ===\nif (openStories.length === 0) {\n  // All stories are closed — trigger epic close check\n  // For now, we do the close check inline (Phase 4 will extract to separate workflow)\n  // Simple close: post comment and close the epic\n  await githubRest('POST', `/repos/${owner}/${repo}/issues/${epicNumber}/comments`, {\n    body: `## All Stories Complete\\n\\nAll ${closedStories.length} stories for this epic have been closed. Running post-epic checks...\\n\\n_TODO: Post-epic quality checks will be implemented in a future phase. Closing epic for now._`\n  });\n  await githubRest('PATCH', `/repos/${owner}/${repo}/issues/${epicNumber}`, { state: 'closed' });\n  return [{ json: { action: 'epic-closed', epicNumber, totalStories: closedStories.length } }];\n}\n\nif (inProgress.length === 0 && ready.length === 0 && blocked.length === 0 && inReview.length > 0) {\n  // All remaining open stories are in-review — move epic to in-review\n  await transitionStatus(epicNumber, 'status:in-review');\n  return [{ json: { action: 'epic-to-in-review', epicNumber, storiesInReview: inReview.length } }];\n}\n\n// Otherwise: epic stays in current state, stories are still being worked on\nreturn [{ json: { action: 'no-change', epicNumber, open: openStories.length, closed: closedStories.length, inProgress: inProgress.length, ready: ready.length, inReview: inReview.length, blocked: blocked.length } }];"
+      },
+      "name": "Check Epic Progress",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [660, 300]
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": {
+      "main": [[{ "node": "Get Installation Token", "type": "main", "index": 0 }]]
+    },
+    "Get Installation Token": {
+      "main": [[{ "node": "Check Epic Progress", "type": "main", "index": 0 }]]
+    }
+  },
+  "active": true,
+  "settings": { "executionOrder": "v1" }
+}

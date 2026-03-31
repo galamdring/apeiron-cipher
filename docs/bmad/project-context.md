@@ -110,12 +110,37 @@ _This file contains critical rules and patterns that AI agents must follow when 
 
 ## Task Management
 
-**All task tracking lives in the [Apeiron Cipher 0.1 GitHub Project](https://github.com/users/galamdring/projects/1).**
+**All task tracking uses GitHub Issues with labels as the state machine.** Status is tracked via `status:*` labels, not a GitHub Project board.
 
-- Epics are GitHub Issues labeled `epic` with stories linked as sub-issues
+- Epics are GitHub Issues labeled `epic` with stories linked via `epic-N` labels
 - Stories are GitHub Issues labeled `story` with full acceptance criteria, technical notes, dependency links, and implementation order in their body
-- Use the project board (Status: Backlog → Ready → In progress → In review → Done) to track progress
-- Priority (P0/P1/P2) and Size (XS/S/M/L/XL) fields are available on the board for sprint planning
+- Status flows via labels: `status:triage` → `status:backlog` → `status:ready` → `status:in-progress` → `status:in-review` → closed
+- Scoping flows via labels: `needs_refinement` → `in_scoping` → `sow_ready` → `stories_created`
+- n8n workflows respond to label changes via GitHub webhook events and manage automated transitions
+
+### Label Taxonomy
+
+| Label | Color | Purpose |
+|-------|-------|---------|
+| **Type Labels** | | |
+| `epic` | `#6f42c1` | Top-level feature epic |
+| `story` | `#0075ca` | Implementable story |
+| `bug` | `#d73a4a` | Defect report |
+| `task` | `#a2eeef` | Standalone work item |
+| **Status Labels** | | |
+| `status:triage` | `#fbca04` | Awaiting classification |
+| `status:backlog` | `#d4c5f9` | Classified, not yet ready |
+| `status:ready` | `#0e8a16` | Approved for work |
+| `status:in-progress` | `#1d76db` | Agent working |
+| `status:in-review` | `#5319e7` | PR up for review |
+| `status:blocked` | `#e11d48` | Blocked |
+| **Scoping Labels** | | |
+| `needs_refinement` | `#d876e3` | Needs initial AI pass |
+| `in_scoping` | `#c5def5` | Scoping conversation active |
+| `sow_ready` | `#0e8a16` | Scope approved |
+| `stories_created` | `#bfd4f2` | Stories generated from epic |
+| **Linking Labels** | | |
+| `epic-N` | `#c5def5` | Links issue to parent epic (created dynamically) |
 
 ### Issue Map
 
@@ -131,22 +156,25 @@ This is the mandatory workflow for implementing stories. Agents must follow thes
 
 #### Step 1 — Pick a story
 
-Query the current iteration for stories in _Ready_ status:
+Query for stories in _Ready_ status:
 
 ```bash
-gh project item-list 1 --owner galamdring --format json
+gh issue list --label "status:ready" --label "story" --json number,title,body --repo galamdring/apeiron-cipher
 ```
 
-Filter to items where `status == "Ready"` and `iteration` matches the current iteration. Read the issue body of each Ready story to find its _Implementation Order_ number. Pick the lowest-numbered story — that is the next story to implement.
+Read the issue body of each Ready story to find its _Implementation Order_ number. Pick the lowest-numbered story — that is the next story to implement.
 
-Skip a story if its dependency is not yet implementable — that is, the dependency is in Backlog, Ready, In progress, or Blocked. If the dependency is In Review or Done, proceed — the code exists on its branch and can be stacked on.
+**Dependency validation:** Before picking a story, check its `Depends on: #N` declarations. For each dependency:
+- If the dependency issue is closed or has the `status:in-review` label, proceed — the code exists on its branch and can be stacked on.
+- If the dependency has any other status (`status:ready`, `status:in-progress`, `status:backlog`, `status:blocked`), skip this story and move to the next lowest-numbered Ready story.
+- If the dependency has an open PR, the agent stacks its branch on top of that PR's branch.
 
 #### Step 2 — Move to In progress
 
-Before writing any code, move the story to _In progress_ on the project board:
+Before writing any code, move the story to _In progress_:
 
 ```bash
-gh project item-edit --project-id PVT_kwHOACDmtc4BSN-c --id <ITEM_ID> --field-id PVTSSF_lAHOACDmtc4BSN-czg_0UHU --single-select-option-id 47fc9ee4
+gh issue edit <N> --remove-label "status:ready" --add-label "status:in-progress" --repo galamdring/apeiron-cipher
 ```
 
 Only one story should be In progress at a time.
@@ -172,24 +200,24 @@ gh issue view <number> --repo galamdring/apeiron-cipher
 
 #### Step 3a — Block (when the agent cannot proceed)
 
-If the agent cannot proceed without human input, it blocks the story.
+If the agent cannot proceed without human input, it blocks the story and cascades to dependents.
 
-**When to block:** Architectural ambiguity, a question where multiple reasonable approaches exist (per "collaborate, don't decide"), an unresolvable build failure.
+**When to block:** Architectural ambiguity, a question where multiple reasonable approaches exist (per "collaborate, don't decide"), or an unresolvable build failure.
 
 **What NOT to block on:** Trivial implementation choices, clippy lint approaches, cosmetic tuning, sensitivity values — handle these and note them in the PR for review.
 
 **Procedure:**
 
 1. Post a comment on the story issue prefixed with `[Indy] Blocked:` explaining the specific question or blocker.
-2. Move the story to _Blocked_ on the project board:
+2. Move the story to _Blocked_:
 
 ```bash
-gh project item-edit --project-id PVT_kwHOACDmtc4BSN-c --id <ITEM_ID> --field-id PVTSSF_lAHOACDmtc4BSN-czg_0UHU --single-select-option-id 68d6688a
+gh issue edit <N> --remove-label "status:in-progress" --add-label "status:blocked" --repo galamdring/apeiron-cipher
 ```
 
-4. Return to Step 1 — pick the next Ready story that is not blocked.
+3. Return to Step 1 — pick the next Ready story that is not blocked.
 
-**Resumption:** When the human answers the question, they move the root story back to Ready. On the next pipeline pass, the agent reads all issue comments on a previously-blocked story to incorporate the human's answer before resuming implementation.
+**Resumption:** The human answers the question and moves the story back to Ready. On the next pipeline pass, the agent reads all issue comments on a previously-blocked story to incorporate the human's answer before resuming implementation.
 
 #### Step 4 — Create PR and move to In review
 
@@ -205,10 +233,10 @@ Graphite creates or updates the GitHub PR for each branch in the stack.
 - If this story depends on an unmerged ancestor branch, add `Depends on #<dependency_pr_number>` in the PR body and do not merge out of dependency order.
 - The PR body _must_ include `Closes #<issue_number>` so merge to `main` auto-closes the story issue.
 - After a dependency PR merges, run `gt stack sync` and `gt submit`, then verify the dependent PR diff only contains that story's changes.
-- Move the story to _In review_ on the project board:
+- Move the story to _In review_:
 
 ```bash
-gh project item-edit --project-id PVT_kwHOACDmtc4BSN-c --id <ITEM_ID> --field-id PVTSSF_lAHOACDmtc4BSN-czg_0UHU --single-select-option-id aba860b9
+gh issue edit <N> --remove-label "status:in-progress" --add-label "status:in-review" --repo galamdring/apeiron-cipher
 ```
 
 #### Handling change requests on stacked PRs
@@ -239,22 +267,10 @@ Run this check periodically (or when a story appears stuck in _In review_) to ve
 
 #### Step 5 — Done (automated, never agent-triggered)
 
-_An agent must NEVER move an issue to Done._ The Done transition happens automatically when the PR is merged and the issue is closed by GitHub. The project board has these automations enabled:
+_An agent must NEVER move an issue to Done or close it._ The Done transition happens automatically:
 
-- _Item closed_ — moves the issue to Done on the board
-- _Auto-close issue_ — closes the issue when its linked PR merges (via `Closes #N`)
-- _Pull request merged_ — updates the board status
-
-### Status Field Reference
-
-| Status      | Option ID  | Who sets it                                                       |
-| ----------- | ---------- | ----------------------------------------------------------------- |
-| Backlog     | `f75ad846` | Default / human                                                   |
-| Ready       | `e18bf179` | Human (sprint planning); human (unblocking a story)               |
-| In progress | `47fc9ee4` | Agent (Step 2)                                                    |
-| Blocked     | `68d6688a` | Agent (Step 3a — when blocked; also cascaded to dependents)       |
-| In review   | `aba860b9` | Agent (Step 4)                                                    |
-| Done        | `98236657` | _Automation only_ — set when issue closes on PR merge             |
+- When a PR with `Closes #N` merges, GitHub auto-closes the story issue.
+- The `story-close-check` n8n workflow detects story closure, checks if all sibling stories in the epic are closed, and auto-closes the parent epic when complete.
 
 ### PR Review Communication
 
@@ -323,14 +339,23 @@ If inline reply posting fails due to permissions or readonly execution (for exam
 ### Useful Commands
 
 ```bash
-# List all project items with status and iteration
-gh project item-list 1 --owner galamdring --format json
+# List all ready stories (sorted by implementation order in body)
+gh issue list --label "status:ready" --label "story" --json number,title,body --repo galamdring/apeiron-cipher
+
+# List all stories for a specific epic
+gh issue list --label "epic-2" --label "story" --json number,title,labels --repo galamdring/apeiron-cipher
+
+# Move a story to in-progress
+gh issue edit <N> --remove-label "status:ready" --add-label "status:in-progress" --repo galamdring/apeiron-cipher
+
+# Move a story to in-review
+gh issue edit <N> --remove-label "status:in-progress" --add-label "status:in-review" --repo galamdring/apeiron-cipher
+
+# Move a story to blocked
+gh issue edit <N> --remove-label "status:in-progress" --add-label "status:blocked" --repo galamdring/apeiron-cipher
 
 # View a specific story's acceptance criteria
 gh issue view <number> --repo galamdring/apeiron-cipher
-
-# Get the project item ID for a specific issue (needed for status updates)
-# Parse from item-list output, matching on issue number
 
 # Graphite: view the current stack
 gt log
@@ -350,7 +375,7 @@ gt stack sync
 # Find PRs that reference a story issue
 gh pr list --state all --search "Closes #<issue_number>" --repo galamdring/apeiron-cipher
 
-# Verify PR base/state/body for in-review health checks
+# Verify PR state/body
 gh pr view <pr_number> --json state,baseRefName,isDraft,mergedAt,body
 ```
 
@@ -372,7 +397,7 @@ gh pr view <pr_number> --json state,baseRefName,isDraft,mergedAt,body
 - Update when technology stack changes
 - Review periodically for outdated rules
 - Remove rules that become obvious over time
-- Manage task status and priorities through the GitHub Project board, not by editing docs
-- Move stories from Backlog to Ready during sprint/iteration planning — agents pick up Ready stories
+- Manage task status by applying `status:*` labels on GitHub Issues — agents pick up `status:ready` stories
+- Move stories from Backlog to Ready by swapping `status:backlog` → `status:ready` labels during sprint planning
 
 Last Updated: 2026-03-27

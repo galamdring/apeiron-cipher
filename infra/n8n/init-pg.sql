@@ -1,0 +1,2 @@
+-- n8n database is created automatically by the n8n container
+-- This file exists for any additional database initialization needed

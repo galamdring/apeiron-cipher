@@ -39,7 +39,6 @@ fn main() {
         .add_plugins(input::InputPlugin)
         // Materials: data-driven material definitions with observable/hidden properties.
         .add_plugins(materials::MaterialPlugin)
-
         // Interaction: raycast, pickup/place, crosshair UI.
         .add_plugins(interaction::InteractionPlugin)
         // Heat: burner on workbench, thermal exposure → property revelation.

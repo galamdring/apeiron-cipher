@@ -1,0 +1,48 @@
+{
+  "id": "TaskReady01",
+  "name": "Task Ready",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "task-ready",
+        "options": {},
+        "responseMode": "onReceived",
+        "responseCode": 200
+      },
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [200, 300],
+      "webhookId": "task-ready"
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\nconst https = require('https');\n\nconst appId = $env.GITHUB_APP_ID;\nconst installationId = $env.GITHUB_INSTALLATION_ID;\nconst privateKeyBase64 = $env.GITHUB_PRIVATE_KEY_BASE64;\nconst privateKey = Buffer.from(privateKeyBase64, 'base64').toString('utf8');\n\nconst now = Math.floor(Date.now() / 1000);\nconst header = Buffer.from(JSON.stringify({ alg: 'RS256', typ: 'JWT' })).toString('base64url');\nconst payload = Buffer.from(JSON.stringify({ iat: now - 60, exp: now + 600, iss: appId })).toString('base64url');\nconst signature = crypto.sign('SHA256', Buffer.from(`${header}.${payload}`), privateKey).toString('base64url');\nconst jwt = `${header}.${payload}.${signature}`;\n\nconst token = await new Promise((resolve, reject) => {\n  const req = https.request({\n    hostname: 'api.github.com',\n    path: `/app/installations/${installationId}/access_tokens`,\n    method: 'POST',\n    headers: {\n      'Authorization': `Bearer ${jwt}`,\n      'Accept': 'application/vnd.github+json',\n      'User-Agent': 'n8n-orchestrator',\n      'Content-Length': 0\n    }\n  }, res => {\n    let body = '';\n    res.on('data', c => body += c);\n    res.on('end', () => {\n      if (res.statusCode !== 201) reject(new Error(`GitHub token request failed: ${res.statusCode} ${body}`));\n      else resolve(JSON.parse(body).token);\n    });\n  });\n  req.on('error', reject);\n  req.end();\n});\n\nreturn [{ json: { ...$input.first().json, githubToken: token } }];"
+      },
+      "name": "Get Installation Token",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [420, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const https = require('https');\nconst data = $input.first().json;\nconst token = data.githubToken;\nconst owner = data.body.repoOwner;\nconst repo = data.body.repoName;\nconst issueNumber = data.body.issueNumber;\n\n// --- Shared REST helper with retry/rate-limit logic ---\nfunction _rawRequest(method, path, body, tkn) {\n  return new Promise((resolve, reject) => {\n    const bodyStr = body ? JSON.stringify(body) : '';\n    const headers = {\n      'Authorization': `Bearer ${tkn}`,\n      'Accept': 'application/vnd.github+json',\n      'User-Agent': 'n8n-orchestrator',\n      'X-GitHub-Api-Version': '2022-11-28'\n    };\n    if (body) {\n      headers['Content-Type'] = 'application/json';\n      headers['Content-Length'] = Buffer.byteLength(bodyStr);\n    }\n    const req = https.request({ hostname: 'api.github.com', path, method, headers }, res => {\n      let d = '';\n      res.on('data', c => d += c);\n      res.on('end', () => {\n        let parsed;\n        try { parsed = JSON.parse(d); } catch(e) { parsed = d; }\n        resolve({ status: res.statusCode, data: parsed, headers: res.headers });\n      });\n    });\n    req.on('error', reject);\n    if (bodyStr) req.write(bodyStr);\n    req.end();\n  });\n}\n\nasync function githubRest(method, path, body, maxRetries = 3) {\n  for (let attempt = 0; attempt <= maxRetries; attempt++) {\n    const result = await _rawRequest(method, path, body, token);\n    if (result.status >= 200 && result.status < 300) return result;\n    if (result.status === 403 || result.status === 429) {\n      const retryAfter = result.headers['retry-after'];\n      const rateLimitReset = result.headers['x-ratelimit-reset'];\n      let waitMs;\n      if (retryAfter) waitMs = parseInt(retryAfter, 10) * 1000;\n      else if (rateLimitReset) waitMs = Math.max((parseInt(rateLimitReset, 10) * 1000) - Date.now(), 1000);\n      else waitMs = Math.pow(2, attempt) * 1000;\n      if (attempt < maxRetries) { await new Promise(r => setTimeout(r, waitMs)); continue; }\n    }\n    if (result.status >= 400 && result.status < 500) throw new Error(`GitHub API ${result.status}: ${JSON.stringify(result.data)}`);\n    if (result.status >= 500 && attempt < maxRetries) { await new Promise(r => setTimeout(r, Math.pow(2, attempt) * 1000)); continue; }\n    throw new Error(`GitHub API failed after ${maxRetries + 1} attempts: ${result.status}`);\n  }\n}\n\n// --- Task Ready Logic ---\n// When sow_ready is applied to a task, move it to status:ready.\n// Remove sow_ready and in_scoping labels, transition to status:ready.\n\n// Remove scoping labels\nfor (const label of ['sow_ready', 'in_scoping', 'needs_refinement']) {\n  try {\n    await githubRest('DELETE', `/repos/${owner}/${repo}/issues/${issueNumber}/labels/${encodeURIComponent(label)}`);\n  } catch (e) { if (!e.message.includes('404')) throw e; }\n}\n\n// Transition to status:ready\nconst current = await githubRest('GET', `/repos/${owner}/${repo}/issues/${issueNumber}/labels`);\nconst oldStatuses = current.data.map(l => l.name).filter(l => l.startsWith('status:'));\nfor (const old of oldStatuses) {\n  try { await githubRest('DELETE', `/repos/${owner}/${repo}/issues/${issueNumber}/labels/${encodeURIComponent(old)}`); }\n  catch (e) { if (!e.message.includes('404')) throw e; }\n}\nawait githubRest('POST', `/repos/${owner}/${repo}/issues/${issueNumber}/labels`, { labels: ['status:ready'] });\n\nreturn [{ json: { success: true, issueNumber, statusApplied: 'status:ready', scopingLabelsRemoved: true } }];"
+      },
+      "name": "Move Task to Ready",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [660, 300]
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": {
+      "main": [[{ "node": "Get Installation Token", "type": "main", "index": 0 }]]
+    },
+    "Get Installation Token": {
+      "main": [[{ "node": "Move Task to Ready", "type": "main", "index": 0 }]]
+    }
+  },
+  "active": true,
+  "settings": { "executionOrder": "v1" }
+}

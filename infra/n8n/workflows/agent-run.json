@@ -1,0 +1,271 @@
+{
+  "id": "AgentRun01",
+  "name": "Agent Run",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "agent-code-start",
+        "options": {},
+        "responseMode": "onReceived",
+        "responseCode": 200
+      },
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [200, 300],
+      "webhookId": "agent-code-start"
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\nconst https = require('https');\n\nconst appId = $env.GITHUB_APP_ID;\nconst installationId = $env.GITHUB_INSTALLATION_ID;\nconst privateKeyBase64 = $env.GITHUB_PRIVATE_KEY_BASE64;\nconst privateKey = Buffer.from(privateKeyBase64, 'base64').toString('utf8');\n\nconst now = Math.floor(Date.now() / 1000);\nconst header = Buffer.from(JSON.stringify({ alg: 'RS256', typ: 'JWT' })).toString('base64url');\nconst payload = Buffer.from(JSON.stringify({ iat: now - 60, exp: now + 600, iss: appId })).toString('base64url');\nconst signature = crypto.sign('SHA256', Buffer.from(`${header}.${payload}`), privateKey).toString('base64url');\nconst jwt = `${header}.${payload}.${signature}`;\n\nconst token = await new Promise((resolve, reject) => {\n  const req = https.request({\n    hostname: 'api.github.com',\n    path: `/app/installations/${installationId}/access_tokens`,\n    method: 'POST',\n    headers: {\n      'Authorization': `Bearer ${jwt}`,\n      'Accept': 'application/vnd.github+json',\n      'User-Agent': 'n8n-orchestrator',\n      'Content-Length': 0\n    }\n  }, res => {\n    let body = '';\n    res.on('data', c => body += c);\n    res.on('end', () => {\n      if (res.statusCode !== 201) reject(new Error(`GitHub token request failed: ${res.statusCode} ${body}`));\n      else resolve(JSON.parse(body).token);\n    });\n  });\n  req.on('error', reject);\n  req.end();\n});\n\nreturn [{ json: { ...$input.first().json, githubToken: token } }];"
+      },
+      "name": "Get Installation Token",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [420, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Check if an agent container is already running.\n// If so, exit — story stays status:ready for next pickup.\nconst { execSync } = require('child_process');\n\nlet running = '';\ntry {\n  running = execSync(\n    'docker ps --filter \"label=apeiron-agent\" --format \"{{.ID}}\"'\n  ).toString().trim();\n} catch (e) {\n  // docker command failed — treat as not running\n  running = '';\n}\n\nif (running) {\n  return [{ json: {\n    ...($input.first().json),\n    blocked: true,\n    reason: 'Agent container already running',\n    runningContainerId: running\n  }}];\n}\n\nreturn [{ json: { ...($input.first().json), blocked: false } }];"
+      },
+      "name": "Check Concurrency",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [640, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "concurrency-check",
+              "leftValue": "={{ $json.blocked }}",
+              "rightValue": false,
+              "operator": {
+                "type": "boolean",
+                "operation": "false"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "name": "Agent Available?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [860, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Post comment that agent is busy, then exit.\n// Story stays status:ready for next pickup.\nconst https = require('https');\nconst data = $input.first().json;\nconst token = data.githubToken;\nconst owner = data.body.repoOwner;\nconst repo = data.body.repoName;\nconst storyNumber = data.body.issueNumber;\n\nconst commentBody = JSON.stringify({\n  body: `\\u26a0\\ufe0f Agent is currently busy with another story (container \\`${data.runningContainerId}\\`). This story will be picked up when the agent is available. Story remains \\`status:ready\\`.`\n});\n\nawait new Promise((resolve, reject) => {\n  const req = https.request({\n    hostname: 'api.github.com',\n    path: `/repos/${owner}/${repo}/issues/${storyNumber}/comments`,\n    method: 'POST',\n    headers: {\n      'Authorization': `Bearer ${token}`,\n      'Accept': 'application/vnd.github+json',\n      'User-Agent': 'n8n-orchestrator',\n      'Content-Type': 'application/json',\n      'Content-Length': Buffer.byteLength(commentBody)\n    }\n  }, res => {\n    let body = '';\n    res.on('data', c => body += c);\n    res.on('end', () => resolve());\n  });\n  req.on('error', reject);\n  req.write(commentBody);\n  req.end();\n});\n\nreturn [{ json: { action: 'agent-busy', storyNumber } }];"
+      },
+      "name": "Comment Agent Busy",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1080, 500]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Dependency check: parse 'Depends on: #N' from story body.\n// If any dependency is not status:in-review or closed, exit.\nconst https = require('https');\nconst data = $input.first().json;\nconst token = data.githubToken;\nconst owner = data.body.repoOwner;\nconst repo = data.body.repoName;\nconst storyNumber = data.body.issueNumber;\nconst storyBody = data.body.issueBody || '';\n\n// --- REST helper ---\nfunction _rawRequest(method, path, body, tkn) {\n  return new Promise((resolve, reject) => {\n    const bodyStr = body ? JSON.stringify(body) : '';\n    const headers = {\n      'Authorization': `Bearer ${tkn}`,\n      'Accept': 'application/vnd.github+json',\n      'User-Agent': 'n8n-orchestrator',\n      'X-GitHub-Api-Version': '2022-11-28'\n    };\n    if (body) {\n      headers['Content-Type'] = 'application/json';\n      headers['Content-Length'] = Buffer.byteLength(bodyStr);\n    }\n    const req = https.request({ hostname: 'api.github.com', path, method, headers }, res => {\n      let d = '';\n      res.on('data', c => d += c);\n      res.on('end', () => {\n        let parsed;\n        try { parsed = JSON.parse(d); } catch(e) { parsed = d; }\n        resolve({ status: res.statusCode, data: parsed, headers: res.headers });\n      });\n    });\n    req.on('error', reject);\n    if (bodyStr) req.write(bodyStr);\n    req.end();\n  });\n}\n\nasync function githubRest(method, path, body) {\n  const maxRetries = 3;\n  for (let attempt = 0; attempt <= maxRetries; attempt++) {\n    const result = await _rawRequest(method, path, body, token);\n    if (result.status >= 200 && result.status < 300) return result;\n    if ((result.status === 403 || result.status === 429) && attempt < maxRetries) {\n      const retryAfter = result.headers['retry-after'];\n      const rateLimitReset = result.headers['x-ratelimit-reset'];\n      let waitMs;\n      if (retryAfter) waitMs = parseInt(retryAfter, 10) * 1000;\n      else if (rateLimitReset) waitMs = Math.max((parseInt(rateLimitReset, 10) * 1000) - Date.now(), 1000);\n      else waitMs = Math.pow(2, attempt) * 1000;\n      await new Promise(r => setTimeout(r, Math.min(waitMs, 60000)));\n      continue;\n    }\n    if (result.status >= 400) {\n      throw new Error(`GitHub API ${method} ${path} failed: ${result.status} ${JSON.stringify(result.data)}`);\n    }\n  }\n}\n\n// Parse dependency declarations\nconst depPattern = /[Dd]epends on:?\\s*#(\\d+)/g;\nconst dependencies = [];\nlet match;\nwhile ((match = depPattern.exec(storyBody)) !== null) {\n  dependencies.push(parseInt(match[1], 10));\n}\n\n// Check each dependency\nconst unsatisfied = [];\nfor (const depNumber of dependencies) {\n  const depIssue = await githubRest('GET', `/repos/${owner}/${repo}/issues/${depNumber}`);\n  const depLabels = (depIssue.data.labels || []).map(l => l.name);\n  const isClosed = depIssue.data.state === 'closed';\n  const isInReview = depLabels.includes('status:in-review');\n  if (!isClosed && !isInReview) {\n    unsatisfied.push({ number: depNumber, labels: depLabels, state: depIssue.data.state });\n  }\n}\n\nif (unsatisfied.length > 0) {\n  return [{ json: {\n    ...data,\n    depsBlocked: true,\n    unsatisfiedDeps: unsatisfied,\n    dependencies\n  }}];\n}\n\nreturn [{ json: {\n  ...data,\n  depsBlocked: false,\n  dependencies\n}}];"
+      },
+      "name": "Dependency Check",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1080, 200]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "deps-check",
+              "leftValue": "={{ $json.depsBlocked }}",
+              "rightValue": false,
+              "operator": {
+                "type": "boolean",
+                "operation": "false"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "name": "Dependencies Satisfied?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1300, 200]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Dependencies not satisfied — story stays status:ready, no comment needed.\n// Just exit silently. The story will be re-evaluated on the next trigger.\nconst data = $input.first().json;\nreturn [{ json: {\n  action: 'deps-not-satisfied',\n  storyNumber: data.body.issueNumber,\n  unsatisfiedDeps: data.unsatisfiedDeps\n}}];"
+      },
+      "name": "Exit Deps Not Ready",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1520, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build the full prompt for the agent container.\nconst https = require('https');\nconst data = $input.first().json;\nconst token = data.githubToken;\nconst owner = data.body.repoOwner;\nconst repo = data.body.repoName;\nconst storyNumber = data.body.issueNumber;\nconst storyTitle = data.body.issueTitle;\nconst storyBody = data.body.issueBody || '';\nconst labels = data.body.labels || [];\nconst dependencies = data.dependencies || [];\n\n// Find epic-N label\nconst epicNLabel = labels.find(l => /^epic-\\d+$/.test(l)) || '';\nconst epicNumber = epicNLabel ? epicNLabel.replace('epic-', '') : '';\n\n// --- REST helper ---\nfunction _rawRequest(method, path, body, tkn) {\n  return new Promise((resolve, reject) => {\n    const bodyStr = body ? JSON.stringify(body) : '';\n    const headers = {\n      'Authorization': `Bearer ${tkn}`,\n      'Accept': 'application/vnd.github+json',\n      'User-Agent': 'n8n-orchestrator',\n      'X-GitHub-Api-Version': '2022-11-28'\n    };\n    if (body) {\n      headers['Content-Type'] = 'application/json';\n      headers['Content-Length'] = Buffer.byteLength(bodyStr);\n    }\n    const req = https.request({ hostname: 'api.github.com', path, method, headers }, res => {\n      let d = '';\n      res.on('data', c => d += c);\n      res.on('end', () => {\n        let parsed;\n        try { parsed = JSON.parse(d); } catch(e) { parsed = d; }\n        resolve({ status: res.statusCode, data: parsed, headers: res.headers });\n      });\n    });\n    req.on('error', reject);\n    if (bodyStr) req.write(bodyStr);\n    req.end();\n  });\n}\n\nasync function githubRest(method, path, body) {\n  const maxRetries = 3;\n  for (let attempt = 0; attempt <= maxRetries; attempt++) {\n    const result = await _rawRequest(method, path, body, token);\n    if (result.status >= 200 && result.status < 300) return result;\n    if ((result.status === 403 || result.status === 429) && attempt < maxRetries) {\n      const retryAfter = result.headers['retry-after'];\n      const rateLimitReset = result.headers['x-ratelimit-reset'];\n      let waitMs;\n      if (retryAfter) waitMs = parseInt(retryAfter, 10) * 1000;\n      else if (rateLimitReset) waitMs = Math.max((parseInt(rateLimitReset, 10) * 1000) - Date.now(), 1000);\n      else waitMs = Math.pow(2, attempt) * 1000;\n      await new Promise(r => setTimeout(r, Math.min(waitMs, 60000)));\n      continue;\n    }\n    if (result.status >= 400) {\n      throw new Error(`GitHub API ${method} ${path} failed: ${result.status} ${JSON.stringify(result.data)}`);\n    }\n  }\n}\n\n// Fetch epic body for broader context\nlet epicBody = '';\nif (epicNumber) {\n  try {\n    const epic = await githubRest('GET', `/repos/${owner}/${repo}/issues/${epicNumber}`);\n    epicBody = epic.data.body || '';\n  } catch (e) {\n    epicBody = `(Failed to fetch epic #${epicNumber}: ${e.message})`;\n  }\n}\n\n// Fetch story comments (may contain scoping context)\nlet storyComments = '';\ntry {\n  const comments = await githubRest('GET', `/repos/${owner}/${repo}/issues/${storyNumber}/comments?per_page=100`);\n  if (Array.isArray(comments.data)) {\n    storyComments = comments.data\n      .map(c => `**${c.user?.login}:** ${c.body}`)\n      .join('\\n\\n');\n  }\n} catch (e) {\n  storyComments = `(Failed to fetch comments: ${e.message})`;\n}\n\n// Fetch project-context.md\nlet projectContextContent = '';\ntry {\n  const pc = await githubRest('GET', `/repos/${owner}/${repo}/contents/docs/bmad/project-context.md`);\n  projectContextContent = Buffer.from(pc.data.content, 'base64').toString();\n} catch (e) {\n  projectContextContent = `(Failed to fetch project-context.md: ${e.message})`;\n}\n\n// Fetch AGENTS.md\nlet agentsMdContent = '';\ntry {\n  const agents = await githubRest('GET', `/repos/${owner}/${repo}/contents/AGENTS.md`);\n  agentsMdContent = Buffer.from(agents.data.content, 'base64').toString();\n} catch (e) {\n  agentsMdContent = `(Failed to fetch AGENTS.md: ${e.message})`;\n}\n\n// Build dependency stacking instructions\nlet depStackingInstructions = '3. No dependencies to stack on.';\nif (dependencies.length > 0) {\n  // Find PR branches for dependencies\n  const depBranches = [];\n  for (const depNum of dependencies) {\n    try {\n      // Search for PRs that reference this issue\n      const prs = await githubRest('GET',\n        `/repos/${owner}/${repo}/pulls?state=open&per_page=100`);\n      if (Array.isArray(prs.data)) {\n        const depPR = prs.data.find(pr =>\n          pr.body && pr.body.includes(`#${depNum}`) ||\n          pr.title && pr.title.includes(`#${depNum}`)\n        );\n        if (depPR) {\n          depBranches.push(depPR.head.ref);\n        }\n      }\n    } catch (e) {\n      // Skip — we'll note it in the prompt\n    }\n  }\n  if (depBranches.length > 0) {\n    depStackingInstructions = `3. Stack on dependency branch(es): ${depBranches.join(', ')}`;\n  } else {\n    depStackingInstructions = `3. Dependencies #${dependencies.join(', #')} exist but no open PR branches found. Create your branch from main.`;\n  }\n}\n\nconst prompt = `You are implementing story #${storyNumber} for the Apeiron Cipher project.\n\n## Story\n**${storyTitle}**\n\n${storyBody}\n\n${epicNumber ? `## Parent Epic (#${epicNumber})\\n${epicBody}` : '## No Parent Epic'}\n\n${storyComments ? `## Story Comments\\n${storyComments}` : ''}\n\n## Coding Rules\n${projectContextContent}\n\n## Workflow Rules\n${agentsMdContent}\n\n## Instructions\n1. The repo is checked out at /workspace.\n2. Create a feature branch: gt create epic-${epicNumber || 'standalone'}/story-${storyNumber}-<short-description>\n${depStackingInstructions}\n4. Implement the story following all coding rules above.\n5. Run \\`make check\\` (cargo test + cargo clippy -- -D warnings). Fix any failures.\n6. If you cannot resolve failures after 3 attempts, exit with code 1.\n7. When passing, run \\`gt submit\\` to create the PR.\n8. The PR title must reference the story: \"Story #${storyNumber}: <description>\"\n9. The PR body must include \"Closes #${storyNumber}\" to auto-close the story on merge.\n`.trim();\n\nreturn [{ json: {\n  prompt,\n  storyNumber,\n  epicNumber: epicNumber || '',\n  githubToken: token,\n  owner,\n  repo\n}}];"
+      },
+      "name": "Build Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1520, 100]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Move story from status:ready to status:in-progress\nconst https = require('https');\nconst data = $input.first().json;\nconst token = data.githubToken;\nconst owner = data.owner;\nconst repo = data.repo;\nconst storyNumber = data.storyNumber;\n\nfunction _rawRequest(method, path, body, tkn) {\n  return new Promise((resolve, reject) => {\n    const bodyStr = body ? JSON.stringify(body) : '';\n    const headers = {\n      'Authorization': `Bearer ${tkn}`,\n      'Accept': 'application/vnd.github+json',\n      'User-Agent': 'n8n-orchestrator',\n      'X-GitHub-Api-Version': '2022-11-28'\n    };\n    if (body) {\n      headers['Content-Type'] = 'application/json';\n      headers['Content-Length'] = Buffer.byteLength(bodyStr);\n    }\n    const req = https.request({ hostname: 'api.github.com', path, method, headers }, res => {\n      let d = '';\n      res.on('data', c => d += c);\n      res.on('end', () => {\n        let parsed;\n        try { parsed = JSON.parse(d); } catch(e) { parsed = d; }\n        resolve({ status: res.statusCode, data: parsed, headers: res.headers });\n      });\n    });\n    req.on('error', reject);\n    if (bodyStr) req.write(bodyStr);\n    req.end();\n  });\n}\n\nasync function githubRest(method, path, body) {\n  const result = await _rawRequest(method, path, body, token);\n  if (result.status >= 200 && result.status < 300) return result;\n  throw new Error(`GitHub API ${method} ${path} failed: ${result.status} ${JSON.stringify(result.data)}`);\n}\n\n// Remove status:ready, add status:in-progress\ntry {\n  await githubRest('DELETE', `/repos/${owner}/${repo}/issues/${storyNumber}/labels/status%3Aready`);\n} catch (e) {\n  // Label might not exist — that's fine\n}\nawait githubRest('POST', `/repos/${owner}/${repo}/issues/${storyNumber}/labels`, {\n  labels: ['status:in-progress']\n});\n\nreturn [{ json: data }];"
+      },
+      "name": "Move to In-Progress",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1740, 100]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Spawn the agent container as a sibling via Docker socket.\nconst { execSync } = require('child_process');\nconst fs = require('fs');\nconst data = $input.first().json;\nconst prompt = data.prompt;\nconst storyNumber = data.storyNumber;\nconst token = data.githubToken;\n\n// Write prompt to a temp file (avoid shell escaping issues with long prompts)\nconst promptPath = `/tmp/agent-prompt-${storyNumber}.md`;\nfs.writeFileSync(promptPath, prompt);\n\n// Build docker run command\nconst openrouterKey = $env.OPENROUTER_API_KEY || '';\nconst openrouterModel = $env.OPENROUTER_MODEL || '';\nconst gtToken = $env.GT_TOKEN || '';\n\nconst containerId = execSync([\n  'docker run -d',\n  '--label apeiron-agent',\n  `--label story=${storyNumber}`,\n  `--name apeiron-agent-${storyNumber}`,\n  '-v apeiron-repo:/workspace',\n  `-v ${promptPath}:/prompt.md:ro`,\n  `-e OPENROUTER_API_KEY=${openrouterKey}`,\n  `-e OPENROUTER_MODEL=${openrouterModel}`,\n  `-e GH_TOKEN=${token}`,\n  `-e GT_TOKEN=${gtToken}`,\n  'apeiron-agent:latest',\n  '\"opencode --prompt-file /prompt.md\"'\n].join(' ')).toString().trim();\n\nreturn [{ json: {\n  containerId,\n  storyNumber,\n  githubToken: token,\n  owner: data.owner,\n  repo: data.repo\n}}];"
+      },
+      "name": "Spawn Agent Container",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1960, 100]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Poll the agent container until it exits or times out.\nconst { execSync } = require('child_process');\nconst data = $input.first().json;\nconst containerId = data.containerId;\nconst maxWaitMinutes = 30;\nconst pollIntervalMs = 15000;\nconst maxPolls = (maxWaitMinutes * 60 * 1000) / pollIntervalMs;\n\nfor (let i = 0; i < maxPolls; i++) {\n  let status;\n  try {\n    status = execSync(\n      `docker inspect --format '{{.State.Status}}' ${containerId}`\n    ).toString().trim();\n  } catch (e) {\n    // Container might have been removed externally\n    return [{ json: {\n      exitCode: -2,\n      logs: `Container ${containerId} not found: ${e.message}`,\n      storyNumber: data.storyNumber,\n      githubToken: data.githubToken,\n      owner: data.owner,\n      repo: data.repo\n    }}];\n  }\n\n  if (status === 'exited') {\n    const exitCode = parseInt(execSync(\n      `docker inspect --format '{{.State.ExitCode}}' ${containerId}`\n    ).toString().trim(), 10);\n\n    // Capture logs for debugging\n    let logs = '';\n    try {\n      logs = execSync(\n        `docker logs --tail 100 ${containerId}`\n      ).toString();\n    } catch (e) {\n      logs = `(Failed to capture logs: ${e.message})`;\n    }\n\n    // Cleanup container\n    try {\n      execSync(`docker rm ${containerId}`);\n    } catch (e) {\n      // Best effort cleanup\n    }\n\n    return [{ json: {\n      exitCode,\n      logs,\n      storyNumber: data.storyNumber,\n      githubToken: data.githubToken,\n      owner: data.owner,\n      repo: data.repo\n    }}];\n  }\n\n  await new Promise(r => setTimeout(r, pollIntervalMs));\n}\n\n// Timeout — kill the container\ntry {\n  execSync(`docker kill ${containerId}`);\n  execSync(`docker rm ${containerId}`);\n} catch (e) {\n  // Best effort\n}\n\nreturn [{ json: {\n  exitCode: -1,\n  logs: `Timed out after ${maxWaitMinutes} minutes`,\n  storyNumber: data.storyNumber,\n  githubToken: data.githubToken,\n  owner: data.owner,\n  repo: data.repo\n}}];"
+      },
+      "name": "Wait for Container Exit",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2180, 100]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 3 },
+                "conditions": [{ "leftValue": "={{ $json.exitCode }}", "rightValue": 0, "operator": { "type": "number", "operation": "equals" }, "id": "exit-success" }],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "success"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 3 },
+                "conditions": [{ "leftValue": "={{ $json.exitCode }}", "rightValue": -1, "operator": { "type": "number", "operation": "equals" }, "id": "exit-timeout" }],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "timeout"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 3 },
+                "conditions": [{ "leftValue": "={{ $json.exitCode }}", "rightValue": 0, "operator": { "type": "number", "operation": "notEquals" }, "id": "exit-failure" }],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "failure"
+            }
+          ]
+        },
+        "options": { "fallbackOutput": "extra" }
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [2400, 100],
+      "name": "Result Switch"
+    },
+    {
+      "parameters": {
+        "jsCode": "// SUCCESS: Move story to status:in-review and post success comment.\nconst https = require('https');\nconst data = $input.first().json;\nconst token = data.githubToken;\nconst owner = data.owner;\nconst repo = data.repo;\nconst storyNumber = data.storyNumber;\n\nfunction _rawRequest(method, path, body, tkn) {\n  return new Promise((resolve, reject) => {\n    const bodyStr = body ? JSON.stringify(body) : '';\n    const headers = {\n      'Authorization': `Bearer ${tkn}`,\n      'Accept': 'application/vnd.github+json',\n      'User-Agent': 'n8n-orchestrator',\n      'X-GitHub-Api-Version': '2022-11-28'\n    };\n    if (body) {\n      headers['Content-Type'] = 'application/json';\n      headers['Content-Length'] = Buffer.byteLength(bodyStr);\n    }\n    const req = https.request({ hostname: 'api.github.com', path, method, headers }, res => {\n      let d = '';\n      res.on('data', c => d += c);\n      res.on('end', () => {\n        let parsed;\n        try { parsed = JSON.parse(d); } catch(e) { parsed = d; }\n        resolve({ status: res.statusCode, data: parsed });\n      });\n    });\n    req.on('error', reject);\n    if (bodyStr) req.write(bodyStr);\n    req.end();\n  });\n}\n\nasync function githubRest(method, path, body) {\n  const result = await _rawRequest(method, path, body, token);\n  if (result.status >= 200 && result.status < 300) return result;\n  throw new Error(`GitHub API ${method} ${path} failed: ${result.status} ${JSON.stringify(result.data)}`);\n}\n\n// Transition: remove status:in-progress, add status:in-review\ntry {\n  await githubRest('DELETE', `/repos/${owner}/${repo}/issues/${storyNumber}/labels/status%3Ain-progress`);\n} catch (e) { /* label might not exist */ }\n\nawait githubRest('POST', `/repos/${owner}/${repo}/issues/${storyNumber}/labels`, {\n  labels: ['status:in-review']\n});\n\n// Post success comment\nawait githubRest('POST', `/repos/${owner}/${repo}/issues/${storyNumber}/comments`, {\n  body: '\\u2705 Implementation complete. PR submitted via Graphite. Story moved to `status:in-review`.'\n});\n\nreturn [{ json: { action: 'success', storyNumber } }];"
+      },
+      "name": "Handle Success",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2640, -60]
+    },
+    {
+      "parameters": {
+        "jsCode": "// TIMEOUT: Move story to status:blocked and post timeout comment.\nconst https = require('https');\nconst data = $input.first().json;\nconst token = data.githubToken;\nconst owner = data.owner;\nconst repo = data.repo;\nconst storyNumber = data.storyNumber;\n\nfunction _rawRequest(method, path, body, tkn) {\n  return new Promise((resolve, reject) => {\n    const bodyStr = body ? JSON.stringify(body) : '';\n    const headers = {\n      'Authorization': `Bearer ${tkn}`,\n      'Accept': 'application/vnd.github+json',\n      'User-Agent': 'n8n-orchestrator',\n      'X-GitHub-Api-Version': '2022-11-28'\n    };\n    if (body) {\n      headers['Content-Type'] = 'application/json';\n      headers['Content-Length'] = Buffer.byteLength(bodyStr);\n    }\n    const req = https.request({ hostname: 'api.github.com', path, method, headers }, res => {\n      let d = '';\n      res.on('data', c => d += c);\n      res.on('end', () => {\n        let parsed;\n        try { parsed = JSON.parse(d); } catch(e) { parsed = d; }\n        resolve({ status: res.statusCode, data: parsed });\n      });\n    });\n    req.on('error', reject);\n    if (bodyStr) req.write(bodyStr);\n    req.end();\n  });\n}\n\nasync function githubRest(method, path, body) {\n  const result = await _rawRequest(method, path, body, token);\n  if (result.status >= 200 && result.status < 300) return result;\n  throw new Error(`GitHub API ${method} ${path} failed: ${result.status} ${JSON.stringify(result.data)}`);\n}\n\n// Transition: remove status:in-progress, add status:blocked\ntry {\n  await githubRest('DELETE', `/repos/${owner}/${repo}/issues/${storyNumber}/labels/status%3Ain-progress`);\n} catch (e) { /* label might not exist */ }\n\nawait githubRest('POST', `/repos/${owner}/${repo}/issues/${storyNumber}/labels`, {\n  labels: ['status:blocked']\n});\n\n// Post timeout comment\nawait githubRest('POST', `/repos/${owner}/${repo}/issues/${storyNumber}/comments`, {\n  body: '\\u23f1\\ufe0f Agent timed out after 30 minutes. Story moved to `status:blocked`. Manual intervention required.'\n});\n\nreturn [{ json: { action: 'timeout', storyNumber } }];"
+      },
+      "name": "Handle Timeout",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2640, 100]
+    },
+    {
+      "parameters": {
+        "jsCode": "// FAILURE: Move story to status:blocked and post failure comment with logs.\nconst https = require('https');\nconst data = $input.first().json;\nconst token = data.githubToken;\nconst owner = data.owner;\nconst repo = data.repo;\nconst storyNumber = data.storyNumber;\nconst exitCode = data.exitCode;\nconst logs = data.logs || '(no logs captured)';\n\nfunction _rawRequest(method, path, body, tkn) {\n  return new Promise((resolve, reject) => {\n    const bodyStr = body ? JSON.stringify(body) : '';\n    const headers = {\n      'Authorization': `Bearer ${tkn}`,\n      'Accept': 'application/vnd.github+json',\n      'User-Agent': 'n8n-orchestrator',\n      'X-GitHub-Api-Version': '2022-11-28'\n    };\n    if (body) {\n      headers['Content-Type'] = 'application/json';\n      headers['Content-Length'] = Buffer.byteLength(bodyStr);\n    }\n    const req = https.request({ hostname: 'api.github.com', path, method, headers }, res => {\n      let d = '';\n      res.on('data', c => d += c);\n      res.on('end', () => {\n        let parsed;\n        try { parsed = JSON.parse(d); } catch(e) { parsed = d; }\n        resolve({ status: res.statusCode, data: parsed });\n      });\n    });\n    req.on('error', reject);\n    if (bodyStr) req.write(bodyStr);\n    req.end();\n  });\n}\n\nasync function githubRest(method, path, body) {\n  const result = await _rawRequest(method, path, body, token);\n  if (result.status >= 200 && result.status < 300) return result;\n  throw new Error(`GitHub API ${method} ${path} failed: ${result.status} ${JSON.stringify(result.data)}`);\n}\n\n// Transition: remove status:in-progress, add status:blocked\ntry {\n  await githubRest('DELETE', `/repos/${owner}/${repo}/issues/${storyNumber}/labels/status%3Ain-progress`);\n} catch (e) { /* label might not exist */ }\n\nawait githubRest('POST', `/repos/${owner}/${repo}/issues/${storyNumber}/labels`, {\n  labels: ['status:blocked']\n});\n\n// Truncate logs if too long for a comment (GitHub max comment is 65536 chars)\nconst maxLogLen = 3000;\nconst truncatedLogs = logs.length > maxLogLen\n  ? logs.substring(logs.length - maxLogLen) + '\\n... (truncated)'\n  : logs;\n\n// Post failure comment\nawait githubRest('POST', `/repos/${owner}/${repo}/issues/${storyNumber}/comments`, {\n  body: `\\u274c Agent failed to implement this story. Container exit code: \\`${exitCode}\\`. Story moved to \\`status:blocked\\`.\\n\\n<details>\\n<summary>Container logs (last 100 lines)</summary>\\n\\n\\`\\`\\`\\n${truncatedLogs}\\n\\`\\`\\`\\n\\n</details>`\n});\n\nreturn [{ json: { action: 'failure', storyNumber, exitCode } }];"
+      },
+      "name": "Handle Failure",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2640, 260]
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": {
+      "main": [[{ "node": "Get Installation Token", "type": "main", "index": 0 }]]
+    },
+    "Get Installation Token": {
+      "main": [[{ "node": "Check Concurrency", "type": "main", "index": 0 }]]
+    },
+    "Check Concurrency": {
+      "main": [[{ "node": "Agent Available?", "type": "main", "index": 0 }]]
+    },
+    "Agent Available?": {
+      "main": [
+        [{ "node": "Dependency Check", "type": "main", "index": 0 }],
+        [{ "node": "Comment Agent Busy", "type": "main", "index": 0 }]
+      ]
+    },
+    "Dependency Check": {
+      "main": [[{ "node": "Dependencies Satisfied?", "type": "main", "index": 0 }]]
+    },
+    "Dependencies Satisfied?": {
+      "main": [
+        [{ "node": "Build Prompt", "type": "main", "index": 0 }],
+        [{ "node": "Exit Deps Not Ready", "type": "main", "index": 0 }]
+      ]
+    },
+    "Build Prompt": {
+      "main": [[{ "node": "Move to In-Progress", "type": "main", "index": 0 }]]
+    },
+    "Move to In-Progress": {
+      "main": [[{ "node": "Spawn Agent Container", "type": "main", "index": 0 }]]
+    },
+    "Spawn Agent Container": {
+      "main": [[{ "node": "Wait for Container Exit", "type": "main", "index": 0 }]]
+    },
+    "Wait for Container Exit": {
+      "main": [[{ "node": "Result Switch", "type": "main", "index": 0 }]]
+    },
+    "Result Switch": {
+      "main": [
+        [{ "node": "Handle Success", "type": "main", "index": 0 }],
+        [{ "node": "Handle Timeout", "type": "main", "index": 0 }],
+        [{ "node": "Handle Failure", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "active": true,
+  "settings": { "executionOrder": "v1" }
+}

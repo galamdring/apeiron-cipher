@@ -1,0 +1,286 @@
+{
+  "id": "StoryCreation01",
+  "name": "Story Creation",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "story-creation",
+        "options": {},
+        "responseMode": "onReceived",
+        "responseCode": 200
+      },
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        200,
+        300
+      ],
+      "webhookId": "story-creation"
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\nconst https = require('https');\n\nconst appId = $env.GITHUB_APP_ID;\nconst installationId = $env.GITHUB_INSTALLATION_ID;\nconst privateKeyBase64 = $env.GITHUB_PRIVATE_KEY_BASE64;\nconst privateKey = Buffer.from(privateKeyBase64, 'base64').toString('utf8');\n\nconst now = Math.floor(Date.now() / 1000);\nconst header = Buffer.from(JSON.stringify({ alg: 'RS256', typ: 'JWT' })).toString('base64url');\nconst payload = Buffer.from(JSON.stringify({ iat: now - 60, exp: now + 600, iss: appId })).toString('base64url');\nconst signature = crypto.sign('SHA256', Buffer.from(`${header}.${payload}`), privateKey).toString('base64url');\nconst jwt = `${header}.${payload}.${signature}`;\n\nconst token = await new Promise((resolve, reject) => {\n  const req = https.request({\n    hostname: 'api.github.com',\n    path: `/app/installations/${installationId}/access_tokens`,\n    method: 'POST',\n    headers: {\n      'Authorization': `Bearer ${jwt}`,\n      'Accept': 'application/vnd.github+json',\n      'User-Agent': 'n8n-orchestrator',\n      'Content-Length': 0\n    }\n  }, res => {\n    let body = '';\n    res.on('data', c => body += c);\n    res.on('end', () => {\n      if (res.statusCode !== 201) reject(new Error(`GitHub token request failed: ${res.statusCode} ${body}`));\n      else resolve(JSON.parse(body).token);\n    });\n  });\n  req.on('error', reject);\n  req.end();\n});\n\nreturn [{ json: { ...$input.first().json, githubToken: token } }];"
+      },
+      "name": "Get Installation Token",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        420,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.github.com/repos/{{ $json.body.repoOwner }}/{{ $json.body.repoName }}/contents/docs/bmad/gdd.md",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/vnd.github.raw+json"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $json.githubToken }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Fetch GDD",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        660,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.github.com/repos/{{ $('Get Installation Token').item.json.body.repoOwner }}/{{ $('Get Installation Token').item.json.body.repoName }}/contents/docs/bmad/project-context.md",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/vnd.github.raw+json"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('Get Installation Token').item.json.githubToken }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Fetch Project Context",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        660,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.github.com/repos/{{ $('Get Installation Token').item.json.body.repoOwner }}/{{ $('Get Installation Token').item.json.body.repoName }}/issues/{{ $('Get Installation Token').item.json.body.issueNumber }}/comments?per_page=100",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/vnd.github+json"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('Get Installation Token').item.json.githubToken }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Fetch Epic Comments",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        660,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const https = require('https');\nconst trigger = $('Get Installation Token').first().json.body;\nconst token = $('Get Installation Token').first().json.githubToken;\nconst gddRaw = $('Fetch GDD').first().json;\nconst contextRaw = $('Fetch Project Context').first().json;\nconst commentItems = $('Fetch Epic Comments').all().map(i => i.json);\n\nconst owner = trigger.repoOwner;\nconst repo = trigger.repoName;\nconst epicNumber = trigger.issueNumber;\nconst epicTitle = trigger.issueTitle;\nconst epicBody = trigger.issueBody;\n\nconst gdd = typeof gddRaw === 'string' ? gddRaw : JSON.stringify(gddRaw);\nconst projectContext = typeof contextRaw === 'string' ? contextRaw : JSON.stringify(contextRaw);\nconst epicComments = commentItems.map(c => `**${c.user?.login}:** ${c.body}`).join('\\n\\n');\n\n// --- Shared REST helper with retry/rate-limit logic ---\nfunction _rawRequest(method, path, body) {\n  return new Promise((resolve, reject) => {\n    const bodyStr = body ? JSON.stringify(body) : '';\n    const headers = {\n      'Authorization': `Bearer ${token}`,\n      'Accept': 'application/vnd.github+json',\n      'User-Agent': 'n8n-orchestrator',\n      'X-GitHub-Api-Version': '2022-11-28'\n    };\n    if (body) {\n      headers['Content-Type'] = 'application/json';\n      headers['Content-Length'] = Buffer.byteLength(bodyStr);\n    }\n    const req = https.request({ hostname: 'api.github.com', path, method, headers }, res => {\n      let d = '';\n      res.on('data', c => d += c);\n      res.on('end', () => {\n        let parsed;\n        try { parsed = JSON.parse(d); } catch(e) { parsed = d; }\n        resolve({ status: res.statusCode, data: parsed, headers: res.headers });\n      });\n    });\n    req.on('error', reject);\n    if (bodyStr) req.write(bodyStr);\n    req.end();\n  });\n}\n\nasync function githubRest(method, path, body, maxRetries = 3) {\n  for (let attempt = 0; attempt <= maxRetries; attempt++) {\n    const result = await _rawRequest(method, path, body);\n    if (result.status >= 200 && result.status < 300) return result;\n    if (result.status === 403 || result.status === 429) {\n      const retryAfter = result.headers['retry-after'];\n      const rateLimitReset = result.headers['x-ratelimit-reset'];\n      let waitMs;\n      if (retryAfter) waitMs = parseInt(retryAfter, 10) * 1000;\n      else if (rateLimitReset) waitMs = Math.max((parseInt(rateLimitReset, 10) * 1000) - Date.now(), 1000);\n      else waitMs = Math.pow(2, attempt) * 1000;\n      if (attempt < maxRetries) { await new Promise(r => setTimeout(r, waitMs)); continue; }\n    }\n    if (result.status >= 400 && result.status < 500) throw new Error(`GitHub API ${result.status}: ${JSON.stringify(result.data)}`);\n    if (result.status >= 500 && attempt < maxRetries) { await new Promise(r => setTimeout(r, Math.pow(2, attempt) * 1000)); continue; }\n    throw new Error(`GitHub API failed after ${maxRetries + 1} attempts: ${result.status}`);\n  }\n}\n\n// --- LLM call with rate limit awareness ---\nasync function callLLM(messages, maxRetries = 3) {\n  const model = process.env.OPENROUTER_MODEL || $env.OPENROUTER_MODEL || 'stepfun/step-3.5-flash:free';\n  const apiKey = process.env.OPENROUTER_API_KEY || $env.OPENROUTER_API_KEY;\n  const bodyStr = JSON.stringify({ model, messages, max_tokens: 4096 });\n\n  for (let attempt = 0; attempt <= maxRetries; attempt++) {\n    const result = await new Promise((resolve, reject) => {\n      const req = https.request({\n        hostname: 'openrouter.ai',\n        path: '/api/v1/chat/completions',\n        method: 'POST',\n        headers: {\n          'Authorization': `Bearer ${apiKey}`,\n          'Content-Type': 'application/json',\n          'Content-Length': Buffer.byteLength(bodyStr)\n        }\n      }, res => {\n        let d = '';\n        res.on('data', c => d += c);\n        res.on('end', () => {\n          let parsed;\n          try { parsed = JSON.parse(d); } catch(e) { parsed = null; }\n          resolve({ status: res.statusCode, data: parsed, raw: d, headers: res.headers });\n        });\n      });\n      req.on('error', reject);\n      req.write(bodyStr);\n      req.end();\n    });\n\n    if (result.status === 200 && result.data?.choices?.[0]?.message?.content) return result.data;\n    if (result.status === 429 || result.status === 503) {\n      const retryAfter = result.headers?.['retry-after'];\n      const waitMs = retryAfter ? parseInt(retryAfter, 10) * 1000 : Math.max(5000, Math.pow(2, attempt) * 2000);\n      if (attempt < maxRetries) { await new Promise(r => setTimeout(r, waitMs)); continue; }\n    }\n    if (result.status >= 500 && attempt < maxRetries) { await new Promise(r => setTimeout(r, Math.pow(2, attempt) * 2000)); continue; }\n    if (attempt >= maxRetries) throw new Error(`LLM call failed after ${maxRetries + 1} attempts. Status: ${result.status}, Response: ${result.raw?.substring(0, 500)}`);\n  }\n}\n\nfunction extractJSON(text) {\n  let str = text.trim();\n  // Strip code fences only if they wrap the entire response\n  if (str.startsWith('```json') && str.endsWith('```')) {\n    str = str.slice(str.indexOf('\\n') + 1, str.lastIndexOf('```')).trim();\n  }\n  return str;\n}\n\n// === STEP 1: Planning AI call \u2014 get story list ===\nconst planMessages = [\n  {\n    role: 'system',\n    content: `You are a game development planning assistant for the Apeiron Cipher project (Rust/Bevy ECS).\\n\\nGiven an epic with its SOW, break it into implementable stories. Each story should be a single PR.\\n\\nOutput a JSON array of story objects:\\n[{\"title\": \"short title\", \"description\": \"one-line scope summary\", \"order\": 1, \"dependsOn\": []}]\\n\\nThe dependsOn array contains 0-indexed references to other stories in this list (by their order number).\\n\\nRespond with ONLY the JSON array, no other text.\\n\\n## GDD (excerpt)\\n${gdd.substring(0, 8000)}\\n\\n## Project Context (excerpt)\\n${projectContext.substring(0, 8000)}`\n  },\n  {\n    role: 'user',\n    content: `Epic: ${epicTitle}\\n\\n${epicBody}\\n\\n## Scoping Conversation\\n${epicComments}`\n  }\n];\n\nconst planResponse = await callLLM(planMessages);\nconst planText = planResponse.choices?.[0]?.message?.content || '[]';\nlet storyPlan;\ntry {\n  storyPlan = JSON.parse(extractJSON(planText));\n} catch (e) {\n  throw new Error(`Failed to parse story plan: ${planText}`);\n}\n\nif (!Array.isArray(storyPlan) || storyPlan.length === 0) {\n  throw new Error(`Story plan is empty or invalid: ${planText}`);\n}\n\n// === STEP 2: Create stub issues for each story ===\nconst epicNLabel = `epic-${epicNumber}`;\n\n// Ensure the epic-N label exists\ntry {\n  await githubRest('POST', `/repos/${owner}/${repo}/labels`, {\n    name: epicNLabel,\n    color: 'c5def5',\n    description: `Stories for epic #${epicNumber}`\n  });\n} catch (e) {\n  if (!e.message.includes('422')) throw e;\n}\n\nconst createdStories = [];\nfor (let i = 0; i < storyPlan.length; i++) {\n  const story = storyPlan[i];\n\n  // Stub body \u2014 will be replaced by the Story Detail workflow\n  const stubBody = `## ${story.title}\\n\\n${story.description}\\n\\n<!-- story-detail-pending -->\\n\\n_Detailed acceptance criteria and technical notes are being generated..._`;\n\n  const result = await githubRest('POST', `/repos/${owner}/${repo}/issues`, {\n    title: `[Epic ${epicNumber}] ${story.title}`,\n    body: stubBody,\n    labels: ['story', 'status:backlog', epicNLabel]\n  });\n\n  createdStories.push({\n    number: result.data.number,\n    title: story.title,\n    description: story.description,\n    order: story.order,\n    dependsOn: story.dependsOn\n  });\n\n  await new Promise(r => setTimeout(r, 500));\n}\n\n// === STEP 3: Update dependency references ===\nfor (const story of createdStories) {\n  const depRefs = story.dependsOn.length > 0\n    ? story.dependsOn.map(d => {\n        const depStory = createdStories.find(s => s.order === d);\n        return depStory ? `#${depStory.number}` : `story ${d}`;\n      })\n    : [];\n\n  const issueData = await githubRest('GET', `/repos/${owner}/${repo}/issues/${story.number}`);\n  const currentBody = issueData.data.body || '';\n  const depLine = depRefs.length > 0 ? `\\nDepends on: ${depRefs.join(', ')}` : '';\n  const parentLine = `\\n\\n---\\n_Parent epic: #${epicNumber}_`;\n  await githubRest('PATCH', `/repos/${owner}/${repo}/issues/${story.number}`, {\n    body: currentBody + depLine + parentLine\n  });\n  await new Promise(r => setTimeout(r, 500));\n}\n\n// === STEP 4: Update epic body with story index ===\nconst epicData = await githubRest('GET', `/repos/${owner}/${repo}/issues/${epicNumber}`);\nconst storyIndex = createdStories\n  .sort((a, b) => a.order - b.order)\n  .map(s => {\n    const deps = s.dependsOn.length > 0\n      ? ` (depends on ${s.dependsOn.map(d => { const ds = createdStories.find(cs => cs.order === d); return ds ? `#${ds.number}` : `story ${d}`; }).join(', ')})`\n      : '';\n    return `- #${s.number}: ${s.title} (order: ${s.order}${deps})`;\n  })\n  .join('\\n');\n\nawait githubRest('PATCH', `/repos/${owner}/${repo}/issues/${epicNumber}`, {\n  body: (epicData.data.body || '') + `\\n\\n## Stories\\n${storyIndex}`\n});\n\n// === STEP 5: Label epic stories_created, remove sow_ready ===\ntry {\n  await githubRest('DELETE', `/repos/${owner}/${repo}/issues/${epicNumber}/labels/${encodeURIComponent('sow_ready')}`);\n} catch (e) { if (!e.message.includes('404')) throw e; }\nawait githubRest('POST', `/repos/${owner}/${repo}/issues/${epicNumber}/labels`, { labels: ['stories_created'] });\n\n// Post summary comment\nawait githubRest('POST', `/repos/${owner}/${repo}/issues/${epicNumber}/comments`, {\n  body: `## Stories Created\\n\\nGenerated ${createdStories.length} story stubs from this epic's SOW:\\n\\n${storyIndex}\\n\\nDetailed story content is now being generated for each story. Please review once all stories show full acceptance criteria.\\n\\nWhen satisfied, apply \\`status:ready\\` to this epic to cascade all stories to the ready queue.`\n});\n\n// === STEP 6: Output one item per story for Split In Batches ===\n// Resolve dependency titles for each story\nconst outputItems = createdStories.map(story => {\n  const depTitles = story.dependsOn.length > 0\n    ? story.dependsOn.map(d => {\n        const ds = createdStories.find(cs => cs.order === d);\n        return ds ? ds.title : `story ${d}`;\n      }).join(', ')\n    : 'none';\n\n  return {\n    json: {\n      storyNumber: story.number,\n      storyTitle: story.title,\n      storyDescription: story.description,\n      storyOrder: story.order,\n      dependencyTitles: depTitles,\n      epicNumber,\n      epicTitle,\n      repoOwner: owner,\n      repoName: repo,\n      gdd: gdd.substring(0, 8000),\n      projectContext: projectContext.substring(0, 8000),\n      epicComments,\n      fixedDelayMs: '5000'\n    }\n  };\n});\n\nreturn outputItems;"
+      },
+      "name": "Plan and Create Stubs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        900,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "name": "Split In Batches",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        1140,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "amount": 5
+      },
+      "name": "Wait Between Stories",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        1380,
+        450
+      ],
+      "webhookId": "story-wait"
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "mode": "id",
+          "value": "StoryDetail01"
+        },
+        "options": {}
+      },
+      "name": "Populate Story Detail",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        1380,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "Get Installation Token",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Installation Token": {
+      "main": [
+        [
+          {
+            "node": "Fetch GDD",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Fetch Project Context",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Fetch Epic Comments",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch GDD": {
+      "main": [
+        [
+          {
+            "node": "Plan and Create Stubs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Project Context": {
+      "main": [
+        [
+          {
+            "node": "Plan and Create Stubs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Epic Comments": {
+      "main": [
+        [
+          {
+            "node": "Plan and Create Stubs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Plan and Create Stubs": {
+      "main": [
+        [
+          {
+            "node": "Split In Batches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split In Batches": {
+      "main": [
+        [
+          {
+            "node": "Populate Story Detail",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Populate Story Detail": {
+      "main": [
+        [
+          {
+            "node": "Wait Between Stories",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait Between Stories": {
+      "main": [
+        [
+          {
+            "node": "Split In Batches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

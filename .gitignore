@@ -3,3 +3,4 @@
 Thumbs.db
 *.swp
 *.swo
+infra/n8n/.env
