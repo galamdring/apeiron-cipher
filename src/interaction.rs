@@ -1,16 +1,18 @@
-//! Interaction plugin — raycasting, pickup/place, and crosshair UI.
+//! Interaction plugin — raycasting, pickup/place, examine, and crosshair UI.
 //!
 //! Provides the hands-on loop for material interaction: the player looks at
-//! objects, picks them up, carries them, and puts them down on surfaces.
+//! objects, picks them up, carries them, puts them down on surfaces, and
+//! examines observable properties.
 //!
 //! Architecture follows the server-authoritative pattern: input systems emit
 //! intent messages, separate systems process those intents and mutate state.
 //!
 //! Systems:
 //! - `update_interaction_target`: raycast from camera center, track closest hit
-//! - `emit_pickup_intent` / `emit_place_intent`: read input actions, emit messages
+//! - `emit_pickup_intent` / `emit_place_intent` / `emit_examine_intent`: input → messages
 //! - `process_pickup`: pick up targeted material (re-parent to camera)
 //! - `process_place`: place held material on nearest surface
+//! - `process_examine`: toggle examine overlay for held material
 //! - `update_held_position`: keep held item in front of camera
 //! - `spawn_crosshair`: UI overlay at screen center
 //! - `update_crosshair`: colour change when targeting an interactable
@@ -20,7 +22,7 @@ use bevy::prelude::*;
 use bevy::window::CursorGrabMode;
 
 use crate::input::InputAction;
-use crate::materials::MaterialObject;
+use crate::materials::{GameMaterial, MaterialObject, PropertyVisibility};
 use crate::player::{Player, PlayerCamera};
 use crate::scene::Surface;
 
@@ -33,19 +35,24 @@ pub(crate) struct InteractionPlugin;
 
 impl Plugin for InteractionPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<InteractionTarget>().add_systems(
-            Update,
-            (
-                update_interaction_target,
-                emit_pickup_intent.after(update_interaction_target),
-                emit_place_intent.after(update_interaction_target),
-                process_pickup.after(emit_pickup_intent),
-                process_place.after(emit_place_intent),
-                update_held_position.after(process_pickup),
-                update_crosshair.after(update_interaction_target),
-            ),
-        );
-        app.add_systems(Startup, spawn_crosshair);
+        app.init_resource::<InteractionTarget>()
+            .init_resource::<ExamineState>()
+            .add_systems(
+                Update,
+                (
+                    update_interaction_target,
+                    emit_pickup_intent.after(update_interaction_target),
+                    emit_place_intent.after(update_interaction_target),
+                    emit_examine_intent.after(update_interaction_target),
+                    process_pickup.after(emit_pickup_intent),
+                    process_place.after(emit_place_intent),
+                    process_examine.after(emit_examine_intent),
+                    update_held_position.after(process_pickup),
+                    update_crosshair.after(update_interaction_target),
+                    update_examine_panel.after(process_examine),
+                ),
+            );
+        app.add_systems(Startup, (spawn_crosshair, spawn_examine_panel));
     }
 }
 
@@ -56,6 +63,9 @@ struct PickupIntent;
 
 #[derive(Message)]
 struct PlaceIntent;
+
+#[derive(Message)]
+struct ExamineIntent;
 
 // ── State ────────────────────────────────────────────────────────────────
 
@@ -69,10 +79,22 @@ struct InteractionTarget {
 #[derive(Component)]
 pub(crate) struct HeldItem;
 
+/// Whether the examine overlay is currently visible.
+#[derive(Resource, Default)]
+struct ExamineState {
+    visible: bool,
+}
+
 // ── UI markers ───────────────────────────────────────────────────────────
 
 #[derive(Component)]
 struct Crosshair;
+
+#[derive(Component)]
+struct ExaminePanel;
+
+#[derive(Component)]
+struct ExamineText;
 
 // ── Crosshair setup ──────────────────────────────────────────────────────
 
@@ -274,4 +296,250 @@ fn update_crosshair(
     } else {
         Color::srgba(1.0, 1.0, 1.0, 0.6)
     };
+}
+
+// ── Examine panel setup ─────────────────────────────────────────────────
+
+fn spawn_examine_panel(mut commands: Commands) {
+    commands
+        .spawn((
+            ExaminePanel,
+            Node {
+                position_type: PositionType::Absolute,
+                bottom: Val::Px(80.0),
+                left: Val::Percent(50.0),
+                padding: UiRect::all(Val::Px(14.0)),
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.08, 0.08, 0.12, 0.85)),
+            Visibility::Hidden,
+        ))
+        .with_children(|parent| {
+            parent.spawn((
+                ExamineText,
+                Text::new(""),
+                TextFont {
+                    font_size: 18.0,
+                    ..default()
+                },
+                TextColor(Color::srgba(0.9, 0.92, 0.88, 1.0)),
+            ));
+        });
+}
+
+// ── Examine intent ──────────────────────────────────────────────────────
+
+fn emit_examine_intent(
+    player_query: Query<&ActionState<InputAction>, With<Player>>,
+    cursor_options: Single<&bevy::window::CursorOptions>,
+    mut writer: MessageWriter<ExamineIntent>,
+) {
+    if cursor_options.grab_mode != CursorGrabMode::Locked {
+        return;
+    }
+    let Ok(action) = player_query.single() else {
+        return;
+    };
+    if action.just_pressed(&InputAction::Examine) {
+        writer.write(ExamineIntent);
+    }
+}
+
+// ── Examine processing ──────────────────────────────────────────────────
+
+fn process_examine(
+    mut reader: MessageReader<ExamineIntent>,
+    mut state: ResMut<ExamineState>,
+    held_query: Query<(), With<HeldItem>>,
+) {
+    for _intent in reader.read() {
+        if held_query.iter().next().is_some() {
+            state.visible = !state.visible;
+        } else {
+            state.visible = false;
+        }
+    }
+}
+
+fn update_examine_panel(
+    state: Res<ExamineState>,
+    held_query: Query<&GameMaterial, With<HeldItem>>,
+    mut panel_query: Query<&mut Visibility, With<ExaminePanel>>,
+    mut text_query: Query<&mut Text, With<ExamineText>>,
+) {
+    let Ok(mut vis) = panel_query.single_mut() else {
+        return;
+    };
+    let Ok(mut text) = text_query.single_mut() else {
+        return;
+    };
+
+    if !state.visible {
+        *vis = Visibility::Hidden;
+        return;
+    }
+
+    let Some(mat) = held_query.iter().next() else {
+        *vis = Visibility::Hidden;
+        return;
+    };
+
+    *vis = Visibility::Visible;
+    text.0 = build_examine_text(mat);
+}
+
+// ── Property description ─────────────────────────────────────────────────
+
+/// Converts a normalised 0–1 property value into a descriptive word.
+fn describe_value(value: f32) -> &'static str {
+    if value < 0.15 {
+        "Negligible"
+    } else if value < 0.3 {
+        "Very low"
+    } else if value < 0.45 {
+        "Low"
+    } else if value < 0.55 {
+        "Moderate"
+    } else if value < 0.7 {
+        "High"
+    } else if value < 0.85 {
+        "Very high"
+    } else {
+        "Extreme"
+    }
+}
+
+fn describe_density(value: f32) -> &'static str {
+    if value < 0.15 {
+        "Almost weightless"
+    } else if value < 0.3 {
+        "Very light"
+    } else if value < 0.45 {
+        "Light"
+    } else if value < 0.55 {
+        "Medium weight"
+    } else if value < 0.7 {
+        "Heavy"
+    } else if value < 0.85 {
+        "Very heavy"
+    } else {
+        "Extremely dense"
+    }
+}
+
+fn build_examine_text(mat: &GameMaterial) -> String {
+    let mut lines = vec![mat.name.clone()];
+    lines.push(String::new());
+
+    append_prop(&mut lines, "Weight", &mat.density, describe_density);
+    append_prop(
+        &mut lines,
+        "Heat resistance",
+        &mat.thermal_resistance,
+        describe_value,
+    );
+    append_prop(&mut lines, "Reactivity", &mat.reactivity, describe_value);
+    append_prop(
+        &mut lines,
+        "Conductivity",
+        &mat.conductivity,
+        describe_value,
+    );
+    append_prop(&mut lines, "Toxicity", &mat.toxicity, describe_value);
+
+    lines.join("\n")
+}
+
+fn append_prop(
+    lines: &mut Vec<String>,
+    label: &str,
+    prop: &crate::materials::MaterialProperty,
+    describer: fn(f32) -> &'static str,
+) {
+    if prop.visibility == PropertyVisibility::Observable
+        || prop.visibility == PropertyVisibility::Revealed
+    {
+        lines.push(format!("{label}: {}", describer(prop.value)));
+    } else {
+        lines.push(format!("{label}: ???"));
+    }
+}
+
+// ── Tests ────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::materials::MaterialProperty;
+
+    #[test]
+    fn describe_value_covers_full_range() {
+        assert_eq!(describe_value(0.0), "Negligible");
+        assert_eq!(describe_value(0.2), "Very low");
+        assert_eq!(describe_value(0.35), "Low");
+        assert_eq!(describe_value(0.5), "Moderate");
+        assert_eq!(describe_value(0.6), "High");
+        assert_eq!(describe_value(0.75), "Very high");
+        assert_eq!(describe_value(0.9), "Extreme");
+    }
+
+    #[test]
+    fn describe_density_covers_full_range() {
+        assert_eq!(describe_density(0.1), "Almost weightless");
+        assert_eq!(describe_density(0.25), "Very light");
+        assert_eq!(describe_density(0.4), "Light");
+        assert_eq!(describe_density(0.5), "Medium weight");
+        assert_eq!(describe_density(0.65), "Heavy");
+        assert_eq!(describe_density(0.78), "Very heavy");
+        assert_eq!(describe_density(0.95), "Extremely dense");
+    }
+
+    fn test_material() -> GameMaterial {
+        GameMaterial {
+            name: "TestMat".into(),
+            seed: 1,
+            color: [0.5, 0.5, 0.5],
+            density: MaterialProperty {
+                value: 0.78,
+                visibility: PropertyVisibility::Observable,
+            },
+            thermal_resistance: MaterialProperty {
+                value: 0.65,
+                visibility: PropertyVisibility::Hidden,
+            },
+            reactivity: MaterialProperty {
+                value: 0.35,
+                visibility: PropertyVisibility::Hidden,
+            },
+            conductivity: MaterialProperty {
+                value: 0.72,
+                visibility: PropertyVisibility::Revealed,
+            },
+            toxicity: MaterialProperty {
+                value: 0.05,
+                visibility: PropertyVisibility::Hidden,
+            },
+        }
+    }
+
+    #[test]
+    fn examine_text_shows_observable_and_revealed_hides_hidden() {
+        let mat = test_material();
+        let text = build_examine_text(&mat);
+
+        assert!(text.contains("TestMat"));
+        assert!(text.contains("Weight: Very heavy"));
+        assert!(text.contains("Conductivity: Very high"));
+        assert!(text.contains("Heat resistance: ???"));
+        assert!(text.contains("Reactivity: ???"));
+        assert!(text.contains("Toxicity: ???"));
+    }
+
+    #[test]
+    fn examine_text_name_is_first_line() {
+        let mat = test_material();
+        let text = build_examine_text(&mat);
+        let first_line = text.lines().next().unwrap();
+        assert_eq!(first_line, "TestMat");
+    }
 }
