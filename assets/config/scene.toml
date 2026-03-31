@@ -52,3 +52,15 @@ x = 0.6
 z = -3.15
 y = 0.92
 
+[heat_source]
+# Offset from workbench center — sits on the right side of the bench.
+offset_x = 0.55
+offset_z = 0.0
+radius = 0.1
+# Materials within this distance of the burner are "in the heat zone".
+zone_radius = 1.0
+light_intensity = 40_000.0
+# Seconds of continuous exposure for a material to fully react.
+reaction_seconds = 2.5
+# Seconds of continuous exposure before thermal_resistance is revealed.
+reveal_seconds = 3.5

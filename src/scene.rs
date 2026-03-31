@@ -22,13 +22,20 @@ impl Plugin for ScenePlugin {
 
 // ── Marker components (Epic 3+ query targets) ───────────────────────────
 
-/// Marks the central workbench — future fabricator anchor (Epic 3).
+/// Marks the central workbench mesh — future fabricator anchor (Epic 3).
 #[derive(Component)]
 pub(crate) struct Workbench;
 
-/// Marks shelf or table surfaces for placing materials (later stories).
+/// A placement plane: the actual top of a piece of furniture where objects
+/// can be set down. Spawned as its own entity at the true surface Y so
+/// the placement system never needs offset math.
 #[derive(Component)]
 pub(crate) struct Surface;
+
+/// Distinguishes storage shelves from the experiment workbench so initial
+/// material spawning only targets shelves.
+#[derive(Component)]
+pub(crate) struct Shelf;
 
 // ── Config (TOML ↔ Rust) ─────────────────────────────────────────────────
 
@@ -45,6 +52,8 @@ pub(crate) struct SceneConfig {
     pub lighting: LightingConfig,
     #[serde(default)]
     pub furniture: FurnitureConfig,
+    #[serde(default)]
+    pub heat_source: HeatSourceConfig,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -272,6 +281,64 @@ pub(crate) struct ShelfConfig {
     pub y: f32,
 }
 
+// ── Heat source config ──────────────────────────────────────────────────
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct HeatSourceConfig {
+    #[serde(default = "default_hs_offset_x")]
+    pub offset_x: f32,
+    #[serde(default = "default_hs_offset_z")]
+    pub offset_z: f32,
+    #[serde(default = "default_hs_radius")]
+    pub radius: f32,
+    #[serde(default = "default_hs_zone_radius")]
+    pub zone_radius: f32,
+    #[serde(default = "default_hs_light_intensity")]
+    pub light_intensity: f32,
+    /// Seconds of exposure before a material fully reacts.
+    #[serde(default = "default_hs_reaction_seconds")]
+    pub reaction_seconds: f32,
+    /// Seconds of exposure before thermal_resistance is revealed.
+    #[serde(default = "default_hs_reveal_seconds")]
+    pub reveal_seconds: f32,
+}
+
+fn default_hs_offset_x() -> f32 {
+    0.55
+}
+fn default_hs_offset_z() -> f32 {
+    0.0
+}
+fn default_hs_radius() -> f32 {
+    0.1
+}
+fn default_hs_zone_radius() -> f32 {
+    1.0
+}
+fn default_hs_light_intensity() -> f32 {
+    40_000.0
+}
+fn default_hs_reaction_seconds() -> f32 {
+    2.5
+}
+fn default_hs_reveal_seconds() -> f32 {
+    3.5
+}
+
+impl Default for HeatSourceConfig {
+    fn default() -> Self {
+        Self {
+            offset_x: default_hs_offset_x(),
+            offset_z: default_hs_offset_z(),
+            radius: default_hs_radius(),
+            zone_radius: default_hs_zone_radius(),
+            light_intensity: default_hs_light_intensity(),
+            reaction_seconds: default_hs_reaction_seconds(),
+            reveal_seconds: default_hs_reveal_seconds(),
+        }
+    }
+}
+
 // ── Load ────────────────────────────────────────────────────────────────
 
 fn load_scene_config(mut commands: Commands) {
@@ -392,6 +459,11 @@ fn setup_scene(
         MeshMaterial3d(workbench_mat),
         Transform::from_xyz(fur.workbench_x, wb_half_y, fur.workbench_z),
     ));
+    // Placement plane at the true top of the workbench.
+    commands.spawn((
+        Surface,
+        Transform::from_xyz(fur.workbench_x, fur.workbench_height, fur.workbench_z),
+    ));
 
     // Shelf surfaces — warm neutral, clearly not wall paint.
     let shelf_w = fur.shelf_width;
@@ -406,10 +478,15 @@ fn setup_scene(
 
     for shelf in &fur.shelves {
         commands.spawn((
-            Surface,
             Mesh3d(meshes.add(Cuboid::new(shelf_w, shelf_h, shelf_d))),
             MeshMaterial3d(shelf_mat.clone()),
             Transform::from_xyz(shelf.x, shelf.y - shelf_half_y, shelf.z),
+        ));
+        // Placement plane at the true top of each shelf.
+        commands.spawn((
+            Surface,
+            Shelf,
+            Transform::from_xyz(shelf.x, shelf.y, shelf.z),
         ));
     }
 
