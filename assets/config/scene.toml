@@ -69,14 +69,6 @@ process_seconds = 2.5
 # Scene tuning — room geometry, lighting, and player spawn.
 # Edit these values instead of changing Rust constants.
 
-[room]
-half_extent_x = 4.0
-half_extent_z = 4.0
-wall_height = 3.0
-wall_thickness = 0.2
-# Player AABB clamp: inner half-extent minus this margin (meters).
-boundary_margin = 0.12
-
 [player]
 eye_height = 1.7
 spawn_x = 0.0
