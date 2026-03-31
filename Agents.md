@@ -7,7 +7,8 @@ Welcome to the **Apeiron Cipher** repository! This document serves as the primar
 - **Name:** Apeiron Cipher
 - **Type:** Procedurally generated open universe sandbox game
 - **Engine:** Bevy (Rust)
-- **Primary Source of Truth:** `docs/bmad/project-context.md` (Agents MUST read this file for critical architectural and workflow rules).
+- **Primary Source of Truth:** `docs/bmad/project-context.md` — coding rules, architecture constraints, tech stack. All agents MUST read this file.
+- **Coding Agent Workflow:** `docs/bmad/agent-workflow.md` — step-by-step story implementation process. Coding agents MUST also read this file.
 
 ## 2. Agent Skills & Capabilities
 
