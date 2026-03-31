@@ -21,8 +21,8 @@ use std::path::Path;
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::scene::Shelf;
 
+use crate::scene::Shelf;
 pub(crate) struct MaterialPlugin;
 
 impl Plugin for MaterialPlugin {
