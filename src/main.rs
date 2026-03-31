@@ -7,6 +7,7 @@
 
 use bevy::prelude::*;
 
+mod fabricator;
 mod heat;
 mod input;
 mod interaction;
@@ -40,5 +41,7 @@ fn main() {
         .add_plugins(interaction::InteractionPlugin)
         // Heat: burner on workbench, thermal exposure → property revelation.
         .add_plugins(heat::HeatPlugin)
+        // Fabricator: input/output slots on the workbench for material combination.
+        .add_plugins(fabricator::FabricatorPlugin)
         .run();
 }
