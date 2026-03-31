@@ -32,10 +32,6 @@ fn enforce_eye_height(translation: &mut Vec3, eye_height: f32) {
     translation.y = eye_height;
 }
 
-pub(crate) fn cursor_is_captured(grab_mode: CursorGrabMode) -> bool {
-    grab_mode != CursorGrabMode::None
-}
-
 pub(crate) struct PlayerPlugin;
 
 impl Plugin for PlayerPlugin {
@@ -252,25 +248,5 @@ mod tests {
     fn room_shell_blocks_south_wall_outside_doorway() {
         let shell = crate::scene::build_room_shell_collision(4.0, 4.0, 0.2);
         assert!(shell.blocks_circle_xz(PositionXZ::new(2.0, -4.1), PLAYER_COLLISION_RADIUS));
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn cursor_is_captured_for_locked_mode() {
-        assert!(cursor_is_captured(CursorGrabMode::Locked));
-    }
-
-    #[test]
-    fn cursor_is_captured_for_confined_mode() {
-        assert!(cursor_is_captured(CursorGrabMode::Confined));
-    }
-
-    #[test]
-    fn cursor_is_not_captured_for_none_mode() {
-        assert!(!cursor_is_captured(CursorGrabMode::None));
     }
 }
