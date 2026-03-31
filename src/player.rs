@@ -23,6 +23,10 @@ use crate::scene::SceneConfig;
 const LOOK_SCALE: f32 = 0.003;
 const PITCH_LIMIT: f32 = std::f32::consts::FRAC_PI_2 * 0.99;
 
+pub(crate) fn cursor_is_captured(grab_mode: CursorGrabMode) -> bool {
+    grab_mode != CursorGrabMode::None
+}
+
 pub(crate) struct PlayerPlugin;
 
 impl Plugin for PlayerPlugin {
@@ -79,7 +83,9 @@ fn cursor_grab(
     let Ok(action_state) = player_query.single() else {
         return;
     };
-    if action_state.just_pressed(&InputAction::CaptureCursor) {
+    if !cursor_is_captured(cursor_options.grab_mode)
+        && action_state.just_pressed(&InputAction::CaptureCursor)
+    {
         cursor_options.visible = false;
         cursor_options.grab_mode = CursorGrabMode::Locked;
     }
@@ -103,7 +109,7 @@ fn player_look(
         (With<PlayerCamera>, Without<Player>),
     >,
 ) {
-    if cursor_options.grab_mode != CursorGrabMode::Locked {
+    if !cursor_is_captured(cursor_options.grab_mode) {
         return;
     }
 
@@ -138,7 +144,7 @@ fn player_move(
     scene: Res<SceneConfig>,
     mut player_query: Query<(&ActionState<InputAction>, &mut Transform), With<Player>>,
 ) {
-    if cursor_options.grab_mode != CursorGrabMode::Locked {
+    if !cursor_is_captured(cursor_options.grab_mode) {
         return;
     }
 
@@ -168,4 +174,24 @@ fn player_move(
     transform.translation.x = transform.translation.x.clamp(-bx, bx);
     transform.translation.z = transform.translation.z.clamp(-bz, bz);
     transform.translation.y = scene.player.eye_height;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cursor_is_captured_for_locked_mode() {
+        assert!(cursor_is_captured(CursorGrabMode::Locked));
+    }
+
+    #[test]
+    fn cursor_is_captured_for_confined_mode() {
+        assert!(cursor_is_captured(CursorGrabMode::Confined));
+    }
+
+    #[test]
+    fn cursor_is_not_captured_for_none_mode() {
+        assert!(!cursor_is_captured(CursorGrabMode::None));
+    }
 }
