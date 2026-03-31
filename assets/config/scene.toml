@@ -69,12 +69,6 @@ process_seconds = 2.5
 # Scene tuning — room geometry, lighting, and player spawn.
 # Edit these values instead of changing Rust constants.
 
-[player]
-eye_height = 1.7
-spawn_x = 0.0
-spawn_z = 2.0
-move_speed = 5.0
-
 [lighting]
 ambient_brightness = 14.0
 directional_illuminance = 1100.0

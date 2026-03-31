@@ -12,6 +12,7 @@ mod fabricator;
 mod heat;
 mod input;
 mod interaction;
+mod journal;
 mod materials;
 mod observation;
 mod player;
@@ -49,5 +50,7 @@ fn main() {
         .add_plugins(combination::CombinationPlugin)
         // Observation: confidence tracking for player knowledge.
         .add_plugins(observation::ObservationPlugin)
+        // Journal: player-owned record of observations and fabrication history.
+        .add_plugins(journal::JournalPlugin)
         .run();
 }
