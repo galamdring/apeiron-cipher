@@ -619,6 +619,7 @@ fn append_prop(
 mod tests {
     use super::*;
     use crate::materials::MaterialProperty;
+    use bevy::app::Update;
 
     #[test]
     fn describe_value_covers_full_range() {
@@ -689,5 +690,59 @@ mod tests {
         let text = build_examine_text(&mat);
         let first_line = text.lines().next().unwrap();
         assert_eq!(first_line, "TestMat");
+    }
+
+    #[test]
+    fn pickup_then_place_returns_item_to_same_surface_spot() {
+        let mut app = App::new();
+        app.add_message::<PickupIntent>()
+            .add_message::<PlaceIntent>()
+            .insert_resource(InteractionTarget::default())
+            .insert_resource(SlotTarget::default())
+            .add_systems(Update, (process_pickup, process_place));
+
+        let camera = app
+            .world_mut()
+            .spawn((PlayerCamera, GlobalTransform::default()))
+            .id();
+
+        let surface_pos = Vec3::ZERO;
+        app.world_mut().spawn((
+            Surface,
+            Transform::from_translation(surface_pos),
+            GlobalTransform::from_translation(surface_pos),
+        ));
+
+        let start_pos = Vec3::new(surface_pos.x, surface_pos.y + PLACE_GAP, surface_pos.z);
+        let item = app
+            .world_mut()
+            .spawn((
+                MaterialObject,
+                Transform::from_translation(start_pos),
+                GlobalTransform::from_translation(start_pos),
+            ))
+            .id();
+
+        app.world_mut().resource_mut::<InteractionTarget>().entity = Some(item);
+        app.world_mut().write_message(PickupIntent);
+        app.update();
+
+        assert!(app.world().entity(item).contains::<HeldItem>());
+        assert_eq!(
+            app.world().get::<ChildOf>(item).map(|p| p.parent()),
+            Some(camera)
+        );
+
+        app.world_mut().write_message(PlaceIntent);
+        app.update();
+
+        assert!(!app.world().entity(item).contains::<HeldItem>());
+        assert!(app.world().get::<ChildOf>(item).is_none());
+
+        let end_pos = app.world().get::<Transform>(item).unwrap().translation;
+        let epsilon = 1e-4;
+        assert!((end_pos.x - start_pos.x).abs() <= epsilon);
+        assert!((end_pos.z - start_pos.z).abs() <= epsilon);
+        assert!((end_pos.y - start_pos.y).abs() <= epsilon);
     }
 }
