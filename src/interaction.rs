@@ -23,10 +23,10 @@ use bevy::prelude::*;
 use crate::fabricator::{ActivateIntent, InputSlot};
 use crate::input::InputAction;
 use crate::journal::RecordEncounter;
-use crate::materials::{GameMaterial, MaterialObject, PropertyVisibility};
+use crate::materials::{GameMaterial, MATERIAL_SURFACE_GAP, MaterialObject, PropertyVisibility};
 use crate::observation::{ConfidenceTracker, describe_thermal_observation};
 use crate::player::{Player, PlayerCamera, cursor_is_captured};
-use crate::scene::Surface;
+use crate::scene::{SceneConfig, Surface};
 
 use leafwing_input_manager::prelude::*;
 
@@ -310,22 +310,23 @@ fn process_pickup(
 }
 
 /// Small gap above the surface so objects sit on top without z-fighting.
-const PLACE_GAP: f32 = 0.1;
 /// Maximum XZ distance from the ray's intersection to a surface center for
 /// placement to be considered valid.
 const PLACE_REACH: f32 = 2.5;
 
+#[allow(clippy::too_many_arguments)]
 fn process_place(
     mut commands: Commands,
     mut reader: MessageReader<PlaceIntent>,
-    held_query: Query<Entity, With<HeldItem>>,
+    scene: Res<SceneConfig>,
+    held_query: Query<(Entity, &GameMaterial), With<HeldItem>>,
     camera_query: Query<&GlobalTransform, With<PlayerCamera>>,
     surfaces: Query<(Entity, &GlobalTransform), With<Surface>>,
     slot_target: Res<SlotTarget>,
     mut slot_query: Query<(&GlobalTransform, &mut InputSlot)>,
 ) {
     for _intent in reader.read() {
-        let Some(held_entity) = held_query.iter().next() else {
+        let Some((held_entity, held_material)) = held_query.iter().next() else {
             continue;
         };
 
@@ -343,7 +344,7 @@ fn process_place(
                 .remove_parent_in_place()
                 .insert(Transform::from_xyz(
                     slot_pos.x,
-                    slot_pos.y + PLACE_GAP,
+                    slot.top_y + held_material.support_height() + MATERIAL_SURFACE_GAP,
                     slot_pos.z,
                 ));
             continue;
@@ -354,28 +355,32 @@ fn process_place(
             continue;
         };
 
-        let Some((_entity, surface_gtf)) = best_surface_for_ray(cam_gtf, &surfaces) else {
-            continue;
-        };
-
         commands
             .entity(held_entity)
             .remove::<HeldItem>()
             .remove_parent_in_place();
 
-        let surface_pos = surface_gtf.translation();
-        let cam_pos = cam_gtf.translation();
-        let cam_fwd = *cam_gtf.forward();
+        let drop_position =
+            if let Some((_entity, surface_gtf)) = best_surface_for_ray(cam_gtf, &surfaces) {
+                let surface_pos = surface_gtf.translation();
+                let cam_pos = cam_gtf.translation();
+                let cam_fwd = *cam_gtf.forward();
 
-        let hit = ray_horizontal_intersection(cam_pos, cam_fwd, surface_pos.y);
-        let place_x = hit.map_or(surface_pos.x, |p| p.x);
-        let place_z = hit.map_or(surface_pos.z, |p| p.z);
+                let hit = ray_horizontal_intersection(cam_pos, cam_fwd, surface_pos.y);
+                let place_x = hit.map_or(surface_pos.x, |p| p.x);
+                let place_z = hit.map_or(surface_pos.z, |p| p.z);
+                Vec3::new(
+                    place_x,
+                    held_material.resting_center_y(surface_pos.y),
+                    place_z,
+                )
+            } else {
+                floor_drop_position(cam_gtf, &scene, held_material)
+            };
 
-        commands.entity(held_entity).insert(Transform::from_xyz(
-            place_x,
-            surface_pos.y + PLACE_GAP,
-            place_z,
-        ));
+        commands
+            .entity(held_entity)
+            .insert(Transform::from_translation(drop_position));
     }
 }
 
@@ -415,6 +420,29 @@ fn best_surface_for_ray<'a>(
         })
         .min_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal))
         .map(|(entity, sgtf, _)| (entity, sgtf))
+}
+
+fn floor_drop_position(
+    cam_gtf: &GlobalTransform,
+    scene: &SceneConfig,
+    material: &GameMaterial,
+) -> Vec3 {
+    let origin = cam_gtf.translation();
+    let forward = *cam_gtf.forward();
+    let forward_xz = Vec3::new(forward.x, 0.0, forward.z).normalize_or_zero();
+    let fallback_forward = if forward_xz == Vec3::ZERO {
+        Vec3::NEG_Z
+    } else {
+        forward_xz
+    };
+    let mut position = origin + fallback_forward * 1.0;
+    let margin = scene.room.boundary_margin;
+    let max_x = scene.room.half_extent_x - margin;
+    let max_z = scene.room.half_extent_z - margin;
+    position.x = position.x.clamp(-max_x, max_x);
+    position.z = position.z.clamp(-max_z, max_z);
+    position.y = material.resting_center_y(0.0);
+    position
 }
 
 // ── Held item tracking ───────────────────────────────────────────────────
@@ -761,5 +789,19 @@ mod tests {
         assert!(should_emit_place(false, true, true));
         assert!(!should_emit_place(false, false, true));
         assert!(!should_emit_place(true, false, false));
+    }
+
+    #[test]
+    fn floor_drop_position_clamps_inside_room_bounds() {
+        let scene = SceneConfig::default();
+        let cam = GlobalTransform::from(Transform::from_xyz(100.0, 1.7, 100.0));
+        let material = test_material();
+        let dropped = floor_drop_position(&cam, &scene, &material);
+        let max_x = scene.room.half_extent_x - scene.room.boundary_margin;
+        let max_z = scene.room.half_extent_z - scene.room.boundary_margin;
+
+        assert!(dropped.x <= max_x);
+        assert!(dropped.z <= max_z);
+        assert!((dropped.y - material.resting_center_y(0.0)).abs() < f32::EPSILON);
     }
 }
