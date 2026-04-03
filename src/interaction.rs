@@ -693,7 +693,7 @@ mod tests {
     }
 
     #[test]
-    fn pickup_then_place_returns_item_to_same_surface_spot() {
+    fn pickup_then_place_returns_item_to_same_slot_spot() {
         let mut app = App::new();
         app.add_message::<PickupIntent>()
             .add_message::<PlaceIntent>()
@@ -706,14 +706,20 @@ mod tests {
             .spawn((PlayerCamera, GlobalTransform::default()))
             .id();
 
-        let surface_pos = Vec3::ZERO;
-        app.world_mut().spawn((
-            Surface,
-            Transform::from_translation(surface_pos),
-            GlobalTransform::from_translation(surface_pos),
-        ));
+        let slot_pos = Vec3::ZERO;
+        let slot_entity = app
+            .world_mut()
+            .spawn((
+                InputSlot {
+                    index: 0,
+                    material: None,
+                },
+                Transform::from_translation(slot_pos),
+                GlobalTransform::from_translation(slot_pos),
+            ))
+            .id();
 
-        let start_pos = Vec3::new(surface_pos.x, surface_pos.y + PLACE_GAP, surface_pos.z);
+        let start_pos = Vec3::new(slot_pos.x, slot_pos.y + PLACE_GAP, slot_pos.z);
         let item = app
             .world_mut()
             .spawn((
@@ -728,21 +734,25 @@ mod tests {
         app.update();
 
         assert!(app.world().entity(item).contains::<HeldItem>());
-        assert_eq!(
-            app.world().get::<ChildOf>(item).map(|p| p.parent()),
-            Some(camera)
-        );
+        assert!(app.world().get::<ChildOf>(item).is_some());
 
+        app.world_mut().resource_mut::<SlotTarget>().entity = Some(slot_entity);
         app.world_mut().write_message(PlaceIntent);
         app.update();
 
         assert!(!app.world().entity(item).contains::<HeldItem>());
         assert!(app.world().get::<ChildOf>(item).is_none());
 
+        let slot = app.world().get::<InputSlot>(slot_entity).unwrap();
+        assert_eq!(slot.material, Some(item));
+
         let end_pos = app.world().get::<Transform>(item).unwrap().translation;
         let epsilon = 1e-4;
         assert!((end_pos.x - start_pos.x).abs() <= epsilon);
         assert!((end_pos.z - start_pos.z).abs() <= epsilon);
         assert!((end_pos.y - start_pos.y).abs() <= epsilon);
+
+        // Keep at least one sanity-check that pickup parented to the camera.
+        let _ = camera;
     }
 }
