@@ -432,14 +432,7 @@ fn floor_drop_position(
     material: &GameMaterial,
 ) -> Vec3 {
     let origin = player_gtf.translation();
-    let forward = *player_gtf.forward();
-    let forward_xz = Vec3::new(forward.x, 0.0, forward.z).normalize_or_zero();
-    let fallback_forward = if forward_xz == Vec3::ZERO {
-        Vec3::NEG_Z
-    } else {
-        forward_xz
-    };
-    let mut position = origin + fallback_forward * 0.6;
+    let mut position = Vec3::new(origin.x, 0.0, origin.z);
     let margin = scene.room.boundary_margin;
     let max_x = scene.room.half_extent_x - margin;
     let max_z = scene.room.half_extent_z - margin;
@@ -807,5 +800,16 @@ mod tests {
         assert!(dropped.x <= max_x);
         assert!(dropped.z <= max_z);
         assert!((dropped.y - material.resting_center_y(0.0)).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn floor_drop_position_uses_player_floor_position() {
+        let scene = SceneConfig::default();
+        let player = GlobalTransform::from(Transform::from_xyz(1.25, 1.7, -0.75));
+        let material = test_material();
+        let dropped = floor_drop_position(&player, &scene, &material);
+
+        assert!((dropped.x - 1.25).abs() < f32::EPSILON);
+        assert!((dropped.z + 0.75).abs() < f32::EPSILON);
     }
 }
