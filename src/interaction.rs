@@ -321,6 +321,7 @@ fn process_place(
     scene: Res<SceneConfig>,
     held_query: Query<(Entity, &GameMaterial), With<HeldItem>>,
     camera_query: Query<&GlobalTransform, With<PlayerCamera>>,
+    player_query: Query<&GlobalTransform, With<Player>>,
     surfaces: Query<(Entity, &GlobalTransform), With<Surface>>,
     slot_target: Res<SlotTarget>,
     mut slot_query: Query<(&GlobalTransform, &mut InputSlot)>,
@@ -354,6 +355,9 @@ fn process_place(
         let Ok(cam_gtf) = camera_query.single() else {
             continue;
         };
+        let Ok(player_gtf) = player_query.single() else {
+            continue;
+        };
 
         commands
             .entity(held_entity)
@@ -375,7 +379,7 @@ fn process_place(
                     place_z,
                 )
             } else {
-                floor_drop_position(cam_gtf, &scene, held_material)
+                floor_drop_position(player_gtf, &scene, held_material)
             };
 
         commands
@@ -423,19 +427,19 @@ fn best_surface_for_ray<'a>(
 }
 
 fn floor_drop_position(
-    cam_gtf: &GlobalTransform,
+    player_gtf: &GlobalTransform,
     scene: &SceneConfig,
     material: &GameMaterial,
 ) -> Vec3 {
-    let origin = cam_gtf.translation();
-    let forward = *cam_gtf.forward();
+    let origin = player_gtf.translation();
+    let forward = *player_gtf.forward();
     let forward_xz = Vec3::new(forward.x, 0.0, forward.z).normalize_or_zero();
     let fallback_forward = if forward_xz == Vec3::ZERO {
         Vec3::NEG_Z
     } else {
         forward_xz
     };
-    let mut position = origin + fallback_forward * 1.0;
+    let mut position = origin + fallback_forward * 0.6;
     let margin = scene.room.boundary_margin;
     let max_x = scene.room.half_extent_x - margin;
     let max_z = scene.room.half_extent_z - margin;
@@ -795,9 +799,9 @@ mod tests {
     #[test]
     fn floor_drop_position_clamps_inside_room_bounds() {
         let scene = SceneConfig::default();
-        let cam = GlobalTransform::from(Transform::from_xyz(100.0, 1.7, 100.0));
+        let player = GlobalTransform::from(Transform::from_xyz(100.0, 1.7, 100.0));
         let material = test_material();
-        let dropped = floor_drop_position(&cam, &scene, &material);
+        let dropped = floor_drop_position(&player, &scene, &material);
         let max_x = scene.room.half_extent_x - scene.room.boundary_margin;
         let max_z = scene.room.half_extent_z - scene.room.boundary_margin;
 
