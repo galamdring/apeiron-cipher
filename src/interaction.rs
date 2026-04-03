@@ -24,6 +24,7 @@ use bevy::window::CursorGrabMode;
 use crate::fabricator::{ActivateIntent, InputSlot};
 use crate::input::InputAction;
 use crate::materials::{GameMaterial, MaterialObject, PropertyVisibility};
+use crate::observation::{ConfidenceLevel, ConfidenceTracker};
 use crate::player::{Player, PlayerCamera};
 use crate::scene::Surface;
 
@@ -504,6 +505,7 @@ fn process_examine(
 fn update_examine_panel(
     state: Res<ExamineState>,
     target: Res<InteractionTarget>,
+    tracker: Res<ConfidenceTracker>,
     held_query: Query<&GameMaterial, With<HeldItem>>,
     material_query: Query<&GameMaterial, With<MaterialObject>>,
     mut panel_query: Query<&mut Visibility, With<ExaminePanel>>,
@@ -533,7 +535,7 @@ fn update_examine_panel(
     };
 
     *vis = Visibility::Visible;
-    text.0 = build_examine_text(mat);
+    text.0 = build_examine_text(mat, &tracker);
 }
 
 // ── Property description ─────────────────────────────────────────────────
@@ -575,17 +577,39 @@ fn describe_density(value: f32) -> &'static str {
     }
 }
 
-fn build_examine_text(mat: &GameMaterial) -> String {
+fn describe_thermal_behavior(value: f32) -> &'static str {
+    if value < 0.25 {
+        "soften quickly under heat"
+    } else if value < 0.5 {
+        "change noticeably under heat"
+    } else if value < 0.75 {
+        "hold together under heat"
+    } else {
+        "barely react to heat"
+    }
+}
+
+fn describe_thermal_observation(value: f32, confidence: ConfidenceLevel) -> String {
+    let behavior = describe_thermal_behavior(value);
+    match confidence {
+        ConfidenceLevel::Tentative => format!("Seemed to {behavior}"),
+        ConfidenceLevel::Observed => {
+            let mut chars = behavior.chars();
+            let Some(first) = chars.next() else {
+                return String::new();
+            };
+            format!("{}{}", first.to_uppercase(), chars.as_str())
+        }
+        ConfidenceLevel::Confident => format!("Reliably {behavior}"),
+    }
+}
+
+fn build_examine_text(mat: &GameMaterial, tracker: &ConfidenceTracker) -> String {
     let mut lines = vec![mat.name.clone()];
     lines.push(String::new());
 
     append_prop(&mut lines, "Weight", &mat.density, describe_density);
-    append_prop(
-        &mut lines,
-        "Heat resistance",
-        &mat.thermal_resistance,
-        describe_value,
-    );
+    append_thermal_prop(&mut lines, mat, tracker);
     append_prop(&mut lines, "Reactivity", &mat.reactivity, describe_value);
     append_prop(
         &mut lines,
@@ -610,6 +634,18 @@ fn append_prop(
         lines.push(format!("{label}: {}", describer(prop.value)));
     } else {
         lines.push(format!("{label}: ???"));
+    }
+}
+
+fn append_thermal_prop(lines: &mut Vec<String>, mat: &GameMaterial, tracker: &ConfidenceTracker) {
+    match mat.thermal_resistance.visibility {
+        PropertyVisibility::Hidden => lines.push("Heat response: ???".to_string()),
+        PropertyVisibility::Observable | PropertyVisibility::Revealed => {
+            let confidence = tracker.level(mat.seed, "thermal_resistance");
+            let description =
+                describe_thermal_observation(mat.thermal_resistance.value, confidence);
+            lines.push(format!("Heat response: {description}"));
+        }
     }
 }
 
@@ -673,12 +709,13 @@ mod tests {
     #[test]
     fn examine_text_shows_observable_and_revealed_hides_hidden() {
         let mat = test_material();
-        let text = build_examine_text(&mat);
+        let tracker = ConfidenceTracker::default();
+        let text = build_examine_text(&mat, &tracker);
 
         assert!(text.contains("TestMat"));
         assert!(text.contains("Weight: Very heavy"));
         assert!(text.contains("Conductivity: Very high"));
-        assert!(text.contains("Heat resistance: ???"));
+        assert!(text.contains("Heat response: ???"));
         assert!(text.contains("Reactivity: ???"));
         assert!(text.contains("Toxicity: ???"));
     }
@@ -686,8 +723,29 @@ mod tests {
     #[test]
     fn examine_text_name_is_first_line() {
         let mat = test_material();
-        let text = build_examine_text(&mat);
+        let tracker = ConfidenceTracker::default();
+        let text = build_examine_text(&mat, &tracker);
         let first_line = text.lines().next().unwrap();
         assert_eq!(first_line, "TestMat");
+    }
+
+    #[test]
+    fn examine_text_uses_confidence_language_for_revealed_heat_response() {
+        let mut mat = test_material();
+        mat.thermal_resistance.visibility = PropertyVisibility::Revealed;
+
+        let mut tracker = ConfidenceTracker::default();
+        let tentative = build_examine_text(&mat, &tracker);
+        assert!(tentative.contains("Heat response: Seemed to hold together under heat"));
+
+        tracker.record(mat.seed, "thermal_resistance");
+        tracker.record(mat.seed, "thermal_resistance");
+        let observed = build_examine_text(&mat, &tracker);
+        assert!(observed.contains("Heat response: Hold together under heat"));
+
+        tracker.record(mat.seed, "thermal_resistance");
+        tracker.record(mat.seed, "thermal_resistance");
+        let confident = build_examine_text(&mat, &tracker);
+        assert!(confident.contains("Heat response: Reliably hold together under heat"));
     }
 }
