@@ -322,7 +322,8 @@ fn process_place(
     held_query: Query<(Entity, &GameMaterial), With<HeldItem>>,
     camera_query: Query<&GlobalTransform, With<PlayerCamera>>,
     player_query: Query<&GlobalTransform, With<Player>>,
-    surfaces: Query<(Entity, &GlobalTransform), With<Surface>>,
+    surfaces: Query<(Entity, &GlobalTransform, &Surface)>,
+    material_positions: Query<(Entity, &GlobalTransform, &GameMaterial), With<MaterialObject>>,
     slot_target: Res<SlotTarget>,
     mut slot_query: Query<(&GlobalTransform, &mut InputSlot)>,
 ) {
@@ -364,23 +365,39 @@ fn process_place(
             .remove::<HeldItem>()
             .remove_parent_in_place();
 
-        let drop_position =
-            if let Some((_entity, surface_gtf)) = best_surface_for_ray(cam_gtf, &surfaces) {
-                let surface_pos = surface_gtf.translation();
-                let cam_pos = cam_gtf.translation();
-                let cam_fwd = *cam_gtf.forward();
+        let drop_position = if let Some((_entity, surface_gtf, surface)) =
+            best_surface_for_ray(cam_gtf, &surfaces)
+        {
+            let surface_pos = surface_gtf.translation();
+            let cam_pos = cam_gtf.translation();
+            let cam_fwd = *cam_gtf.forward();
 
-                let hit = ray_horizontal_intersection(cam_pos, cam_fwd, surface_pos.y);
-                let place_x = hit.map_or(surface_pos.x, |p| p.x);
-                let place_z = hit.map_or(surface_pos.z, |p| p.z);
-                Vec3::new(
-                    place_x,
-                    held_material.resting_center_y(surface_pos.y),
-                    place_z,
+            let hit = ray_horizontal_intersection(cam_pos, cam_fwd, surface_pos.y);
+            let place_x = hit.map_or(surface_pos.x, |p| {
+                p.x.clamp(
+                    surface_pos.x - surface.half_extent_x,
+                    surface_pos.x + surface.half_extent_x,
                 )
+            });
+            let place_z = hit.map_or(surface_pos.z, |p| {
+                p.z.clamp(
+                    surface_pos.z - surface.half_extent_z,
+                    surface_pos.z + surface.half_extent_z,
+                )
+            });
+            let candidate = Vec3::new(
+                place_x,
+                held_material.resting_center_y(surface_pos.y),
+                place_z,
+            );
+            if can_place_material(held_entity, held_material, candidate, &material_positions) {
+                candidate
             } else {
                 floor_drop_position(player_gtf, &scene, held_material)
-            };
+            }
+        } else {
+            floor_drop_position(player_gtf, &scene, held_material)
+        };
 
         commands
             .entity(held_entity)
@@ -406,24 +423,53 @@ fn ray_horizontal_intersection(origin: Vec3, direction: Vec3, plane_y: f32) -> O
 /// center is closest to the intersection point.
 fn best_surface_for_ray<'a>(
     cam_gtf: &GlobalTransform,
-    surfaces: &'a Query<(Entity, &GlobalTransform), With<Surface>>,
-) -> Option<(Entity, &'a GlobalTransform)> {
+    surfaces: &'a Query<(Entity, &GlobalTransform, &Surface)>,
+) -> Option<(Entity, &'a GlobalTransform, &'a Surface)> {
     let origin = cam_gtf.translation();
     let direction = *cam_gtf.forward();
 
     surfaces
         .iter()
-        .filter_map(|(entity, sgtf)| {
+        .filter_map(|(entity, sgtf, surface)| {
             let s_pos = sgtf.translation();
             let hit = ray_horizontal_intersection(origin, direction, s_pos.y)?;
-            let xz_dist = Vec2::new(hit.x - s_pos.x, hit.z - s_pos.z).length();
+            let dx = hit.x - s_pos.x;
+            let dz = hit.z - s_pos.z;
+            if dx.abs() > surface.half_extent_x || dz.abs() > surface.half_extent_z {
+                return None;
+            }
+            let xz_dist = Vec2::new(dx, dz).length();
             if xz_dist > PLACE_REACH {
                 return None;
             }
-            Some((entity, sgtf, xz_dist))
+            Some((entity, sgtf, surface, xz_dist))
         })
-        .min_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal))
-        .map(|(entity, sgtf, _)| (entity, sgtf))
+        .min_by(|a, b| a.3.partial_cmp(&b.3).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|(entity, sgtf, surface, _)| (entity, sgtf, surface))
+}
+
+fn can_place_material(
+    held_entity: Entity,
+    held_material: &GameMaterial,
+    candidate: Vec3,
+    material_positions: &Query<(Entity, &GlobalTransform, &GameMaterial), With<MaterialObject>>,
+) -> bool {
+    let held_radius = held_material.footprint_radius();
+    material_positions.iter().all(|(entity, gtf, material)| {
+        if entity == held_entity {
+            return true;
+        }
+
+        let other = gtf.translation();
+        let same_level = (other.y - candidate.y).abs() < 0.25;
+        if !same_level {
+            return true;
+        }
+
+        let required_gap = held_radius + material.footprint_radius();
+        let xz_dist = Vec2::new(other.x - candidate.x, other.z - candidate.z).length();
+        xz_dist >= required_gap
+    })
 }
 
 fn floor_drop_position(

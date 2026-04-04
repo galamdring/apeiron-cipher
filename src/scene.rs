@@ -30,7 +30,10 @@ pub(crate) struct Workbench;
 /// can be set down. Spawned as its own entity at the true surface Y so
 /// the placement system never needs offset math.
 #[derive(Component)]
-pub(crate) struct Surface;
+pub(crate) struct Surface {
+    pub half_extent_x: f32,
+    pub half_extent_z: f32,
+}
 
 /// Distinguishes storage shelves from the experiment workbench so initial
 /// material spawning only targets shelves.
@@ -531,7 +534,10 @@ fn setup_scene(
     ));
     // Placement plane at the true top of the workbench.
     commands.spawn((
-        Surface,
+        Surface {
+            half_extent_x: fur.workbench_width * 0.5,
+            half_extent_z: fur.workbench_depth * 0.5,
+        },
         Transform::from_xyz(fur.workbench_x, fur.workbench_height, fur.workbench_z),
     ));
 
@@ -554,7 +560,10 @@ fn setup_scene(
         ));
         // Placement plane at the true top of each shelf.
         commands.spawn((
-            Surface,
+            Surface {
+                half_extent_x: shelf_w * 0.5,
+                half_extent_z: shelf_d * 0.5,
+            },
             Shelf,
             Transform::from_xyz(shelf.x, shelf.y, shelf.z),
         ));
