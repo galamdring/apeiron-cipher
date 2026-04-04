@@ -116,6 +116,17 @@ impl GameMaterial {
     pub(crate) fn resting_center_y(&self, surface_y: f32) -> f32 {
         surface_y + self.support_height() + MATERIAL_SURFACE_GAP
     }
+
+    pub(crate) fn footprint_radius(&self) -> f32 {
+        let density = self.density.value;
+        if density < 0.3 {
+            0.12
+        } else if density < 0.7 {
+            0.10
+        } else {
+            0.13
+        }
+    }
 }
 
 // ── Catalog resource ─────────────────────────────────────────────────────
@@ -289,6 +300,20 @@ mod tests {
 
         let heavy = sample_material();
         assert!((heavy.support_height() - 0.09).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn footprint_radius_matches_density_mesh_shape() {
+        let mut light = sample_material();
+        light.density.value = 0.2;
+        assert!((light.footprint_radius() - 0.12).abs() < f32::EPSILON);
+
+        let mut medium = sample_material();
+        medium.density.value = 0.5;
+        assert!((medium.footprint_radius() - 0.10).abs() < f32::EPSILON);
+
+        let heavy = sample_material();
+        assert!((heavy.footprint_radius() - 0.13).abs() < f32::EPSILON);
     }
 
     #[test]
