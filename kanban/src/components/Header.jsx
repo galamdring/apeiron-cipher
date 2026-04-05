@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import { useIssueStore } from "../store/issues";
+import { useAuthStore } from "../store/auth";
 import { fetchAllIssues } from "../api/github";
 
 const s = {
@@ -32,16 +33,38 @@ const s = {
     fontWeight: 600,
     fontSize: 14,
   },
+  signOutBtn: {
+    background: "none",
+    color: "#8b949e",
+    border: "1px solid #30363d",
+    borderRadius: 6,
+    padding: "6px 14px",
+    cursor: "pointer",
+    fontWeight: 600,
+    fontSize: 13,
+    marginLeft: "auto",
+  },
   error: { color: "#f85149", fontSize: 13 },
   info: { color: "#8b949e", fontSize: 13 },
+  avatar: {
+    width: 28,
+    height: 28,
+    borderRadius: "50%",
+    border: "1px solid #30363d",
+  },
+  userInfo: {
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+    marginLeft: "auto",
+  },
+  userName: { fontSize: 13, color: "#e6edf3" },
 };
 
 export default function Header({ repo, onRepoChange }) {
   const [repoInput, setRepoInput] = useState(repo || "");
-  const [tokenInput, setTokenInput] = useState(
-    () => localStorage.getItem("gh_kanban_token") || ""
-  );
   const { setIssues, setLoading, setError, loading, error } = useIssueStore();
+  const { token, user, clearAuth } = useAuthStore();
 
   async function handleLoad() {
     const trimmed = repoInput.trim();
@@ -53,9 +76,9 @@ export default function Header({ repo, onRepoChange }) {
     setError(null);
     setLoading(true);
     try {
-      const issues = await fetchAllIssues(owner, repoName, tokenInput.trim());
+      const issues = await fetchAllIssues(owner, repoName, token);
       setIssues(issues);
-      onRepoChange(trimmed, tokenInput.trim());
+      onRepoChange(trimmed);
     } catch (e) {
       setError(e?.response?.data?.message || e.message || "Failed to load");
     } finally {
@@ -73,14 +96,6 @@ export default function Header({ repo, onRepoChange }) {
         onChange={(e) => setRepoInput(e.target.value)}
         onKeyDown={(e) => e.key === "Enter" && handleLoad()}
       />
-      <input
-        style={{ ...s.input, width: 240 }}
-        placeholder="GitHub token (for private repos / writes)"
-        type="password"
-        value={tokenInput}
-        onChange={(e) => setTokenInput(e.target.value)}
-        onKeyDown={(e) => e.key === "Enter" && handleLoad()}
-      />
       <button style={s.btn} onClick={handleLoad} disabled={loading}>
         {loading ? "Loading…" : "Load"}
       </button>
@@ -88,6 +103,15 @@ export default function Header({ repo, onRepoChange }) {
       {!error && !loading && repo && (
         <span style={s.info}>Loaded: {repo}</span>
       )}
+      <div style={s.userInfo}>
+        {user?.avatar_url && (
+          <img src={user.avatar_url} alt={user.login} style={s.avatar} />
+        )}
+        <span style={s.userName}>{user?.login}</span>
+        <button style={s.signOutBtn} onClick={clearAuth}>
+          Sign out
+        </button>
+      </div>
     </header>
   );
 }

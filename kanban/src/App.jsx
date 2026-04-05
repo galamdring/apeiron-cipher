@@ -3,7 +3,9 @@ import Header from "./components/Header";
 import Sidebar from "./components/Sidebar";
 import Board from "./components/Board";
 import IssueDetail from "./components/IssueDetail";
+import LoginScreen from "./components/LoginScreen";
 import { useIssueStore } from "./store/issues";
+import { useAuthStore } from "./store/auth";
 
 const styles = {
   app: {
@@ -20,19 +22,21 @@ const styles = {
 };
 
 export default function App() {
+  const { token, user } = useAuthStore();
+  const selectedIssue = useIssueStore((s) => s.selectedIssue);
+
   const [repo, setRepo] = useState(() => {
     return localStorage.getItem("gh_kanban_repo") || "";
   });
-  const [token, setToken] = useState(() => {
-    return localStorage.getItem("gh_kanban_token") || "";
-  });
-  const selectedIssue = useIssueStore((s) => s.selectedIssue);
 
-  function handleRepoChange(newRepo, newToken) {
+  // If not logged in, show the login screen
+  if (!token || !user) {
+    return <LoginScreen />;
+  }
+
+  function handleRepoChange(newRepo) {
     setRepo(newRepo);
-    setToken(newToken);
     localStorage.setItem("gh_kanban_repo", newRepo);
-    localStorage.setItem("gh_kanban_token", newToken);
   }
 
   return (
