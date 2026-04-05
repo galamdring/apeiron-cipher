@@ -3,6 +3,8 @@ import {
   useIssueStore,
   TYPES,
   COLUMNS,
+  ALL_COLUMN_LABELS,
+  COLUMN_LABELS,
   issueType,
   issueColumn,
 } from "../store/issues";
@@ -125,6 +127,7 @@ const s = {
     fontSize: 13,
     color: "#e6edf3",
     lineHeight: 1.5,
+    marginBottom: 10,
   },
   commentMeta: { fontSize: 11, color: "#8b949e", marginBottom: 4 },
   commentInput: {
@@ -189,18 +192,19 @@ export default function IssueDetail({ repo, token }) {
     setSaving(true);
     setSaveError(null);
     try {
+      // Strip type and all column labels, then re-add chosen ones
       let labels = (issue.labels || [])
         .map((l) => l.name || l)
         .filter(
           (l) =>
             !TYPES.includes(l.toLowerCase()) &&
-            !["in progress", "in review"].includes(l.toLowerCase())
+            !ALL_COLUMN_LABELS.includes(l.toLowerCase())
         );
       labels.push(type);
-      if (column === "In Progress") labels.push("in progress");
-      if (column === "In Review") labels.push("in review");
+      const colLabel = COLUMN_LABELS[column];
+      if (colLabel) labels.push(colLabel);
 
-      const newState = column === "Done" ? "closed" : "open";
+      const newState = column === "Complete" ? "closed" : "open";
 
       const updated = await updateIssue(
         owner,
@@ -283,14 +287,12 @@ export default function IssueDetail({ repo, token }) {
             </button>
 
             <div>
-              <div style={s.fieldLabel}>
-                Comments ({comments.length})
-              </div>
+              <div style={s.fieldLabel}>Comments ({comments.length})</div>
               {commentsLoading && (
                 <div style={{ color: "#8b949e", fontSize: 13 }}>Loading…</div>
               )}
               {comments.map((c) => (
-                <div key={c.id} style={{ marginBottom: 10 }}>
+                <div key={c.id}>
                   <div style={s.commentMeta}>
                     {c.user.login} ·{" "}
                     {new Date(c.created_at).toLocaleString()}

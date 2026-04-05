@@ -7,7 +7,7 @@ import {
   DragOverlay,
   closestCenter,
 } from "@dnd-kit/core";
-import { useIssueStore, COLUMNS } from "../store/issues";
+import { useIssueStore, COLUMNS, ALL_COLUMN_LABELS, COLUMN_LABELS } from "../store/issues";
 import { setIssueState, setIssueLabels } from "../api/github";
 import Column from "./Column";
 import IssueCard from "./IssueCard";
@@ -63,19 +63,20 @@ export default function Board({ repo, token }) {
     const currentColumn = useIssueStore.getState().getColumn(issue);
     if (currentColumn === targetColumn) return;
 
+    // Optimistic update
     moveIssue(issueNumber, targetColumn);
 
     if (repo && repo.includes("/")) {
       const [owner, repoName] = repo.split("/");
       try {
-        let labels = (issue.labels || []).map((l) => l.name || l);
-        labels = labels.filter(
-          (l) => !["in progress", "in review"].includes(l.toLowerCase())
-        );
-        if (targetColumn === "In Progress") labels.push("in progress");
-        if (targetColumn === "In Review") labels.push("in review");
+        let labels = (issue.labels || [])
+          .map((l) => l.name || l)
+          .filter((l) => !ALL_COLUMN_LABELS.includes(l.toLowerCase()));
 
-        const newState = targetColumn === "Done" ? "closed" : "open";
+        const colLabel = COLUMN_LABELS[targetColumn];
+        if (colLabel) labels.push(colLabel);
+
+        const newState = targetColumn === "Complete" ? "closed" : "open";
 
         const updated = await setIssueState(
           owner,

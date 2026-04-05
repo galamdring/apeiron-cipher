@@ -4,10 +4,13 @@ import { SortableContext, verticalListSortingStrategy } from "@dnd-kit/sortable"
 import IssueCard from "./IssueCard";
 
 const COLUMN_COLOR = {
+  Triage: "#e3b341",
   Backlog: "#8b949e",
-  "In Progress": "#58a6ff",
+  Ready: "#58a6ff",
+  "In Progress": "#1f6feb",
   "In Review": "#a371f7",
-  Done: "#3fb950",
+  "Sign Off": "#db6d28",
+  Complete: "#3fb950",
 };
 
 const s = {
@@ -15,20 +18,21 @@ const s = {
     background: isOver ? "#1c2128" : "#161b22",
     border: `1px solid ${isOver ? "#388bfd" : "#30363d"}`,
     borderRadius: 10,
-    minWidth: 260,
-    width: 280,
+    minWidth: 220,
+    width: 240,
     maxHeight: "100%",
     display: "flex",
     flexDirection: "column",
     transition: "background .15s, border .15s",
+    flexShrink: 0,
   }),
-  header: () => ({
+  header: {
     display: "flex",
     alignItems: "center",
     gap: 8,
     padding: "12px 14px 10px",
     borderBottom: "1px solid #30363d",
-  }),
+  },
   dot: (col) => ({
     width: 10,
     height: 10,
@@ -59,7 +63,7 @@ export default function Column({ title, issues }) {
 
   return (
     <div style={s.column(isOver)}>
-      <div style={s.header(title)}>
+      <div style={s.header}>
         <span style={s.dot(title)} />
         <span style={s.title}>{title}</span>
         <span style={s.count}>{issues.length}</span>
