@@ -33,13 +33,18 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Get short SHA
+        if: github.event_name == 'pull_request'
+        id: sha
+        run: echo "short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+
       - name: Build and push (PR)
         if: github.event_name == 'pull_request'
         uses: docker/build-push-action@v5
         with:
           context: ./kanban
           push: true
-          tags: ghcr.io/${{ github.repository_owner }}/apeiron-kanban:${{ github.sha }}
+          tags: ghcr.io/${{ github.repository_owner }}/apeiron-kanban:${{ steps.sha.outputs.short }}
 
       - name: Run semantic-release
         if: github.event_name == 'push'
