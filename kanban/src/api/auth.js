@@ -1,13 +1,17 @@
 import axios from "axios";
 
 const CLIENT_ID = import.meta.env.VITE_GITHUB_CLIENT_ID;
-const CALLBACK_URL = "https://apeiron-orchestrator.lukemckechnie.com/kanban/auth/callback";
+
+// Points at the n8n webhook that handles the OAuth code exchange.
+// When the orchestrator is ready, change this to:
+// https://apeiron-orchestrator.lukemckechnie.com/kanban/auth/callback
+const CALLBACK_URL = import.meta.env.VITE_AUTH_CALLBACK_URL;
 
 /**
  * Redirect the browser to GitHub's OAuth authorisation page.
  * GitHub will redirect back to CALLBACK_URL?code=... after the user approves.
- * The orchestrator backend exchanges the code for a token and redirects to
- * the frontend with #token=... in the hash.
+ * The callback handler (n8n or orchestrator) exchanges the code for a token
+ * and redirects to the frontend with #token=... in the hash.
  */
 export function redirectToGitHubLogin() {
   const params = new URLSearchParams({
