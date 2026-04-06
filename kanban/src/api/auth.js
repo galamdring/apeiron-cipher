@@ -2,10 +2,12 @@ import axios from "axios";
 
 const CLIENT_ID = import.meta.env.VITE_GITHUB_CLIENT_ID;
 
-// Points at the n8n webhook that handles the OAuth code exchange.
-// When the orchestrator is ready, change this to:
-// https://apeiron-orchestrator.lukemckechnie.com/kanban/auth/callback
-const CALLBACK_URL = import.meta.env.VITE_AUTH_CALLBACK_URL;
+// OAuth callback URL — currently handled by an n8n workflow.
+// When the orchestrator is stood up behind the tunnel this URL will be handled
+// by the orchestrator instead, with no frontend changes needed.
+const CALLBACK_URL =
+  import.meta.env.VITE_AUTH_CALLBACK_URL ||
+  "https://apeiron-orchestrator.lukemckechnie.com/webhook/kanban/auth/callback";
 
 /**
  * Redirect the browser to GitHub's OAuth authorisation page.
