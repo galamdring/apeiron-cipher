@@ -31,7 +31,7 @@ const styles = {
   },
 };
 
-export default function App() {
+export default function App({ config }) {
   const { token, user, setAuth } = useAuthStore();
   const selectedIssue = useIssueStore((s) => s.selectedIssue);
   const [bootstrapping, setBootstrapping] = useState(true);
@@ -77,7 +77,7 @@ export default function App() {
   }
 
   if (!token || !user) {
-    return <LoginScreen error={hashError} />;
+    return <LoginScreen error={hashError} config={config} />;
   }
 
   function handleRepoChange(newRepo) {

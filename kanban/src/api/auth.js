@@ -1,33 +1,14 @@
 import axios from "axios";
 
-const CLIENT_ID = import.meta.env.VITE_GITHUB_CLIENT_ID;
-
-// n8n enforces a /webhook/ prefix on all webhook nodes.
-// When the orchestrator is stood up behind the tunnel this URL will change to:
-// https://apeiron-orchestrator.lukemckechnie.com/kanban/auth/callback
-const CALLBACK_URL =
-  import.meta.env.VITE_AUTH_CALLBACK_URL ||
-  "https://apeiron-orchestrator.lukemckechnie.com/webhook/kanban/auth/callback";
-
-/**
- * Redirect the browser to GitHub's OAuth authorisation page.
- * GitHub will redirect back to CALLBACK_URL?code=... after the user approves.
- * The callback handler (n8n or orchestrator) exchanges the code for a token
- * and redirects to the frontend with #token=... in the hash.
- */
-export function redirectToGitHubLogin() {
+export function redirectToGitHubLogin(config) {
   const params = new URLSearchParams({
-    client_id: CLIENT_ID,
-    redirect_uri: CALLBACK_URL,
+    client_id: config.githubClientId,
+    redirect_uri: config.authCallbackUrl,
     scope: "repo",
   });
   window.location.href = `https://github.com/login/oauth/authorize?${params}`;
 }
 
-/**
- * After GitHub redirects back to the frontend with #token=... or #error=...,
- * parse the hash and return { token, error }.
- */
 export function parseTokenFromHash() {
   const hash = window.location.hash.slice(1);
   const params = new URLSearchParams(hash);
@@ -37,9 +18,6 @@ export function parseTokenFromHash() {
   };
 }
 
-/**
- * Fetch the authenticated user's profile from the GitHub API.
- */
 export async function fetchAuthenticatedUser(token) {
   const { data } = await axios.get("https://api.github.com/user", {
     headers: {

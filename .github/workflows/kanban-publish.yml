@@ -1,0 +1,65 @@
+name: Publish Kanban Image
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "kanban/**"
+  pull_request:
+    paths:
+      - "kanban/**"
+
+permissions:
+  contents: write
+  packages: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  release:
+    name: Release and publish
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push (PR)
+        if: github.event_name == 'pull_request'
+        uses: docker/build-push-action@v5
+        with:
+          context: ./kanban
+          push: true
+          tags: ghcr.io/${{ github.repository_owner }}/apeiron-kanban:${{ github.sha }}
+
+      - name: Run semantic-release
+        if: github.event_name == 'push'
+        id: semrel
+        uses: cycjimmy/semantic-release-action@v4
+        with:
+          working_directory: ./kanban
+          extra_plugins: |
+            @semantic-release/commit-analyzer
+            @semantic-release/release-notes-generator
+            @semantic-release/github
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push (main)
+        if: github.event_name == 'push' && steps.semrel.outputs.new_release_published == 'true'
+        uses: docker/build-push-action@v5
+        with:
+          context: ./kanban
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/apeiron-kanban:${{ steps.semrel.outputs.new_release_version }}
+            ghcr.io/${{ github.repository_owner }}/apeiron-kanban:latest

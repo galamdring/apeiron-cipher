@@ -49,7 +49,7 @@ const s = {
   },
 };
 
-export default function LoginScreen({ error }) {
+export default function LoginScreen({ error, config }) {
   return (
     <div style={s.wrap}>
       <div style={s.card}>
@@ -60,7 +60,7 @@ export default function LoginScreen({ error }) {
         {error && (
           <div style={s.err}>Login failed: {decodeURIComponent(error)}</div>
         )}
-        <button style={s.btn} onClick={redirectToGitHubLogin}>
+        <button style={s.btn} onClick={() => redirectToGitHubLogin(config)}>
           Sign in with GitHub
         </button>
       </div>
