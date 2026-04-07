@@ -704,6 +704,26 @@ fn setup_scene(
         Transform::from_xyz(0.0, -0.01, exterior_ground_center_z),
     ));
 
+    let exterior_ground_size_x = hx * 6.0;
+    let exterior_ground_size_z = hz * 8.0;
+    let exterior_ground_center_z = -hz - exterior_ground_size_z * 0.5;
+    let exterior_ground_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.26, 0.3, 0.22),
+        perceptual_roughness: 0.98,
+        ..default()
+    });
+    commands.spawn((
+        Mesh3d(
+            meshes.add(
+                Plane3d::default()
+                    .mesh()
+                    .size(exterior_ground_size_x, exterior_ground_size_z),
+            ),
+        ),
+        MeshMaterial3d(exterior_ground_mat),
+        Transform::from_xyz(0.0, -0.01, exterior_ground_center_z),
+    ));
+
     // Workbench — lighter, lower roughness than walls (future fabricator site).
     let fur = &cfg.furniture;
     let wb_half_y = fur.workbench_height * 0.5;
