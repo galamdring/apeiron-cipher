@@ -4,3 +4,16 @@ Thumbs.db
 *.swp
 *.swo
 infra/n8n/.env
+
+# Orchestrator local artifacts
+infra/orchestrator/server
+infra/orchestrator/orchestrator
+infra/orchestrator/worker
+infra/orchestrator/coverage-*.out
+infra/orchestrator/coverage-*.txt
+infra/orchestrator/gotest-*.log
+infra/orchestrator/gotest-*.exit
+infra/orchestrator/smoke-*.log
+infra/orchestrator/smoke-*.exit
+
+coverage*.out
