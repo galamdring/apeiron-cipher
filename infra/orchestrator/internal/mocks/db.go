@@ -15,6 +15,7 @@ type MockDBClient struct {
 	InsertEventFunc           func(ctx context.Context, deliveryID, eventType, action string, payload json.RawMessage) (int64, error)
 	PendingJobsByWorkflowFunc func(ctx context.Context, workflowType string) ([]db.Job, error)
 	NextPendingJobFunc        func(ctx context.Context) (*db.Job, error)
+	ActiveJobCountFunc        func(ctx context.Context) (int, error)
 	HasAnyRunningJobsFunc     func(ctx context.Context) (bool, error)
 	HasRunningJobsFunc        func(ctx context.Context, workflowType string) (bool, error)
 	GetEventPayloadFunc       func(ctx context.Context, eventID int64) (json.RawMessage, error)
@@ -63,6 +64,12 @@ func (m *MockDBClient) NextPendingJob(ctx context.Context) (*db.Job, error) {
 		return m.NextPendingJobFunc(ctx)
 	}
 	return nil, errors.New("NextPendingJobFunc not implemented")
+}
+func (m *MockDBClient) ActiveJobCount(ctx context.Context) (int, error) {
+	if m.ActiveJobCountFunc != nil {
+		return m.ActiveJobCountFunc(ctx)
+	}
+	return 0, errors.New("ActiveJobCountFunc not implemented")
 }
 func (m *MockDBClient) HasAnyRunningJobs(ctx context.Context) (bool, error) {
 	if m.HasAnyRunningJobsFunc != nil {

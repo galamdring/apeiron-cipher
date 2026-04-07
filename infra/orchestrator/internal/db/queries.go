@@ -33,21 +33,16 @@ type Job struct {
 	CreatedAt         time.Time
 }
 
-// InsertEvent stores a raw webhook event. Returns the new event ID.
-// If the delivery_id already exists, it returns 0 and no error (idempotent).
+// InsertEvent stores a raw webhook receipt and returns the new event ID.
+// delivery_id is retained as audit metadata and is not treated as an idempotency key.
 func (d *DBClientImpl) InsertEvent(ctx context.Context, deliveryID, eventType, action string, payload json.RawMessage) (int64, error) {
 	var id int64
 	err := d.conn.QueryRowContext(ctx,
 		`INSERT INTO events (delivery_id, event_type, action, payload)
 		 VALUES ($1, $2, $3, $4)
-		 ON CONFLICT (delivery_id) DO NOTHING
 		 RETURNING id`,
 		deliveryID, eventType, action, payload,
 	).Scan(&id)
-
-	if err == sql.ErrNoRows {
-		return 0, nil // duplicate delivery
-	}
 	if err != nil {
 		return 0, fmt.Errorf("inserting event: %w", err)
 	}
@@ -201,6 +196,19 @@ func (d *DBClientImpl) HasAnyRunningJobs(ctx context.Context) (bool, error) {
 		return false, fmt.Errorf("checking running jobs: %w", err)
 	}
 	return count > 0, nil
+}
+
+// ActiveJobCount returns the number of jobs currently in launching/running states.
+func (d *DBClientImpl) ActiveJobCount(ctx context.Context) (int, error) {
+	var count int
+	err := d.conn.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM jobs WHERE status IN ('launching', 'running')`,
+	).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("counting active jobs: %w", err)
+	}
+
+	return count, nil
 }
 
 // NextPendingJob returns the oldest pending job regardless of workflow type.

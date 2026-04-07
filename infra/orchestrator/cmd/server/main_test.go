@@ -173,10 +173,10 @@ func TestWebhookHandler_Success_NoAction(t *testing.T) {
 	}
 }
 
-func TestWebhookHandler_Duplicate_ReturnsOK(t *testing.T) {
+func TestWebhookHandler_RepeatedReceiptStillReturnsOK(t *testing.T) {
 	mock := &mocks.MockDBClient{
 		InsertEventFunc: func(_ context.Context, _, _, _ string, _ json.RawMessage) (int64, error) {
-			return 0, nil // 0 = duplicate
+			return 99, nil
 		},
 	}
 	handler := webhookHandler(mock, "")
@@ -187,7 +187,7 @@ func TestWebhookHandler_Duplicate_ReturnsOK(t *testing.T) {
 	handler(rr, req)
 
 	if rr.Code != http.StatusOK {
-		t.Fatalf("expected 200 for duplicate, got %d", rr.Code)
+		t.Fatalf("expected 200 for repeated receipt, got %d", rr.Code)
 	}
 }
 
@@ -255,4 +255,3 @@ func TestEnvOrDefault(t *testing.T) {
 		t.Errorf("expected default, got %q", got)
 	}
 }
-

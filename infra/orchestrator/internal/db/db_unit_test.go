@@ -115,16 +115,17 @@ func TestInsertEvent(t *testing.T) {
 		requireMockExpectations(t, mock)
 	})
 
-	t.Run("duplicate returns zero", func(t *testing.T) {
+	t.Run("stores repeated receipt as new row", func(t *testing.T) {
 		c, mock, cleanup := newMockClient(t)
 		defer cleanup()
 
 		payload := json.RawMessage(`{"ok":true}`)
-		mock.ExpectQuery("INSERT INTO events").WithArgs("d1", "issues", "opened", payload).WillReturnError(sql.ErrNoRows)
+		rows := sqlmock.NewRows([]string{"id"}).AddRow(int64(13))
+		mock.ExpectQuery("INSERT INTO events").WithArgs("d1", "issues", "opened", payload).WillReturnRows(rows)
 
 		id, err := c.InsertEvent(context.Background(), "d1", "issues", "opened", payload)
-		if err != nil || id != 0 {
-			t.Fatalf("expected duplicate behavior, id=%d err=%v", id, err)
+		if err != nil || id != 13 {
+			t.Fatalf("expected repeated receipt to insert, id=%d err=%v", id, err)
 		}
 		requireMockExpectations(t, mock)
 	})
@@ -211,14 +212,14 @@ func TestEventAndJobMutations(t *testing.T) {
 		{
 			name: "MarkEventProcessed success",
 			run: func(c *DBClientImpl, mock sqlmock.Sqlmock) error {
-				mock.ExpectExec("UPDATE events SET status = 'processed'").WithArgs(int64(1)).WillReturnResult(sqlmock.NewResult(0, 1))
+				mock.ExpectExec(`UPDATE events SET status = \$1 WHERE id = \$2`).WithArgs("processed", int64(1)).WillReturnResult(sqlmock.NewResult(0, 1))
 				return c.MarkEventProcessed(context.Background(), 1, "processed")
 			},
 		},
 		{
 			name: "MarkEventProcessed error",
 			run: func(c *DBClientImpl, mock sqlmock.Sqlmock) error {
-				mock.ExpectExec("UPDATE events SET status = 'processed'").WithArgs(int64(1)).WillReturnError(errors.New("x"))
+				mock.ExpectExec(`UPDATE events SET status = \$1 WHERE id = \$2`).WithArgs("processed", int64(1)).WillReturnError(errors.New("x"))
 				return c.MarkEventProcessed(context.Background(), 1, "processed")
 			},
 			errText: "updating event status",
@@ -370,6 +371,27 @@ func TestCountQueries(t *testing.T) {
 		_, err = c.HasAnyRunningJobs(context.Background())
 		if err == nil || !strings.Contains(err.Error(), "checking running jobs") {
 			t.Fatalf("expected any running jobs error, got %v", err)
+		}
+
+		requireMockExpectations(t, mock)
+	})
+
+	t.Run("ActiveJobCount", func(t *testing.T) {
+		c, mock, cleanup := newMockClient(t)
+		defer cleanup()
+
+		mock.ExpectQuery(`SELECT COUNT\(\*\) FROM jobs WHERE status IN \('launching', 'running'\)`).
+			WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(2))
+		count, err := c.ActiveJobCount(context.Background())
+		if err != nil || count != 2 {
+			t.Fatalf("ActiveJobCount expected 2, got %d err=%v", count, err)
+		}
+
+		mock.ExpectQuery(`SELECT COUNT\(\*\) FROM jobs WHERE status IN \('launching', 'running'\)`).
+			WillReturnError(errors.New("x"))
+		_, err = c.ActiveJobCount(context.Background())
+		if err == nil || !strings.Contains(err.Error(), "counting active jobs") {
+			t.Fatalf("expected active job count error, got %v", err)
 		}
 
 		requireMockExpectations(t, mock)

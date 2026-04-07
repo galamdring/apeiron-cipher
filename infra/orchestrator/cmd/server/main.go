@@ -116,11 +116,7 @@ func webhookHandler(database db.DBClient, secret string) http.HandlerFunc {
 			return
 		}
 
-		if id == 0 {
-			log.Printf("duplicate delivery %s, ignoring", deliveryID)
-		} else {
-			log.Printf("received event %d: %s.%s (delivery: %s)", id, eventType, payload.Action, deliveryID)
-		}
+		log.Printf("received event %d: %s.%s (delivery: %s)", id, eventType, payload.Action, deliveryID)
 
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))

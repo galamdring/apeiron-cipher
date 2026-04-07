@@ -133,7 +133,7 @@ RESTART IDENTITY CASCADE;
 	}
 }
 
-func TestIntegration_InsertEvent_Idempotent(t *testing.T) {
+func TestIntegration_InsertEvent_StoresRepeatedReceipts(t *testing.T) {
 	ctx, client, cleanup := newIntegrationClient(t)
 	defer cleanup()
 
@@ -149,10 +149,13 @@ func TestIntegration_InsertEvent_Idempotent(t *testing.T) {
 
 	duplicateID, err := client.InsertEvent(ctx, "delivery-1", "issues", "opened", payload)
 	if err != nil {
-		t.Fatalf("InsertEvent duplicate call failed: %v", err)
+		t.Fatalf("InsertEvent repeated call failed: %v", err)
 	}
-	if duplicateID != 0 {
-		t.Fatalf("expected duplicate insert to return 0, got %d", duplicateID)
+	if duplicateID == 0 {
+		t.Fatal("expected repeated receipt to return a new non-zero ID")
+	}
+	if duplicateID == id {
+		t.Fatalf("expected repeated receipt to create a distinct row, got same id %d", duplicateID)
 	}
 
 	storedPayload, err := client.GetEventPayload(ctx, id)

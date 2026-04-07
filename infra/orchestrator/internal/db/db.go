@@ -53,6 +53,7 @@ type DBClient interface {
 	InsertEvent(ctx context.Context, deliveryID, eventType, action string, payload json.RawMessage) (int64, error)
 	PendingJobsByWorkflow(ctx context.Context, workflowType string) ([]Job, error)
 	NextPendingJob(ctx context.Context) (*Job, error)
+	ActiveJobCount(ctx context.Context) (int, error)
 	HasAnyRunningJobs(ctx context.Context) (bool, error)
 	HasRunningJobs(ctx context.Context, workflowType string) (bool, error)
 	GetEventPayload(ctx context.Context, eventID int64) (json.RawMessage, error)
@@ -118,13 +119,15 @@ func (d *DBClientImpl) migrate(ctx context.Context) error {
 const schema = `
 CREATE TABLE IF NOT EXISTS events (
 	id            BIGSERIAL PRIMARY KEY,
-	delivery_id   TEXT UNIQUE NOT NULL,
+	delivery_id   TEXT NOT NULL,
 	event_type    TEXT NOT NULL,
 	action        TEXT NOT NULL DEFAULT '',
 	payload       JSONB NOT NULL,
 	received_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
 	status        TEXT NOT NULL DEFAULT 'pending'
 );
+
+ALTER TABLE events DROP CONSTRAINT IF EXISTS events_delivery_id_key;
 
 CREATE INDEX IF NOT EXISTS idx_events_status ON events (status);
 CREATE INDEX IF NOT EXISTS idx_events_delivery_id ON events (delivery_id);
