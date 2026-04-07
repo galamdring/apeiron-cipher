@@ -73,3 +73,23 @@ export async function updateIssue(owner, repo, number, payload, token) {
   );
   return data;
 }
+
+export async function fetchUserRepos(token) {
+  const gh = client(token);
+  let page = 1;
+  const all = [];
+  while (true) {
+    const { data } = await gh.get("/user/repos", {
+      params: {
+        affiliation: "owner,collaborator,organization_member",
+        sort: "pushed",
+        per_page: 100,
+        page,
+      },
+    });
+    all.push(...data);
+    if (data.length < 100) break;
+    page++;
+  }
+  return all;
+}

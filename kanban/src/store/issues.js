@@ -15,11 +15,11 @@ export function issueColumn(issue) {
   const names = (issue.labels || []).map((l) =>
     (l.name || "").toLowerCase()
   );
-  if (names.includes("sign off")) return "Sign Off";
-  if (names.includes("in review")) return "In Review";
-  if (names.includes("in progress")) return "In Progress";
-  if (names.includes("ready")) return "Ready";
-  if (names.includes("triage")) return "Triage";
+  if (names.includes("status:sign-off")) return "Sign Off";
+  if (names.includes("status:in-review")) return "In Review";
+  if (names.includes("status:in-progress")) return "In Progress";
+  if (names.includes("status:ready")) return "Ready";
+  if (names.includes("status:triage")) return "Triage";
   return "Backlog";
 }
 
@@ -35,22 +35,22 @@ export const COLUMNS = [
 
 // Labels that map 1-to-1 with columns (Complete = closed state, not a label)
 export const COLUMN_LABELS = {
-  Triage: "triage",
+  Triage: "status:triage",
   Backlog: null,
-  Ready: "ready",
-  "In Progress": "in progress",
-  "In Review": "in review",
-  "Sign Off": "sign off",
+  Ready: "status:ready",
+  "In Progress": "status:in-progress",
+  "In Review": "status:in-review",
+  "Sign Off": "status:sign-off",
   Complete: null,
 };
 
 // All label values used for column tracking — strip these when moving columns
 export const ALL_COLUMN_LABELS = [
-  "triage",
-  "ready",
-  "in progress",
-  "in review",
-  "sign off",
+  "status:triage",
+  "status:ready",
+  "status:in-progress",
+  "status:in-review",
+  "status:sign-off",
 ];
 
 export const TYPES = ["epic", "story", "bug", "task"];

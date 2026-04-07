@@ -1,7 +1,7 @@
 import React from "react";
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { useIssueStore, issueType } from "../store/issues";
+import { useIssueStore, issueType, ALL_COLUMN_LABELS, TYPES } from "../store/issues";
 
 const TYPE_COLOR = {
   epic: "#a371f7",
@@ -10,14 +10,7 @@ const TYPE_COLOR = {
   task: "#3fb950",
 };
 
-const SKIP_LABELS = new Set([
-  "epic",
-  "story",
-  "bug",
-  "task",
-  "in progress",
-  "in review",
-]);
+const SKIP_LABELS = new Set([...TYPES, ...ALL_COLUMN_LABELS]);
 
 const s = {
   card: (isDragging, overlay) => ({
