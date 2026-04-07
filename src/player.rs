@@ -22,6 +22,8 @@ use crate::scene::SceneConfig;
 /// changing this constant.
 const LOOK_SCALE: f32 = 0.003;
 const PITCH_LIMIT: f32 = std::f32::consts::FRAC_PI_2 * 0.99;
+const SOUTH_DOORWAY_HALF_WIDTH: f32 = 0.8;
+const DOORWAY_TRANSITION_DEPTH: f32 = 0.5;
 
 pub(crate) fn cursor_is_captured(grab_mode: CursorGrabMode) -> bool {
     grab_mode != CursorGrabMode::None
@@ -29,6 +31,28 @@ pub(crate) fn cursor_is_captured(grab_mode: CursorGrabMode) -> bool {
 
 fn enforce_eye_height(translation: &mut Vec3, eye_height: f32) {
     translation.y = eye_height;
+}
+
+fn constrain_player_to_walkable_region(position: &mut Vec3, scene: &SceneConfig) {
+    let m = scene.room.boundary_margin;
+    let bx = scene.room.half_extent_x - m;
+    let bz = scene.room.half_extent_z - m;
+
+    if position.z >= -bz {
+        position.x = position.x.clamp(-bx, bx);
+        position.z = position.z.clamp(-bz, bz);
+        return;
+    }
+
+    let doorway_limit_z = -bz - DOORWAY_TRANSITION_DEPTH;
+    if position.z >= doorway_limit_z {
+        position.x = position
+            .x
+            .clamp(-SOUTH_DOORWAY_HALF_WIDTH, SOUTH_DOORWAY_HALF_WIDTH);
+        return;
+    }
+
+    position.x = position.x.clamp(-bx, bx);
 }
 
 pub(crate) struct PlayerPlugin;
@@ -173,12 +197,7 @@ fn player_move(
     let direction = (forward_xz * input.y + right_xz * input.x).normalize_or_zero();
     transform.translation += direction * scene.player.move_speed * time.delta_secs();
 
-    // AABB collision — keep the player inside the room interior.
-    let m = scene.room.boundary_margin;
-    let bx = scene.room.half_extent_x - m;
-    let bz = scene.room.half_extent_z - m;
-    transform.translation.x = transform.translation.x.clamp(-bx, bx);
-    transform.translation.z = transform.translation.z.clamp(-bz, bz);
+    constrain_player_to_walkable_region(&mut transform.translation, &scene);
     enforce_eye_height(&mut transform.translation, scene.player.eye_height);
 }
 
@@ -206,5 +225,37 @@ mod tests {
         let mut translation = Vec3::new(1.0, 9.0, -2.0);
         enforce_eye_height(&mut translation, 1.7);
         assert!((translation.y - 1.7).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn room_interior_still_clamps_to_bounds() {
+        let scene = SceneConfig::default();
+        let mut position = Vec3::new(99.0, 1.7, 99.0);
+        constrain_player_to_walkable_region(&mut position, &scene);
+
+        let margin = scene.room.boundary_margin;
+        assert!(position.x <= scene.room.half_extent_x - margin);
+        assert!(position.z <= scene.room.half_extent_z - margin);
+    }
+
+    #[test]
+    fn doorway_band_allows_transition_outside() {
+        let scene = SceneConfig::default();
+        let mut position = Vec3::new(0.4, 1.7, -scene.room.half_extent_z - 0.2);
+        constrain_player_to_walkable_region(&mut position, &scene);
+
+        assert!(position.z < -(scene.room.half_extent_z - scene.room.boundary_margin));
+        assert!(position.x.abs() <= SOUTH_DOORWAY_HALF_WIDTH);
+    }
+
+    #[test]
+    fn outside_region_allows_forward_progress_but_clamps_sideways() {
+        let scene = SceneConfig::default();
+        let mut position = Vec3::new(99.0, 1.7, -scene.room.half_extent_z - 2.0);
+        constrain_player_to_walkable_region(&mut position, &scene);
+
+        let margin = scene.room.boundary_margin;
+        assert!(position.z < -(scene.room.half_extent_z - margin));
+        assert!(position.x <= scene.room.half_extent_x - margin);
     }
 }
