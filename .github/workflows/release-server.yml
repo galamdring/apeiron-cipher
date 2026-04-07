@@ -43,6 +43,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: infra/orchestrator
+          file: infra/orchestrator/cmd/server/Dockerfile
           target: server
           push: true
           tags: ${{ env.IMAGE }}:${{ steps.sha.outputs.short }}
@@ -93,6 +94,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: infra/orchestrator
+          file: infra/orchestrator/cmd/server/Dockerfile
           target: server
           push: true
           tags: |
