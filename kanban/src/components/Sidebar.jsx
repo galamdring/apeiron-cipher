@@ -1,23 +1,6 @@
 import React from "react";
-import { useIssueStore, TYPES, issueType, COLUMNS } from "../store/issues";
+import { useIssueStore, TYPES, issueType, COLUMNS, TYPE_COLORS, COLUMN_COLORS } from "../store/issues";
 import NewIssueForm from "./NewIssueForm";
-
-const TYPE_COLOR = {
-  epic: "#a371f7",
-  story: "#58a6ff",
-  bug: "#f85149",
-  task: "#3fb950",
-};
-
-const COLUMN_COLOR = {
-  Triage: "#e3b341",
-  Backlog: "#8b949e",
-  Ready: "#58a6ff",
-  "In Progress": "#1f6feb",
-  "In Review": "#a371f7",
-  "Sign Off": "#db6d28",
-  Complete: "#3fb950",
-};
 
 const s = {
   sidebar: {
@@ -93,7 +76,7 @@ export default function Sidebar() {
             onClick={() => toggleType(type)}
             title={activeTypes.has(type) ? "Hide" : "Show"}
           >
-            <span style={s.dot(TYPE_COLOR[type])} />
+            <span style={s.dot(TYPE_COLORS[type] || "#8b949e")} />
             <span style={s.label(activeTypes.has(type))}>
               {type.charAt(0).toUpperCase() + type.slice(1)}
             </span>
@@ -106,7 +89,7 @@ export default function Sidebar() {
         <span style={s.heading}>Columns</span>
         {COLUMNS.map((col) => (
           <div key={col} style={{ ...s.typeRow, cursor: "default" }}>
-            <span style={s.dot(COLUMN_COLOR[col])} />
+            <span style={s.dot(COLUMN_COLORS[col] || "#8b949e")} />
             <span style={s.label(true)}>{col}</span>
             <span style={s.count}>{countByColumn[col] ?? 0}</span>
           </div>

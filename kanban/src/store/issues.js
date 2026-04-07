@@ -1,59 +1,79 @@
 import { create } from "zustand";
 
+const COLLAPSED_KEY = "gh_kanban_collapsed";
+
+// These are populated by initColumns() before React mounts.
+// Treat as read-only after initialisation.
+export let COLUMNS = [];
+export let COLUMN_LABELS = {};
+export let COLUMN_COLORS = {};
+export let ALL_COLUMN_LABELS = [];
+export let TYPES = [];
+export let TYPE_COLORS = {};
+
+let _defaultColumn = "Backlog";
+let _closeIssueColumn = "Complete";
+
+export function initColumns(columns, types) {
+  COLUMNS = columns.map((c) => c.name);
+
+  COLUMN_LABELS = {};
+  COLUMN_COLORS = {};
+  ALL_COLUMN_LABELS = [];
+
+  for (const c of columns) {
+    COLUMN_LABELS[c.name] = c.label || null;
+    COLUMN_COLORS[c.name] = c.color || "#8b949e";
+    if (c.label) ALL_COLUMN_LABELS.push(c.label.toLowerCase());
+    if (c.default) _defaultColumn = c.name;
+    if (c.closeIssue) _closeIssueColumn = c.name;
+  }
+
+  TYPES = types.map((t) => t.name);
+  TYPE_COLORS = {};
+  for (const t of types) {
+    TYPE_COLORS[t.name] = t.color || "#8b949e";
+  }
+}
+
+export function getCloseIssueColumn() {
+  return _closeIssueColumn;
+}
+
+export function getDefaultColumn() {
+  return _defaultColumn;
+}
+
 export function issueType(issue) {
-  const names = (issue.labels || []).map((l) =>
-    (l.name || "").toLowerCase()
-  );
-  if (names.includes("epic")) return "epic";
-  if (names.includes("story")) return "story";
-  if (names.includes("bug")) return "bug";
-  return "task";
+  const names = (issue.labels || []).map((l) => (l.name || "").toLowerCase());
+  for (const t of TYPES) {
+    if (names.includes(t.toLowerCase())) return t;
+  }
+  return TYPES[TYPES.length - 1] || "task";
 }
 
 export function issueColumn(issue) {
-  if (issue.state === "closed") return "Complete";
-  const names = (issue.labels || []).map((l) =>
-    (l.name || "").toLowerCase()
-  );
-  if (names.includes("status:sign-off")) return "Sign Off";
-  if (names.includes("status:in-review")) return "In Review";
-  if (names.includes("status:in-progress")) return "In Progress";
-  if (names.includes("status:ready")) return "Ready";
-  if (names.includes("status:triage")) return "Triage";
-  return "Backlog";
+  if (issue.state === "closed") return _closeIssueColumn;
+  const names = (issue.labels || []).map((l) => (l.name || "").toLowerCase());
+  for (const col of COLUMNS) {
+    const lbl = COLUMN_LABELS[col];
+    if (lbl && names.includes(lbl.toLowerCase())) return col;
+  }
+  return _defaultColumn;
 }
 
-export const COLUMNS = [
-  "Triage",
-  "Backlog",
-  "Ready",
-  "In Progress",
-  "In Review",
-  "Sign Off",
-  "Complete",
-];
+function loadCollapsed() {
+  try {
+    const raw = localStorage.getItem(COLLAPSED_KEY);
+    return raw ? new Set(JSON.parse(raw)) : new Set();
+  } catch {
+    return new Set();
+  }
+}
 
-// Labels that map 1-to-1 with columns (Complete = closed state, not a label)
-export const COLUMN_LABELS = {
-  Triage: "status:triage",
-  Backlog: null,
-  Ready: "status:ready",
-  "In Progress": "status:in-progress",
-  "In Review": "status:in-review",
-  "Sign Off": "status:sign-off",
-  Complete: null,
-};
-
-// All label values used for column tracking — strip these when moving columns
-export const ALL_COLUMN_LABELS = [
-  "status:triage",
-  "status:ready",
-  "status:in-progress",
-  "status:in-review",
-  "status:sign-off",
-];
-
-export const TYPES = ["epic", "story", "bug", "task"];
+function saveCollapsed(set) {
+  localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...set]));
+}
 
 export const useIssueStore = create((set, get) => ({
   issues: [],
@@ -62,9 +82,10 @@ export const useIssueStore = create((set, get) => ({
   selectedIssue: null,
   activeTypes: new Set(TYPES),
   columnOrder: {},
+  collapsedColumns: loadCollapsed(),
 
   setIssues(issues) {
-    set({ issues });
+    set({ issues, activeTypes: new Set(TYPES) });
   },
 
   setLoading(loading) {
@@ -86,12 +107,19 @@ export const useIssueStore = create((set, get) => ({
   toggleType(type) {
     set((state) => {
       const next = new Set(state.activeTypes);
-      if (next.has(type)) {
-        next.delete(type);
-      } else {
-        next.add(type);
-      }
+      if (next.has(type)) next.delete(type);
+      else next.add(type);
       return { activeTypes: next };
+    });
+  },
+
+  toggleCollapsed(name) {
+    set((state) => {
+      const next = new Set(state.collapsedColumns);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      saveCollapsed(next);
+      return { collapsedColumns: next };
     });
   },
 
@@ -106,7 +134,7 @@ export const useIssueStore = create((set, get) => ({
         // Add the new column label if one exists for this column
         const colLabel = COLUMN_LABELS[targetColumn];
         if (colLabel) labels.push(colLabel);
-        const newState = targetColumn === "Complete" ? "closed" : "open";
+        const newState = targetColumn === _closeIssueColumn ? "closed" : "open";
         return {
           ...iss,
           state: newState,
@@ -117,10 +145,7 @@ export const useIssueStore = create((set, get) => ({
       });
       return {
         issues,
-        columnOrder: {
-          ...state.columnOrder,
-          [issueNumber]: targetColumn,
-        },
+        columnOrder: { ...state.columnOrder, [issueNumber]: targetColumn },
       };
     });
   },

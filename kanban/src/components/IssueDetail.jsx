@@ -7,6 +7,7 @@ import {
   COLUMN_LABELS,
   issueType,
   issueColumn,
+  getCloseIssueColumn,
 } from "../store/issues";
 import { updateIssue, fetchComments, createComment } from "../api/github";
 
@@ -216,7 +217,7 @@ export default function IssueDetail({ repo, token }) {
       const colLabel = COLUMN_LABELS[column];
       if (colLabel) labels.push(colLabel);
 
-      const newState = column === "Complete" ? "closed" : "open";
+      const newState = column === getCloseIssueColumn() ? "closed" : "open";
 
       const updated = await updateIssue(
         owner,
