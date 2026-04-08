@@ -22,13 +22,12 @@ use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::input::InputAction;
-use crate::interaction::{HOLD_OFFSET, HeldItem, floor_drop_position};
+use crate::interaction::{HOLD_OFFSET, HeldItem};
 use crate::journal::RecordWeightObservation;
 use crate::materials::GameMaterial;
 use crate::materials::MaterialObject;
 use crate::observation::{ConfidenceLevel, ConfidenceTracker};
 use crate::player::{Player, PlayerCamera, cursor_is_captured};
-use crate::scene::SceneConfig;
 use leafwing_input_manager::prelude::*;
 
 const CONFIG_PATH: &str = "assets/config/carry.toml";
@@ -39,7 +38,6 @@ impl Plugin for CarryPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<StashIntent>()
             .add_message::<CycleCarryIntent>()
-            .add_message::<DropCarryIntent>()
             .add_message::<CarryWeightChanged>()
             .add_message::<CarryActionRejected>()
             .init_resource::<CarryConfig>()
@@ -57,10 +55,8 @@ impl Plugin for CarryPlugin {
                     update_carry_strength,
                     emit_stash_intent,
                     emit_cycle_carry_intent,
-                    emit_drop_carry_intent,
                     process_stash_intent,
                     process_cycle_carry_intent.after(process_stash_intent),
-                    process_drop_carry_intent.after(process_cycle_carry_intent),
                 ),
             );
     }
@@ -1093,22 +1089,6 @@ fn emit_cycle_carry_intent(
     }
 }
 
-fn emit_drop_carry_intent(
-    player_query: Query<&ActionState<InputAction>, With<Player>>,
-    cursor_options: Single<&bevy::window::CursorOptions>,
-    mut writer: MessageWriter<DropCarryIntent>,
-) {
-    if !cursor_is_captured(cursor_options.grab_mode) {
-        return;
-    }
-    let Ok(action) = player_query.single() else {
-        return;
-    };
-    if action.just_pressed(&InputAction::Drop) {
-        writer.write(DropCarryIntent);
-    }
-}
-
 // ── Carry mutation helpers ───────────────────────────────────────────────
 
 /// Convert a held world material into a stashed carry item.
@@ -1120,7 +1100,16 @@ fn emit_drop_carry_intent(
 /// - remove `MaterialObject` because it should no longer behave like a world prop
 /// - add `InCarry` to make the state explicit for later systems
 /// - hide the entity so it stops rendering
-fn stash_entity_into_carry(
+pub(crate) fn can_stash_material(carry_state: &CarryState, material: &GameMaterial) -> bool {
+    if !carry_state.hard_limit_enabled {
+        return true;
+    }
+
+    (carry_state.current_weight + material.density.value)
+        <= (carry_state.effective_capacity + f32::EPSILON)
+}
+
+pub(crate) fn stash_entity_into_carry(
     commands: &mut Commands,
     carry_state: &mut CarryState,
     entity: Entity,
@@ -1136,7 +1125,7 @@ fn stash_entity_into_carry(
         .insert(Visibility::Hidden);
 }
 
-fn record_weight_observation(
+pub(crate) fn record_weight_observation(
     material: &GameMaterial,
     carry_strength: f32,
     config: &CarryConfig,
@@ -1173,16 +1162,6 @@ fn move_entity_from_carry_to_hand(commands: &mut Commands, camera_entity: Entity
         .insert(Visibility::Inherited)
         .set_parent_in_place(camera_entity)
         .insert(Transform::from_translation(HOLD_OFFSET));
-}
-
-/// Convert a stashed carry item back into a physical world object at the player's feet.
-fn move_entity_from_carry_to_floor(commands: &mut Commands, entity: Entity, drop_position: Vec3) {
-    commands
-        .entity(entity)
-        .remove::<InCarry>()
-        .insert(MaterialObject)
-        .insert(Visibility::Inherited)
-        .insert(Transform::from_translation(drop_position));
 }
 
 fn emit_carry_weight_changed(
@@ -1222,6 +1201,9 @@ fn process_stash_intent(
         let Ok((mut carry_state, carry_strength)) = player_query.single_mut() else {
             continue;
         };
+        if !can_stash_material(&carry_state, held_material) {
+            continue;
+        }
 
         if !carry_state.can_accept(held_material.density.value) {
             reject_writer.write(CarryActionRejected {
@@ -1291,6 +1273,9 @@ fn process_cycle_carry_intent(
             .next()
             .map(|(entity, material)| (entity, material.clone()));
         if let Some((held_entity, held_material)) = held_item.as_ref() {
+            if !can_stash_material(&carry_state, held_material) {
+                continue;
+            }
             stash_entity_into_carry(&mut commands, &mut carry_state, *held_entity, held_material);
             record_weight_observation(
                 held_material,
@@ -1489,6 +1474,24 @@ exponent = 1.0
         assert_eq!(removed, Some(CarriedItem::new(second)));
         assert!((state.current_weight - 0.2).abs() < f32::EPSILON);
         assert_eq!(state.carried_items, vec![CarriedItem::new(first)]);
+    }
+
+    #[test]
+    fn can_stash_material_respects_hard_limit_capacity() {
+        let material = material_with_density(0.6);
+        let mut state = CarryState::new(1.0, true);
+        state.current_weight = 0.5;
+
+        assert!(!can_stash_material(&state, &material));
+    }
+
+    #[test]
+    fn can_stash_material_ignores_capacity_when_hard_limit_disabled() {
+        let material = material_with_density(0.6);
+        let mut state = CarryState::new(1.0, false);
+        state.current_weight = 0.9;
+
+        assert!(can_stash_material(&state, &material));
     }
 
     #[test]

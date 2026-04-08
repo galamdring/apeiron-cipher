@@ -20,13 +20,17 @@
 use bevy::picking::mesh_picking::ray_cast::{MeshRayCast, MeshRayCastSettings, RayCastVisibility};
 use bevy::prelude::*;
 
+use crate::carry::{
+    CarryConfig, CarryState, CarryStrength, can_stash_material, record_weight_observation,
+    stash_entity_into_carry,
+};
 use crate::fabricator::{ActivateIntent, InputSlot};
 use crate::input::InputAction;
-use crate::journal::RecordEncounter;
+use crate::journal::{RecordEncounter, RecordWeightObservation};
 use crate::materials::{GameMaterial, MATERIAL_SURFACE_GAP, MaterialObject, PropertyVisibility};
 use crate::observation::{ConfidenceTracker, describe_thermal_observation};
 use crate::player::{Player, PlayerCamera, cursor_is_captured};
-use crate::scene::{SceneConfig, Surface};
+use crate::scene::Surface;
 
 use leafwing_input_manager::prelude::*;
 
@@ -215,28 +219,35 @@ fn update_slot_target(
 
 // ── Intent emission ──────────────────────────────────────────────────────
 
-fn should_emit_pickup(interact_pressed: bool, holding: bool) -> bool {
-    interact_pressed && !holding
+fn should_emit_pickup(interact_pressed: bool, targeting_material: bool) -> bool {
+    interact_pressed && targeting_material
 }
 
-fn should_emit_place(interact_pressed: bool, place_pressed: bool, holding: bool) -> bool {
-    holding && (place_pressed || interact_pressed)
+fn should_emit_place(
+    interact_pressed: bool,
+    place_pressed: bool,
+    holding: bool,
+    targeting_material: bool,
+) -> bool {
+    holding && (place_pressed || (interact_pressed && !targeting_material))
 }
 
 fn emit_pickup_intent(
     player_query: Query<&ActionState<InputAction>, With<Player>>,
     cursor_options: Single<&bevy::window::CursorOptions>,
-    held_query: Query<(), With<HeldItem>>,
+    target: Res<InteractionTarget>,
     mut writer: MessageWriter<PickupIntent>,
 ) {
     if !cursor_is_captured(cursor_options.grab_mode) {
         return;
     }
-    let holding = held_query.iter().next().is_some();
     let Ok(action) = player_query.single() else {
         return;
     };
-    if should_emit_pickup(action.just_pressed(&InputAction::Interact), holding) {
+    if should_emit_pickup(
+        action.just_pressed(&InputAction::Interact),
+        target.entity.is_some(),
+    ) {
         writer.write(PickupIntent);
     }
 }
@@ -244,6 +255,7 @@ fn emit_pickup_intent(
 fn emit_place_intent(
     player_query: Query<&ActionState<InputAction>, With<Player>>,
     cursor_options: Single<&bevy::window::CursorOptions>,
+    target: Res<InteractionTarget>,
     held_query: Query<(), With<HeldItem>>,
     mut writer: MessageWriter<PlaceIntent>,
 ) {
@@ -258,6 +270,7 @@ fn emit_place_intent(
         action.just_pressed(&InputAction::Interact),
         action.just_pressed(&InputAction::Place),
         holding,
+        target.entity.is_some(),
     ) {
         writer.write(PlaceIntent);
     }
@@ -281,18 +294,22 @@ fn emit_activate_intent(
 
 // ── Server-side processing ───────────────────────────────────────────────
 
+// This system bridges world interaction with carry state, confidence tracking,
+// and journal updates. The explicit ECS parameters are easier to audit than
+// hiding the touch points behind wrapper structs here.
+#[allow(clippy::too_many_arguments)]
 fn process_pickup(
     mut commands: Commands,
     mut reader: MessageReader<PickupIntent>,
+    config: Res<CarryConfig>,
     target: Res<InteractionTarget>,
-    held_query: Query<Entity, With<HeldItem>>,
+    mut tracker: ResMut<ConfidenceTracker>,
+    mut journal_writer: MessageWriter<RecordWeightObservation>,
+    mut player_query: Query<(&mut CarryState, &CarryStrength), With<Player>>,
+    held_query: Query<(Entity, &GameMaterial), With<HeldItem>>,
     camera_query: Query<Entity, With<PlayerCamera>>,
 ) {
     for _intent in reader.read() {
-        if held_query.iter().next().is_some() {
-            continue;
-        }
-
         let Some(target_entity) = target.entity else {
             continue;
         };
@@ -300,6 +317,23 @@ fn process_pickup(
         let Ok(camera_entity) = camera_query.single() else {
             continue;
         };
+        let Ok((mut carry_state, carry_strength)) = player_query.single_mut() else {
+            continue;
+        };
+
+        if let Some((held_entity, held_material)) = held_query.iter().next() {
+            if !can_stash_material(&carry_state, held_material) {
+                continue;
+            }
+            stash_entity_into_carry(&mut commands, &mut carry_state, held_entity, held_material);
+            record_weight_observation(
+                held_material,
+                carry_strength.current,
+                &config,
+                &mut tracker,
+                &mut journal_writer,
+            );
+        }
 
         commands
             .entity(target_entity)
@@ -314,11 +348,17 @@ fn process_pickup(
 /// placement to be considered valid.
 const PLACE_REACH: f32 = 2.5;
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct OccupiedMaterialFootprint {
+    entity: Entity,
+    position: Vec3,
+    radius: f32,
+}
+
 #[allow(clippy::too_many_arguments)]
 fn process_place(
     mut commands: Commands,
     mut reader: MessageReader<PlaceIntent>,
-    scene: Res<SceneConfig>,
     held_query: Query<(Entity, &GameMaterial), With<HeldItem>>,
     camera_query: Query<&GlobalTransform, With<PlayerCamera>>,
     player_query: Query<&GlobalTransform, With<Player>>,
@@ -331,6 +371,7 @@ fn process_place(
         let Some((held_entity, held_material)) = held_query.iter().next() else {
             continue;
         };
+        let occupied = collect_material_footprints(&material_positions);
 
         // Priority: if looking at an empty input slot, seat the material there.
         if let Some(slot_entity) = slot_target.entity
@@ -390,13 +431,13 @@ fn process_place(
                 held_material.resting_center_y(surface_pos.y),
                 place_z,
             );
-            if can_place_material(held_entity, held_material, candidate, &material_positions) {
+            if can_place_material(held_entity, held_material, candidate, &occupied) {
                 candidate
             } else {
-                floor_drop_position(player_gtf, &scene, held_material)
+                floor_drop_position(player_gtf, held_entity, held_material, &occupied)
             }
         } else {
-            floor_drop_position(player_gtf, &scene, held_material)
+            floor_drop_position(player_gtf, held_entity, held_material, &occupied)
         };
 
         commands
@@ -448,51 +489,81 @@ fn best_surface_for_ray<'a>(
         .map(|(entity, sgtf, surface, _)| (entity, sgtf, surface))
 }
 
+fn collect_material_footprints(
+    material_positions: &Query<(Entity, &GlobalTransform, &GameMaterial), With<MaterialObject>>,
+) -> Vec<OccupiedMaterialFootprint> {
+    material_positions
+        .iter()
+        .map(|(entity, gtf, material)| OccupiedMaterialFootprint {
+            entity,
+            position: gtf.translation(),
+            radius: material.footprint_radius(),
+        })
+        .collect()
+}
+
 fn can_place_material(
     held_entity: Entity,
     held_material: &GameMaterial,
     candidate: Vec3,
-    material_positions: &Query<(Entity, &GlobalTransform, &GameMaterial), With<MaterialObject>>,
+    occupied: &[OccupiedMaterialFootprint],
 ) -> bool {
     let held_radius = held_material.footprint_radius();
-    material_positions.iter().all(|(entity, gtf, material)| {
-        if entity == held_entity {
+    occupied.iter().all(|footprint| {
+        if footprint.entity == held_entity {
             return true;
         }
 
-        let other = gtf.translation();
-        let same_level = (other.y - candidate.y).abs() < 0.25;
+        let same_level = (footprint.position.y - candidate.y).abs() < 0.25;
         if !same_level {
             return true;
         }
 
-        let required_gap = held_radius + material.footprint_radius();
-        let xz_dist = Vec2::new(other.x - candidate.x, other.z - candidate.z).length();
+        let required_gap = held_radius + footprint.radius;
+        let xz_dist = Vec2::new(
+            footprint.position.x - candidate.x,
+            footprint.position.z - candidate.z,
+        )
+        .length();
         xz_dist >= required_gap
     })
 }
 
-pub(crate) fn floor_drop_position(
+fn floor_drop_position(
     player_gtf: &GlobalTransform,
-    scene: &SceneConfig,
+    held_entity: Entity,
     material: &GameMaterial,
+    occupied: &[OccupiedMaterialFootprint],
 ) -> Vec3 {
     let origin = player_gtf.translation();
     let forward = *player_gtf.forward();
+    let right = *player_gtf.right();
     let forward_xz = Vec3::new(forward.x, 0.0, forward.z).normalize_or_zero();
+    let right_xz = Vec3::new(right.x, 0.0, right.z).normalize_or_zero();
     let fallback_forward = if forward_xz == Vec3::ZERO {
         Vec3::NEG_Z
     } else {
         forward_xz
     };
-    let mut position = Vec3::new(origin.x, 0.0, origin.z) + fallback_forward * 0.35;
-    let margin = scene.room.boundary_margin;
-    let max_x = scene.room.half_extent_x - margin;
-    let max_z = scene.room.half_extent_z - margin;
-    position.x = position.x.clamp(-max_x, max_x);
-    position.z = position.z.clamp(-max_z, max_z);
-    position.y = material.resting_center_y(0.0);
-    position
+    let fallback_right = if right_xz == Vec3::ZERO {
+        Vec3::X
+    } else {
+        right_xz
+    };
+    let base = Vec3::new(origin.x, material.resting_center_y(0.0), origin.z);
+    let forward_steps = [0.35_f32, 0.6, 0.85, 1.1];
+    let lateral_steps = [0.0_f32, -0.35, 0.35, -0.7, 0.7];
+
+    for forward_step in forward_steps {
+        for lateral_step in lateral_steps {
+            let candidate = base + fallback_forward * forward_step + fallback_right * lateral_step;
+            if can_place_material(held_entity, material, candidate, occupied) {
+                return candidate;
+            }
+        }
+    }
+
+    base + fallback_forward * 0.35
 }
 
 // ── Held item tracking ───────────────────────────────────────────────────
@@ -732,7 +803,6 @@ fn append_thermal_prop(lines: &mut Vec<String>, mat: &GameMaterial, tracker: &Co
 mod tests {
     use super::*;
     use crate::materials::MaterialProperty;
-    use bevy::app::Update;
 
     #[test]
     fn describe_value_covers_full_range() {
@@ -829,39 +899,36 @@ mod tests {
 
     #[test]
     fn interact_picks_up_only_when_not_holding() {
-        assert!(should_emit_pickup(true, false));
-        assert!(!should_emit_pickup(false, false));
-        assert!(!should_emit_pickup(true, true));
+        assert!(should_emit_pickup(true, true));
+        assert!(!should_emit_pickup(false, true));
+        assert!(!should_emit_pickup(true, false));
     }
 
     #[test]
     fn interact_or_place_can_drop_when_holding() {
-        assert!(should_emit_place(true, false, true));
-        assert!(should_emit_place(false, true, true));
-        assert!(!should_emit_place(false, false, true));
-        assert!(!should_emit_place(true, false, false));
+        assert!(should_emit_place(true, false, true, false));
+        assert!(should_emit_place(false, true, true, false));
+        assert!(!should_emit_place(true, false, true, true));
+        assert!(!should_emit_place(false, false, true, false));
+        assert!(!should_emit_place(true, false, false, false));
     }
 
     #[test]
-    fn floor_drop_position_clamps_inside_room_bounds() {
-        let scene = SceneConfig::default();
+    fn floor_drop_position_does_not_snap_back_into_room_bounds() {
         let player = GlobalTransform::from(Transform::from_xyz(100.0, 1.7, 100.0));
         let material = test_material();
-        let dropped = floor_drop_position(&player, &scene, &material);
-        let max_x = scene.room.half_extent_x - scene.room.boundary_margin;
-        let max_z = scene.room.half_extent_z - scene.room.boundary_margin;
+        let dropped = floor_drop_position(&player, Entity::from_bits(99), &material, &[]);
 
-        assert!(dropped.x <= max_x);
-        assert!(dropped.z <= max_z);
+        assert!(dropped.x > 4.0);
+        assert!(dropped.z > 4.0);
         assert!((dropped.y - material.resting_center_y(0.0)).abs() < f32::EPSILON);
     }
 
     #[test]
     fn floor_drop_position_uses_player_floor_position() {
-        let scene = SceneConfig::default();
         let player = GlobalTransform::from(Transform::from_xyz(1.25, 1.7, -0.75));
         let material = test_material();
-        let dropped = floor_drop_position(&player, &scene, &material);
+        let dropped = floor_drop_position(&player, Entity::from_bits(99), &material, &[]);
 
         assert!((dropped.x - 1.25).abs() < f32::EPSILON);
         assert!((dropped.z - (-1.10)).abs() < f32::EPSILON);
@@ -937,5 +1004,22 @@ mod tests {
 
         // Keep at least one sanity-check that pickup parented to the camera.
         let _ = camera;
+    }
+
+    #[test]
+    fn floor_drop_position_spreads_away_from_occupied_drop_points() {
+        let player = GlobalTransform::from(Transform::from_xyz(1.25, 1.7, -0.75));
+        let material = test_material();
+        let occupied = [OccupiedMaterialFootprint {
+            entity: Entity::from_bits(1),
+            position: Vec3::new(1.25, material.resting_center_y(0.0), -1.10),
+            radius: material.footprint_radius(),
+        }];
+        let dropped = floor_drop_position(&player, Entity::from_bits(99), &material, &occupied);
+
+        assert_ne!(
+            dropped,
+            Vec3::new(1.25, material.resting_center_y(0.0), -1.10)
+        );
     }
 }

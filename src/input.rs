@@ -63,7 +63,6 @@ pub(crate) enum InputAction {
     Examine,
     Stash,
     CycleCarry,
-    Drop,
     Place,
     ToggleJournal,
     Activate,
@@ -118,8 +117,6 @@ pub(crate) struct BindingsConfig {
     pub stash: Vec<String>,
     #[serde(default = "default_cycle_carry", rename = "CycleCarry")]
     pub cycle_carry: Vec<String>,
-    #[serde(default = "default_drop", rename = "Drop")]
-    pub drop_item: Vec<String>,
     #[serde(default = "default_place", rename = "Place")]
     pub place: Vec<String>,
     #[serde(default = "default_toggle_journal", rename = "ToggleJournal")]
@@ -140,7 +137,6 @@ impl Default for BindingsConfig {
             examine: default_examine(),
             stash: default_stash(),
             cycle_carry: default_cycle_carry(),
-            drop_item: default_drop(),
             place: default_place(),
             toggle_journal: default_toggle_journal(),
             activate: default_activate(),
@@ -201,9 +197,6 @@ fn default_stash() -> Vec<String> {
 }
 fn default_cycle_carry() -> Vec<String> {
     vec!["C".into()]
-}
-fn default_drop() -> Vec<String> {
-    vec!["G".into()]
 }
 fn default_place() -> Vec<String> {
     vec!["R".into()]
@@ -363,7 +356,6 @@ pub(crate) fn build_input_map(config: &InputConfig) -> InputMap<InputAction> {
         InputAction::CycleCarry,
         &bindings.cycle_carry,
     );
-    insert_bindings(&mut input_map, InputAction::Drop, &bindings.drop_item);
     insert_bindings(&mut input_map, InputAction::Place, &bindings.place);
     insert_bindings(
         &mut input_map,
@@ -467,7 +459,6 @@ CaptureCursor = ["MouseRight"]
 Sprint = ["ShiftLeft"]
 Stash = ["T"]
 CycleCarry = ["C"]
-Drop = ["G"]
 "#;
         let config: InputConfig = toml::from_str(custom).expect("parse custom");
         assert_eq!(config.bindings.movement.up, "I");
@@ -476,7 +467,6 @@ Drop = ["G"]
         assert_eq!(config.bindings.sprint, vec!["ShiftLeft"]);
         assert_eq!(config.bindings.stash, vec!["T"]);
         assert_eq!(config.bindings.cycle_carry, vec!["C"]);
-        assert_eq!(config.bindings.drop_item, vec!["G"]);
 
         let input_map = build_input_map(&config);
         let interact_bindings = input_map
@@ -517,7 +507,6 @@ Interact = ["MouseLeft"]
 Examine = ["MouseRight"]
 Stash = ["T"]
 CycleCarry = ["C"]
-Drop = ["G"]
 "#;
         let config: InputConfig = toml::from_str(config_str).expect("parse mouse config");
         let input_map = build_input_map(&config);
@@ -546,10 +535,6 @@ Drop = ["G"]
         assert!(
             input_map.get_buttonlike(&InputAction::CycleCarry).is_some(),
             "CycleCarry should have bindings"
-        );
-        assert!(
-            input_map.get_buttonlike(&InputAction::Drop).is_some(),
-            "Drop should have bindings"
         );
     }
 }
