@@ -11,6 +11,34 @@ grant_starting_device = true
 # Story 4.2 will consume this once carry retrieval is implemented.
 cycle_order = "fifo"
 
+[growth_curve]
+kind = "asymptotic"
+max_strength = 8.0
+
+[[weight_descriptions]]
+max_ratio = 0.1
+text = "Almost weightless"
+
+[[weight_descriptions]]
+max_ratio = 0.3
+text = "Light enough to carry easily"
+
+[[weight_descriptions]]
+max_ratio = 0.5
+text = "Solid weight"
+
+[[weight_descriptions]]
+max_ratio = 0.7
+text = "Heavy but manageable"
+
+[[weight_descriptions]]
+max_ratio = 0.9
+text = "Straining under the weight"
+
+[[weight_descriptions]]
+max_ratio = 9999.0
+text = "Barely able to lift"
+
 [profiles.default]
 stamina_cost_multiplier = 1.4
 hard_limit_enabled = true

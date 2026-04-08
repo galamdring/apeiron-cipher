@@ -23,8 +23,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::input::InputAction;
 use crate::interaction::{HOLD_OFFSET, HeldItem, floor_drop_position};
+use crate::journal::RecordWeightObservation;
 use crate::materials::GameMaterial;
 use crate::materials::MaterialObject;
+use crate::observation::{ConfidenceLevel, ConfidenceTracker};
 use crate::player::{Player, PlayerCamera, cursor_is_captured};
 use crate::scene::SceneConfig;
 use leafwing_input_manager::prelude::*;
@@ -52,6 +54,7 @@ impl Plugin for CarryPlugin {
                 Update,
                 (
                     update_carry_movement_state,
+                    update_carry_strength,
                     emit_stash_intent,
                     emit_cycle_carry_intent,
                     emit_drop_carry_intent,
@@ -350,11 +353,15 @@ pub(crate) struct CarryConfig {
     #[serde(default = "default_growth_rate")]
     pub growth_rate: f32,
     #[serde(default)]
+    pub growth_curve: CarryGrowthCurveConfig,
+    #[serde(default)]
     pub carry_device_item_key: Option<String>,
     #[serde(default)]
     pub grant_starting_device: bool,
     #[serde(default)]
     pub cycle_order: CarryCycleOrder,
+    #[serde(default = "default_weight_descriptions")]
+    pub weight_descriptions: Vec<WeightDescriptionBand>,
     #[serde(default)]
     pub profiles: CarryProfilesConfig,
 }
@@ -366,9 +373,11 @@ impl Default for CarryConfig {
             starting_capacity: default_starting_capacity(),
             starting_strength: default_starting_strength(),
             growth_rate: default_growth_rate(),
+            growth_curve: CarryGrowthCurveConfig::default(),
             carry_device_item_key: None,
             grant_starting_device: false,
             cycle_order: CarryCycleOrder::default(),
+            weight_descriptions: default_weight_descriptions(),
             profiles: CarryProfilesConfig::default(),
         }
     }
@@ -388,6 +397,71 @@ fn default_starting_strength() -> f32 {
 
 fn default_growth_rate() -> f32 {
     0.02
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub(crate) struct CarryGrowthCurveConfig {
+    #[serde(default)]
+    pub kind: CarryGrowthCurveKind,
+    #[serde(default = "default_growth_curve_cap")]
+    pub max_strength: f32,
+}
+
+impl Default for CarryGrowthCurveConfig {
+    fn default() -> Self {
+        Self {
+            kind: CarryGrowthCurveKind::default(),
+            max_strength: default_growth_curve_cap(),
+        }
+    }
+}
+
+fn default_growth_curve_cap() -> f32 {
+    8.0
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum CarryGrowthCurveKind {
+    #[default]
+    Linear,
+    Logarithmic,
+    Asymptotic,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub(crate) struct WeightDescriptionBand {
+    pub max_ratio: f32,
+    pub text: String,
+}
+
+fn default_weight_descriptions() -> Vec<WeightDescriptionBand> {
+    vec![
+        WeightDescriptionBand {
+            max_ratio: 0.1,
+            text: "Almost weightless".into(),
+        },
+        WeightDescriptionBand {
+            max_ratio: 0.3,
+            text: "Light enough to carry easily".into(),
+        },
+        WeightDescriptionBand {
+            max_ratio: 0.5,
+            text: "Solid weight".into(),
+        },
+        WeightDescriptionBand {
+            max_ratio: 0.7,
+            text: "Heavy but manageable".into(),
+        },
+        WeightDescriptionBand {
+            max_ratio: 0.9,
+            text: "Straining under the weight".into(),
+        },
+        WeightDescriptionBand {
+            max_ratio: f32::INFINITY,
+            text: "Barely able to lift".into(),
+        },
+    ]
 }
 
 /// How carry retrieval should behave once Story 4.2 starts cycling items.
@@ -608,6 +682,15 @@ fn load_carry_config(mut commands: Commands) {
     };
 
     let active_profile = ActiveCarryProfile::from_config(&config);
+    // Normalize TOML sentinel for the final weight band. TOML doesn't support
+    // infinity literals, so authors use a large number like 9999.0. We convert
+    // to f32::INFINITY so band lookup never falls through for extreme ratios.
+    let mut config = config;
+    if let Some(last) = config.weight_descriptions.last_mut()
+        && last.max_ratio >= 9999.0
+    {
+        last.max_ratio = f32::INFINITY;
+    }
     commands.insert_resource(config);
     commands.insert_resource(active_profile);
 }
@@ -699,6 +782,33 @@ fn update_carry_movement_state(
     };
 }
 
+fn update_carry_strength(
+    time: Res<Time>,
+    active_profile: Res<ActiveCarryProfile>,
+    config: Res<CarryConfig>,
+    mut player_query: Query<(&CarryState, &mut CarryStrength), With<Player>>,
+) {
+    if active_profile.profile_name == "creative" {
+        return;
+    }
+
+    let Ok((carry_state, mut strength)) = player_query.single_mut() else {
+        return;
+    };
+    if carry_state.current_weight <= f32::EPSILON {
+        return;
+    }
+
+    let delta = carry_strength_delta(
+        carry_state.current_weight,
+        strength.current,
+        config.growth_rate,
+        &config.growth_curve,
+        time.delta_secs(),
+    );
+    strength.current = (strength.current + delta).min(config.growth_curve.max_strength);
+}
+
 fn evaluate_speed_curve(
     curve: &CarryCurveConfig,
     encumbrance_ratio: f32,
@@ -720,6 +830,55 @@ fn evaluate_speed_curve(
         base.max(curve.min_multiplier)
     } else {
         base.max(0.1)
+    }
+}
+
+fn carry_strength_delta(
+    current_weight: f32,
+    current_strength: f32,
+    growth_rate: f32,
+    growth_curve: &CarryGrowthCurveConfig,
+    delta_seconds: f32,
+) -> f32 {
+    // Defensive clamps: all inputs must be non-negative. A misconfigured TOML
+    // (e.g. negative growth_rate) or future bug (negative strength) must not
+    // cause strength to decrease or produce NaN via ln_1p().
+    let base = current_weight.max(0.0) * growth_rate.max(0.0) * delta_seconds.max(0.0);
+    let safe_strength = current_strength.max(0.0);
+    match growth_curve.kind {
+        CarryGrowthCurveKind::Linear => base,
+        CarryGrowthCurveKind::Logarithmic => base / (1.0 + safe_strength.ln_1p()),
+        CarryGrowthCurveKind::Asymptotic => {
+            let remaining = (growth_curve.max_strength - safe_strength).max(0.0);
+            if growth_curve.max_strength <= f32::EPSILON {
+                0.0
+            } else {
+                base * (remaining / growth_curve.max_strength)
+            }
+        }
+    }
+}
+
+pub(crate) fn describe_weight_observation(
+    density: f32,
+    carry_strength: f32,
+    confidence: ConfidenceLevel,
+    bands: &[WeightDescriptionBand],
+) -> String {
+    let ratio = if carry_strength <= f32::EPSILON {
+        f32::INFINITY
+    } else {
+        density / carry_strength
+    };
+    let base = bands
+        .iter()
+        .find(|band| ratio <= band.max_ratio)
+        .map(|band| band.text.as_str())
+        .unwrap_or("Barely able to lift");
+
+    match confidence {
+        ConfidenceLevel::Tentative => format!("Seemed {}", base.to_lowercase()),
+        ConfidenceLevel::Observed | ConfidenceLevel::Confident => base.to_string(),
     }
 }
 
@@ -813,6 +972,28 @@ fn stash_entity_into_carry(
         .insert(Visibility::Hidden);
 }
 
+fn record_weight_observation(
+    material: &GameMaterial,
+    carry_strength: f32,
+    config: &CarryConfig,
+    tracker: &mut ConfidenceTracker,
+    journal_writer: &mut MessageWriter<RecordWeightObservation>,
+) {
+    tracker.record(material.seed, "weight");
+    let confidence = tracker.level(material.seed, "weight");
+    let description = describe_weight_observation(
+        material.density.value,
+        carry_strength,
+        confidence,
+        &config.weight_descriptions,
+    );
+    journal_writer.write(RecordWeightObservation {
+        seed: material.seed,
+        name: material.name.clone(),
+        description,
+    });
+}
+
 /// Convert a stashed carry item back into the player's hand.
 ///
 /// We restore the entity into the world-facing material state because the hand
@@ -852,12 +1033,19 @@ fn emit_carry_weight_changed(
 
 // ── Server-side carry processing ─────────────────────────────────────────
 
+// This system now spans input, carry state, observation confidence, and journal
+// recording. Keeping the parameters explicit is still easier to read than
+// hiding the ECS touch points behind wrapper structs.
+#[allow(clippy::too_many_arguments)]
 fn process_stash_intent(
     mut commands: Commands,
     mut reader: MessageReader<StashIntent>,
     mut weight_writer: MessageWriter<CarryWeightChanged>,
     mut reject_writer: MessageWriter<CarryActionRejected>,
-    mut player_query: Query<&mut CarryState, With<Player>>,
+    mut journal_writer: MessageWriter<RecordWeightObservation>,
+    mut tracker: ResMut<ConfidenceTracker>,
+    config: Res<CarryConfig>,
+    mut player_query: Query<(&mut CarryState, &CarryStrength), With<Player>>,
     held_query: Query<(Entity, &GameMaterial), With<HeldItem>>,
 ) {
     for _intent in reader.read() {
@@ -867,7 +1055,7 @@ fn process_stash_intent(
             });
             continue;
         };
-        let Ok(mut carry_state) = player_query.single_mut() else {
+        let Ok((mut carry_state, carry_strength)) = player_query.single_mut() else {
             continue;
         };
 
@@ -879,6 +1067,13 @@ fn process_stash_intent(
         }
 
         stash_entity_into_carry(&mut commands, &mut carry_state, held_entity, held_material);
+        record_weight_observation(
+            held_material,
+            carry_strength.current,
+            &config,
+            &mut tracker,
+            &mut journal_writer,
+        );
         emit_carry_weight_changed(&mut weight_writer, &carry_state);
     }
 }
@@ -892,14 +1087,16 @@ fn process_cycle_carry_intent(
     mut reader: MessageReader<CycleCarryIntent>,
     mut weight_writer: MessageWriter<CarryWeightChanged>,
     mut reject_writer: MessageWriter<CarryActionRejected>,
+    mut journal_writer: MessageWriter<RecordWeightObservation>,
+    mut tracker: ResMut<ConfidenceTracker>,
     config: Res<CarryConfig>,
-    mut player_query: Query<&mut CarryState, With<Player>>,
+    mut player_query: Query<(&mut CarryState, &CarryStrength), With<Player>>,
     camera_query: Query<Entity, With<PlayerCamera>>,
     held_query: Query<(Entity, &GameMaterial), With<HeldItem>>,
     carried_material_query: Query<&GameMaterial, With<InCarry>>,
 ) {
     for _intent in reader.read() {
-        let Ok(mut carry_state) = player_query.single_mut() else {
+        let Ok((mut carry_state, carry_strength)) = player_query.single_mut() else {
             continue;
         };
 
@@ -931,6 +1128,13 @@ fn process_cycle_carry_intent(
             .map(|(entity, material)| (entity, material.clone()));
         if let Some((held_entity, held_material)) = held_item.as_ref() {
             stash_entity_into_carry(&mut commands, &mut carry_state, *held_entity, held_material);
+            record_weight_observation(
+                held_material,
+                carry_strength.current,
+                &config,
+                &mut tracker,
+                &mut journal_writer,
+            );
         }
 
         let Some(_removed) = carry_state.remove_material(next_entity, next_material) else {
@@ -938,6 +1142,13 @@ fn process_cycle_carry_intent(
         };
 
         move_entity_from_carry_to_hand(&mut commands, camera_entity, next_entity);
+        record_weight_observation(
+            next_material,
+            carry_strength.current,
+            &config,
+            &mut tracker,
+            &mut journal_writer,
+        );
         emit_carry_weight_changed(&mut weight_writer, &carry_state);
     }
 }
@@ -1221,5 +1432,43 @@ exponent = 1.0
         // At 0% load there should be no penalty.
         let at_0 = evaluate_speed_curve(&curve, 0.0, true);
         assert!((at_0 - 1.0).abs() < f32::EPSILON, "zero load = full speed");
+    }
+
+    #[test]
+    fn asymptotic_growth_slows_near_strength_cap() {
+        let growth_curve = CarryGrowthCurveConfig {
+            kind: CarryGrowthCurveKind::Asymptotic,
+            max_strength: 8.0,
+        };
+
+        let early = carry_strength_delta(2.0, 1.0, 0.1, &growth_curve, 1.0);
+        let late = carry_strength_delta(2.0, 7.5, 0.1, &growth_curve, 1.0);
+
+        assert!(early > late);
+        assert!(late > 0.0);
+    }
+
+    #[test]
+    fn weight_observation_uses_tentative_language_for_first_carry() {
+        let text = describe_weight_observation(
+            0.8,
+            1.0,
+            ConfidenceLevel::Tentative,
+            &default_weight_descriptions(),
+        );
+
+        assert!(text.starts_with("Seemed "));
+    }
+
+    #[test]
+    fn weight_observation_strengthens_with_confidence() {
+        let text = describe_weight_observation(
+            0.8,
+            1.0,
+            ConfidenceLevel::Observed,
+            &default_weight_descriptions(),
+        );
+
+        assert_eq!(text, "Straining under the weight");
     }
 }

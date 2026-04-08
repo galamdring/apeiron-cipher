@@ -23,6 +23,7 @@ impl Plugin for JournalPlugin {
         app.add_message::<RecordEncounter>()
             .add_message::<RecordFabrication>()
             .add_message::<RecordThermalObservation>()
+            .add_message::<RecordWeightObservation>()
             .add_message::<ToggleJournalIntent>()
             .init_resource::<JournalUiState>()
             .add_systems(
@@ -40,10 +41,12 @@ impl Plugin for JournalPlugin {
                     apply_encounter_records,
                     apply_fabrication_records,
                     apply_thermal_records,
+                    apply_weight_records,
                     render_journal
                         .after(apply_encounter_records)
                         .after(apply_fabrication_records)
-                        .after(apply_thermal_records),
+                        .after(apply_thermal_records)
+                        .after(apply_weight_records),
                 ),
             );
     }
@@ -71,6 +74,13 @@ pub(crate) struct RecordThermalObservation {
     pub confidence: ConfidenceLevel,
 }
 
+#[derive(Message, Clone)]
+pub(crate) struct RecordWeightObservation {
+    pub seed: u64,
+    pub name: String,
+    pub description: String,
+}
+
 // ── Player-owned journal data ───────────────────────────────────────────
 
 #[derive(Component, Default)]
@@ -83,6 +93,7 @@ struct JournalEntry {
     name: String,
     surface_observations: Vec<String>,
     thermal_observation: Option<String>,
+    weight_observation: Option<String>,
     fabrication_history: Vec<String>,
 }
 
@@ -242,6 +253,20 @@ fn apply_thermal_records(
     }
 }
 
+fn apply_weight_records(
+    mut reader: MessageReader<RecordWeightObservation>,
+    mut player_query: Query<&mut Journal, With<Player>>,
+) {
+    let Ok(mut journal) = player_query.single_mut() else {
+        return;
+    };
+
+    for event in reader.read() {
+        let entry = journal.ensure_entry(event.seed, &event.name);
+        entry.weight_observation = Some(event.description.clone());
+    }
+}
+
 // ── Rendering ───────────────────────────────────────────────────────────
 
 fn render_journal(
@@ -290,6 +315,10 @@ fn build_journal_text(journal: &Journal) -> String {
 
         if let Some(thermal) = &entry.thermal_observation {
             out.push(format!("Heat: {thermal}"));
+        }
+
+        if let Some(weight) = &entry.weight_observation {
+            out.push(format!("Carried: {weight}"));
         }
 
         for history in &entry.fabrication_history {
@@ -379,5 +408,23 @@ mod tests {
 
         let text = build_journal_text(&journal);
         assert!(text.contains("Heat: Reliably hold together under heat"));
+    }
+
+    #[test]
+    fn journal_shows_weight_observation_only_when_present() {
+        let mut journal = Journal::default();
+        let entry = journal.ensure_entry(4, "Ferrite");
+        entry
+            .surface_observations
+            .push("Color: Cool blue tone".into());
+
+        let without_weight = build_journal_text(&journal);
+        assert!(!without_weight.contains("Carried: Heavy but manageable"));
+
+        let entry = journal.ensure_entry(4, "Ferrite");
+        entry.weight_observation = Some("Heavy but manageable".into());
+
+        let with_weight = build_journal_text(&journal);
+        assert!(with_weight.contains("Carried: Heavy but manageable"));
     }
 }
