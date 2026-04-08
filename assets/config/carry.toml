@@ -1,0 +1,39 @@
+active_profile = "default"
+starting_capacity = 5.0
+starting_strength = 1.0
+growth_rate = 0.02
+
+# If set, carry capacity is modeled as coming from a named carry-enabling item.
+# grant_starting_device controls whether the player begins with that item already.
+carry_device_item_key = "satchel_basic"
+grant_starting_device = true
+
+# Story 4.2 will consume this once carry retrieval is implemented.
+cycle_order = "fifo"
+
+[profiles.default]
+stamina_cost_multiplier = 1.4
+hard_limit_enabled = true
+
+[profiles.default.speed_curve]
+kind = "linear"
+min_multiplier = 0.45
+exponent = 1.35
+
+[profiles.relaxed]
+stamina_cost_multiplier = 1.15
+hard_limit_enabled = false
+
+[profiles.relaxed.speed_curve]
+kind = "linear"
+min_multiplier = 0.75
+exponent = 1.0
+
+[profiles.creative]
+stamina_cost_multiplier = 1.0
+hard_limit_enabled = false
+
+[profiles.creative.speed_curve]
+kind = "linear"
+min_multiplier = 1.0
+exponent = 1.0

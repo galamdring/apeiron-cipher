@@ -265,12 +265,6 @@ fn tick_processing(
 
     out_slot.material = Some(output_entity);
 
-    journal_writer.write(RecordFabrication {
-        output_material: output_mat.clone(),
-        input_a: input_mats[0].name.clone(),
-        input_b: input_mats[1].name.clone(),
-    });
-
     info!("Fabrication complete — produced '{}'", output_mat.name);
     *state = FabricatorState::Idle;
 }
