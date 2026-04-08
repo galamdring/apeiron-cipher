@@ -39,6 +39,28 @@ text = "Straining under the weight"
 max_ratio = 9999.0
 text = "Barely able to lift"
 
+[weight_cues]
+footstep_interval_seconds = 0.42
+footstep_base_volume = 0.02
+footstep_max_volume = 0.06
+footstep_light_speed = 1.2
+footstep_heavy_speed = 0.8
+bob_base_amplitude = 0.01
+bob_weight_amplitude = 0.015
+bob_frequency = 8.0
+bob_sprint_multiplier = 1.35
+breathing_start_ratio = 0.75
+breathing_full_ratio = 1.0
+breathing_max_volume = 0.035
+breathing_base_speed = 0.9
+breathing_heavy_speed = 1.15
+footstep_tone_hz = 180.0
+footstep_duration_ms = 65
+breathing_tone_hz = 110.0
+breathing_cycle_ms = 1100
+bob_forward_ratio = 0.35
+footstep_sprint_cadence = 0.78
+
 [profiles.default]
 stamina_cost_multiplier = 1.4
 hard_limit_enabled = true

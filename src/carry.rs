@@ -363,6 +363,8 @@ pub(crate) struct CarryConfig {
     #[serde(default = "default_weight_descriptions")]
     pub weight_descriptions: Vec<WeightDescriptionBand>,
     #[serde(default)]
+    pub weight_cues: CarryCueConfig,
+    #[serde(default)]
     pub profiles: CarryProfilesConfig,
 }
 
@@ -378,6 +380,7 @@ impl Default for CarryConfig {
             grant_starting_device: false,
             cycle_order: CarryCycleOrder::default(),
             weight_descriptions: default_weight_descriptions(),
+            weight_cues: CarryCueConfig::default(),
             profiles: CarryProfilesConfig::default(),
         }
     }
@@ -462,6 +465,162 @@ fn default_weight_descriptions() -> Vec<WeightDescriptionBand> {
             text: "Barely able to lift".into(),
         },
     ]
+}
+
+/// Config for Story 4.5's subtle sensory carry cues.
+///
+/// These values intentionally live alongside the rest of the carry tuning in
+/// `carry.toml`, because the goal is "weight feels physical through multiple
+/// channels" rather than "camera math and audio live in unrelated systems."
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub(crate) struct CarryCueConfig {
+    #[serde(default = "default_footstep_interval_seconds")]
+    pub footstep_interval_seconds: f32,
+    #[serde(default = "default_footstep_base_volume")]
+    pub footstep_base_volume: f32,
+    #[serde(default = "default_footstep_max_volume")]
+    pub footstep_max_volume: f32,
+    #[serde(default = "default_footstep_light_speed")]
+    pub footstep_light_speed: f32,
+    #[serde(default = "default_footstep_heavy_speed")]
+    pub footstep_heavy_speed: f32,
+    #[serde(default = "default_bob_base_amplitude")]
+    pub bob_base_amplitude: f32,
+    #[serde(default = "default_bob_weight_amplitude")]
+    pub bob_weight_amplitude: f32,
+    #[serde(default = "default_bob_frequency")]
+    pub bob_frequency: f32,
+    #[serde(default = "default_bob_sprint_multiplier")]
+    pub bob_sprint_multiplier: f32,
+    #[serde(default = "default_breathing_start_ratio")]
+    pub breathing_start_ratio: f32,
+    #[serde(default = "default_breathing_full_ratio")]
+    pub breathing_full_ratio: f32,
+    #[serde(default = "default_breathing_max_volume")]
+    pub breathing_max_volume: f32,
+    #[serde(default = "default_breathing_base_speed")]
+    pub breathing_base_speed: f32,
+    #[serde(default = "default_breathing_heavy_speed")]
+    pub breathing_heavy_speed: f32,
+    #[serde(default = "default_footstep_tone_hz")]
+    pub footstep_tone_hz: f32,
+    #[serde(default = "default_footstep_duration_ms")]
+    pub footstep_duration_ms: u64,
+    #[serde(default = "default_breathing_tone_hz")]
+    pub breathing_tone_hz: f32,
+    #[serde(default = "default_breathing_cycle_ms")]
+    pub breathing_cycle_ms: u64,
+    #[serde(default = "default_bob_forward_ratio")]
+    pub bob_forward_ratio: f32,
+    #[serde(default = "default_footstep_sprint_cadence")]
+    pub footstep_sprint_cadence: f32,
+}
+
+impl Default for CarryCueConfig {
+    fn default() -> Self {
+        Self {
+            footstep_interval_seconds: default_footstep_interval_seconds(),
+            footstep_base_volume: default_footstep_base_volume(),
+            footstep_max_volume: default_footstep_max_volume(),
+            footstep_light_speed: default_footstep_light_speed(),
+            footstep_heavy_speed: default_footstep_heavy_speed(),
+            bob_base_amplitude: default_bob_base_amplitude(),
+            bob_weight_amplitude: default_bob_weight_amplitude(),
+            bob_frequency: default_bob_frequency(),
+            bob_sprint_multiplier: default_bob_sprint_multiplier(),
+            breathing_start_ratio: default_breathing_start_ratio(),
+            breathing_full_ratio: default_breathing_full_ratio(),
+            breathing_max_volume: default_breathing_max_volume(),
+            breathing_base_speed: default_breathing_base_speed(),
+            breathing_heavy_speed: default_breathing_heavy_speed(),
+            footstep_tone_hz: default_footstep_tone_hz(),
+            footstep_duration_ms: default_footstep_duration_ms(),
+            breathing_tone_hz: default_breathing_tone_hz(),
+            breathing_cycle_ms: default_breathing_cycle_ms(),
+            bob_forward_ratio: default_bob_forward_ratio(),
+            footstep_sprint_cadence: default_footstep_sprint_cadence(),
+        }
+    }
+}
+
+fn default_footstep_interval_seconds() -> f32 {
+    0.42
+}
+
+fn default_footstep_base_volume() -> f32 {
+    0.02
+}
+
+fn default_footstep_max_volume() -> f32 {
+    0.06
+}
+
+fn default_footstep_light_speed() -> f32 {
+    1.2
+}
+
+fn default_footstep_heavy_speed() -> f32 {
+    0.8
+}
+
+fn default_bob_base_amplitude() -> f32 {
+    0.01
+}
+
+fn default_bob_weight_amplitude() -> f32 {
+    0.015
+}
+
+fn default_bob_frequency() -> f32 {
+    8.0
+}
+
+fn default_bob_sprint_multiplier() -> f32 {
+    1.35
+}
+
+fn default_breathing_start_ratio() -> f32 {
+    0.75
+}
+
+fn default_breathing_full_ratio() -> f32 {
+    1.0
+}
+
+fn default_breathing_max_volume() -> f32 {
+    0.035
+}
+
+fn default_breathing_base_speed() -> f32 {
+    0.9
+}
+
+fn default_breathing_heavy_speed() -> f32 {
+    1.15
+}
+
+fn default_footstep_tone_hz() -> f32 {
+    180.0
+}
+
+fn default_footstep_duration_ms() -> u64 {
+    65
+}
+
+fn default_breathing_tone_hz() -> f32 {
+    110.0
+}
+
+fn default_breathing_cycle_ms() -> u64 {
+    1100
+}
+
+fn default_bob_forward_ratio() -> f32 {
+    0.35
+}
+
+fn default_footstep_sprint_cadence() -> f32 {
+    0.78
 }
 
 /// How carry retrieval should behave once Story 4.2 starts cycling items.
