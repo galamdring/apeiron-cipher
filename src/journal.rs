@@ -9,13 +9,12 @@
 use std::collections::BTreeMap;
 
 use bevy::prelude::*;
-use bevy::window::CursorGrabMode;
 use leafwing_input_manager::prelude::*;
 
 use crate::input::InputAction;
 use crate::materials::GameMaterial;
 use crate::observation::{ConfidenceLevel, describe_thermal_observation};
-use crate::player::{Player, spawn_player};
+use crate::player::{Player, cursor_is_captured, spawn_player};
 
 pub(crate) struct JournalPlugin;
 
@@ -155,7 +154,7 @@ fn emit_toggle_journal_intent(
     cursor_options: Single<&bevy::window::CursorOptions>,
     mut writer: MessageWriter<ToggleJournalIntent>,
 ) {
-    if cursor_options.grab_mode == CursorGrabMode::None {
+    if !cursor_is_captured(cursor_options.grab_mode) {
         return;
     }
 
