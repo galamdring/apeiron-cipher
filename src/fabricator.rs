@@ -215,11 +215,6 @@ fn tick_processing(
 
     // Rule-driven combination.
     let output_mat = rule_combine(&rules, &input_mats[0], &input_mats[1]);
-    journal_writer.write(RecordFabrication {
-        output_material: output_mat.clone(),
-        input_a: input_mats[0].name.clone(),
-        input_b: input_mats[1].name.clone(),
-    });
 
     // Spawn the output material on the output slot.
     let Ok((output_gtf, mut out_slot)) = output_slot.single_mut() else {
@@ -252,6 +247,12 @@ fn tick_processing(
         .id();
 
     out_slot.material = Some(output_entity);
+
+    journal_writer.write(RecordFabrication {
+        output_material: output_mat.clone(),
+        input_a: input_mats[0].name.clone(),
+        input_b: input_mats[1].name.clone(),
+    });
 
     info!("Fabrication complete — produced '{}'", output_mat.name);
     *state = FabricatorState::Idle;
