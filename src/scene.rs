@@ -487,6 +487,11 @@ fn setup_scene(
     let wall_y = h * 0.5;
     let west_east_depth = hz * 2.0 + t * 2.0;
     let north_south_width = hx * 2.0 + t * 2.0;
+    let doorway_width = 1.6;
+    let doorway_height = 2.25;
+    let doorway_half_width = doorway_width * 0.5;
+    let side_wall_width = hx - doorway_half_width;
+    let lintel_height = (h - doorway_height).max(t);
 
     // West (-X)
     commands.spawn((
@@ -500,17 +505,55 @@ fn setup_scene(
         MeshMaterial3d(wall_mat.clone()),
         Transform::from_xyz(hx + t * 0.5, wall_y, 0.0),
     ));
-    // South (-Z)
+    // South (-Z) with a centered doorway opening.
     commands.spawn((
-        Mesh3d(meshes.add(Cuboid::new(north_south_width, h, t))),
+        Mesh3d(meshes.add(Cuboid::new(side_wall_width, h, t))),
         MeshMaterial3d(wall_mat.clone()),
-        Transform::from_xyz(0.0, wall_y, -hz - t * 0.5),
+        Transform::from_xyz(
+            -(doorway_half_width + side_wall_width * 0.5),
+            wall_y,
+            -hz - t * 0.5,
+        ),
+    ));
+    commands.spawn((
+        Mesh3d(meshes.add(Cuboid::new(side_wall_width, h, t))),
+        MeshMaterial3d(wall_mat.clone()),
+        Transform::from_xyz(
+            doorway_half_width + side_wall_width * 0.5,
+            wall_y,
+            -hz - t * 0.5,
+        ),
+    ));
+    commands.spawn((
+        Mesh3d(meshes.add(Cuboid::new(doorway_width, lintel_height, t))),
+        MeshMaterial3d(wall_mat.clone()),
+        Transform::from_xyz(0.0, doorway_height + lintel_height * 0.5, -hz - t * 0.5),
     ));
     // North (+Z)
     commands.spawn((
         Mesh3d(meshes.add(Cuboid::new(north_south_width, h, t))),
         MeshMaterial3d(wall_mat),
         Transform::from_xyz(0.0, wall_y, hz + t * 0.5),
+    ));
+
+    let exterior_ground_size_x = hx * 6.0;
+    let exterior_ground_size_z = hz * 8.0;
+    let exterior_ground_center_z = -hz - exterior_ground_size_z * 0.5;
+    let exterior_ground_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.26, 0.3, 0.22),
+        perceptual_roughness: 0.98,
+        ..default()
+    });
+    commands.spawn((
+        Mesh3d(
+            meshes.add(
+                Plane3d::default()
+                    .mesh()
+                    .size(exterior_ground_size_x, exterior_ground_size_z),
+            ),
+        ),
+        MeshMaterial3d(exterior_ground_mat),
+        Transform::from_xyz(0.0, -0.01, exterior_ground_center_z),
     ));
 
     // Workbench — lighter, lower roughness than walls (future fabricator site).
