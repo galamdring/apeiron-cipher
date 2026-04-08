@@ -25,6 +25,9 @@ func main() {
 	if dbURL == "" {
 		log.Fatal("DATABASE_URL is required")
 	}
+	if webhookSecret == "" {
+		log.Fatal("WEBHOOK_SECRET is required")
+	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
@@ -75,20 +78,19 @@ func main() {
 
 func webhookHandler(database db.DBClient, secret string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, 25*1024*1024) // 25 MB — well above any real GitHub webhook
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			http.Error(w, "failed to read body", http.StatusBadRequest)
 			return
 		}
 
-		// Validate webhook signature if secret is configured
-		if secret != "" {
-			sig := r.Header.Get("X-Hub-Signature-256")
-			if !validateSignature(body, sig, secret) {
-				log.Printf("webhook signature validation failed")
-				http.Error(w, "invalid signature", http.StatusUnauthorized)
-				return
-			}
+		// Validate webhook signature
+		sig := r.Header.Get("X-Hub-Signature-256")
+		if !validateSignature(body, sig, secret) {
+			log.Printf("webhook signature validation failed")
+			http.Error(w, "invalid signature", http.StatusUnauthorized)
+			return
 		}
 
 		deliveryID := r.Header.Get("X-GitHub-Delivery")

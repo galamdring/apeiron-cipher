@@ -15,6 +15,8 @@ import (
 	"github.com/galamdring/apeiron-cipher/infra/orchestrator/internal/mocks"
 )
 
+const testSecret = "test-secret"
+
 // signBody returns a valid "sha256=<hex>" signature for the given body and secret.
 func signBody(body []byte, secret string) string {
 	mac := hmac.New(sha256.New, []byte(secret))
@@ -47,9 +49,10 @@ type capturedInsertEvent struct {
 
 func TestWebhookHandler_MissingDeliveryID(t *testing.T) {
 	mock := &mocks.MockDBClient{}
-	handler := webhookHandler(mock, "")
+	handler := webhookHandler(mock, testSecret)
 
-	req := newWebhookRequest(t, []byte(`{}`), "", "push", "")
+	body := []byte(`{}`)
+	req := newWebhookRequest(t, body, "", "push", signBody(body, testSecret))
 	rr := httptest.NewRecorder()
 	handler(rr, req)
 
@@ -60,9 +63,10 @@ func TestWebhookHandler_MissingDeliveryID(t *testing.T) {
 
 func TestWebhookHandler_MissingEventType(t *testing.T) {
 	mock := &mocks.MockDBClient{}
-	handler := webhookHandler(mock, "")
+	handler := webhookHandler(mock, testSecret)
 
-	req := newWebhookRequest(t, []byte(`{}`), "delivery-1", "", "")
+	body := []byte(`{}`)
+	req := newWebhookRequest(t, body, "delivery-1", "", signBody(body, testSecret))
 	rr := httptest.NewRecorder()
 	handler(rr, req)
 
@@ -106,10 +110,10 @@ func TestWebhookHandler_InsertEventError(t *testing.T) {
 			return 0, errors.New("db down")
 		},
 	}
-	handler := webhookHandler(mock, "")
+	handler := webhookHandler(mock, testSecret)
 
 	body := []byte(`{"action":"opened"}`)
-	req := newWebhookRequest(t, body, "delivery-1", "pull_request", "")
+	req := newWebhookRequest(t, body, "delivery-1", "pull_request", signBody(body, testSecret))
 	rr := httptest.NewRecorder()
 	handler(rr, req)
 
@@ -126,10 +130,10 @@ func TestWebhookHandler_Success_WithAction(t *testing.T) {
 			return 42, nil
 		},
 	}
-	handler := webhookHandler(mock, "")
+	handler := webhookHandler(mock, testSecret)
 
 	body := []byte(`{"action":"opened","number":1}`)
-	req := newWebhookRequest(t, body, "abc-123", "pull_request", "")
+	req := newWebhookRequest(t, body, "abc-123", "pull_request", signBody(body, testSecret))
 	rr := httptest.NewRecorder()
 	handler(rr, req)
 
@@ -158,10 +162,10 @@ func TestWebhookHandler_Success_NoAction(t *testing.T) {
 			return 1, nil
 		},
 	}
-	handler := webhookHandler(mock, "")
+	handler := webhookHandler(mock, testSecret)
 
 	body := []byte(`{"ref":"main"}`)
-	req := newWebhookRequest(t, body, "del-99", "push", "")
+	req := newWebhookRequest(t, body, "del-99", "push", signBody(body, testSecret))
 	rr := httptest.NewRecorder()
 	handler(rr, req)
 
@@ -179,15 +183,29 @@ func TestWebhookHandler_RepeatedReceiptStillReturnsOK(t *testing.T) {
 			return 99, nil
 		},
 	}
-	handler := webhookHandler(mock, "")
+	handler := webhookHandler(mock, testSecret)
 
 	body := []byte(`{"action":"opened"}`)
-	req := newWebhookRequest(t, body, "dup-1", "issues", "")
+	req := newWebhookRequest(t, body, "dup-1", "issues", signBody(body, testSecret))
 	rr := httptest.NewRecorder()
 	handler(rr, req)
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("expected 200 for repeated receipt, got %d", rr.Code)
+	}
+}
+
+func TestWebhookHandler_BodyTooLarge(t *testing.T) {
+	mock := &mocks.MockDBClient{}
+	handler := webhookHandler(mock, testSecret)
+
+	body := make([]byte, 26*1024*1024) // 26 MB — over the 25 MB limit
+	req := newWebhookRequest(t, body, "big-1", "push", signBody(body, testSecret))
+	rr := httptest.NewRecorder()
+	handler(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for oversized body, got %d", rr.Code)
 	}
 }
 
