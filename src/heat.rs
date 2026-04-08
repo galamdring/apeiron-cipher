@@ -16,7 +16,6 @@
 
 use bevy::prelude::*;
 
-use crate::interaction::HeldItem;
 use crate::journal::RecordThermalObservation;
 use crate::materials::{GameMaterial, MaterialObject, PropertyVisibility};
 use crate::observation::ConfidenceTracker;
@@ -67,6 +66,24 @@ fn update_exposure_elapsed(elapsed: f32, in_zone: bool, delta_secs: f32) -> f32 
     } else {
         (elapsed - delta_secs).max(0.0)
     }
+}
+
+fn exposure_rate(thermal_resistance: f32) -> f32 {
+    let thermal_conductivity = 1.0 - thermal_resistance.clamp(0.0, 1.0);
+    0.35 + thermal_conductivity * 1.3
+}
+
+fn update_exposure_elapsed_for_material(
+    elapsed: f32,
+    in_zone: bool,
+    delta_secs: f32,
+    thermal_resistance: f32,
+) -> f32 {
+    update_exposure_elapsed(
+        elapsed,
+        in_zone,
+        delta_secs * exposure_rate(thermal_resistance),
+    )
 }
 
 /// Prevents a single material entity from incrementing confidence more than once.
@@ -132,8 +149,13 @@ fn track_heat_exposure(
     cfg: Res<SceneConfig>,
     heat_query: Query<&GlobalTransform, With<HeatSource>>,
     mut material_query: Query<
-        (Entity, &GlobalTransform, Option<&mut HeatExposure>),
-        (With<MaterialObject>, Without<HeldItem>),
+        (
+            Entity,
+            &GlobalTransform,
+            &GameMaterial,
+            Option<&mut HeatExposure>,
+        ),
+        With<MaterialObject>,
     >,
 ) {
     let Ok(heat_gtf) = heat_query.single() else {
@@ -143,14 +165,19 @@ fn track_heat_exposure(
     let zone_r_sq = cfg.heat_source.zone_radius * cfg.heat_source.zone_radius;
     let dt = time.delta_secs();
 
-    for (entity, mat_gtf, exposure) in &mut material_query {
+    for (entity, mat_gtf, mat, exposure) in &mut material_query {
         let dist_sq = mat_gtf.translation().distance_squared(heat_pos);
         let inside = dist_sq <= zone_r_sq;
 
         match exposure {
             Some(mut exp) => {
                 exp.in_zone = inside;
-                exp.elapsed = update_exposure_elapsed(exp.elapsed, inside, dt);
+                exp.elapsed = update_exposure_elapsed_for_material(
+                    exp.elapsed,
+                    inside,
+                    dt,
+                    mat.thermal_resistance.value,
+                );
             }
             None if inside => {
                 commands.entity(entity).insert(HeatExposure::new());
@@ -324,6 +351,13 @@ mod tests {
     fn exposure_elapsed_never_goes_below_zero() {
         let elapsed = update_exposure_elapsed(0.1, false, 0.25);
         assert!(elapsed.abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn low_resistance_materials_change_temperature_faster() {
+        let low = update_exposure_elapsed_for_material(0.0, true, 1.0, 0.1);
+        let high = update_exposure_elapsed_for_material(0.0, true, 1.0, 0.9);
+        assert!(low > high);
     }
 
     #[test]

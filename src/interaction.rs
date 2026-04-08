@@ -23,10 +23,10 @@ use bevy::prelude::*;
 use crate::fabricator::{ActivateIntent, InputSlot};
 use crate::input::InputAction;
 use crate::journal::RecordEncounter;
-use crate::materials::{GameMaterial, MaterialObject, PropertyVisibility};
+use crate::materials::{GameMaterial, MATERIAL_SURFACE_GAP, MaterialObject, PropertyVisibility};
 use crate::observation::{ConfidenceTracker, describe_thermal_observation};
 use crate::player::{Player, PlayerCamera, cursor_is_captured};
-use crate::scene::Surface;
+use crate::scene::{SceneConfig, Surface};
 
 use leafwing_input_manager::prelude::*;
 
@@ -310,22 +310,25 @@ fn process_pickup(
 }
 
 /// Small gap above the surface so objects sit on top without z-fighting.
-const PLACE_GAP: f32 = 0.1;
 /// Maximum XZ distance from the ray's intersection to a surface center for
 /// placement to be considered valid.
 const PLACE_REACH: f32 = 2.5;
 
+#[allow(clippy::too_many_arguments)]
 fn process_place(
     mut commands: Commands,
     mut reader: MessageReader<PlaceIntent>,
-    held_query: Query<Entity, With<HeldItem>>,
+    scene: Res<SceneConfig>,
+    held_query: Query<(Entity, &GameMaterial), With<HeldItem>>,
     camera_query: Query<&GlobalTransform, With<PlayerCamera>>,
-    surfaces: Query<(Entity, &GlobalTransform), With<Surface>>,
+    player_query: Query<&GlobalTransform, With<Player>>,
+    surfaces: Query<(Entity, &GlobalTransform, &Surface)>,
+    material_positions: Query<(Entity, &GlobalTransform, &GameMaterial), With<MaterialObject>>,
     slot_target: Res<SlotTarget>,
     mut slot_query: Query<(&GlobalTransform, &mut InputSlot)>,
 ) {
     for _intent in reader.read() {
-        let Some(held_entity) = held_query.iter().next() else {
+        let Some((held_entity, held_material)) = held_query.iter().next() else {
             continue;
         };
 
@@ -343,7 +346,7 @@ fn process_place(
                 .remove_parent_in_place()
                 .insert(Transform::from_xyz(
                     slot_pos.x,
-                    slot_pos.y + PLACE_GAP,
+                    slot.top_y + held_material.support_height() + MATERIAL_SURFACE_GAP,
                     slot_pos.z,
                 ));
             continue;
@@ -353,8 +356,7 @@ fn process_place(
         let Ok(cam_gtf) = camera_query.single() else {
             continue;
         };
-
-        let Some((_entity, surface_gtf)) = best_surface_for_ray(cam_gtf, &surfaces) else {
+        let Ok(player_gtf) = player_query.single() else {
             continue;
         };
 
@@ -363,19 +365,43 @@ fn process_place(
             .remove::<HeldItem>()
             .remove_parent_in_place();
 
-        let surface_pos = surface_gtf.translation();
-        let cam_pos = cam_gtf.translation();
-        let cam_fwd = *cam_gtf.forward();
+        let drop_position = if let Some((_entity, surface_gtf, surface)) =
+            best_surface_for_ray(cam_gtf, &surfaces)
+        {
+            let surface_pos = surface_gtf.translation();
+            let cam_pos = cam_gtf.translation();
+            let cam_fwd = *cam_gtf.forward();
 
-        let hit = ray_horizontal_intersection(cam_pos, cam_fwd, surface_pos.y);
-        let place_x = hit.map_or(surface_pos.x, |p| p.x);
-        let place_z = hit.map_or(surface_pos.z, |p| p.z);
+            let hit = ray_horizontal_intersection(cam_pos, cam_fwd, surface_pos.y);
+            let place_x = hit.map_or(surface_pos.x, |p| {
+                p.x.clamp(
+                    surface_pos.x - surface.half_extent_x,
+                    surface_pos.x + surface.half_extent_x,
+                )
+            });
+            let place_z = hit.map_or(surface_pos.z, |p| {
+                p.z.clamp(
+                    surface_pos.z - surface.half_extent_z,
+                    surface_pos.z + surface.half_extent_z,
+                )
+            });
+            let candidate = Vec3::new(
+                place_x,
+                held_material.resting_center_y(surface_pos.y),
+                place_z,
+            );
+            if can_place_material(held_entity, held_material, candidate, &material_positions) {
+                candidate
+            } else {
+                floor_drop_position(player_gtf, &scene, held_material)
+            }
+        } else {
+            floor_drop_position(player_gtf, &scene, held_material)
+        };
 
-        commands.entity(held_entity).insert(Transform::from_xyz(
-            place_x,
-            surface_pos.y + PLACE_GAP,
-            place_z,
-        ));
+        commands
+            .entity(held_entity)
+            .insert(Transform::from_translation(drop_position));
     }
 }
 
@@ -397,24 +423,76 @@ fn ray_horizontal_intersection(origin: Vec3, direction: Vec3, plane_y: f32) -> O
 /// center is closest to the intersection point.
 fn best_surface_for_ray<'a>(
     cam_gtf: &GlobalTransform,
-    surfaces: &'a Query<(Entity, &GlobalTransform), With<Surface>>,
-) -> Option<(Entity, &'a GlobalTransform)> {
+    surfaces: &'a Query<(Entity, &GlobalTransform, &Surface)>,
+) -> Option<(Entity, &'a GlobalTransform, &'a Surface)> {
     let origin = cam_gtf.translation();
     let direction = *cam_gtf.forward();
 
     surfaces
         .iter()
-        .filter_map(|(entity, sgtf)| {
+        .filter_map(|(entity, sgtf, surface)| {
             let s_pos = sgtf.translation();
             let hit = ray_horizontal_intersection(origin, direction, s_pos.y)?;
-            let xz_dist = Vec2::new(hit.x - s_pos.x, hit.z - s_pos.z).length();
+            let dx = hit.x - s_pos.x;
+            let dz = hit.z - s_pos.z;
+            if dx.abs() > surface.half_extent_x || dz.abs() > surface.half_extent_z {
+                return None;
+            }
+            let xz_dist = Vec2::new(dx, dz).length();
             if xz_dist > PLACE_REACH {
                 return None;
             }
-            Some((entity, sgtf, xz_dist))
+            Some((entity, sgtf, surface, xz_dist))
         })
-        .min_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal))
-        .map(|(entity, sgtf, _)| (entity, sgtf))
+        .min_by(|a, b| a.3.partial_cmp(&b.3).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|(entity, sgtf, surface, _)| (entity, sgtf, surface))
+}
+
+fn can_place_material(
+    held_entity: Entity,
+    held_material: &GameMaterial,
+    candidate: Vec3,
+    material_positions: &Query<(Entity, &GlobalTransform, &GameMaterial), With<MaterialObject>>,
+) -> bool {
+    let held_radius = held_material.footprint_radius();
+    material_positions.iter().all(|(entity, gtf, material)| {
+        if entity == held_entity {
+            return true;
+        }
+
+        let other = gtf.translation();
+        let same_level = (other.y - candidate.y).abs() < 0.25;
+        if !same_level {
+            return true;
+        }
+
+        let required_gap = held_radius + material.footprint_radius();
+        let xz_dist = Vec2::new(other.x - candidate.x, other.z - candidate.z).length();
+        xz_dist >= required_gap
+    })
+}
+
+fn floor_drop_position(
+    player_gtf: &GlobalTransform,
+    scene: &SceneConfig,
+    material: &GameMaterial,
+) -> Vec3 {
+    let origin = player_gtf.translation();
+    let forward = *player_gtf.forward();
+    let forward_xz = Vec3::new(forward.x, 0.0, forward.z).normalize_or_zero();
+    let fallback_forward = if forward_xz == Vec3::ZERO {
+        Vec3::NEG_Z
+    } else {
+        forward_xz
+    };
+    let mut position = Vec3::new(origin.x, 0.0, origin.z) + fallback_forward * 0.35;
+    let margin = scene.room.boundary_margin;
+    let max_x = scene.room.half_extent_x - margin;
+    let max_z = scene.room.half_extent_z - margin;
+    position.x = position.x.clamp(-max_x, max_x);
+    position.z = position.z.clamp(-max_z, max_z);
+    position.y = material.resting_center_y(0.0);
+    position
 }
 
 // ── Held item tracking ───────────────────────────────────────────────────
@@ -762,6 +840,31 @@ mod tests {
         assert!(should_emit_place(false, true, true));
         assert!(!should_emit_place(false, false, true));
         assert!(!should_emit_place(true, false, false));
+    }
+
+    #[test]
+    fn floor_drop_position_clamps_inside_room_bounds() {
+        let scene = SceneConfig::default();
+        let player = GlobalTransform::from(Transform::from_xyz(100.0, 1.7, 100.0));
+        let material = test_material();
+        let dropped = floor_drop_position(&player, &scene, &material);
+        let max_x = scene.room.half_extent_x - scene.room.boundary_margin;
+        let max_z = scene.room.half_extent_z - scene.room.boundary_margin;
+
+        assert!(dropped.x <= max_x);
+        assert!(dropped.z <= max_z);
+        assert!((dropped.y - material.resting_center_y(0.0)).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn floor_drop_position_uses_player_floor_position() {
+        let scene = SceneConfig::default();
+        let player = GlobalTransform::from(Transform::from_xyz(1.25, 1.7, -0.75));
+        let material = test_material();
+        let dropped = floor_drop_position(&player, &scene, &material);
+
+        assert!((dropped.x - 1.25).abs() < f32::EPSILON);
+        assert!((dropped.z - (-1.10)).abs() < f32::EPSILON);
     }
 
     #[test]
