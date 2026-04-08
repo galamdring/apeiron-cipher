@@ -23,8 +23,9 @@ use bevy::window::CursorGrabMode;
 
 use crate::fabricator::{ActivateIntent, InputSlot};
 use crate::input::InputAction;
+use crate::journal::RecordEncounter;
 use crate::materials::{GameMaterial, MaterialObject, PropertyVisibility};
-use crate::observation::{ConfidenceLevel, ConfidenceTracker};
+use crate::observation::{ConfidenceTracker, describe_thermal_observation};
 use crate::player::{Player, PlayerCamera};
 use crate::scene::Surface;
 
@@ -491,11 +492,21 @@ fn process_examine(
     mut reader: MessageReader<ExamineIntent>,
     mut state: ResMut<ExamineState>,
     target: Res<InteractionTarget>,
-    held_query: Query<(), With<HeldItem>>,
+    held_query: Query<&GameMaterial, With<HeldItem>>,
+    material_query: Query<&GameMaterial, With<MaterialObject>>,
+    mut encounter_writer: MessageWriter<RecordEncounter>,
 ) {
     for _intent in reader.read() {
-        if held_query.iter().next().is_some() || target.entity.is_some() {
+        let held_material = held_query.iter().next();
+        let targeted_material = target
+            .entity
+            .and_then(|entity| material_query.get(entity).ok());
+
+        if let Some(mat) = held_material.or(targeted_material) {
             state.visible = !state.visible;
+            encounter_writer.write(RecordEncounter {
+                material: mat.clone(),
+            });
         } else {
             state.visible = false;
         }
@@ -574,33 +585,6 @@ fn describe_density(value: f32) -> &'static str {
         "Very heavy"
     } else {
         "Extremely dense"
-    }
-}
-
-fn describe_thermal_behavior(value: f32) -> &'static str {
-    if value < 0.25 {
-        "soften quickly under heat"
-    } else if value < 0.5 {
-        "change noticeably under heat"
-    } else if value < 0.75 {
-        "hold together under heat"
-    } else {
-        "barely react to heat"
-    }
-}
-
-fn describe_thermal_observation(value: f32, confidence: ConfidenceLevel) -> String {
-    let behavior = describe_thermal_behavior(value);
-    match confidence {
-        ConfidenceLevel::Tentative => format!("Seemed to {behavior}"),
-        ConfidenceLevel::Observed => {
-            let mut chars = behavior.chars();
-            let Some(first) = chars.next() else {
-                return String::new();
-            };
-            format!("{}{}", first.to_uppercase(), chars.as_str())
-        }
-        ConfidenceLevel::Confident => format!("Reliably {behavior}"),
     }
 }
 

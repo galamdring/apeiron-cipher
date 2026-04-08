@@ -14,6 +14,7 @@
 use bevy::prelude::*;
 
 use crate::combination::CombinationRules;
+use crate::journal::RecordFabrication;
 use crate::materials::{GameMaterial, MaterialObject, MaterialProperty, PropertyVisibility};
 use crate::scene::{SceneConfig, Workbench};
 
@@ -175,6 +176,7 @@ fn tick_processing(
     time: Res<Time>,
     cfg: Res<SceneConfig>,
     rules: Res<CombinationRules>,
+    mut journal_writer: MessageWriter<RecordFabrication>,
     mut state: ResMut<FabricatorState>,
     mut slots: Query<&mut InputSlot>,
     material_query: Query<&GameMaterial, With<MaterialObject>>,
@@ -245,6 +247,12 @@ fn tick_processing(
         .id();
 
     out_slot.material = Some(output_entity);
+
+    journal_writer.write(RecordFabrication {
+        output_material: output_mat.clone(),
+        input_a: input_mats[0].name.clone(),
+        input_b: input_mats[1].name.clone(),
+    });
 
     info!("Fabrication complete — produced '{}'", output_mat.name);
     *state = FabricatorState::Idle;

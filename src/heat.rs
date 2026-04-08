@@ -17,6 +17,7 @@
 use bevy::prelude::*;
 
 use crate::interaction::HeldItem;
+use crate::journal::RecordThermalObservation;
 use crate::materials::{GameMaterial, MaterialObject, PropertyVisibility};
 use crate::observation::ConfidenceTracker;
 use crate::scene::{SceneConfig, Workbench};
@@ -227,6 +228,7 @@ fn reveal_thermal_property(
     mut commands: Commands,
     cfg: Res<SceneConfig>,
     mut tracker: ResMut<ConfidenceTracker>,
+    mut journal_writer: MessageWriter<RecordThermalObservation>,
     mut material_query: Query<
         (
             Entity,
@@ -255,6 +257,12 @@ fn reveal_thermal_property(
         if recorded.is_none() {
             let count = tracker.record(mat.seed, "thermal_resistance");
             commands.entity(entity).insert(ThermalObservationRecorded);
+            journal_writer.write(RecordThermalObservation {
+                seed: mat.seed,
+                name: mat.name.clone(),
+                thermal_resistance: mat.thermal_resistance.value,
+                confidence: tracker.level(mat.seed, "thermal_resistance"),
+            });
             info!(
                 "'{}' thermal observation recorded (count = {})",
                 mat.name, count
