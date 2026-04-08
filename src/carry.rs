@@ -21,8 +21,13 @@ use std::path::Path;
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 
+use crate::input::InputAction;
+use crate::interaction::{HOLD_OFFSET, HeldItem, floor_drop_position};
 use crate::materials::GameMaterial;
-use crate::player::Player;
+use crate::materials::MaterialObject;
+use crate::player::{Player, PlayerCamera, cursor_is_captured};
+use crate::scene::SceneConfig;
+use leafwing_input_manager::prelude::*;
 
 const CONFIG_PATH: &str = "assets/config/carry.toml";
 
@@ -40,6 +45,17 @@ impl Plugin for CarryPlugin {
             .add_systems(
                 Startup,
                 attach_carry_state_to_player.after(crate::player::spawn_player),
+            )
+            .add_systems(
+                Update,
+                (
+                    emit_stash_intent,
+                    emit_cycle_carry_intent,
+                    emit_drop_carry_intent,
+                    process_stash_intent,
+                    process_cycle_carry_intent.after(process_stash_intent),
+                    process_drop_carry_intent.after(process_cycle_carry_intent),
+                ),
             );
     }
 }
@@ -65,6 +81,20 @@ pub(crate) struct CarryWeightChanged {
     pub current_weight: f32,
     pub effective_capacity: f32,
 }
+
+/// Marks a material entity as being in the player's carry container rather than
+/// physically present in the world.
+///
+/// This matters because Epic 4's carry loop is not a second copy of materials.
+/// The same entity moves between three states:
+/// - world object (`MaterialObject`)
+/// - held in hand (`HeldItem`)
+/// - stashed in carry (`InCarry`)
+///
+/// Making that state explicit keeps later systems from accidentally treating a
+/// stashed item like a world object that can still be raycast, heated, or placed.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct InCarry;
 
 // ── Runtime player state ─────────────────────────────────────────────────
 
@@ -117,13 +147,6 @@ impl CarryState {
     ///
     /// Story 4.1 does not wire the stash interaction yet, but this method is the
     /// server-side accounting rule that later intent-processing systems will call.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "Story 4.2 will use these helpers when carry mutations become interactive"
-        )
-    )]
     pub(crate) fn add_material(&mut self, entity: Entity, material: &GameMaterial) {
         self.carried_items.push(CarriedItem::new(entity));
         self.current_weight += material.density.value;
@@ -134,13 +157,6 @@ impl CarryState {
     /// We search by entity because runtime carry is presently keyed by the live
     /// world entity. A future persistence story may need a richer identity model,
     /// but runtime in-session carry can safely start here.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "Story 4.2 will use these helpers when carry mutations become interactive"
-        )
-    )]
     pub(crate) fn remove_material(
         &mut self,
         entity: Entity,
@@ -158,6 +174,19 @@ impl CarryState {
             self.current_weight = 0.0;
         }
         Some(removed)
+    }
+
+    /// Select which carried entity should be returned next when cycling or dropping.
+    ///
+    /// FIFO means "oldest stashed item first." LIFO means "most recently stashed
+    /// item first." We return the entity without mutating here so higher-level
+    /// systems can decide the order of multi-step operations like "stash current
+    /// hand item, then retrieve an older carried item."
+    pub(crate) fn next_carried_entity(&self, cycle_order: CarryCycleOrder) -> Option<Entity> {
+        match cycle_order {
+            CarryCycleOrder::Fifo => self.carried_items.first().map(|item| item.entity),
+            CarryCycleOrder::Lifo => self.carried_items.last().map(|item| item.entity),
+        }
     }
 }
 
@@ -485,6 +514,222 @@ fn compute_effective_capacity(base_capacity: f32, device_state: &CarryDeviceStat
     }
 }
 
+// ── Input → carry intents ────────────────────────────────────────────────
+
+fn emit_stash_intent(
+    player_query: Query<&ActionState<InputAction>, With<Player>>,
+    cursor_options: Single<&bevy::window::CursorOptions>,
+    mut writer: MessageWriter<StashIntent>,
+) {
+    if !cursor_is_captured(cursor_options.grab_mode) {
+        return;
+    }
+    let Ok(action) = player_query.single() else {
+        return;
+    };
+    if action.just_pressed(&InputAction::Stash) {
+        writer.write(StashIntent);
+    }
+}
+
+fn emit_cycle_carry_intent(
+    player_query: Query<&ActionState<InputAction>, With<Player>>,
+    cursor_options: Single<&bevy::window::CursorOptions>,
+    mut writer: MessageWriter<CycleCarryIntent>,
+) {
+    if !cursor_is_captured(cursor_options.grab_mode) {
+        return;
+    }
+    let Ok(action) = player_query.single() else {
+        return;
+    };
+    if action.just_pressed(&InputAction::CycleCarry) {
+        writer.write(CycleCarryIntent);
+    }
+}
+
+fn emit_drop_carry_intent(
+    player_query: Query<&ActionState<InputAction>, With<Player>>,
+    cursor_options: Single<&bevy::window::CursorOptions>,
+    mut writer: MessageWriter<DropCarryIntent>,
+) {
+    if !cursor_is_captured(cursor_options.grab_mode) {
+        return;
+    }
+    let Ok(action) = player_query.single() else {
+        return;
+    };
+    if action.just_pressed(&InputAction::Drop) {
+        writer.write(DropCarryIntent);
+    }
+}
+
+// ── Carry mutation helpers ───────────────────────────────────────────────
+
+/// Convert a held world material into a stashed carry item.
+///
+/// The entity itself stays alive. We are not cloning or re-instantiating the
+/// material for carry. Instead, we move the same entity out of the world-facing
+/// state and into an inventory-facing state:
+/// - remove `HeldItem` because it is no longer in hand
+/// - remove `MaterialObject` because it should no longer behave like a world prop
+/// - add `InCarry` to make the state explicit for later systems
+/// - hide the entity so it stops rendering
+fn stash_entity_into_carry(
+    commands: &mut Commands,
+    carry_state: &mut CarryState,
+    entity: Entity,
+    material: &GameMaterial,
+) {
+    carry_state.add_material(entity, material);
+    commands
+        .entity(entity)
+        .remove::<HeldItem>()
+        .remove::<MaterialObject>()
+        .remove_parent_in_place()
+        .insert(InCarry)
+        .insert(Visibility::Hidden);
+}
+
+/// Convert a stashed carry item back into the player's hand.
+///
+/// We restore the entity into the world-facing material state because the hand
+/// interaction loop already understands `HeldItem + MaterialObject`. Reusing that
+/// path keeps Epic 4 from inventing a second representation for "the material in
+/// front of the camera."
+fn move_entity_from_carry_to_hand(commands: &mut Commands, camera_entity: Entity, entity: Entity) {
+    commands
+        .entity(entity)
+        .remove::<InCarry>()
+        .insert(MaterialObject)
+        .insert(HeldItem)
+        .insert(Visibility::Inherited)
+        .set_parent_in_place(camera_entity)
+        .insert(Transform::from_translation(HOLD_OFFSET));
+}
+
+/// Convert a stashed carry item back into a physical world object at the player's feet.
+fn move_entity_from_carry_to_floor(commands: &mut Commands, entity: Entity, drop_position: Vec3) {
+    commands
+        .entity(entity)
+        .remove::<InCarry>()
+        .insert(MaterialObject)
+        .insert(Visibility::Inherited)
+        .insert(Transform::from_translation(drop_position));
+}
+
+fn emit_carry_weight_changed(
+    writer: &mut MessageWriter<CarryWeightChanged>,
+    carry_state: &CarryState,
+) {
+    writer.write(CarryWeightChanged {
+        current_weight: carry_state.current_weight,
+        effective_capacity: carry_state.effective_capacity,
+    });
+}
+
+// ── Server-side carry processing ─────────────────────────────────────────
+
+fn process_stash_intent(
+    mut commands: Commands,
+    mut reader: MessageReader<StashIntent>,
+    mut weight_writer: MessageWriter<CarryWeightChanged>,
+    mut player_query: Query<&mut CarryState, With<Player>>,
+    held_query: Query<(Entity, &GameMaterial), With<HeldItem>>,
+) {
+    for _intent in reader.read() {
+        let Some((held_entity, held_material)) = held_query.iter().next() else {
+            continue;
+        };
+        let Ok(mut carry_state) = player_query.single_mut() else {
+            continue;
+        };
+
+        stash_entity_into_carry(&mut commands, &mut carry_state, held_entity, held_material);
+        emit_carry_weight_changed(&mut weight_writer, &carry_state);
+    }
+}
+
+// Bevy system signatures get wide when they touch both input-derived state and
+// ECS mutation points. Keeping the queries explicit is more readable than
+// hiding them behind wrapper resources or tuple aliases here.
+#[allow(clippy::too_many_arguments)]
+fn process_cycle_carry_intent(
+    mut commands: Commands,
+    mut reader: MessageReader<CycleCarryIntent>,
+    mut weight_writer: MessageWriter<CarryWeightChanged>,
+    config: Res<CarryConfig>,
+    mut player_query: Query<&mut CarryState, With<Player>>,
+    camera_query: Query<Entity, With<PlayerCamera>>,
+    held_query: Query<(Entity, &GameMaterial), With<HeldItem>>,
+    carried_material_query: Query<&GameMaterial, With<InCarry>>,
+) {
+    for _intent in reader.read() {
+        let Ok(mut carry_state) = player_query.single_mut() else {
+            continue;
+        };
+
+        let Some(next_entity) = carry_state.next_carried_entity(config.cycle_order) else {
+            continue;
+        };
+
+        let Ok(next_material) = carried_material_query.get(next_entity) else {
+            continue;
+        };
+        let Ok(camera_entity) = camera_query.single() else {
+            continue;
+        };
+
+        // Capture the current held item before mutating carry so LIFO/FIFO
+        // selection is based on what was already in carry, not the item currently
+        // in the player's hand.
+        let held_item = held_query
+            .iter()
+            .next()
+            .map(|(entity, material)| (entity, material.clone()));
+        if let Some((held_entity, held_material)) = held_item.as_ref() {
+            stash_entity_into_carry(&mut commands, &mut carry_state, *held_entity, held_material);
+        }
+
+        let Some(_removed) = carry_state.remove_material(next_entity, next_material) else {
+            continue;
+        };
+
+        move_entity_from_carry_to_hand(&mut commands, camera_entity, next_entity);
+        emit_carry_weight_changed(&mut weight_writer, &carry_state);
+    }
+}
+
+fn process_drop_carry_intent(
+    mut commands: Commands,
+    mut reader: MessageReader<DropCarryIntent>,
+    mut weight_writer: MessageWriter<CarryWeightChanged>,
+    config: Res<CarryConfig>,
+    scene: Res<SceneConfig>,
+    mut player_query: Query<(&GlobalTransform, &mut CarryState), With<Player>>,
+    carried_material_query: Query<&GameMaterial, With<InCarry>>,
+) {
+    for _intent in reader.read() {
+        let Ok((player_gtf, mut carry_state)) = player_query.single_mut() else {
+            continue;
+        };
+
+        let Some(next_entity) = carry_state.next_carried_entity(config.cycle_order) else {
+            continue;
+        };
+        let Ok(next_material) = carried_material_query.get(next_entity) else {
+            continue;
+        };
+
+        let Some(_removed) = carry_state.remove_material(next_entity, next_material) else {
+            continue;
+        };
+        let drop_position = floor_drop_position(player_gtf, &scene, next_material);
+        move_entity_from_carry_to_floor(&mut commands, next_entity, drop_position);
+        emit_carry_weight_changed(&mut weight_writer, &carry_state);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -617,5 +862,31 @@ exponent = 1.0
         assert_eq!(removed, Some(CarriedItem::new(second)));
         assert!((state.current_weight - 0.2).abs() < f32::EPSILON);
         assert_eq!(state.carried_items, vec![CarriedItem::new(first)]);
+    }
+
+    #[test]
+    fn next_carried_entity_uses_fifo_order() {
+        let first = Entity::from_bits(1);
+        let second = Entity::from_bits(2);
+        let mut state = CarryState::new(5.0, true);
+        state.carried_items = vec![CarriedItem::new(first), CarriedItem::new(second)];
+
+        assert_eq!(
+            state.next_carried_entity(CarryCycleOrder::Fifo),
+            Some(first)
+        );
+    }
+
+    #[test]
+    fn next_carried_entity_uses_lifo_order() {
+        let first = Entity::from_bits(1);
+        let second = Entity::from_bits(2);
+        let mut state = CarryState::new(5.0, true);
+        state.carried_items = vec![CarriedItem::new(first), CarriedItem::new(second)];
+
+        assert_eq!(
+            state.next_carried_entity(CarryCycleOrder::Lifo),
+            Some(second)
+        );
     }
 }

@@ -60,6 +60,9 @@ pub(crate) enum InputAction {
     CaptureCursor,
     Interact,
     Examine,
+    Stash,
+    CycleCarry,
+    Drop,
     Place,
     ToggleJournal,
     Activate,
@@ -108,6 +111,12 @@ pub(crate) struct BindingsConfig {
     pub capture_cursor: Vec<String>,
     #[serde(default = "default_examine", rename = "Examine")]
     pub examine: Vec<String>,
+    #[serde(default = "default_stash", rename = "Stash")]
+    pub stash: Vec<String>,
+    #[serde(default = "default_cycle_carry", rename = "CycleCarry")]
+    pub cycle_carry: Vec<String>,
+    #[serde(default = "default_drop", rename = "Drop")]
+    pub drop_item: Vec<String>,
     #[serde(default = "default_place", rename = "Place")]
     pub place: Vec<String>,
     #[serde(default = "default_toggle_journal", rename = "ToggleJournal")]
@@ -125,6 +134,9 @@ impl Default for BindingsConfig {
             interact: default_interact(),
             capture_cursor: default_capture_cursor(),
             examine: default_examine(),
+            stash: default_stash(),
+            cycle_carry: default_cycle_carry(),
+            drop_item: default_drop(),
             place: default_place(),
             toggle_journal: default_toggle_journal(),
             activate: default_activate(),
@@ -176,6 +188,15 @@ fn default_capture_cursor() -> Vec<String> {
 }
 fn default_examine() -> Vec<String> {
     vec!["Q".into()]
+}
+fn default_stash() -> Vec<String> {
+    vec!["T".into()]
+}
+fn default_cycle_carry() -> Vec<String> {
+    vec!["C".into()]
+}
+fn default_drop() -> Vec<String> {
+    vec!["G".into()]
 }
 fn default_place() -> Vec<String> {
     vec!["R".into()]
@@ -328,6 +349,13 @@ pub(crate) fn build_input_map(config: &InputConfig) -> InputMap<InputAction> {
         &bindings.capture_cursor,
     );
     insert_bindings(&mut input_map, InputAction::Examine, &bindings.examine);
+    insert_bindings(&mut input_map, InputAction::Stash, &bindings.stash);
+    insert_bindings(
+        &mut input_map,
+        InputAction::CycleCarry,
+        &bindings.cycle_carry,
+    );
+    insert_bindings(&mut input_map, InputAction::Drop, &bindings.drop_item);
     insert_bindings(&mut input_map, InputAction::Place, &bindings.place);
     insert_bindings(
         &mut input_map,
@@ -428,11 +456,17 @@ sensitivity_y = 0.4
 Move = { up = "I", down = "K", left = "J", right = "L" }
 Interact = ["F"]
 CaptureCursor = ["MouseRight"]
+Stash = ["T"]
+CycleCarry = ["C"]
+Drop = ["G"]
 "#;
         let config: InputConfig = toml::from_str(custom).expect("parse custom");
         assert_eq!(config.bindings.movement.up, "I");
         assert_eq!(config.bindings.interact, vec!["F"]);
         assert_eq!(config.bindings.capture_cursor, vec!["MouseRight"]);
+        assert_eq!(config.bindings.stash, vec!["T"]);
+        assert_eq!(config.bindings.cycle_carry, vec!["C"]);
+        assert_eq!(config.bindings.drop_item, vec!["G"]);
 
         let input_map = build_input_map(&config);
         let interact_bindings = input_map
@@ -470,6 +504,9 @@ CaptureCursor = ["MouseRight"]
 CaptureCursor = ["MouseLeft"]
 Interact = ["MouseLeft"]
 Examine = ["MouseRight"]
+Stash = ["T"]
+CycleCarry = ["C"]
+Drop = ["G"]
 "#;
         let config: InputConfig = toml::from_str(config_str).expect("parse mouse config");
         let input_map = build_input_map(&config);
@@ -486,6 +523,18 @@ Examine = ["MouseRight"]
         assert!(
             input_map.get_buttonlike(&InputAction::Examine).is_some(),
             "Examine should accept MouseButton bindings"
+        );
+        assert!(
+            input_map.get_buttonlike(&InputAction::Stash).is_some(),
+            "Stash should have bindings"
+        );
+        assert!(
+            input_map.get_buttonlike(&InputAction::CycleCarry).is_some(),
+            "CycleCarry should have bindings"
+        );
+        assert!(
+            input_map.get_buttonlike(&InputAction::Drop).is_some(),
+            "Drop should have bindings"
         );
     }
 }

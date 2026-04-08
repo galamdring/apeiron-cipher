@@ -31,7 +31,7 @@ use crate::scene::{SceneConfig, Surface};
 use leafwing_input_manager::prelude::*;
 
 const INTERACTION_RANGE: f32 = 3.0;
-const HOLD_OFFSET: Vec3 = Vec3::new(0.2, -0.15, -0.5);
+pub(crate) const HOLD_OFFSET: Vec3 = Vec3::new(0.2, -0.15, -0.5);
 
 pub(crate) struct InteractionPlugin;
 
@@ -472,7 +472,7 @@ fn can_place_material(
     })
 }
 
-fn floor_drop_position(
+pub(crate) fn floor_drop_position(
     player_gtf: &GlobalTransform,
     scene: &SceneConfig,
     material: &GameMaterial,
