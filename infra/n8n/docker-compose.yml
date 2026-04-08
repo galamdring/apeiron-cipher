@@ -44,6 +44,14 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - /tmp:/tmp
 
+  kanban:
+    image: ghcr.io/galamdring/apeiron-kanban:latest
+    restart: unless-stopped
+    # Serves on port 80 internally — point the Cloudflare tunnel at http://kanban:80
+    # To override config for a custom deployment, mount your own config.json:
+    # volumes:
+    #   - ./kanban-config.json:/usr/share/nginx/html/config.json:ro
+
   cloudflared:
     image: cloudflare/cloudflared:latest
     restart: unless-stopped
@@ -52,6 +60,7 @@ services:
       - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
     depends_on:
       - n8n
+      - kanban
 
 volumes:
   n8n_data:
