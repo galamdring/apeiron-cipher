@@ -190,6 +190,7 @@ fn player_move(
     ) {
         transform.translation.z = proposed.z;
     }
+
     enforce_eye_height(&mut transform.translation, scene.player.eye_height);
 }
 
