@@ -15,13 +15,14 @@ use bevy::window::{CursorGrabMode, CursorOptions};
 use leafwing_input_manager::prelude::*;
 
 use crate::input::InputAction;
-use crate::scene::SceneConfig;
+use crate::scene::{PositionXZ, RoomShellCollision, SceneConfig};
 
 /// Converts the leafwing axis_pair output (pixels * config sensitivity) to radians.
 /// Tune by adjusting `sensitivity_x` / `sensitivity_y` in input.toml rather than
 /// changing this constant.
 const LOOK_SCALE: f32 = 0.003;
 const PITCH_LIMIT: f32 = std::f32::consts::FRAC_PI_2 * 0.99;
+const PLAYER_COLLISION_RADIUS: f32 = 0.2;
 
 pub(crate) fn cursor_is_captured(grab_mode: CursorGrabMode) -> bool {
     grab_mode != CursorGrabMode::None
@@ -146,6 +147,7 @@ fn player_move(
     time: Res<Time>,
     cursor_options: Single<&CursorOptions>,
     scene: Res<SceneConfig>,
+    room_shell: Res<RoomShellCollision>,
     mut player_query: Query<(&ActionState<InputAction>, &mut Transform), With<Player>>,
 ) {
     if !cursor_is_captured(cursor_options.grab_mode) {
@@ -171,20 +173,32 @@ fn player_move(
     let right_xz = Vec3::new(right.x, 0.0, right.z).normalize_or_zero();
 
     let direction = (forward_xz * input.y + right_xz * input.x).normalize_or_zero();
-    transform.translation += direction * scene.player.move_speed * time.delta_secs();
+    let delta = direction * scene.player.move_speed * time.delta_secs();
+    let mut proposed = transform.translation;
+    proposed.x += delta.x;
+    if !room_shell.blocks_circle_xz(
+        PositionXZ::new(proposed.x, proposed.z),
+        PLAYER_COLLISION_RADIUS,
+    ) {
+        transform.translation.x = proposed.x;
+    }
 
-    // AABB collision — keep the player inside the room interior.
-    let m = scene.room.boundary_margin;
-    let bx = scene.room.half_extent_x - m;
-    let bz = scene.room.half_extent_z - m;
-    transform.translation.x = transform.translation.x.clamp(-bx, bx);
-    transform.translation.z = transform.translation.z.clamp(-bz, bz);
+    proposed = transform.translation;
+    proposed.z += delta.z;
+    if !room_shell.blocks_circle_xz(
+        PositionXZ::new(proposed.x, proposed.z),
+        PLAYER_COLLISION_RADIUS,
+    ) {
+        transform.translation.z = proposed.z;
+    }
+
     enforce_eye_height(&mut transform.translation, scene.player.eye_height);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scene::WallCollider;
 
     #[test]
     fn cursor_is_captured_for_locked_mode() {
@@ -206,5 +220,33 @@ mod tests {
         let mut translation = Vec3::new(1.0, 9.0, -2.0);
         enforce_eye_height(&mut translation, 1.7);
         assert!((translation.y - 1.7).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn room_shell_blocks_west_wall() {
+        let shell = RoomShellCollision {
+            wall_colliders: vec![WallCollider {
+                footprint_xz: crate::scene::RectXZ {
+                    min_x: -4.2,
+                    max_x: -4.0,
+                    min_z: -5.0,
+                    max_z: 5.0,
+                },
+            }],
+        };
+
+        assert!(shell.blocks_circle_xz(PositionXZ::new(-4.05, 0.0), PLAYER_COLLISION_RADIUS));
+    }
+
+    #[test]
+    fn room_shell_leaves_doorway_gap_open() {
+        let shell = crate::scene::build_room_shell_collision(4.0, 4.0, 0.2);
+        assert!(!shell.blocks_circle_xz(PositionXZ::new(0.0, -4.1), PLAYER_COLLISION_RADIUS));
+    }
+
+    #[test]
+    fn room_shell_blocks_south_wall_outside_doorway() {
+        let shell = crate::scene::build_room_shell_collision(4.0, 4.0, 0.2);
+        assert!(shell.blocks_circle_xz(PositionXZ::new(2.0, -4.1), PLAYER_COLLISION_RADIUS));
     }
 }
