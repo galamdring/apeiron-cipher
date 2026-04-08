@@ -19,13 +19,14 @@
 
 use bevy::picking::mesh_picking::ray_cast::{MeshRayCast, MeshRayCastSettings, RayCastVisibility};
 use bevy::prelude::*;
-use bevy::window::CursorGrabMode;
 
 use crate::fabricator::{ActivateIntent, InputSlot};
 use crate::input::InputAction;
-use crate::materials::{GameMaterial, MaterialObject, PropertyVisibility};
-use crate::player::{Player, PlayerCamera};
-use crate::scene::Surface;
+use crate::journal::RecordEncounter;
+use crate::materials::{GameMaterial, MATERIAL_SURFACE_GAP, MaterialObject, PropertyVisibility};
+use crate::observation::{ConfidenceTracker, describe_thermal_observation};
+use crate::player::{Player, PlayerCamera, cursor_is_captured};
+use crate::scene::{SceneConfig, Surface};
 
 use leafwing_input_manager::prelude::*;
 
@@ -214,18 +215,28 @@ fn update_slot_target(
 
 // ── Intent emission ──────────────────────────────────────────────────────
 
+fn should_emit_pickup(interact_pressed: bool, holding: bool) -> bool {
+    interact_pressed && !holding
+}
+
+fn should_emit_place(interact_pressed: bool, place_pressed: bool, holding: bool) -> bool {
+    holding && (place_pressed || interact_pressed)
+}
+
 fn emit_pickup_intent(
     player_query: Query<&ActionState<InputAction>, With<Player>>,
     cursor_options: Single<&bevy::window::CursorOptions>,
+    held_query: Query<(), With<HeldItem>>,
     mut writer: MessageWriter<PickupIntent>,
 ) {
-    if cursor_options.grab_mode != CursorGrabMode::Locked {
+    if !cursor_is_captured(cursor_options.grab_mode) {
         return;
     }
+    let holding = held_query.iter().next().is_some();
     let Ok(action) = player_query.single() else {
         return;
     };
-    if action.just_pressed(&InputAction::Interact) {
+    if should_emit_pickup(action.just_pressed(&InputAction::Interact), holding) {
         writer.write(PickupIntent);
     }
 }
@@ -233,15 +244,21 @@ fn emit_pickup_intent(
 fn emit_place_intent(
     player_query: Query<&ActionState<InputAction>, With<Player>>,
     cursor_options: Single<&bevy::window::CursorOptions>,
+    held_query: Query<(), With<HeldItem>>,
     mut writer: MessageWriter<PlaceIntent>,
 ) {
-    if cursor_options.grab_mode != CursorGrabMode::Locked {
+    if !cursor_is_captured(cursor_options.grab_mode) {
         return;
     }
+    let holding = held_query.iter().next().is_some();
     let Ok(action) = player_query.single() else {
         return;
     };
-    if action.just_pressed(&InputAction::Place) {
+    if should_emit_place(
+        action.just_pressed(&InputAction::Interact),
+        action.just_pressed(&InputAction::Place),
+        holding,
+    ) {
         writer.write(PlaceIntent);
     }
 }
@@ -251,7 +268,7 @@ fn emit_activate_intent(
     cursor_options: Single<&bevy::window::CursorOptions>,
     mut writer: MessageWriter<ActivateIntent>,
 ) {
-    if cursor_options.grab_mode != CursorGrabMode::Locked {
+    if !cursor_is_captured(cursor_options.grab_mode) {
         return;
     }
     let Ok(action) = player_query.single() else {
@@ -293,22 +310,25 @@ fn process_pickup(
 }
 
 /// Small gap above the surface so objects sit on top without z-fighting.
-const PLACE_GAP: f32 = 0.1;
 /// Maximum XZ distance from the ray's intersection to a surface center for
 /// placement to be considered valid.
 const PLACE_REACH: f32 = 2.5;
 
+#[allow(clippy::too_many_arguments)]
 fn process_place(
     mut commands: Commands,
     mut reader: MessageReader<PlaceIntent>,
-    held_query: Query<Entity, With<HeldItem>>,
+    scene: Res<SceneConfig>,
+    held_query: Query<(Entity, &GameMaterial), With<HeldItem>>,
     camera_query: Query<&GlobalTransform, With<PlayerCamera>>,
-    surfaces: Query<(Entity, &GlobalTransform), With<Surface>>,
+    player_query: Query<&GlobalTransform, With<Player>>,
+    surfaces: Query<(Entity, &GlobalTransform, &Surface)>,
+    material_positions: Query<(Entity, &GlobalTransform, &GameMaterial), With<MaterialObject>>,
     slot_target: Res<SlotTarget>,
     mut slot_query: Query<(&GlobalTransform, &mut InputSlot)>,
 ) {
     for _intent in reader.read() {
-        let Some(held_entity) = held_query.iter().next() else {
+        let Some((held_entity, held_material)) = held_query.iter().next() else {
             continue;
         };
 
@@ -326,7 +346,7 @@ fn process_place(
                 .remove_parent_in_place()
                 .insert(Transform::from_xyz(
                     slot_pos.x,
-                    slot_pos.y + PLACE_GAP,
+                    slot.top_y + held_material.support_height() + MATERIAL_SURFACE_GAP,
                     slot_pos.z,
                 ));
             continue;
@@ -336,8 +356,7 @@ fn process_place(
         let Ok(cam_gtf) = camera_query.single() else {
             continue;
         };
-
-        let Some((_entity, surface_gtf)) = best_surface_for_ray(cam_gtf, &surfaces) else {
+        let Ok(player_gtf) = player_query.single() else {
             continue;
         };
 
@@ -346,19 +365,43 @@ fn process_place(
             .remove::<HeldItem>()
             .remove_parent_in_place();
 
-        let surface_pos = surface_gtf.translation();
-        let cam_pos = cam_gtf.translation();
-        let cam_fwd = *cam_gtf.forward();
+        let drop_position = if let Some((_entity, surface_gtf, surface)) =
+            best_surface_for_ray(cam_gtf, &surfaces)
+        {
+            let surface_pos = surface_gtf.translation();
+            let cam_pos = cam_gtf.translation();
+            let cam_fwd = *cam_gtf.forward();
 
-        let hit = ray_horizontal_intersection(cam_pos, cam_fwd, surface_pos.y);
-        let place_x = hit.map_or(surface_pos.x, |p| p.x);
-        let place_z = hit.map_or(surface_pos.z, |p| p.z);
+            let hit = ray_horizontal_intersection(cam_pos, cam_fwd, surface_pos.y);
+            let place_x = hit.map_or(surface_pos.x, |p| {
+                p.x.clamp(
+                    surface_pos.x - surface.half_extent_x,
+                    surface_pos.x + surface.half_extent_x,
+                )
+            });
+            let place_z = hit.map_or(surface_pos.z, |p| {
+                p.z.clamp(
+                    surface_pos.z - surface.half_extent_z,
+                    surface_pos.z + surface.half_extent_z,
+                )
+            });
+            let candidate = Vec3::new(
+                place_x,
+                held_material.resting_center_y(surface_pos.y),
+                place_z,
+            );
+            if can_place_material(held_entity, held_material, candidate, &material_positions) {
+                candidate
+            } else {
+                floor_drop_position(player_gtf, &scene, held_material)
+            }
+        } else {
+            floor_drop_position(player_gtf, &scene, held_material)
+        };
 
-        commands.entity(held_entity).insert(Transform::from_xyz(
-            place_x,
-            surface_pos.y + PLACE_GAP,
-            place_z,
-        ));
+        commands
+            .entity(held_entity)
+            .insert(Transform::from_translation(drop_position));
     }
 }
 
@@ -380,24 +423,76 @@ fn ray_horizontal_intersection(origin: Vec3, direction: Vec3, plane_y: f32) -> O
 /// center is closest to the intersection point.
 fn best_surface_for_ray<'a>(
     cam_gtf: &GlobalTransform,
-    surfaces: &'a Query<(Entity, &GlobalTransform), With<Surface>>,
-) -> Option<(Entity, &'a GlobalTransform)> {
+    surfaces: &'a Query<(Entity, &GlobalTransform, &Surface)>,
+) -> Option<(Entity, &'a GlobalTransform, &'a Surface)> {
     let origin = cam_gtf.translation();
     let direction = *cam_gtf.forward();
 
     surfaces
         .iter()
-        .filter_map(|(entity, sgtf)| {
+        .filter_map(|(entity, sgtf, surface)| {
             let s_pos = sgtf.translation();
             let hit = ray_horizontal_intersection(origin, direction, s_pos.y)?;
-            let xz_dist = Vec2::new(hit.x - s_pos.x, hit.z - s_pos.z).length();
+            let dx = hit.x - s_pos.x;
+            let dz = hit.z - s_pos.z;
+            if dx.abs() > surface.half_extent_x || dz.abs() > surface.half_extent_z {
+                return None;
+            }
+            let xz_dist = Vec2::new(dx, dz).length();
             if xz_dist > PLACE_REACH {
                 return None;
             }
-            Some((entity, sgtf, xz_dist))
+            Some((entity, sgtf, surface, xz_dist))
         })
-        .min_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal))
-        .map(|(entity, sgtf, _)| (entity, sgtf))
+        .min_by(|a, b| a.3.partial_cmp(&b.3).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|(entity, sgtf, surface, _)| (entity, sgtf, surface))
+}
+
+fn can_place_material(
+    held_entity: Entity,
+    held_material: &GameMaterial,
+    candidate: Vec3,
+    material_positions: &Query<(Entity, &GlobalTransform, &GameMaterial), With<MaterialObject>>,
+) -> bool {
+    let held_radius = held_material.footprint_radius();
+    material_positions.iter().all(|(entity, gtf, material)| {
+        if entity == held_entity {
+            return true;
+        }
+
+        let other = gtf.translation();
+        let same_level = (other.y - candidate.y).abs() < 0.25;
+        if !same_level {
+            return true;
+        }
+
+        let required_gap = held_radius + material.footprint_radius();
+        let xz_dist = Vec2::new(other.x - candidate.x, other.z - candidate.z).length();
+        xz_dist >= required_gap
+    })
+}
+
+fn floor_drop_position(
+    player_gtf: &GlobalTransform,
+    scene: &SceneConfig,
+    material: &GameMaterial,
+) -> Vec3 {
+    let origin = player_gtf.translation();
+    let forward = *player_gtf.forward();
+    let forward_xz = Vec3::new(forward.x, 0.0, forward.z).normalize_or_zero();
+    let fallback_forward = if forward_xz == Vec3::ZERO {
+        Vec3::NEG_Z
+    } else {
+        forward_xz
+    };
+    let mut position = Vec3::new(origin.x, 0.0, origin.z) + fallback_forward * 0.35;
+    let margin = scene.room.boundary_margin;
+    let max_x = scene.room.half_extent_x - margin;
+    let max_z = scene.room.half_extent_z - margin;
+    position.x = position.x.clamp(-max_x, max_x);
+    position.z = position.z.clamp(-max_z, max_z);
+    position.y = material.resting_center_y(0.0);
+    position
 }
 
 // ── Held item tracking ───────────────────────────────────────────────────
@@ -473,7 +568,7 @@ fn emit_examine_intent(
     cursor_options: Single<&bevy::window::CursorOptions>,
     mut writer: MessageWriter<ExamineIntent>,
 ) {
-    if cursor_options.grab_mode != CursorGrabMode::Locked {
+    if !cursor_is_captured(cursor_options.grab_mode) {
         return;
     }
     let Ok(action) = player_query.single() else {
@@ -490,11 +585,21 @@ fn process_examine(
     mut reader: MessageReader<ExamineIntent>,
     mut state: ResMut<ExamineState>,
     target: Res<InteractionTarget>,
-    held_query: Query<(), With<HeldItem>>,
+    held_query: Query<&GameMaterial, With<HeldItem>>,
+    material_query: Query<&GameMaterial, With<MaterialObject>>,
+    mut encounter_writer: MessageWriter<RecordEncounter>,
 ) {
     for _intent in reader.read() {
-        if held_query.iter().next().is_some() || target.entity.is_some() {
+        let held_material = held_query.iter().next();
+        let targeted_material = target
+            .entity
+            .and_then(|entity| material_query.get(entity).ok());
+
+        if let Some(mat) = held_material.or(targeted_material) {
             state.visible = !state.visible;
+            encounter_writer.write(RecordEncounter {
+                material: mat.clone(),
+            });
         } else {
             state.visible = false;
         }
@@ -504,6 +609,7 @@ fn process_examine(
 fn update_examine_panel(
     state: Res<ExamineState>,
     target: Res<InteractionTarget>,
+    tracker: Res<ConfidenceTracker>,
     held_query: Query<&GameMaterial, With<HeldItem>>,
     material_query: Query<&GameMaterial, With<MaterialObject>>,
     mut panel_query: Query<&mut Visibility, With<ExaminePanel>>,
@@ -533,7 +639,7 @@ fn update_examine_panel(
     };
 
     *vis = Visibility::Visible;
-    text.0 = build_examine_text(mat);
+    text.0 = build_examine_text(mat, &tracker);
 }
 
 // ── Property description ─────────────────────────────────────────────────
@@ -575,17 +681,12 @@ fn describe_density(value: f32) -> &'static str {
     }
 }
 
-fn build_examine_text(mat: &GameMaterial) -> String {
+fn build_examine_text(mat: &GameMaterial, tracker: &ConfidenceTracker) -> String {
     let mut lines = vec![mat.name.clone()];
     lines.push(String::new());
 
     append_prop(&mut lines, "Weight", &mat.density, describe_density);
-    append_prop(
-        &mut lines,
-        "Heat resistance",
-        &mat.thermal_resistance,
-        describe_value,
-    );
+    append_thermal_prop(&mut lines, mat, tracker);
     append_prop(&mut lines, "Reactivity", &mat.reactivity, describe_value);
     append_prop(
         &mut lines,
@@ -610,6 +711,18 @@ fn append_prop(
         lines.push(format!("{label}: {}", describer(prop.value)));
     } else {
         lines.push(format!("{label}: ???"));
+    }
+}
+
+fn append_thermal_prop(lines: &mut Vec<String>, mat: &GameMaterial, tracker: &ConfidenceTracker) {
+    match mat.thermal_resistance.visibility {
+        PropertyVisibility::Hidden => lines.push("Heat response: ???".to_string()),
+        PropertyVisibility::Observable | PropertyVisibility::Revealed => {
+            let confidence = tracker.level(mat.seed, "thermal_resistance");
+            let description =
+                describe_thermal_observation(mat.thermal_resistance.value, confidence);
+            lines.push(format!("Heat response: {description}"));
+        }
     }
 }
 
@@ -674,12 +787,13 @@ mod tests {
     #[test]
     fn examine_text_shows_observable_and_revealed_hides_hidden() {
         let mat = test_material();
-        let text = build_examine_text(&mat);
+        let tracker = ConfidenceTracker::default();
+        let text = build_examine_text(&mat, &tracker);
 
         assert!(text.contains("TestMat"));
         assert!(text.contains("Weight: Very heavy"));
         assert!(text.contains("Conductivity: Very high"));
-        assert!(text.contains("Heat resistance: ???"));
+        assert!(text.contains("Heat response: ???"));
         assert!(text.contains("Reactivity: ???"));
         assert!(text.contains("Toxicity: ???"));
     }
@@ -687,9 +801,70 @@ mod tests {
     #[test]
     fn examine_text_name_is_first_line() {
         let mat = test_material();
-        let text = build_examine_text(&mat);
+        let tracker = ConfidenceTracker::default();
+        let text = build_examine_text(&mat, &tracker);
         let first_line = text.lines().next().unwrap();
         assert_eq!(first_line, "TestMat");
+    }
+
+    #[test]
+    fn examine_text_uses_confidence_language_for_revealed_heat_response() {
+        let mut mat = test_material();
+        mat.thermal_resistance.visibility = PropertyVisibility::Revealed;
+
+        let mut tracker = ConfidenceTracker::default();
+        let tentative = build_examine_text(&mat, &tracker);
+        assert!(tentative.contains("Heat response: Seemed to hold together under heat"));
+
+        tracker.record(mat.seed, "thermal_resistance");
+        tracker.record(mat.seed, "thermal_resistance");
+        let observed = build_examine_text(&mat, &tracker);
+        assert!(observed.contains("Heat response: Hold together under heat"));
+
+        tracker.record(mat.seed, "thermal_resistance");
+        tracker.record(mat.seed, "thermal_resistance");
+        let confident = build_examine_text(&mat, &tracker);
+        assert!(confident.contains("Heat response: Reliably hold together under heat"));
+    }
+
+    #[test]
+    fn interact_picks_up_only_when_not_holding() {
+        assert!(should_emit_pickup(true, false));
+        assert!(!should_emit_pickup(false, false));
+        assert!(!should_emit_pickup(true, true));
+    }
+
+    #[test]
+    fn interact_or_place_can_drop_when_holding() {
+        assert!(should_emit_place(true, false, true));
+        assert!(should_emit_place(false, true, true));
+        assert!(!should_emit_place(false, false, true));
+        assert!(!should_emit_place(true, false, false));
+    }
+
+    #[test]
+    fn floor_drop_position_clamps_inside_room_bounds() {
+        let scene = SceneConfig::default();
+        let player = GlobalTransform::from(Transform::from_xyz(100.0, 1.7, 100.0));
+        let material = test_material();
+        let dropped = floor_drop_position(&player, &scene, &material);
+        let max_x = scene.room.half_extent_x - scene.room.boundary_margin;
+        let max_z = scene.room.half_extent_z - scene.room.boundary_margin;
+
+        assert!(dropped.x <= max_x);
+        assert!(dropped.z <= max_z);
+        assert!((dropped.y - material.resting_center_y(0.0)).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn floor_drop_position_uses_player_floor_position() {
+        let scene = SceneConfig::default();
+        let player = GlobalTransform::from(Transform::from_xyz(1.25, 1.7, -0.75));
+        let material = test_material();
+        let dropped = floor_drop_position(&player, &scene, &material);
+
+        assert!((dropped.x - 1.25).abs() < f32::EPSILON);
+        assert!((dropped.z - (-1.10)).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -697,6 +872,7 @@ mod tests {
         let mut app = App::new();
         app.add_message::<PickupIntent>()
             .add_message::<PlaceIntent>()
+            .insert_resource(SceneConfig::default())
             .insert_resource(InteractionTarget::default())
             .insert_resource(SlotTarget::default())
             .add_systems(Update, (process_pickup, process_place));
@@ -713,17 +889,24 @@ mod tests {
                 InputSlot {
                     index: 0,
                     material: None,
+                    top_y: slot_pos.y,
                 },
                 Transform::from_translation(slot_pos),
                 GlobalTransform::from_translation(slot_pos),
             ))
             .id();
 
-        let start_pos = Vec3::new(slot_pos.x, slot_pos.y + PLACE_GAP, slot_pos.z);
+        let material = test_material();
+        let start_pos = Vec3::new(
+            slot_pos.x,
+            material.resting_center_y(slot_pos.y),
+            slot_pos.z,
+        );
         let item = app
             .world_mut()
             .spawn((
                 MaterialObject,
+                material,
                 Transform::from_translation(start_pos),
                 GlobalTransform::from_translation(start_pos),
             ))

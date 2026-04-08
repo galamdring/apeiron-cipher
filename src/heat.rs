@@ -16,8 +16,9 @@
 
 use bevy::prelude::*;
 
-use crate::interaction::HeldItem;
+use crate::journal::RecordThermalObservation;
 use crate::materials::{GameMaterial, MaterialObject, PropertyVisibility};
+use crate::observation::ConfidenceTracker;
 use crate::scene::{SceneConfig, Workbench};
 
 pub(crate) struct HeatPlugin;
@@ -58,6 +59,36 @@ impl HeatExposure {
         }
     }
 }
+
+fn update_exposure_elapsed(elapsed: f32, in_zone: bool, delta_secs: f32) -> f32 {
+    if in_zone {
+        elapsed + delta_secs
+    } else {
+        (elapsed - delta_secs).max(0.0)
+    }
+}
+
+fn exposure_rate(thermal_resistance: f32) -> f32 {
+    let thermal_conductivity = 1.0 - thermal_resistance.clamp(0.0, 1.0);
+    0.35 + thermal_conductivity * 1.3
+}
+
+fn update_exposure_elapsed_for_material(
+    elapsed: f32,
+    in_zone: bool,
+    delta_secs: f32,
+    thermal_resistance: f32,
+) -> f32 {
+    update_exposure_elapsed(
+        elapsed,
+        in_zone,
+        delta_secs * exposure_rate(thermal_resistance),
+    )
+}
+
+/// Prevents a single material entity from incrementing confidence more than once.
+#[derive(Component)]
+struct ThermalObservationRecorded;
 
 // ── Spawn ───────────────────────────────────────────────────────────────
 
@@ -118,8 +149,13 @@ fn track_heat_exposure(
     cfg: Res<SceneConfig>,
     heat_query: Query<&GlobalTransform, With<HeatSource>>,
     mut material_query: Query<
-        (Entity, &GlobalTransform, Option<&mut HeatExposure>),
-        (With<MaterialObject>, Without<HeldItem>),
+        (
+            Entity,
+            &GlobalTransform,
+            &GameMaterial,
+            Option<&mut HeatExposure>,
+        ),
+        With<MaterialObject>,
     >,
 ) {
     let Ok(heat_gtf) = heat_query.single() else {
@@ -129,16 +165,19 @@ fn track_heat_exposure(
     let zone_r_sq = cfg.heat_source.zone_radius * cfg.heat_source.zone_radius;
     let dt = time.delta_secs();
 
-    for (entity, mat_gtf, exposure) in &mut material_query {
+    for (entity, mat_gtf, mat, exposure) in &mut material_query {
         let dist_sq = mat_gtf.translation().distance_squared(heat_pos);
         let inside = dist_sq <= zone_r_sq;
 
         match exposure {
             Some(mut exp) => {
                 exp.in_zone = inside;
-                if inside {
-                    exp.elapsed += dt;
-                }
+                exp.elapsed = update_exposure_elapsed_for_material(
+                    exp.elapsed,
+                    inside,
+                    dt,
+                    mat.thermal_resistance.value,
+                );
             }
             None if inside => {
                 commands.entity(entity).insert(HeatExposure::new());
@@ -219,19 +258,47 @@ fn apply_thermal_reaction(
 // ── Property revelation ─────────────────────────────────────────────────
 
 fn reveal_thermal_property(
+    mut commands: Commands,
     cfg: Res<SceneConfig>,
-    mut material_query: Query<(&HeatExposure, &mut GameMaterial), With<MaterialObject>>,
+    mut tracker: ResMut<ConfidenceTracker>,
+    mut journal_writer: MessageWriter<RecordThermalObservation>,
+    mut material_query: Query<
+        (
+            Entity,
+            &HeatExposure,
+            &mut GameMaterial,
+            Option<&ThermalObservationRecorded>,
+        ),
+        With<MaterialObject>,
+    >,
 ) {
     let reveal_secs = cfg.heat_source.reveal_seconds;
 
-    for (exp, mut mat) in &mut material_query {
-        if exp.elapsed >= reveal_secs
-            && mat.thermal_resistance.visibility == PropertyVisibility::Hidden
-        {
+    for (entity, exp, mut mat, recorded) in &mut material_query {
+        if exp.elapsed < reveal_secs {
+            continue;
+        }
+
+        if mat.thermal_resistance.visibility == PropertyVisibility::Hidden {
             mat.thermal_resistance.visibility = PropertyVisibility::Revealed;
             info!(
                 "'{}' thermal resistance revealed after {:.1}s exposure",
                 mat.name, exp.elapsed
+            );
+        }
+
+        if recorded.is_none() {
+            let count = tracker.record(mat.seed, "thermal_resistance");
+            commands.entity(entity).insert(ThermalObservationRecorded);
+            journal_writer.write(RecordThermalObservation {
+                seed: mat.seed,
+                name: mat.name.clone(),
+                thermal_resistance: mat.thermal_resistance.value,
+                confidence: tracker.level(mat.seed, "thermal_resistance"),
+            });
+            info!(
+                "'{}' thermal observation recorded (count = {})",
+                mat.name, count
             );
         }
     }
@@ -266,6 +333,31 @@ mod tests {
     fn reaction_intensity_clamped_to_one() {
         let result = reaction_intensity(2.0, 0.0);
         assert!((result - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn exposure_elapsed_accumulates_in_zone() {
+        let elapsed = update_exposure_elapsed(0.5, true, 0.25);
+        assert!((elapsed - 0.75).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn exposure_elapsed_cools_when_outside_zone() {
+        let elapsed = update_exposure_elapsed(0.5, false, 0.25);
+        assert!((elapsed - 0.25).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn exposure_elapsed_never_goes_below_zero() {
+        let elapsed = update_exposure_elapsed(0.1, false, 0.25);
+        assert!(elapsed.abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn low_resistance_materials_change_temperature_faster() {
+        let low = update_exposure_elapsed_for_material(0.0, true, 1.0, 0.1);
+        let high = update_exposure_elapsed_for_material(0.0, true, 1.0, 0.9);
+        assert!(low > high);
     }
 
     #[test]

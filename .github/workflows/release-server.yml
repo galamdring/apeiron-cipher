@@ -1,0 +1,177 @@
+name: Server CI/CD
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
+    paths:
+      - "infra/orchestrator/cmd/server/**"
+      - ".github/workflows/release-server.yml"
+      - "infra/orchestrator/.releaserc.server.json"
+  push:
+    branches: [main]
+    paths:
+      - "infra/orchestrator/cmd/server/**"
+      - ".github/workflows/release-server.yml"
+      - "infra/orchestrator/.releaserc.server.json"
+
+permissions:
+  contents: write
+  packages: write
+  pull-requests: write
+
+env:
+  IMAGE: ghcr.io/galamdring/apeiron-orchestrator-server
+
+jobs:
+  build-pr:
+    name: Build and push (PR)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Short SHA
+        id: sha
+        run: echo "short=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: infra/orchestrator
+          file: infra/orchestrator/cmd/server/Dockerfile
+          target: server
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:pr-${{ github.event.pull_request.number }}
+            ${{ env.IMAGE }}:pr-${{ github.event.pull_request.number }}-${{ steps.sha.outputs.short }}
+
+      - name: Post image tags to PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const marker = '<!-- pr-image-tags:server -->';
+            const body = [
+              marker,
+              '### Server image tags',
+              '| Tag | Value |',
+              '|-----|-------|',
+              `| Mutable (latest for this PR) | \`${{ env.IMAGE }}:pr-${{ github.event.pull_request.number }}\` |`,
+              `| Immutable (this commit) | \`${{ env.IMAGE }}:pr-${{ github.event.pull_request.number }}-${{ steps.sha.outputs.short }}\` |`,
+            ].join('\n');
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find(c => c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
+
+  release:
+    name: Semantic release
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.release.outputs.new_release_version }}
+      published: ${{ steps.release.outputs.new_release_published }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Select semantic-release config
+        run: cp infra/orchestrator/.releaserc.server.json infra/orchestrator/.releaserc.json
+
+      - name: Semantic release
+        id: release
+        uses: cycjimmy/semantic-release-action@v4
+        with:
+          semantic_version: 24
+          working_directory: infra/orchestrator
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  cleanup-pr:
+    name: Clean up PR images
+    if: github.event_name == 'pull_request' && github.event.action == 'closed'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete PR package versions
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pkg = 'apeiron-orchestrator-server';
+            const prefix = `pr-${{ github.event.pull_request.number }}`;
+            let page = 1;
+            while (true) {
+              const { data: versions } = await github.rest.packages.getAllPackageVersionsForPackageOwnedByUser({
+                package_type: 'container',
+                package_name: pkg,
+                username: context.repo.owner,
+                per_page: 100,
+                page,
+              });
+              if (versions.length === 0) break;
+              for (const v of versions) {
+                const tags = v.metadata?.container?.tags ?? [];
+                if (tags.some(t => t === prefix || t.startsWith(prefix + '-'))) {
+                  await github.rest.packages.deletePackageVersionForUser({
+                    package_type: 'container',
+                    package_name: pkg,
+                    username: context.repo.owner,
+                    package_version_id: v.id,
+                  }).catch(e => core.warning(`Failed to delete version ${v.id}: ${e.message}`));
+                }
+              }
+              if (versions.length < 100) break;
+              page++;
+            }
+
+  push-image:
+    name: Push release image
+    needs: release
+    if: needs.release.outputs.published == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: server-v${{ needs.release.outputs.version }}
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: infra/orchestrator
+          file: infra/orchestrator/cmd/server/Dockerfile
+          target: server
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:v${{ needs.release.outputs.version }}
+            ${{ env.IMAGE }}:latest

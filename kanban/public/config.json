@@ -1,0 +1,19 @@
+{
+  "githubClientId": "Iv23lisdJkaJCknZAoUS",
+  "authCallbackUrl": "https://apeiron-orchestrator.lukemckechnie.com/webhook/kanban/auth/callback",
+  "columns": [
+    { "name": "Triage",      "label": "status:triage",      "color": "#e3b341" },
+    { "name": "Backlog",     "label": null,                  "color": "#8b949e", "default": true },
+    { "name": "Ready",       "label": "status:ready",        "color": "#58a6ff" },
+    { "name": "In Progress", "label": "status:in-progress",  "color": "#1f6feb" },
+    { "name": "In Review",   "label": "status:in-review",    "color": "#a371f7" },
+    { "name": "Sign Off",    "label": "status:sign-off",     "color": "#db6d28" },
+    { "name": "Complete",    "label": null,                  "color": "#3fb950", "closeIssue": true }
+  ],
+  "types": [
+    { "name": "epic",  "label": "epic",  "color": "#a371f7" },
+    { "name": "story", "label": "story", "color": "#58a6ff" },
+    { "name": "bug",   "label": "bug",   "color": "#f85149" },
+    { "name": "task",  "label": "task",  "color": "#3fb950" }
+  ]
+}

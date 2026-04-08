@@ -14,7 +14,10 @@
 use bevy::prelude::*;
 
 use crate::combination::CombinationRules;
-use crate::materials::{GameMaterial, MaterialObject, MaterialProperty, PropertyVisibility};
+use crate::journal::RecordFabrication;
+use crate::materials::{
+    GameMaterial, MATERIAL_SURFACE_GAP, MaterialObject, MaterialProperty, PropertyVisibility,
+};
 use crate::scene::{SceneConfig, Workbench};
 
 pub(crate) struct FabricatorPlugin;
@@ -61,12 +64,14 @@ pub(crate) struct InputSlot {
     #[allow(dead_code)]
     pub index: usize,
     pub material: Option<Entity>,
+    pub top_y: f32,
 }
 
 /// Marks the fabricator output receptacle where the combined material appears.
 #[derive(Component, Debug)]
 pub(crate) struct OutputSlot {
     pub material: Option<Entity>,
+    pub top_y: f32,
 }
 
 // ── Slot spawning ───────────────────────────────────────────────────────
@@ -114,6 +119,7 @@ fn spawn_fabricator_slots(
             InputSlot {
                 index: i,
                 material: None,
+                top_y: pos.y + fab.slot_height * 0.5,
             },
             Mesh3d(meshes.add(Cylinder::new(fab.slot_radius, fab.slot_height))),
             MeshMaterial3d(slot_mat.clone()),
@@ -133,7 +139,10 @@ fn spawn_fabricator_slots(
     );
 
     commands.spawn((
-        OutputSlot { material: None },
+        OutputSlot {
+            material: None,
+            top_y: output_pos.y + fab.output_height * 0.5,
+        },
         Mesh3d(meshes.add(Cylinder::new(fab.output_radius, fab.output_height))),
         MeshMaterial3d(output_mat),
         Transform::from_translation(output_pos),
@@ -175,6 +184,7 @@ fn tick_processing(
     time: Res<Time>,
     cfg: Res<SceneConfig>,
     rules: Res<CombinationRules>,
+    mut journal_writer: MessageWriter<RecordFabrication>,
     mut state: ResMut<FabricatorState>,
     mut slots: Query<&mut InputSlot>,
     material_query: Query<&GameMaterial, With<MaterialObject>>,
@@ -240,11 +250,21 @@ fn tick_processing(
             output_mat.clone(),
             Mesh3d(mesh),
             MeshMaterial3d(render_mat),
-            Transform::from_xyz(out_pos.x, out_pos.y + 0.1, out_pos.z),
+            Transform::from_xyz(
+                out_pos.x,
+                out_slot.top_y + output_mat.support_height() + MATERIAL_SURFACE_GAP,
+                out_pos.z,
+            ),
         ))
         .id();
 
     out_slot.material = Some(output_entity);
+
+    journal_writer.write(RecordFabrication {
+        output_material: output_mat.clone(),
+        input_a: input_mats[0].name.clone(),
+        input_b: input_mats[1].name.clone(),
+    });
 
     info!("Fabrication complete — produced '{}'", output_mat.name);
     *state = FabricatorState::Idle;
@@ -277,18 +297,6 @@ fn apply_processing_visuals(
 // ── Rule-driven combination ──────────────────────────────────────────────
 
 use crate::combination::PropertyRule;
-
-/// Determines the output property visibility.
-/// If both inputs have been seen (Observable or Revealed), the output is Observable.
-/// Otherwise, the output is Hidden — the player must discover it again.
-fn output_visibility(a: PropertyVisibility, b: PropertyVisibility) -> PropertyVisibility {
-    match (a, b) {
-        (PropertyVisibility::Hidden, _) | (_, PropertyVisibility::Hidden) => {
-            PropertyVisibility::Hidden
-        }
-        _ => PropertyVisibility::Observable,
-    }
-}
 
 /// Deterministic pseudo-random float in \[-1.0, 1.0\] from a seed+channel.
 /// Splitmix64 single iteration — fast, deterministic, no external crate needed.
@@ -323,7 +331,7 @@ fn apply_rule_with_perturbation(
     };
     MaterialProperty {
         value,
-        visibility: output_visibility(a.visibility, b.visibility),
+        visibility: PropertyVisibility::Hidden,
     }
 }
 
@@ -393,25 +401,39 @@ pub(crate) fn rule_combine(
 
     let catalytic = has_catalytic_rule(&pair_rules);
     let color = blend_color(&a.color, &b.color, catalytic);
+    let thermal_resistance = apply_rule_with_perturbation(
+        &pair_rules.thermal_resistance,
+        &a.thermal_resistance,
+        &b.thermal_resistance,
+        combined_seed,
+        1,
+    );
+    let conductivity = align_conductivity_with_thermal_behavior(
+        apply_rule_with_perturbation(
+            &pair_rules.conductivity,
+            &a.conductivity,
+            &b.conductivity,
+            combined_seed,
+            3,
+        ),
+        thermal_resistance.value,
+    );
 
     GameMaterial {
         name,
         seed: combined_seed,
         color,
-        density: apply_rule_with_perturbation(
-            &pair_rules.density,
-            &a.density,
-            &b.density,
-            combined_seed,
-            0,
-        ),
-        thermal_resistance: apply_rule_with_perturbation(
-            &pair_rules.thermal_resistance,
-            &a.thermal_resistance,
-            &b.thermal_resistance,
-            combined_seed,
-            1,
-        ),
+        density: MaterialProperty {
+            visibility: PropertyVisibility::Observable,
+            ..apply_rule_with_perturbation(
+                &pair_rules.density,
+                &a.density,
+                &b.density,
+                combined_seed,
+                0,
+            )
+        },
+        thermal_resistance,
         reactivity: apply_rule_with_perturbation(
             &pair_rules.reactivity,
             &a.reactivity,
@@ -419,13 +441,7 @@ pub(crate) fn rule_combine(
             combined_seed,
             2,
         ),
-        conductivity: apply_rule_with_perturbation(
-            &pair_rules.conductivity,
-            &a.conductivity,
-            &b.conductivity,
-            combined_seed,
-            3,
-        ),
+        conductivity,
         toxicity: apply_rule_with_perturbation(
             &pair_rules.toxicity,
             &a.toxicity,
@@ -434,6 +450,15 @@ pub(crate) fn rule_combine(
             4,
         ),
     }
+}
+
+fn align_conductivity_with_thermal_behavior(
+    mut conductivity: MaterialProperty,
+    thermal_resistance: f32,
+) -> MaterialProperty {
+    let thermal_conductivity = 1.0 - thermal_resistance;
+    conductivity.value = ((conductivity.value * 2.0) + thermal_conductivity) / 3.0;
+    conductivity
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────
@@ -598,20 +623,6 @@ mod tests {
     }
 
     #[test]
-    fn observable_inputs_produce_observable_output() {
-        let a = MaterialProperty {
-            value: 0.5,
-            visibility: PropertyVisibility::Observable,
-        };
-        let b = MaterialProperty {
-            value: 0.5,
-            visibility: PropertyVisibility::Observable,
-        };
-        let result = apply_rule_with_perturbation(&PropertyRule::default(), &a, &b, 1, 0);
-        assert_eq!(result.visibility, PropertyVisibility::Observable);
-    }
-
-    #[test]
     fn hidden_input_produces_hidden_output() {
         let a = MaterialProperty {
             value: 0.5,
@@ -626,17 +637,34 @@ mod tests {
     }
 
     #[test]
-    fn revealed_inputs_produce_observable_output() {
+    fn non_surface_output_properties_remain_hidden_even_if_inputs_were_known() {
         let a = MaterialProperty {
             value: 0.5,
-            visibility: PropertyVisibility::Revealed,
+            visibility: PropertyVisibility::Observable,
         };
         let b = MaterialProperty {
             value: 0.5,
             visibility: PropertyVisibility::Revealed,
         };
         let result = apply_rule_with_perturbation(&PropertyRule::default(), &a, &b, 1, 0);
-        assert_eq!(result.visibility, PropertyVisibility::Observable);
+        assert_eq!(result.visibility, PropertyVisibility::Hidden);
+    }
+
+    #[test]
+    fn fabricated_density_remains_surface_observable() {
+        let rules = default_rules();
+        let a = test_material("Ferrite", 100, 0.8);
+        let b = test_material("Silite", 200, 0.2);
+        let result = rule_combine(&rules, &a, &b);
+
+        assert_eq!(result.density.visibility, PropertyVisibility::Observable);
+        assert_eq!(
+            result.thermal_resistance.visibility,
+            PropertyVisibility::Hidden
+        );
+        assert_eq!(result.reactivity.visibility, PropertyVisibility::Hidden);
+        assert_eq!(result.conductivity.visibility, PropertyVisibility::Hidden);
+        assert_eq!(result.toxicity.visibility, PropertyVisibility::Hidden);
     }
 
     #[test]
@@ -733,5 +761,22 @@ mod tests {
         assert!((r1.density.value - r2.density.value).abs() < f32::EPSILON);
         assert!((r1.thermal_resistance.value - r2.thermal_resistance.value).abs() < f32::EPSILON);
         assert!((r1.toxicity.value - r2.toxicity.value).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn fabricated_conductivity_tracks_thermal_conductivity_direction() {
+        let rules = default_rules();
+        let mut a = test_material("Alpha", 1, 0.2);
+        let mut b = test_material("Beta", 2, 0.3);
+        a.thermal_resistance.value = 0.1;
+        b.thermal_resistance.value = 0.2;
+        a.conductivity.value = 0.2;
+        b.conductivity.value = 0.2;
+
+        let result = rule_combine(&rules, &a, &b);
+        assert!(
+            result.conductivity.value > 0.2,
+            "expected conductivity to move upward for a thermally conductive result"
+        );
     }
 }

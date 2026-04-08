@@ -24,6 +24,8 @@ use serde::{Deserialize, Serialize};
 use crate::scene::Shelf;
 pub(crate) struct MaterialPlugin;
 
+pub(crate) const MATERIAL_SURFACE_GAP: f32 = 0.01;
+
 impl Plugin for MaterialPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(PreStartup, load_material_catalog)
@@ -96,6 +98,33 @@ impl GameMaterial {
             meshes.add(Capsule3d::new(0.08, 0.18).mesh().build())
         } else {
             meshes.add(Cuboid::new(0.18, 0.18, 0.18))
+        }
+    }
+
+    /// Height from the support surface to the entity origin for the selected mesh.
+    pub(crate) fn support_height(&self) -> f32 {
+        let density = self.density.value;
+        if density < 0.3 {
+            0.12
+        } else if density < 0.7 {
+            0.17
+        } else {
+            0.09
+        }
+    }
+
+    pub(crate) fn resting_center_y(&self, surface_y: f32) -> f32 {
+        surface_y + self.support_height() + MATERIAL_SURFACE_GAP
+    }
+
+    pub(crate) fn footprint_radius(&self) -> f32 {
+        let density = self.density.value;
+        if density < 0.3 {
+            0.12
+        } else if density < 0.7 {
+            0.10
+        } else {
+            0.13
         }
     }
 }
@@ -173,7 +202,7 @@ fn spawn_material_objects(
             MeshMaterial3d(render_mat),
             Transform::from_xyz(
                 surface_tf.translation.x + x_offset,
-                surface_tf.translation.y + 0.1,
+                mat.resting_center_y(surface_tf.translation.y),
                 surface_tf.translation.z,
             )
             .with_scale(Vec3::splat(OBJECT_SCALE)),
@@ -257,6 +286,34 @@ mod tests {
             conductivity: prop(0.72, PropertyVisibility::Hidden),
             toxicity: prop(0.05, PropertyVisibility::Hidden),
         }
+    }
+
+    #[test]
+    fn support_height_matches_density_mesh_shape() {
+        let mut light = sample_material();
+        light.density.value = 0.2;
+        assert!((light.support_height() - 0.12).abs() < f32::EPSILON);
+
+        let mut medium = sample_material();
+        medium.density.value = 0.5;
+        assert!((medium.support_height() - 0.17).abs() < f32::EPSILON);
+
+        let heavy = sample_material();
+        assert!((heavy.support_height() - 0.09).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn footprint_radius_matches_density_mesh_shape() {
+        let mut light = sample_material();
+        light.density.value = 0.2;
+        assert!((light.footprint_radius() - 0.12).abs() < f32::EPSILON);
+
+        let mut medium = sample_material();
+        medium.density.value = 0.5;
+        assert!((medium.footprint_radius() - 0.10).abs() < f32::EPSILON);
+
+        let heavy = sample_material();
+        assert!((heavy.footprint_radius() - 0.13).abs() < f32::EPSILON);
     }
 
     #[test]
