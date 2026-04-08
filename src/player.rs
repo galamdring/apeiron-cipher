@@ -15,15 +15,14 @@ use bevy::window::{CursorGrabMode, CursorOptions};
 use leafwing_input_manager::prelude::*;
 
 use crate::input::InputAction;
-use crate::scene::SceneConfig;
+use crate::scene::{PositionXZ, RoomShellCollision, SceneConfig};
 
 /// Converts the leafwing axis_pair output (pixels * config sensitivity) to radians.
 /// Tune by adjusting `sensitivity_x` / `sensitivity_y` in input.toml rather than
 /// changing this constant.
 const LOOK_SCALE: f32 = 0.003;
 const PITCH_LIMIT: f32 = std::f32::consts::FRAC_PI_2 * 0.99;
-const SOUTH_DOORWAY_HALF_WIDTH: f32 = 0.8;
-const DOORWAY_TRANSITION_DEPTH: f32 = 0.5;
+const PLAYER_COLLISION_RADIUS: f32 = 0.2;
 
 pub(crate) fn cursor_is_captured(grab_mode: CursorGrabMode) -> bool {
     grab_mode != CursorGrabMode::None
@@ -31,28 +30,6 @@ pub(crate) fn cursor_is_captured(grab_mode: CursorGrabMode) -> bool {
 
 fn enforce_eye_height(translation: &mut Vec3, eye_height: f32) {
     translation.y = eye_height;
-}
-
-fn constrain_player_to_walkable_region(position: &mut Vec3, scene: &SceneConfig) {
-    let m = scene.room.boundary_margin;
-    let bx = scene.room.half_extent_x - m;
-    let bz = scene.room.half_extent_z - m;
-
-    if position.z >= -bz {
-        position.x = position.x.clamp(-bx, bx);
-        position.z = position.z.clamp(-bz, bz);
-        return;
-    }
-
-    let doorway_limit_z = -bz - DOORWAY_TRANSITION_DEPTH;
-    if position.z >= doorway_limit_z {
-        position.x = position
-            .x
-            .clamp(-SOUTH_DOORWAY_HALF_WIDTH, SOUTH_DOORWAY_HALF_WIDTH);
-        return;
-    }
-
-    position.x = position.x.clamp(-bx, bx);
 }
 
 pub(crate) struct PlayerPlugin;
@@ -170,6 +147,7 @@ fn player_move(
     time: Res<Time>,
     cursor_options: Single<&CursorOptions>,
     scene: Res<SceneConfig>,
+    room_shell: Res<RoomShellCollision>,
     mut player_query: Query<(&ActionState<InputAction>, &mut Transform), With<Player>>,
 ) {
     if !cursor_is_captured(cursor_options.grab_mode) {
@@ -195,15 +173,32 @@ fn player_move(
     let right_xz = Vec3::new(right.x, 0.0, right.z).normalize_or_zero();
 
     let direction = (forward_xz * input.y + right_xz * input.x).normalize_or_zero();
-    transform.translation += direction * scene.player.move_speed * time.delta_secs();
+    let delta = direction * scene.player.move_speed * time.delta_secs();
+    let mut proposed = transform.translation;
+    proposed.x += delta.x;
+    if !room_shell.blocks_circle_xz(
+        PositionXZ::new(proposed.x, proposed.z),
+        PLAYER_COLLISION_RADIUS,
+    ) {
+        transform.translation.x = proposed.x;
+    }
 
-    constrain_player_to_walkable_region(&mut transform.translation, &scene);
+    proposed = transform.translation;
+    proposed.z += delta.z;
+    if !room_shell.blocks_circle_xz(
+        PositionXZ::new(proposed.x, proposed.z),
+        PLAYER_COLLISION_RADIUS,
+    ) {
+        transform.translation.z = proposed.z;
+    }
+
     enforce_eye_height(&mut transform.translation, scene.player.eye_height);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scene::WallCollider;
 
     #[test]
     fn cursor_is_captured_for_locked_mode() {
@@ -228,34 +223,30 @@ mod tests {
     }
 
     #[test]
-    fn room_interior_still_clamps_to_bounds() {
-        let scene = SceneConfig::default();
-        let mut position = Vec3::new(99.0, 1.7, 99.0);
-        constrain_player_to_walkable_region(&mut position, &scene);
+    fn room_shell_blocks_west_wall() {
+        let shell = RoomShellCollision {
+            wall_colliders: vec![WallCollider {
+                footprint_xz: crate::scene::RectXZ {
+                    min_x: -4.2,
+                    max_x: -4.0,
+                    min_z: -5.0,
+                    max_z: 5.0,
+                },
+            }],
+        };
 
-        let margin = scene.room.boundary_margin;
-        assert!(position.x <= scene.room.half_extent_x - margin);
-        assert!(position.z <= scene.room.half_extent_z - margin);
+        assert!(shell.blocks_circle_xz(PositionXZ::new(-4.05, 0.0), PLAYER_COLLISION_RADIUS));
     }
 
     #[test]
-    fn doorway_band_allows_transition_outside() {
-        let scene = SceneConfig::default();
-        let mut position = Vec3::new(0.4, 1.7, -scene.room.half_extent_z - 0.2);
-        constrain_player_to_walkable_region(&mut position, &scene);
-
-        assert!(position.z < -(scene.room.half_extent_z - scene.room.boundary_margin));
-        assert!(position.x.abs() <= SOUTH_DOORWAY_HALF_WIDTH);
+    fn room_shell_leaves_doorway_gap_open() {
+        let shell = crate::scene::build_room_shell_collision(4.0, 4.0, 0.2);
+        assert!(!shell.blocks_circle_xz(PositionXZ::new(0.0, -4.1), PLAYER_COLLISION_RADIUS));
     }
 
     #[test]
-    fn outside_region_allows_forward_progress_but_clamps_sideways() {
-        let scene = SceneConfig::default();
-        let mut position = Vec3::new(99.0, 1.7, -scene.room.half_extent_z - 2.0);
-        constrain_player_to_walkable_region(&mut position, &scene);
-
-        let margin = scene.room.boundary_margin;
-        assert!(position.z < -(scene.room.half_extent_z - margin));
-        assert!(position.x <= scene.room.half_extent_x - margin);
+    fn room_shell_blocks_south_wall_outside_doorway() {
+        let shell = crate::scene::build_room_shell_collision(4.0, 4.0, 0.2);
+        assert!(shell.blocks_circle_xz(PositionXZ::new(2.0, -4.1), PLAYER_COLLISION_RADIUS));
     }
 }

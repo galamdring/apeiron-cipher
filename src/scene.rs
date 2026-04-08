@@ -15,7 +15,8 @@ pub(crate) struct ScenePlugin;
 
 impl Plugin for ScenePlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(PreStartup, load_scene_config)
+        app.init_resource::<RoomShellCollision>()
+            .add_systems(PreStartup, load_scene_config)
             .add_systems(Startup, setup_scene);
     }
 }
@@ -39,6 +40,71 @@ pub(crate) struct Surface {
 /// material spawning only targets shelves.
 #[derive(Component)]
 pub(crate) struct Shelf;
+
+/// Ground-plane position using world X/Z coordinates.
+///
+/// Bevy uses Y as vertical, so any "flat" room-shell collision math happens on
+/// the X/Z plane instead of the X/Y plane familiar from CAD or 3D printing.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PositionXZ {
+    pub x: f32,
+    pub z: f32,
+}
+
+impl PositionXZ {
+    pub(crate) fn new(x: f32, z: f32) -> Self {
+        Self { x, z }
+    }
+}
+
+/// Axis-aligned rectangle on the world X/Z plane.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct RectXZ {
+    pub min_x: f32,
+    pub max_x: f32,
+    pub min_z: f32,
+    pub max_z: f32,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct WallCollider {
+    pub footprint_xz: RectXZ,
+}
+
+impl WallCollider {
+    fn blocks_circle_xz(&self, position_xz: PositionXZ, radius: f32) -> bool {
+        let clamped_x = position_xz
+            .x
+            .clamp(self.footprint_xz.min_x, self.footprint_xz.max_x);
+        let clamped_z = position_xz
+            .z
+            .clamp(self.footprint_xz.min_z, self.footprint_xz.max_z);
+
+        // We treat the player as a circle on the X/Z plane and each wall
+        // segment as a finite rectangle on that same plane. First find the
+        // nearest point on the wall footprint to the player's center. Then ask
+        // whether a same-radius circle centered on that wall point would reach
+        // the player center. That gives the same overlap answer as asking
+        // whether the player's circle overlaps the wall rectangle, while also
+        // handling the ends of split wall segments around the doorway.
+        let dx = position_xz.x - clamped_x;
+        let dz = position_xz.z - clamped_z;
+        dx * dx + dz * dz < radius * radius
+    }
+}
+
+#[derive(Resource, Clone, Debug, Default)]
+pub(crate) struct RoomShellCollision {
+    pub wall_colliders: Vec<WallCollider>,
+}
+
+impl RoomShellCollision {
+    pub(crate) fn blocks_circle_xz(&self, position_xz: PositionXZ, radius: f32) -> bool {
+        self.wall_colliders
+            .iter()
+            .any(|collider| collider.blocks_circle_xz(position_xz, radius))
+    }
+}
 
 // ── Config (TOML ↔ Rust) ─────────────────────────────────────────────────
 
@@ -441,6 +507,85 @@ fn load_scene_config(mut commands: Commands) {
 
 // ── Scene setup ─────────────────────────────────────────────────────────
 
+const DOORWAY_WIDTH: f32 = 1.6;
+const DOORWAY_HEIGHT: f32 = 2.25;
+
+fn west_wall_center_x(room_half_width: f32, wall_thickness: f32) -> f32 {
+    -room_half_width - wall_thickness * 0.5
+}
+
+fn east_wall_center_x(room_half_width: f32, wall_thickness: f32) -> f32 {
+    room_half_width + wall_thickness * 0.5
+}
+
+fn south_wall_center_z(room_half_depth: f32, wall_thickness: f32) -> f32 {
+    -room_half_depth - wall_thickness * 0.5
+}
+
+fn north_wall_center_z(room_half_depth: f32, wall_thickness: f32) -> f32 {
+    room_half_depth + wall_thickness * 0.5
+}
+
+pub(crate) fn build_room_shell_collision(
+    room_half_width: f32,
+    room_half_depth: f32,
+    wall_thickness: f32,
+) -> RoomShellCollision {
+    let full_depth_with_walls = room_half_depth * 2.0 + wall_thickness * 2.0;
+    let full_width_with_walls = room_half_width * 2.0 + wall_thickness * 2.0;
+    let doorway_half_width = DOORWAY_WIDTH * 0.5;
+    let side_wall_width = room_half_width - doorway_half_width;
+    let south_z = south_wall_center_z(room_half_depth, wall_thickness);
+    let north_z = north_wall_center_z(room_half_depth, wall_thickness);
+    let west_x = west_wall_center_x(room_half_width, wall_thickness);
+    let east_x = east_wall_center_x(room_half_width, wall_thickness);
+
+    RoomShellCollision {
+        wall_colliders: vec![
+            WallCollider {
+                footprint_xz: RectXZ {
+                    min_x: west_x - wall_thickness * 0.5,
+                    max_x: west_x + wall_thickness * 0.5,
+                    min_z: -full_depth_with_walls * 0.5,
+                    max_z: full_depth_with_walls * 0.5,
+                },
+            },
+            WallCollider {
+                footprint_xz: RectXZ {
+                    min_x: east_x - wall_thickness * 0.5,
+                    max_x: east_x + wall_thickness * 0.5,
+                    min_z: -full_depth_with_walls * 0.5,
+                    max_z: full_depth_with_walls * 0.5,
+                },
+            },
+            WallCollider {
+                footprint_xz: RectXZ {
+                    min_x: -full_width_with_walls * 0.5,
+                    max_x: full_width_with_walls * 0.5,
+                    min_z: north_z - wall_thickness * 0.5,
+                    max_z: north_z + wall_thickness * 0.5,
+                },
+            },
+            WallCollider {
+                footprint_xz: RectXZ {
+                    min_x: -(doorway_half_width + side_wall_width),
+                    max_x: -doorway_half_width,
+                    min_z: south_z - wall_thickness * 0.5,
+                    max_z: south_z + wall_thickness * 0.5,
+                },
+            },
+            WallCollider {
+                footprint_xz: RectXZ {
+                    min_x: doorway_half_width,
+                    max_x: doorway_half_width + side_wall_width,
+                    min_z: south_z - wall_thickness * 0.5,
+                    max_z: south_z + wall_thickness * 0.5,
+                },
+            },
+        ],
+    }
+}
+
 fn setup_scene(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -487,23 +632,22 @@ fn setup_scene(
     let wall_y = h * 0.5;
     let west_east_depth = hz * 2.0 + t * 2.0;
     let north_south_width = hx * 2.0 + t * 2.0;
-    let doorway_width = 1.6;
-    let doorway_height = 2.25;
-    let doorway_half_width = doorway_width * 0.5;
+    let doorway_half_width = DOORWAY_WIDTH * 0.5;
     let side_wall_width = hx - doorway_half_width;
-    let lintel_height = (h - doorway_height).max(t);
+    let lintel_height = (h - DOORWAY_HEIGHT).max(t);
+    commands.insert_resource(build_room_shell_collision(hx, hz, t));
 
     // West (-X)
     commands.spawn((
         Mesh3d(meshes.add(Cuboid::new(t, h, west_east_depth))),
         MeshMaterial3d(wall_mat.clone()),
-        Transform::from_xyz(-hx - t * 0.5, wall_y, 0.0),
+        Transform::from_xyz(west_wall_center_x(hx, t), wall_y, 0.0),
     ));
     // East (+X)
     commands.spawn((
         Mesh3d(meshes.add(Cuboid::new(t, h, west_east_depth))),
         MeshMaterial3d(wall_mat.clone()),
-        Transform::from_xyz(hx + t * 0.5, wall_y, 0.0),
+        Transform::from_xyz(east_wall_center_x(hx, t), wall_y, 0.0),
     ));
     // South (-Z) with a centered doorway opening.
     commands.spawn((
@@ -512,7 +656,7 @@ fn setup_scene(
         Transform::from_xyz(
             -(doorway_half_width + side_wall_width * 0.5),
             wall_y,
-            -hz - t * 0.5,
+            south_wall_center_z(hz, t),
         ),
     ));
     commands.spawn((
@@ -521,19 +665,23 @@ fn setup_scene(
         Transform::from_xyz(
             doorway_half_width + side_wall_width * 0.5,
             wall_y,
-            -hz - t * 0.5,
+            south_wall_center_z(hz, t),
         ),
     ));
     commands.spawn((
-        Mesh3d(meshes.add(Cuboid::new(doorway_width, lintel_height, t))),
+        Mesh3d(meshes.add(Cuboid::new(DOORWAY_WIDTH, lintel_height, t))),
         MeshMaterial3d(wall_mat.clone()),
-        Transform::from_xyz(0.0, doorway_height + lintel_height * 0.5, -hz - t * 0.5),
+        Transform::from_xyz(
+            0.0,
+            DOORWAY_HEIGHT + lintel_height * 0.5,
+            south_wall_center_z(hz, t),
+        ),
     ));
     // North (+Z)
     commands.spawn((
         Mesh3d(meshes.add(Cuboid::new(north_south_width, h, t))),
         MeshMaterial3d(wall_mat),
-        Transform::from_xyz(0.0, wall_y, hz + t * 0.5),
+        Transform::from_xyz(0.0, wall_y, north_wall_center_z(hz, t)),
     ));
 
     let exterior_ground_size_x = hx * 6.0;
