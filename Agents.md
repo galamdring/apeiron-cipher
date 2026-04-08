@@ -46,6 +46,17 @@ If you encounter architectural ambiguity or missing dependencies, move the issue
 
 ## 4. Coding Golden Rules
 
+## 4.5 Agent Autonomy Contract
+
+Unless the user says otherwise, agents should operate with the following default contract:
+
+- **Treat the story body as authoritative.** Acceptance criteria, scope boundaries, and implementation intent come from the story as written.
+- **Implement the narrowest correct interpretation without asking for routine permission.** If the story clearly implies the next engineering step, do it.
+- **Escalate once when the decision changes reusable architecture or meaningfully broadens scope.** If a choice would reshape a shared system boundary, introduce a new abstraction with repo-wide consequences, or pull adjacent stories forward, stop and ask a single focused question.
+- **Finish the full implementation workflow when feasible.** That includes code changes, verification, commit, PR update/submission, and issue/PR linkage rather than stopping at partial progress.
+- **Prefer explicit, tutorial-style comments in tricky systems.** When code involves math, coordinate spaces, deterministic generation, persistence layering, or other logic that is easy to misunderstand, comment it heavily enough that the next reader does not need to reverse engineer intent.
+- **Do not make the user restate stable preferences every story.** Reuse established repo and user preferences unless the user changes direction.
+
 - **Rust & ECS:** Follow Rust 2024 idioms. Use strict Bevy ECS logic (Data in Components, Behavior in Systems, Plugin-per-feature).
 - **No UI Spoilers:** The game reveals mechanics strictly through consequence and visual feedback. Never add UI log popups or progress bars explaining internal game state.
 - **Data-Driven:** All game tuning and material properties must reside in data files (`assets/`), never hardcoded in Rust source. Always assert deterministic outcomes!
