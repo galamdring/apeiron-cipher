@@ -42,6 +42,7 @@ impl Plugin for CarryPlugin {
             .add_message::<CarryActionRejected>()
             .init_resource::<CarryConfig>()
             .init_resource::<ActiveCarryProfile>()
+            .init_resource::<CarryMovementState>()
             .add_systems(PreStartup, load_carry_config)
             .add_systems(
                 Startup,
@@ -50,6 +51,7 @@ impl Plugin for CarryPlugin {
             .add_systems(
                 Update,
                 (
+                    update_carry_movement_state,
                     emit_stash_intent,
                     emit_cycle_carry_intent,
                     emit_drop_carry_intent,
@@ -105,6 +107,31 @@ pub(crate) enum CarryRejectionReason {
 pub(crate) struct CarryWeightChanged {
     pub current_weight: f32,
     pub effective_capacity: f32,
+}
+
+/// Current movement-facing interpretation of carry consequences.
+///
+/// `CarryState` is the source of truth for inventory mass. This resource is the
+/// source of truth for *how that mass affects locomotion right now*. Keeping the
+/// two separated lets later stories change the feedback model without rewriting
+/// how carry contents are tracked.
+#[derive(Clone, Debug, Resource, PartialEq)]
+pub(crate) struct CarryMovementState {
+    pub speed_modifier: f32,
+    pub stamina_drain_multiplier: f32,
+    pub encumbrance_ratio: f32,
+    pub creative_mode: bool,
+}
+
+impl Default for CarryMovementState {
+    fn default() -> Self {
+        Self {
+            speed_modifier: 1.0,
+            stamina_drain_multiplier: 1.0,
+            encumbrance_ratio: 0.0,
+            creative_mode: false,
+        }
+    }
 }
 
 /// Marks a material entity as being in the player's carry container rather than
@@ -555,6 +582,80 @@ fn attach_carry_state_to_player(
         },
         device_state,
     ));
+}
+
+/// Convert current carry state into movement-facing consequences.
+///
+/// This runs every frame instead of only on `CarryWeightChanged` because Story 4.3
+/// is the first consumer and simplicity matters more than event fan-out here.
+/// Later stories can make this reactive if needed.
+fn update_carry_movement_state(
+    active_profile: Res<ActiveCarryProfile>,
+    mut movement_state: ResMut<CarryMovementState>,
+    player_query: Query<&CarryState, With<Player>>,
+) {
+    let Ok(carry_state) = player_query.single() else {
+        return;
+    };
+
+    if active_profile.profile_name == "creative" {
+        *movement_state = CarryMovementState {
+            speed_modifier: 1.0,
+            stamina_drain_multiplier: 1.0,
+            encumbrance_ratio: 0.0,
+            creative_mode: true,
+        };
+        return;
+    }
+
+    let encumbrance_ratio = if carry_state.effective_capacity <= f32::EPSILON {
+        if carry_state.current_weight > 0.0 {
+            1.0
+        } else {
+            0.0
+        }
+    } else {
+        (carry_state.current_weight / carry_state.effective_capacity).max(0.0)
+    };
+
+    let speed_modifier = evaluate_speed_curve(
+        &active_profile.tuning.speed_curve,
+        encumbrance_ratio,
+        carry_state.hard_limit_enabled,
+    );
+    let stamina_drain_multiplier =
+        1.0 + encumbrance_ratio.max(0.0) * (active_profile.tuning.stamina_cost_multiplier - 1.0);
+
+    *movement_state = CarryMovementState {
+        speed_modifier,
+        stamina_drain_multiplier,
+        encumbrance_ratio,
+        creative_mode: false,
+    };
+}
+
+fn evaluate_speed_curve(
+    curve: &CarryCurveConfig,
+    encumbrance_ratio: f32,
+    hard_limit_enabled: bool,
+) -> f32 {
+    let clamped_ratio = if hard_limit_enabled {
+        encumbrance_ratio.clamp(0.0, 1.0)
+    } else {
+        encumbrance_ratio.max(0.0)
+    };
+
+    let falloff = match curve.kind {
+        CarryCurveKind::Linear => clamped_ratio.powf(curve.exponent.max(0.01)),
+        CarryCurveKind::Exponential => 1.0 - (-clamped_ratio * curve.exponent.max(0.01)).exp(),
+    };
+
+    let base = 1.0 - (1.0 - curve.min_multiplier) * falloff;
+    if hard_limit_enabled {
+        base.max(curve.min_multiplier)
+    } else {
+        base.max(0.1)
+    }
 }
 
 /// Capacity depends on both the configured base capacity and the carry-device rule.
@@ -1012,5 +1113,27 @@ exponent = 1.0
     fn evict_stale_entity_returns_false_for_unknown() {
         let mut state = CarryState::new(5.0, true);
         assert!(!state.evict_stale_entity(Entity::from_bits(999)));
+    }
+
+    #[test]
+    fn linear_speed_curve_clamps_at_min_multiplier_when_hard_limit_is_enabled() {
+        let curve = CarryCurveConfig {
+            kind: CarryCurveKind::Linear,
+            min_multiplier: 0.45,
+            exponent: 1.0,
+        };
+
+        assert!((evaluate_speed_curve(&curve, 3.0, true) - 0.45).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn linear_speed_curve_continues_degrading_when_hard_limit_is_disabled() {
+        let curve = CarryCurveConfig {
+            kind: CarryCurveKind::Linear,
+            min_multiplier: 0.45,
+            exponent: 1.0,
+        };
+
+        assert!(evaluate_speed_curve(&curve, 3.0, false) < 0.45);
     }
 }
