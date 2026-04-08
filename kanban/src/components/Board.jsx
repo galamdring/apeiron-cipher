@@ -7,7 +7,7 @@ import {
   DragOverlay,
   closestCenter,
 } from "@dnd-kit/core";
-import { useIssueStore, COLUMNS, ALL_COLUMN_LABELS, COLUMN_LABELS } from "../store/issues";
+import { useIssueStore, COLUMNS, ALL_COLUMN_LABELS, COLUMN_LABELS, getCloseIssueColumn } from "../store/issues";
 import { setIssueState, setIssueLabels } from "../api/github";
 import Column from "./Column";
 import IssueCard from "./IssueCard";
@@ -76,7 +76,7 @@ export default function Board({ repo, token }) {
         const colLabel = COLUMN_LABELS[targetColumn];
         if (colLabel) labels.push(colLabel);
 
-        const newState = targetColumn === "Complete" ? "closed" : "open";
+        const newState = targetColumn === getCloseIssueColumn() ? "closed" : "open";
 
         const updated = await setIssueState(
           owner,

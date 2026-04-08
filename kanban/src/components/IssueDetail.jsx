@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   useIssueStore,
   TYPES,
@@ -7,6 +7,7 @@ import {
   COLUMN_LABELS,
   issueType,
   issueColumn,
+  getCloseIssueColumn,
 } from "../store/issues";
 import { updateIssue, fetchComments, createComment } from "../api/github";
 
@@ -24,7 +25,7 @@ const s = {
     background: "#161b22",
     border: "1px solid #30363d",
     borderRadius: 12,
-    width: "min(720px, 95vw)",
+    width: "min(1100px, 95vw)",
     maxHeight: "90vh",
     display: "flex",
     flexDirection: "column",
@@ -104,9 +105,11 @@ const s = {
     outline: "none",
     width: "100%",
     minHeight: 120,
-    resize: "vertical",
+    resize: "none",
     fontFamily: "inherit",
     lineHeight: 1.5,
+    overflow: "hidden",
+    boxSizing: "border-box",
   },
   saveBtn: {
     background: "#238636",
@@ -176,6 +179,16 @@ export default function IssueDetail({ repo, token }) {
   const [newComment, setNewComment] = useState("");
   const [postingComment, setPostingComment] = useState(false);
 
+  const bodyRef = useRef(null);
+
+  // Auto-size the description textarea to its content
+  useEffect(() => {
+    const el = bodyRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  }, [body]);
+
   const [owner, repoName] = (repo || "/").split("/");
 
   useEffect(() => {
@@ -204,7 +217,7 @@ export default function IssueDetail({ repo, token }) {
       const colLabel = COLUMN_LABELS[column];
       if (colLabel) labels.push(colLabel);
 
-      const newState = column === "Complete" ? "closed" : "open";
+      const newState = column === getCloseIssueColumn() ? "closed" : "open";
 
       const updated = await updateIssue(
         owner,
@@ -274,6 +287,7 @@ export default function IssueDetail({ repo, token }) {
             <div>
               <div style={s.fieldLabel}>Description</div>
               <textarea
+                ref={bodyRef}
                 style={s.textarea}
                 value={body}
                 onChange={(e) => setBody(e.target.value)}

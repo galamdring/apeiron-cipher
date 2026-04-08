@@ -1,23 +1,9 @@
 import React from "react";
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { useIssueStore, issueType } from "../store/issues";
+import { useIssueStore, issueType, ALL_COLUMN_LABELS, TYPES, TYPE_COLORS } from "../store/issues";
 
-const TYPE_COLOR = {
-  epic: "#a371f7",
-  story: "#58a6ff",
-  bug: "#f85149",
-  task: "#3fb950",
-};
-
-const SKIP_LABELS = new Set([
-  "epic",
-  "story",
-  "bug",
-  "task",
-  "in progress",
-  "in review",
-]);
+const SKIP_LABELS = new Set([...TYPES, ...ALL_COLUMN_LABELS]);
 
 const s = {
   card: (isDragging, overlay) => ({
@@ -40,8 +26,8 @@ const s = {
   typeBadge: (type) => ({
     fontSize: 10,
     fontWeight: 700,
-    background: TYPE_COLOR[type] + "33",
-    color: TYPE_COLOR[type],
+    background: (TYPE_COLORS[type] || "#8b949e") + "33",
+    color: TYPE_COLORS[type] || "#8b949e",
     borderRadius: 4,
     padding: "1px 6px",
     textTransform: "uppercase",

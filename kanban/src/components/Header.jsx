@@ -1,7 +1,7 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { useIssueStore } from "../store/issues";
 import { useAuthStore } from "../store/auth";
-import { fetchAllIssues } from "../api/github";
+import { fetchAllIssues, fetchUserRepos } from "../api/github";
 
 const s = {
   header: {
@@ -14,7 +14,7 @@ const s = {
     flexWrap: "wrap",
   },
   title: { fontWeight: 700, fontSize: 18, color: "#58a6ff", marginRight: 8 },
-  input: {
+  select: {
     background: "#0d1117",
     border: "1px solid #30363d",
     borderRadius: 6,
@@ -22,16 +22,12 @@ const s = {
     padding: "6px 10px",
     fontSize: 14,
     outline: "none",
-  },
-  btn: {
-    background: "#238636",
-    color: "#fff",
-    border: "none",
-    borderRadius: 6,
-    padding: "6px 16px",
+    minWidth: 220,
     cursor: "pointer",
-    fontWeight: 600,
-    fontSize: 14,
+  },
+  selectDisabled: {
+    opacity: 0.5,
+    cursor: "not-allowed",
   },
   signOutBtn: {
     background: "none",
@@ -62,47 +58,77 @@ const s = {
 };
 
 export default function Header({ repo, onRepoChange }) {
-  const [repoInput, setRepoInput] = useState(repo || "");
   const { setIssues, setLoading, setError, loading, error } = useIssueStore();
   const { token, user, clearAuth } = useAuthStore();
 
-  async function handleLoad() {
-    const trimmed = repoInput.trim();
-    if (!trimmed.includes("/")) {
-      setError("Enter repo as owner/repo");
-      return;
-    }
-    const [owner, repoName] = trimmed.split("/");
+  const [repos, setRepos] = useState([]);
+  const [reposLoading, setReposLoading] = useState(true);
+  const [reposError, setReposError] = useState(null);
+
+  // Fetch accessible repos once on mount
+  useEffect(() => {
+    let cancelled = false;
+    setReposLoading(true);
+    fetchUserRepos(token)
+      .then((data) => {
+        if (cancelled) return;
+        setRepos(data.map((r) => r.full_name).sort((a, b) => a.localeCompare(b)));
+        setReposLoading(false);
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        setReposError(e?.response?.data?.message || e.message || "Failed to load repos");
+        setReposLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [token]);
+
+  // Auto-load issues when repo is selected (including restored value from localStorage)
+  useEffect(() => {
+    if (!repo) return;
+    const [owner, repoName] = repo.split("/");
+    if (!owner || !repoName) return;
     setError(null);
     setLoading(true);
-    try {
-      const issues = await fetchAllIssues(owner, repoName, token);
-      setIssues(issues);
-      onRepoChange(trimmed);
-    } catch (e) {
-      setError(e?.response?.data?.message || e.message || "Failed to load");
-    } finally {
-      setLoading(false);
-    }
+    fetchAllIssues(owner, repoName, token)
+      .then((issues) => setIssues(issues))
+      .catch((e) => setError(e?.response?.data?.message || e.message || "Failed to load"))
+      .finally(() => setLoading(false));
+  }, [repo]);
+
+  function handleSelect(e) {
+    const value = e.target.value;
+    if (!value) return;
+    onRepoChange(value);
   }
+
+  const selectStyle = reposLoading || loading
+    ? { ...s.select, ...s.selectDisabled }
+    : s.select;
 
   return (
     <header style={s.header}>
       <span style={s.title}>GitHub Kanban</span>
-      <input
-        style={{ ...s.input, width: 220 }}
-        placeholder="owner/repo"
-        value={repoInput}
-        onChange={(e) => setRepoInput(e.target.value)}
-        onKeyDown={(e) => e.key === "Enter" && handleLoad()}
-      />
-      <button style={s.btn} onClick={handleLoad} disabled={loading}>
-        {loading ? "Loading…" : "Load"}
-      </button>
+
+      <select
+        style={selectStyle}
+        value={repo || ""}
+        onChange={handleSelect}
+        disabled={reposLoading || loading}
+      >
+        {reposLoading && <option value="">Loading repos…</option>}
+        {!reposLoading && !repo && <option value="">Select a repo…</option>}
+        {repos.map((r) => (
+          <option key={r} value={r}>{r}</option>
+        ))}
+      </select>
+
+      {reposError && <span style={s.error}>{reposError}</span>}
       {error && <span style={s.error}>{error}</span>}
-      {!error && !loading && repo && (
-        <span style={s.info}>Loaded: {repo}</span>
+      {!error && !reposError && loading && (
+        <span style={s.info}>Loading issues…</span>
       )}
+
       <div style={s.userInfo}>
         {user?.avatar_url && (
           <img src={user.avatar_url} alt={user.login} style={s.avatar} />
