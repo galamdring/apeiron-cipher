@@ -1,0 +1,20 @@
+# World-generation foundation for Epic 5.
+#
+# The POC deliberately loads the planet seed from config instead of generating
+# it at runtime. That keeps the first deterministic exterior stories easy to
+# inspect and easy to reproduce.
+
+# Stable identity for this world / planet.
+planet_seed = 20260408
+
+# Exterior chunk size in Bevy world units.
+#
+# The initial default is 45 because it comfortably contains the current room
+# and nearby exterior patch while still giving later chunk-generation stories a
+# meaningful neighborhood size to work with.
+chunk_size_world_units = 45.0
+
+# Logical active neighborhood around the player's current chunk.
+#
+# Radius 1 means a 3x3 block of chunks centered on the player's chunk.
+active_chunk_radius = 1

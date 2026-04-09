@@ -19,6 +19,7 @@ mod materials;
 mod observation;
 mod player;
 mod scene;
+mod world_generation;
 
 fn main() {
     App::new()
@@ -58,5 +59,7 @@ fn main() {
         .add_plugins(observation::ObservationPlugin)
         // Journal: player-owned record of observations and fabrication history.
         .add_plugins(journal::JournalPlugin)
+        // World generation: deterministic planet/chunk identity foundation for exterior systems.
+        .add_plugins(world_generation::WorldGenerationPlugin)
         .run();
 }
