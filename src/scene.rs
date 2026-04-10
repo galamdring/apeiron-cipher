@@ -697,8 +697,12 @@ fn setup_scene(
         Transform::from_xyz(0.0, wall_y, north_wall_center_z(hz, t)),
     ));
 
-    let exterior_ground_size_x = hx * 6.0;
-    let exterior_ground_size_z = hz * 8.0;
+    // Keep the first authored exterior intentionally simple, but make it large
+    // enough that chunk-based surface deposit generation has room to feel
+    // present. A tiny patch technically "works" yet makes the outside feel
+    // empty, which gives the wrong read on Story 5.2's generation density.
+    let exterior_ground_size_x = hx * 10.0;
+    let exterior_ground_size_z = hz * 14.0;
     let exterior_ground_center_z = -hz - exterior_ground_size_z * 0.5;
     let exterior_surface_y = -0.01;
     let exterior_ground_mat = materials.add(StandardMaterial {
