@@ -65,6 +65,11 @@ pub(crate) struct SurfaceMineralDepositDefinition {
     pub selection_weight: f32,
     pub scale_min: f32,
     pub scale_max: f32,
+    pub deposit_radius_min: f32,
+    pub deposit_radius_max: f32,
+    pub child_count_min: u32,
+    pub child_count_max: u32,
+    pub cluster_compactness: f32,
 }
 
 /// Dedicated data source for Story 5.2 baseline exterior generation.
@@ -75,14 +80,16 @@ pub(crate) struct SurfaceMineralDepositDefinition {
 /// looks like in the world" rather than generic world foundation config.
 #[derive(Clone, Debug, PartialEq, Resource, Serialize, Deserialize)]
 pub(crate) struct SurfaceMineralDepositCatalog {
-    #[serde(default = "default_candidate_spacing_world_units")]
-    pub candidate_spacing_world_units: f32,
-    #[serde(default = "default_density_field_scale_world_units")]
-    pub density_field_scale_world_units: f32,
-    #[serde(default = "default_spawn_threshold")]
-    pub spawn_threshold: f32,
-    #[serde(default = "default_jitter_fraction")]
-    pub jitter_fraction: f32,
+    #[serde(default = "default_site_spacing_world_units")]
+    pub site_spacing_world_units: f32,
+    #[serde(default = "default_site_density_field_scale_world_units")]
+    pub site_density_field_scale_world_units: f32,
+    #[serde(default = "default_site_spawn_threshold")]
+    pub site_spawn_threshold: f32,
+    #[serde(default = "default_site_jitter_fraction")]
+    pub site_jitter_fraction: f32,
+    #[serde(default = "default_site_min_gap_world_units")]
+    pub site_min_gap_world_units: f32,
     #[serde(default = "default_surface_mineral_deposits")]
     pub deposits: Vec<SurfaceMineralDepositDefinition>,
 }
@@ -90,29 +97,34 @@ pub(crate) struct SurfaceMineralDepositCatalog {
 impl Default for SurfaceMineralDepositCatalog {
     fn default() -> Self {
         Self {
-            candidate_spacing_world_units: default_candidate_spacing_world_units(),
-            density_field_scale_world_units: default_density_field_scale_world_units(),
-            spawn_threshold: default_spawn_threshold(),
-            jitter_fraction: default_jitter_fraction(),
+            site_spacing_world_units: default_site_spacing_world_units(),
+            site_density_field_scale_world_units: default_site_density_field_scale_world_units(),
+            site_spawn_threshold: default_site_spawn_threshold(),
+            site_jitter_fraction: default_site_jitter_fraction(),
+            site_min_gap_world_units: default_site_min_gap_world_units(),
             deposits: default_surface_mineral_deposits(),
         }
     }
 }
 
-fn default_candidate_spacing_world_units() -> f32 {
-    6.0
+fn default_site_spacing_world_units() -> f32 {
+    11.0
 }
 
-fn default_density_field_scale_world_units() -> f32 {
-    18.0
+fn default_site_density_field_scale_world_units() -> f32 {
+    24.0
 }
 
-fn default_spawn_threshold() -> f32 {
-    0.62
+fn default_site_spawn_threshold() -> f32 {
+    0.55
 }
 
-fn default_jitter_fraction() -> f32 {
-    0.34
+fn default_site_jitter_fraction() -> f32 {
+    0.28
+}
+
+fn default_site_min_gap_world_units() -> f32 {
+    2.5
 }
 
 fn default_surface_mineral_deposits() -> Vec<SurfaceMineralDepositDefinition> {
@@ -123,6 +135,11 @@ fn default_surface_mineral_deposits() -> Vec<SurfaceMineralDepositDefinition> {
             selection_weight: 1.0,
             scale_min: 0.9,
             scale_max: 1.2,
+            deposit_radius_min: 2.2,
+            deposit_radius_max: 3.4,
+            child_count_min: 5,
+            child_count_max: 9,
+            cluster_compactness: 0.75,
         },
         SurfaceMineralDepositDefinition {
             key: "silite_surface_deposit".into(),
@@ -130,6 +147,11 @@ fn default_surface_mineral_deposits() -> Vec<SurfaceMineralDepositDefinition> {
             selection_weight: 0.8,
             scale_min: 0.85,
             scale_max: 1.15,
+            deposit_radius_min: 1.8,
+            deposit_radius_max: 3.0,
+            child_count_min: 4,
+            child_count_max: 7,
+            cluster_compactness: 0.68,
         },
         SurfaceMineralDepositDefinition {
             key: "prismate_surface_deposit".into(),
@@ -137,6 +159,11 @@ fn default_surface_mineral_deposits() -> Vec<SurfaceMineralDepositDefinition> {
             selection_weight: 0.45,
             scale_min: 0.8,
             scale_max: 1.05,
+            deposit_radius_min: 1.4,
+            deposit_radius_max: 2.2,
+            child_count_min: 3,
+            child_count_max: 5,
+            cluster_compactness: 0.82,
         },
     ]
 }
@@ -164,6 +191,27 @@ pub(crate) struct SurfaceMineralDeposit {
     pub definition_key: String,
 }
 
+/// Stable identity for one deterministic deposit site.
+///
+/// Story 5.2 scattered independent child objects. Story 5.2b adds a site layer
+/// above them so the world can say "this whole Ferrite patch is one deposit"
+/// instead of pretending the individual loose pieces are unrelated.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Component)]
+pub(crate) struct GeneratedDepositSiteId {
+    pub planet_seed: u64,
+    pub chunk_coord: ChunkCoord,
+    pub deposit_kind_key: String,
+    pub local_site_index: u32,
+    pub generator_version: u32,
+}
+
+/// Marker connecting a generated child mineral back to its parent deposit site.
+#[derive(Component, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DepositSiteMember {
+    pub site_id: GeneratedDepositSiteId,
+    pub local_child_index: u32,
+}
+
 /// Baseline generated placement before it becomes a live Bevy entity.
 ///
 /// This separation is important for testing. The deterministic generation logic
@@ -172,11 +220,28 @@ pub(crate) struct SurfaceMineralDeposit {
 #[derive(Clone, Debug, PartialEq)]
 struct GeneratedSurfaceMineralPlacement {
     generated_id: GeneratedObjectId,
+    deposit_site_id: GeneratedDepositSiteId,
     definition_key: String,
     material_key: String,
     position_xz: PositionXZ,
     surface_y: f32,
     visual_scale: f32,
+    local_child_index: u32,
+}
+
+/// Deterministic deposit site before child minerals are expanded around it.
+#[derive(Clone, Debug, PartialEq)]
+struct GeneratedSurfaceMineralDepositSite {
+    site_id: GeneratedDepositSiteId,
+    definition_key: String,
+    material_key: String,
+    center_xz: PositionXZ,
+    radius_world_units: f32,
+    child_count: u32,
+    surface_y: f32,
+    scale_min: f32,
+    scale_max: f32,
+    cluster_compactness: f32,
 }
 
 /// Active chunk baseline entities currently spawned into the world.
@@ -287,6 +352,10 @@ fn sync_active_exterior_chunks(
                         definition_key: placement.definition_key.clone(),
                     },
                     GeneratedExteriorObject { home_chunk: chunk },
+                    DepositSiteMember {
+                        site_id: placement.deposit_site_id.clone(),
+                        local_child_index: placement.local_child_index,
+                    },
                     placement.generated_id.clone(),
                     Mesh3d(mesh),
                     MeshMaterial3d(render_material),
@@ -325,6 +394,7 @@ fn release_collected_generated_objects(
         commands
             .entity(entity)
             .remove::<GeneratedExteriorObject>()
+            .remove::<DepositSiteMember>()
             .remove::<SurfaceMineralDeposit>()
             .remove::<GeneratedObjectId>();
     }
@@ -336,44 +406,60 @@ fn generate_surface_mineral_chunk_baseline(
     exterior_patch: &ExteriorGroundPatch,
     chunk_coord: ChunkCoord,
 ) -> Vec<GeneratedSurfaceMineralPlacement> {
+    let deposit_sites =
+        generate_surface_mineral_deposit_sites(profile, catalog, exterior_patch, chunk_coord);
+    let mut placements = Vec::new();
+
+    // Story 5.2 produced one object per accepted point sample.
+    // Story 5.2b inserts a site layer in between:
+    // 1. generate a few deterministic deposit sites
+    // 2. expand each site into clustered child minerals
+    //
+    // That extra layer is what makes the outside read like deposits or veins
+    // instead of unrelated loose pieces sprinkled around the patch.
+    for site in deposit_sites {
+        placements.extend(expand_deposit_site_into_cluster(
+            profile,
+            &site,
+            exterior_patch,
+        ));
+    }
+
+    placements
+}
+
+fn generate_surface_mineral_deposit_sites(
+    profile: &WorldProfile,
+    catalog: &SurfaceMineralDepositCatalog,
+    exterior_patch: &ExteriorGroundPatch,
+    chunk_coord: ChunkCoord,
+) -> Vec<GeneratedSurfaceMineralDepositSite> {
     let generation_key = derive_chunk_generation_key(profile, chunk_coord);
     let chunk_origin_xz = chunk_origin_xz(chunk_coord, profile.chunk_size_world_units);
-    let spacing = catalog.candidate_spacing_world_units;
+    let spacing = catalog.site_spacing_world_units;
     let columns = (profile.chunk_size_world_units / spacing).ceil() as u32;
     let rows = (profile.chunk_size_world_units / spacing).ceil() as u32;
-    let mut placements = Vec::new();
-    let mut local_candidate_index = 0_u32;
+    let mut sites: Vec<GeneratedSurfaceMineralDepositSite> = Vec::new();
+    let mut local_site_index = 0_u32;
 
-    // The chunk uses a fixed candidate grid so "same chunk" always means the
-    // same set of candidate identities. Continuous spatial variation then
-    // decides which of those candidates actually become visible deposits.
     for row in 0..rows {
         for column in 0..columns {
             let cell_center_x = chunk_origin_xz.x + (column as f32 + 0.5) * spacing;
             let cell_center_z = chunk_origin_xz.z + (row as f32 + 0.5) * spacing;
             let cell_center_xz = PositionXZ::new(cell_center_x, cell_center_z);
 
-            // The current exterior is a flat authored patch south of the room.
-            // We only generate baseline deposits where that patch actually
-            // exists. This keeps Story 5.2 honest: it is about deterministic
-            // chunk content, not about pretending the whole future planet is
-            // already physically rendered.
             if !rect_contains_xz(&exterior_patch.bounds_xz, cell_center_xz) {
-                local_candidate_index += 1;
+                local_site_index += 1;
                 continue;
             }
 
-            // This density field is the "adjacent chunks feel related" part.
-            // It samples a continuous world-position field, so nearby world
-            // positions produce nearby values even when they live in different
-            // chunks.
             let density = continuous_value_field_01(
                 generation_key.placement_density_key,
                 cell_center_xz,
-                catalog.density_field_scale_world_units,
+                catalog.site_density_field_scale_world_units,
             );
-            if density < catalog.spawn_threshold {
-                local_candidate_index += 1;
+            if density < catalog.site_spawn_threshold {
+                local_site_index += 1;
                 continue;
             }
 
@@ -381,53 +467,147 @@ fn generate_surface_mineral_chunk_baseline(
                 &catalog.deposits,
                 generation_key.placement_variation_key,
                 chunk_coord,
-                local_candidate_index,
+                local_site_index,
             ) else {
-                local_candidate_index += 1;
+                local_site_index += 1;
                 continue;
             };
 
             let jitter_offset = jitter_offset_xz(
                 generation_key.placement_variation_key,
                 chunk_coord,
-                local_candidate_index,
-                spacing * catalog.jitter_fraction,
+                local_site_index,
+                spacing * catalog.site_jitter_fraction,
             );
-            let final_position_xz = PositionXZ::new(
+            let center_xz = PositionXZ::new(
                 cell_center_xz.x + jitter_offset.x,
                 cell_center_xz.z + jitter_offset.z,
             );
-
-            if !rect_contains_xz(&exterior_patch.bounds_xz, final_position_xz) {
-                local_candidate_index += 1;
+            if !rect_contains_xz(&exterior_patch.bounds_xz, center_xz) {
+                local_site_index += 1;
                 continue;
             }
 
-            let scale_mix = unit_interval_01(mix_candidate_input(
+            let radius_mix = unit_interval_01(mix_candidate_input(
                 generation_key.placement_variation_key,
                 chunk_coord,
-                local_candidate_index,
-                0x5500_0000_0000_0001,
+                local_site_index,
+                0x6600_0000_0000_0001,
             ));
-            let visual_scale = lerp(definition.scale_min, definition.scale_max, scale_mix);
+            let radius_world_units = lerp(
+                definition.deposit_radius_min,
+                definition.deposit_radius_max,
+                radius_mix,
+            );
 
-            placements.push(GeneratedSurfaceMineralPlacement {
-                generated_id: derive_generated_object_id(
-                    profile,
+            let child_count_mix = unit_interval_01(mix_candidate_input(
+                generation_key.placement_variation_key,
+                chunk_coord,
+                local_site_index,
+                0x6600_0000_0000_0002,
+            ));
+            let child_count = lerp(
+                definition.child_count_min as f32,
+                definition.child_count_max as f32,
+                child_count_mix,
+            )
+            .round() as u32;
+
+            // A deposit only feels like its own formation if it has some air
+            // around it. This deterministic overlap check rejects sites that
+            // would collapse visually into an existing site, preserving visible
+            // gaps between deposits.
+            let overlaps_existing_site = sites.iter().any(|existing| {
+                let distance = distance_xz(center_xz, existing.center_xz);
+                let min_distance = radius_world_units
+                    + existing.radius_world_units
+                    + catalog.site_min_gap_world_units;
+                distance < min_distance
+            });
+            if overlaps_existing_site {
+                local_site_index += 1;
+                continue;
+            }
+
+            sites.push(GeneratedSurfaceMineralDepositSite {
+                site_id: GeneratedDepositSiteId {
+                    planet_seed: profile.planet_seed.0,
                     chunk_coord,
-                    definition.key.clone(),
-                    local_candidate_index,
-                    SURFACE_MINERAL_DEPOSIT_GENERATOR_VERSION,
-                ),
+                    deposit_kind_key: definition.key.clone(),
+                    local_site_index,
+                    generator_version: SURFACE_MINERAL_DEPOSIT_GENERATOR_VERSION,
+                },
                 definition_key: definition.key.clone(),
                 material_key: definition.material_key.clone(),
-                position_xz: final_position_xz,
+                center_xz,
+                radius_world_units,
+                child_count: child_count.max(1),
                 surface_y: exterior_patch.surface_y,
-                visual_scale,
+                scale_min: definition.scale_min,
+                scale_max: definition.scale_max,
+                cluster_compactness: definition.cluster_compactness.clamp(0.0, 1.0),
             });
 
-            local_candidate_index += 1;
+            local_site_index += 1;
         }
+    }
+
+    sites
+}
+
+fn expand_deposit_site_into_cluster(
+    profile: &WorldProfile,
+    site: &GeneratedSurfaceMineralDepositSite,
+    exterior_patch: &ExteriorGroundPatch,
+) -> Vec<GeneratedSurfaceMineralPlacement> {
+    let mut placements = Vec::new();
+
+    for local_child_index in 0..site.child_count {
+        let angle = unit_interval_01(mix_child_input(
+            site,
+            local_child_index,
+            0x7700_0000_0000_0001,
+        )) * std::f32::consts::TAU;
+        let radial_mix = unit_interval_01(mix_child_input(
+            site,
+            local_child_index,
+            0x7700_0000_0000_0002,
+        ));
+        // Higher compactness keeps more child minerals near the center so the
+        // player reads one deposit instead of a sparse ring.
+        let radial_exponent = lerp(2.6, 1.1, 1.0 - site.cluster_compactness);
+        let radial_distance = site.radius_world_units * radial_mix.powf(radial_exponent);
+        let child_x = site.center_xz.x + angle.cos() * radial_distance;
+        let child_z = site.center_xz.z + angle.sin() * radial_distance;
+        let position_xz = PositionXZ::new(child_x, child_z);
+
+        if !rect_contains_xz(&exterior_patch.bounds_xz, position_xz) {
+            continue;
+        }
+
+        let scale_mix = unit_interval_01(mix_child_input(
+            site,
+            local_child_index,
+            0x7700_0000_0000_0003,
+        ));
+        let visual_scale = lerp(site.scale_min, site.scale_max, scale_mix);
+
+        placements.push(GeneratedSurfaceMineralPlacement {
+            generated_id: derive_generated_object_id(
+                profile,
+                site.site_id.chunk_coord,
+                site.definition_key.clone(),
+                (site.site_id.local_site_index << 16) | local_child_index,
+                SURFACE_MINERAL_DEPOSIT_GENERATOR_VERSION,
+            ),
+            deposit_site_id: site.site_id.clone(),
+            definition_key: site.definition_key.clone(),
+            material_key: site.material_key.clone(),
+            position_xz,
+            surface_y: site.surface_y,
+            visual_scale,
+            local_child_index,
+        });
     }
 
     placements
@@ -438,6 +618,12 @@ fn rect_contains_xz(bounds_xz: &RectXZ, position_xz: PositionXZ) -> bool {
         && position_xz.x <= bounds_xz.max_x
         && position_xz.z >= bounds_xz.min_z
         && position_xz.z <= bounds_xz.max_z
+}
+
+fn distance_xz(a: PositionXZ, b: PositionXZ) -> f32 {
+    let dx = a.x - b.x;
+    let dz = a.z - b.z;
+    (dx * dx + dz * dz).sqrt()
 }
 
 fn choose_deposit_definition(
@@ -549,6 +735,22 @@ fn mix_candidate_input(
     )
 }
 
+fn mix_child_input(
+    site: &GeneratedSurfaceMineralDepositSite,
+    local_child_index: u32,
+    channel: u64,
+) -> u64 {
+    splitmix64(
+        site.site_id
+            .planet_seed
+            .wrapping_add(site.site_id.chunk_coord.x as u32 as u64)
+            .wrapping_add((site.site_id.chunk_coord.z as u32 as u64) << 32)
+            .wrapping_add(site.site_id.local_site_index as u64)
+            .wrapping_add(local_child_index as u64)
+            .wrapping_add(channel),
+    )
+}
+
 fn splitmix64(mut z: u64) -> u64 {
     z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
     z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
@@ -586,7 +788,7 @@ mod tests {
 
     fn sample_catalog() -> SurfaceMineralDepositCatalog {
         SurfaceMineralDepositCatalog {
-            spawn_threshold: 0.0,
+            site_spawn_threshold: 0.0,
             ..SurfaceMineralDepositCatalog::default()
         }
     }
@@ -675,10 +877,11 @@ mod tests {
     #[test]
     fn deposit_catalog_toml_parses() {
         let toml_str = r#"
-candidate_spacing_world_units = 6.0
-density_field_scale_world_units = 18.0
-spawn_threshold = 0.62
-jitter_fraction = 0.34
+site_spacing_world_units = 11.0
+site_density_field_scale_world_units = 24.0
+site_spawn_threshold = 0.55
+site_jitter_fraction = 0.28
+site_min_gap_world_units = 2.5
 
 [[deposits]]
 key = "ferrite_surface_deposit"
@@ -686,6 +889,11 @@ material_key = "Ferrite"
 selection_weight = 1.0
 scale_min = 0.9
 scale_max = 1.2
+deposit_radius_min = 2.2
+deposit_radius_max = 3.4
+child_count_min = 5
+child_count_max = 9
+cluster_compactness = 0.75
 "#;
 
         let catalog: SurfaceMineralDepositCatalog =
