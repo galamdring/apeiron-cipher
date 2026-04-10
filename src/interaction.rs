@@ -678,6 +678,12 @@ fn process_examine(
     }
 }
 
+// This system intentionally keeps the explicit ECS parameters visible instead of
+// bundling them into helper structs. The whole point of the examine/journal
+// bridge is that it touches UI visibility, interaction targeting, confidence
+// rendering, material queries, and journal recording in one place. Hiding those
+// dependencies would make the data flow harder to audit than the longer
+// signature.
 #[allow(clippy::too_many_arguments)]
 fn update_examine_panel(
     mut state: ResMut<ExamineState>,
