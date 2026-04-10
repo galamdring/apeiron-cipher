@@ -105,7 +105,6 @@ pub(crate) struct HeldItem;
 #[derive(Resource, Default)]
 struct ExamineState {
     visible: bool,
-    current_seed: Option<u64>,
 }
 
 // ── UI markers ───────────────────────────────────────────────────────────
@@ -149,9 +148,11 @@ fn update_interaction_target(
     mut target: ResMut<InteractionTarget>,
     camera_query: Query<(&Camera, &GlobalTransform), With<PlayerCamera>>,
     mut ray_cast: MeshRayCast,
-    material_query: Query<(), With<MaterialObject>>,
+    material_query: Query<&GameMaterial, With<MaterialObject>>,
     held_query: Query<(), With<HeldItem>>,
+    mut encounter_writer: MessageWriter<RecordEncounter>,
 ) {
+    let previous_target = target.entity;
     target.entity = None;
 
     let Ok((camera, cam_gtf)) = camera_query.single() else {
@@ -178,6 +179,15 @@ fn update_interaction_target(
         && hit.distance <= INTERACTION_RANGE
     {
         target.entity = Some(entity);
+    }
+
+    if target.entity != previous_target
+        && let Some(entity) = target.entity
+        && let Ok(material) = material_query.get(entity)
+    {
+        encounter_writer.write(RecordEncounter {
+            material: material.clone(),
+        });
     }
 }
 
@@ -308,6 +318,7 @@ fn process_pickup(
     mut journal_writer: MessageWriter<RecordWeightObservation>,
     mut player_query: Query<(&mut CarryState, &CarryStrength), With<Player>>,
     held_query: Query<(Entity, &GameMaterial), With<HeldItem>>,
+    material_query: Query<&GameMaterial, With<MaterialObject>>,
     camera_query: Query<Entity, With<PlayerCamera>>,
 ) {
     for _intent in reader.read() {
@@ -335,6 +346,18 @@ fn process_pickup(
                 &mut journal_writer,
             );
         }
+
+        let Ok(target_material) = material_query.get(target_entity) else {
+            continue;
+        };
+
+        record_weight_observation(
+            target_material,
+            carry_strength.current,
+            &config,
+            &mut tracker,
+            &mut journal_writer,
+        );
 
         commands
             .entity(target_entity)
@@ -668,32 +691,20 @@ fn process_examine(
 
         if held_material.or(targeted_material).is_some() {
             state.visible = !state.visible;
-            if !state.visible {
-                state.current_seed = None;
-            }
         } else {
             state.visible = false;
-            state.current_seed = None;
         }
     }
 }
 
-// This system intentionally keeps the explicit ECS parameters visible instead of
-// bundling them into helper structs. The whole point of the examine/journal
-// bridge is that it touches UI visibility, interaction targeting, confidence
-// rendering, material queries, and journal recording in one place. Hiding those
-// dependencies would make the data flow harder to audit than the longer
-// signature.
-#[allow(clippy::too_many_arguments)]
 fn update_examine_panel(
-    mut state: ResMut<ExamineState>,
+    state: Res<ExamineState>,
     target: Res<InteractionTarget>,
     tracker: Res<ConfidenceTracker>,
     held_query: Query<&GameMaterial, With<HeldItem>>,
     material_query: Query<&GameMaterial, With<MaterialObject>>,
     mut panel_query: Query<&mut Visibility, With<ExaminePanel>>,
     mut text_query: Query<&mut Text, With<ExamineText>>,
-    mut encounter_writer: MessageWriter<RecordEncounter>,
 ) {
     let Ok(mut vis) = panel_query.single_mut() else {
         return;
@@ -704,7 +715,6 @@ fn update_examine_panel(
 
     if !state.visible {
         *vis = Visibility::Hidden;
-        state.current_seed = None;
         return;
     }
 
@@ -716,16 +726,8 @@ fn update_examine_panel(
 
     let Some(mat) = mat else {
         *vis = Visibility::Hidden;
-        state.current_seed = None;
         return;
     };
-
-    if state.current_seed != Some(mat.seed) {
-        encounter_writer.write(RecordEncounter {
-            material: mat.clone(),
-        });
-        state.current_seed = Some(mat.seed);
-    }
 
     *vis = Visibility::Visible;
     text.0 = build_examine_text(mat, &tracker);
