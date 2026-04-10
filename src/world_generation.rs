@@ -170,6 +170,21 @@ pub(crate) struct ChunkGenerationKey {
     pub object_identity_key: u64,
 }
 
+/// Stable identity for one generated baseline object.
+///
+/// We keep the identity fields explicit instead of hiding them behind a single
+/// opaque hash. That makes later persistence stories easier to audit because a
+/// saved removal record can literally say which planet, which chunk, which
+/// object kind, and which deterministic local candidate it refers to.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Component)]
+pub(crate) struct GeneratedObjectId {
+    pub planet_seed: PlanetSeed,
+    pub chunk_coord: ChunkCoord,
+    pub object_kind_key: String,
+    pub local_candidate_index: u32,
+    pub generator_version: u32,
+}
+
 /// Runtime view of the chunks that are logically active around the player.
 ///
 /// This resource is intentionally boring: it just names the player's current
@@ -348,6 +363,22 @@ fn mix_chunk_coord(planet_seed: PlanetSeed, chunk_coord: ChunkCoord) -> u64 {
     mix_seed(planet_seed.0, packed)
 }
 
+pub(crate) fn derive_generated_object_id(
+    profile: &WorldProfile,
+    chunk_coord: ChunkCoord,
+    object_kind_key: impl Into<String>,
+    local_candidate_index: u32,
+    generator_version: u32,
+) -> GeneratedObjectId {
+    GeneratedObjectId {
+        planet_seed: profile.planet_seed,
+        chunk_coord,
+        object_kind_key: object_kind_key.into(),
+        local_candidate_index,
+        generator_version,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -455,5 +486,21 @@ mod tests {
         assert_ne!(a.placement_density_key, b.placement_density_key);
         assert_ne!(a.placement_variation_key, b.placement_variation_key);
         assert_ne!(a.object_identity_key, b.object_identity_key);
+    }
+
+    #[test]
+    fn generated_object_id_is_stable_from_explicit_inputs() {
+        let profile = WorldProfile::from_config(&WorldGenerationConfig {
+            planet_seed: 42,
+            chunk_size_world_units: 45.0,
+            active_chunk_radius: 1,
+        });
+
+        let a =
+            derive_generated_object_id(&profile, ChunkCoord::new(-2, 3), "ferrite_surface", 7, 1);
+        let b =
+            derive_generated_object_id(&profile, ChunkCoord::new(-2, 3), "ferrite_surface", 7, 1);
+
+        assert_eq!(a, b);
     }
 }
