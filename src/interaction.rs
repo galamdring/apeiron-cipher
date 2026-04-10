@@ -105,6 +105,7 @@ pub(crate) struct HeldItem;
 #[derive(Resource, Default)]
 struct ExamineState {
     visible: bool,
+    current_seed: Option<u64>,
 }
 
 // ── UI markers ───────────────────────────────────────────────────────────
@@ -658,7 +659,6 @@ fn process_examine(
     target: Res<InteractionTarget>,
     held_query: Query<&GameMaterial, With<HeldItem>>,
     material_query: Query<&GameMaterial, With<MaterialObject>>,
-    mut encounter_writer: MessageWriter<RecordEncounter>,
 ) {
     for _intent in reader.read() {
         let held_material = held_query.iter().next();
@@ -666,25 +666,28 @@ fn process_examine(
             .entity
             .and_then(|entity| material_query.get(entity).ok());
 
-        if let Some(mat) = held_material.or(targeted_material) {
+        if held_material.or(targeted_material).is_some() {
             state.visible = !state.visible;
-            encounter_writer.write(RecordEncounter {
-                material: mat.clone(),
-            });
+            if !state.visible {
+                state.current_seed = None;
+            }
         } else {
             state.visible = false;
+            state.current_seed = None;
         }
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn update_examine_panel(
-    state: Res<ExamineState>,
+    mut state: ResMut<ExamineState>,
     target: Res<InteractionTarget>,
     tracker: Res<ConfidenceTracker>,
     held_query: Query<&GameMaterial, With<HeldItem>>,
     material_query: Query<&GameMaterial, With<MaterialObject>>,
     mut panel_query: Query<&mut Visibility, With<ExaminePanel>>,
     mut text_query: Query<&mut Text, With<ExamineText>>,
+    mut encounter_writer: MessageWriter<RecordEncounter>,
 ) {
     let Ok(mut vis) = panel_query.single_mut() else {
         return;
@@ -695,6 +698,7 @@ fn update_examine_panel(
 
     if !state.visible {
         *vis = Visibility::Hidden;
+        state.current_seed = None;
         return;
     }
 
@@ -706,8 +710,16 @@ fn update_examine_panel(
 
     let Some(mat) = mat else {
         *vis = Visibility::Hidden;
+        state.current_seed = None;
         return;
     };
+
+    if state.current_seed != Some(mat.seed) {
+        encounter_writer.write(RecordEncounter {
+            material: mat.clone(),
+        });
+        state.current_seed = Some(mat.seed);
+    }
 
     *vis = Visibility::Visible;
     text.0 = build_examine_text(mat, &tracker);
