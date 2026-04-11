@@ -49,6 +49,8 @@ _This file contains critical rules and patterns that AI agents must follow when 
 - **System parameters only:** Systems use Bevy parameter types (`Query`, `Res`, `ResMut`, `Commands`, `EventReader`, `EventWriter`). Direct `World` access is almost always wrong for game systems.
 - **Asset loading via AssetServer:** All data files loaded through Bevy's `AssetServer` and `Handle<T>`. Never use `std::fs::read` or manual file I/O. This enables hot-reloading and cross-platform paths.
 - **Event-driven plugin communication:** Plugins communicate through Bevy Events (`EventWriter<T>` to send, `EventReader<T>` to receive). Plugins must never reach into each other's components directly. The fabricator plugin doesn't query material components — it sends a `FabricateEvent` and the material plugin handles it.
+- **Material seed data is canonical; entities are instances.** A material seed defines the durable truth of that material: its generated properties, learned observations, and any other canonical knowledge the player can carry across multiple samples. World entities are only physical instances of that seed. Entity components may store transient world state such as transform, held/placed/generated status, current heat exposure, or temporary visual reaction state, but they must not become the long-term source of truth for what a material *is* or what the player *knows* about it.
+- **UI and journal systems read seed-level knowledge, not entity-local copies.** Inspect panels, journals, fabrication history, and future save data must resolve material identity through the seed and shared knowledge model. If two entities share a seed, learning a property from one sample must make that knowledge available everywhere the same seed is referenced.
 
 ### Testing Rules
 
@@ -59,6 +61,7 @@ _This file contains critical rules and patterns that AI agents must follow when 
 - **Test isolation:** Each test creates its own state. No shared mutable state between tests. Each Bevy test creates its own `App` instance.
 - **Server-authoritative testability:** Every system that mutates game state must be testable by feeding inputs and asserting outputs without rendering a frame. If it can only be verified visually, the architecture is leaking.
 - **Determinism regression tests:** Material generation from seeds must produce identical results across runs. Assert specific seed → output mappings.
+- **Seed-instance consistency tests:** When the design says knowledge is seed-level, tests must prove that learning from one entity updates the behavior of other same-seed entities in inspect, journal, and other player-facing systems.
 - **Test location:** Unit tests in `#[cfg(test)] mod tests` blocks in the same file. Integration tests in `tests/`.
 - **Test naming:** No `test_` prefix — `#[test]` already marks it. Use `fn combine_two_metals_produces_alloy()`. Descriptive: `<thing>_<scenario>_<expected>`.
 - **No property-based testing frameworks yet.** Deterministic seed-based tests for the POC. Adopt `proptest`/`quickcheck` post-POC when the input space grows.
