@@ -831,9 +831,14 @@ fn append_prop(
 }
 
 fn append_thermal_prop(lines: &mut Vec<String>, mat: &GameMaterial, tracker: &ConfidenceTracker) {
+    let seed_has_thermal_knowledge = tracker.count(mat.seed, "thermal_resistance") > 0;
     match mat.thermal_resistance.visibility {
-        PropertyVisibility::Hidden => lines.push("Heat response: ???".to_string()),
-        PropertyVisibility::Observable | PropertyVisibility::Revealed => {
+        PropertyVisibility::Hidden if !seed_has_thermal_knowledge => {
+            lines.push("Heat response: ???".to_string())
+        }
+        PropertyVisibility::Hidden
+        | PropertyVisibility::Observable
+        | PropertyVisibility::Revealed => {
             let confidence = tracker.level(mat.seed, "thermal_resistance");
             let description =
                 describe_thermal_observation(mat.thermal_resistance.value, confidence);
@@ -940,6 +945,17 @@ mod tests {
         tracker.record(mat.seed, "thermal_resistance");
         let confident = build_examine_text(&mat, &tracker);
         assert!(confident.contains("Heat response: Reliably hold together under heat"));
+    }
+
+    #[test]
+    fn examine_text_uses_seed_level_thermal_knowledge_even_if_entity_is_hidden() {
+        let mat = test_material();
+        let mut tracker = ConfidenceTracker::default();
+        tracker.record(mat.seed, "thermal_resistance");
+
+        let text = build_examine_text(&mat, &tracker);
+        assert!(!text.contains("Heat response: ???"));
+        assert!(text.contains("Heat response: Seemed to hold together under heat"));
     }
 
     #[test]
