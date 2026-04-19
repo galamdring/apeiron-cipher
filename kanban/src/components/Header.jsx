@@ -59,7 +59,7 @@ const s = {
 
 export default function Header({ repo, onRepoChange }) {
   const { setIssues, setLoading, setError, loading, error } = useIssueStore();
-  const { token, user, clearAuth } = useAuthStore();
+  const { token, user, signOut } = useAuthStore();
 
   const [repos, setRepos] = useState([]);
   const [reposLoading, setReposLoading] = useState(true);
@@ -134,7 +134,7 @@ export default function Header({ repo, onRepoChange }) {
           <img src={user.avatar_url} alt={user.login} style={s.avatar} />
         )}
         <span style={s.userName}>{user?.login}</span>
-        <button style={s.signOutBtn} onClick={clearAuth}>
+        <button style={s.signOutBtn} onClick={signOut}>
           Sign out
         </button>
       </div>

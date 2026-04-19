@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import { useIssueStore, TYPES } from "../store/issues";
+import { useAuthStore } from "../store/auth";
 import { createIssue } from "../api/github";
 
 const s = {
@@ -52,12 +53,12 @@ export default function NewIssueForm() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
   const addIssueToStore = useIssueStore((st) => st.addIssueToStore);
+  const { token } = useAuthStore();
 
   async function handleSubmit(e) {
     e.preventDefault();
     if (!title.trim()) return;
     const repo = localStorage.getItem("gh_kanban_repo") || "";
-    const token = localStorage.getItem("gh_kanban_token") || "";
     if (!repo.includes("/")) {
       setError("Load a repo first");
       return;
