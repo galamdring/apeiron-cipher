@@ -1,6 +1,6 @@
 # Agent Story Workflow
 
-_This file contains the step-by-step workflow for the coding agent to implement stories. For coding rules, architecture constraints, and project context, see `docs/bmad/project-context.md`._
+_This file contains the step-by-step workflow for the coding agent to implement stories. For tech stack and process rules, see `docs/bmad/project-context.md`. For architectural decisions, core principles, and implementation patterns, see `docs/bmad/planning-artifacts/architecture/` (start with `agent-context-routing.md`)._
 
 ---
 
@@ -49,7 +49,8 @@ If the previous story's branch is still open (PR not yet merged), Graphite autom
 gh issue view <number> --repo galamdring/apeiron-cipher
 ```
 
-- Implement the story. All acceptance criteria must be satisfied. The epics doc (`docs/bmad/planning-artifacts/epics.md`) remains the canonical reference for acceptance criteria and requirements coverage.
+- **Load architecture context:** Consult `docs/bmad/planning-artifacts/architecture/agent-context-routing.md` to determine which architecture shards are relevant to this story's domain (e.g., materials, persistence, error handling). Load those shards before writing code.
+- Implement the story. All acceptance criteria must be satisfied. The GitHub Issue is the canonical source for acceptance criteria — query it with `gh issue view <N> --repo galamdring/apeiron-cipher`.
 - Run `make check` (or `cargo fmt --check && cargo clippy -- -D warnings && cargo test`) before committing.
 
 ### Step 3a — Block (when the agent cannot proceed)
@@ -130,47 +131,6 @@ If inline reply posting fails due to permissions or readonly execution (for exam
 
 ---
 
-## Useful Commands
+_For label taxonomy, issue map, health checks, and command reference, see `agent-workflow-reference.md`._
 
-```bash
-# List all ready stories (sorted by implementation order in body)
-gh issue list --label "status:ready" --label "story" --json number,title,body --repo galamdring/apeiron-cipher
-
-# List all stories for a specific epic
-gh issue list --label "epic-2" --label "story" --json number,title,labels --repo galamdring/apeiron-cipher
-
-# Move a story to in-progress
-gh issue edit <N> --remove-label "status:ready" --add-label "status:in-progress" --repo galamdring/apeiron-cipher
-
-# Move a story to in-review
-gh issue edit <N> --remove-label "status:in-progress" --add-label "status:in-review" --repo galamdring/apeiron-cipher
-
-# Move a story to blocked
-gh issue edit <N> --remove-label "status:in-progress" --add-label "status:blocked" --repo galamdring/apeiron-cipher
-
-# View a specific story's acceptance criteria
-gh issue view <number> --repo galamdring/apeiron-cipher
-
-# Graphite: view the current stack
-gt log
-
-# Graphite: create a new stacked branch
-gt create <branch-name>
-
-# Graphite: submit all branches in the stack as PRs
-gt submit
-
-# Graphite: rebase the stack after a change to a lower branch
-gt stack restack
-
-# Graphite: sync with remote (after a PR is merged on GitHub)
-gt stack sync
-
-# Find PRs that reference a story issue
-gh pr list --state all --search "Closes #<issue_number>" --repo galamdring/apeiron-cipher
-
-# Verify PR state/body
-gh pr view <pr_number> --json state,baseRefName,isDraft,mergedAt,body
-```
-
-Last Updated: 2026-03-27
+Last Updated: 2026-04-18
