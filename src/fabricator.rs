@@ -46,7 +46,7 @@ pub(crate) struct ActivateIntent;
 // ── State ───────────────────────────────────────────────────────────────
 
 #[derive(Resource, Default, Debug, PartialEq)]
-pub(crate) enum FabricatorState {
+enum FabricatorState {
     #[default]
     Idle,
     Processing {
@@ -383,11 +383,7 @@ fn blend_color(a: &[f32; 3], b: &[f32; 3], catalytic: bool) -> [f32; 3] {
 
 // ── Main combine function ────────────────────────────────────────────────
 
-pub(crate) fn rule_combine(
-    rules: &CombinationRules,
-    a: &GameMaterial,
-    b: &GameMaterial,
-) -> GameMaterial {
+fn rule_combine(rules: &CombinationRules, a: &GameMaterial, b: &GameMaterial) -> GameMaterial {
     let pair_rules = rules.rules_for(&a.name, &b.name);
 
     let combined_seed = a.seed.wrapping_mul(31).wrapping_add(b.seed);

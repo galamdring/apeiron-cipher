@@ -73,7 +73,7 @@ pub(crate) enum InputAction {
 
 /// Top-level structure of `assets/config/input.toml`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, Resource)]
-pub(crate) struct InputConfig {
+struct InputConfig {
     #[serde(default)]
     pub mouse: MouseConfig,
     #[serde(default)]
@@ -81,7 +81,7 @@ pub(crate) struct InputConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct MouseConfig {
+struct MouseConfig {
     #[serde(default = "default_sensitivity")]
     pub sensitivity_x: f32,
     #[serde(default = "default_sensitivity")]
@@ -102,7 +102,7 @@ fn default_sensitivity() -> f32 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct BindingsConfig {
+struct BindingsConfig {
     #[serde(default = "MoveBindings::default", rename = "Move")]
     pub movement: MoveBindings,
     #[serde(default = "default_interact", rename = "Interact")]
@@ -146,7 +146,7 @@ impl Default for BindingsConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct MoveBindings {
+struct MoveBindings {
     #[serde(default = "default_up")]
     pub up: String,
     #[serde(default = "default_down")]
@@ -308,7 +308,7 @@ fn load_input_config(mut commands: Commands) {
 
 /// Builds a leafwing `InputMap` from the current `InputConfig` and attaches it
 /// to the player entity. Runs once at startup after the player is spawned.
-pub(crate) fn attach_input_map_to_player(
+fn attach_input_map_to_player(
     mut commands: Commands,
     config: Res<InputConfig>,
     player_query: Query<Entity, With<Player>>,
@@ -325,7 +325,7 @@ pub(crate) fn attach_input_map_to_player(
 
 /// Pure function: constructs an `InputMap` from an `InputConfig`.
 /// Separated from the system so it can be called when rebinding too.
-pub(crate) fn build_input_map(config: &InputConfig) -> InputMap<InputAction> {
+fn build_input_map(config: &InputConfig) -> InputMap<InputAction> {
     let bindings = &config.bindings;
     let mut input_map = InputMap::default();
 

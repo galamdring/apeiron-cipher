@@ -84,7 +84,7 @@ pub(crate) struct RecordWeightObservation {
 // ── Player-owned journal data ───────────────────────────────────────────
 
 #[derive(Component, Default)]
-pub(crate) struct Journal {
+struct Journal {
     fabrication_log: Vec<String>,
     entries: BTreeMap<u64, JournalEntry>,
 }

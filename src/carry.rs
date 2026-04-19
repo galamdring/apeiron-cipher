@@ -66,11 +66,11 @@ impl Plugin for CarryPlugin {
 
 /// Story 4.2 will emit this when the player wants to move the held item into carry.
 #[derive(Message)]
-pub(crate) struct StashIntent;
+struct StashIntent;
 
 /// Story 4.2 will emit this when the player wants to cycle the next carried item to hand.
 #[derive(Message)]
-pub(crate) struct CycleCarryIntent;
+struct CycleCarryIntent;
 
 /// Story 4.2 will emit this when the player wants to drop an item out of carry.
 #[derive(Message)]
@@ -103,7 +103,7 @@ pub(crate) enum CarryRejectionReason {
 /// Later stories will emit this whenever carry weight changes so movement/stamina
 /// systems can respond without polling and guessing.
 #[derive(Message, Clone, Copy, Debug, PartialEq)]
-pub(crate) struct CarryWeightChanged {
+struct CarryWeightChanged {
     pub current_weight: f32,
     pub effective_capacity: f32,
 }
@@ -302,7 +302,7 @@ pub(crate) struct CarryStrength {
 /// the design direction is "carry may come from a real fabricated or acquired
 /// object later," not "carry is always an innate stat."
 #[derive(Component, Clone, Debug, PartialEq, Eq, Default)]
-pub(crate) struct CarryDeviceState {
+struct CarryDeviceState {
     pub required_item_key: Option<String>,
     pub equipped_item_key: Option<String>,
 }
@@ -782,7 +782,7 @@ pub(crate) enum CarryCurveKind {
 /// This gives later systems one stable resource to read without making every
 /// caller re-implement "which profile name did the config select?" logic.
 #[derive(Clone, Debug, Resource, PartialEq)]
-pub(crate) struct ActiveCarryProfile {
+struct ActiveCarryProfile {
     pub profile_name: String,
     pub tuning: CarryProfileConfig,
 }
@@ -1019,7 +1019,7 @@ fn carry_strength_delta(
     }
 }
 
-pub(crate) fn describe_weight_observation(
+fn describe_weight_observation(
     density: f32,
     carry_strength: f32,
     confidence: ConfidenceLevel,
