@@ -24,7 +24,7 @@ function client() {
     (response) => response,
     (error) => {
       if (error.response && (error.response.status === 401 || error.response.status === 403)) {
-        useAuthStore.getState().signOut();
+        useAuthStore.getState().signOut({ expired: true });
       }
       return Promise.reject(error);
     }
