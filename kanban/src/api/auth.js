@@ -1,33 +1,41 @@
 import axios from "axios";
 
+let _proxyBase = "";
+
+export function setAuthProxyBase(url) {
+  _proxyBase = url.replace(/\/+$/, "");
+}
+
 export function redirectToGitHubLogin(config) {
-  // "repo" — full repo access (issues, labels, PRs).
-  // "read:user user:email" — OIDC-compatible identity claims so the backend
-  // (n8n / orchestrator) can use GitHub as an OIDC provider and verify the
-  // user's identity without a separate IdP.
+  // The orchestrator's /auth/callback handles the OAuth code exchange and
+  // sets the httpOnly session cookie. We redirect GitHub to that endpoint.
   const params = new URLSearchParams({
     client_id: config.githubClientId,
-    redirect_uri: config.authCallbackUrl,
+    redirect_uri: _proxyBase + "/auth/callback",
     scope: "repo read:user user:email",
   });
   window.location.href = `https://github.com/login/oauth/authorize?${params}`;
 }
 
-export function parseTokenFromHash() {
-  const hash = window.location.hash.slice(1);
-  const params = new URLSearchParams(hash);
-  return {
-    token: params.get("token") || null,
-    error: params.get("error") || null,
-  };
+// Check if we have a valid server-side session by calling /api/me.
+// Returns the user profile object or null.
+export async function checkSession() {
+  try {
+    const { data } = await axios.get(_proxyBase + "/api/me", {
+      withCredentials: true,
+    });
+    return data;
+  } catch {
+    return null;
+  }
 }
 
-export async function fetchAuthenticatedUser(token) {
-  const { data } = await axios.get("https://api.github.com/user", {
-    headers: {
-      Authorization: `Bearer ${token}`,
-      Accept: "application/vnd.github+json",
-    },
-  });
-  return data;
+export function parseErrorFromHash() {
+  const hash = window.location.hash.slice(1);
+  const params = new URLSearchParams(hash);
+  return params.get("error") || null;
+}
+
+export function getLogoutUrl() {
+  return _proxyBase + "/auth/logout";
 }

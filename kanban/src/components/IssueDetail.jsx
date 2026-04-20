@@ -162,7 +162,7 @@ const s = {
   err: { color: "#f85149", fontSize: 12 },
 };
 
-export default function IssueDetail({ repo, token }) {
+export default function IssueDetail({ repo }) {
   const { selectedIssue, clearSelectedIssue, updateIssueInStore, moveIssue } =
     useIssueStore();
   const issue = selectedIssue;
@@ -194,7 +194,7 @@ export default function IssueDetail({ repo, token }) {
   useEffect(() => {
     if (!repo || !repo.includes("/")) return;
     setCommentsLoading(true);
-    fetchComments(owner, repoName, issue.number, token)
+    fetchComments(owner, repoName, issue.number)
       .then(setComments)
       .catch(() => {})
       .finally(() => setCommentsLoading(false));
@@ -224,7 +224,6 @@ export default function IssueDetail({ repo, token }) {
         repoName,
         issue.number,
         { title, body, labels, state: newState },
-        token
       );
 
       updateIssueInStore(updated);
@@ -245,7 +244,6 @@ export default function IssueDetail({ repo, token }) {
         repoName,
         issue.number,
         newComment.trim(),
-        token
       );
       setComments((c) => [...c, comment]);
       setNewComment("");

@@ -4,7 +4,7 @@ import Sidebar from "./components/Sidebar";
 import Board from "./components/Board";
 import IssueDetail from "./components/IssueDetail";
 import LoginScreen from "./components/LoginScreen";
-import { parseTokenFromHash, fetchAuthenticatedUser } from "./api/auth";
+import { checkSession, parseErrorFromHash } from "./api/auth";
 import { useIssueStore } from "./store/issues";
 import { useAuthStore } from "./store/auth";
 
@@ -32,7 +32,7 @@ const styles = {
 };
 
 export default function App({ config }) {
-  const { token, user, setAuth } = useAuthStore();
+  const { user, setUser } = useAuthStore();
   const selectedIssue = useIssueStore((s) => s.selectedIssue);
   const [bootstrapping, setBootstrapping] = useState(true);
   const [hashError, setHashError] = useState(null);
@@ -42,41 +42,38 @@ export default function App({ config }) {
   });
 
   useEffect(() => {
-    async function handleCallback() {
-      const { token: hashToken, error: hashErr } = parseTokenFromHash();
-
-      if (hashErr) {
-        setHashError(hashErr);
+    async function bootstrap() {
+      // Check for an error in the hash (e.g. OAuth failure redirect).
+      const err = parseErrorFromHash();
+      if (err) {
+        setHashError(err);
         window.history.replaceState(null, "", window.location.pathname);
         setBootstrapping(false);
         return;
       }
 
-      if (hashToken) {
-        try {
-          const userData = await fetchAuthenticatedUser(hashToken);
-          setAuth(hashToken, userData);
-        } catch (e) {
-          setHashError("Failed to fetch user profile after login");
-        }
-        // Clean the hash so the token doesn't sit in the address bar
+      // Clean any leftover hash from a successful OAuth redirect.
+      if (window.location.hash) {
         window.history.replaceState(null, "", window.location.pathname);
-        setBootstrapping(false);
-        return;
       }
 
-      // No hash — normal load, existing session (if any) is already in the store
+      // Check if we have a valid server-side session.
+      const sessionUser = await checkSession();
+      if (sessionUser) {
+        setUser(sessionUser);
+      }
+
       setBootstrapping(false);
     }
 
-    handleCallback();
+    bootstrap();
   }, []);
 
   if (bootstrapping) {
     return <div style={styles.loading}>Loading…</div>;
   }
 
-  if (!token || !user) {
+  if (!user) {
     return <LoginScreen error={hashError} config={config} />;
   }
 
@@ -90,9 +87,9 @@ export default function App({ config }) {
       <Header repo={repo} onRepoChange={handleRepoChange} />
       <div style={styles.body}>
         <Sidebar />
-        <Board repo={repo} token={token} />
+        <Board repo={repo} />
       </div>
-      {selectedIssue && <IssueDetail repo={repo} token={token} />}
+      {selectedIssue && <IssueDetail repo={repo} />}
     </div>
   );
 }

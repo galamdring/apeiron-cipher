@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { useIssueStore } from "../store/issues";
 import { useAuthStore } from "../store/auth";
 import { fetchAllIssues, fetchUserRepos } from "../api/github";
+import { getLogoutUrl } from "../api/auth";
 
 const s = {
   header: {
@@ -59,7 +60,7 @@ const s = {
 
 export default function Header({ repo, onRepoChange }) {
   const { setIssues, setLoading, setError, loading, error } = useIssueStore();
-  const { token, user, signOut } = useAuthStore();
+  const { user, signOut } = useAuthStore();
 
   const [repos, setRepos] = useState([]);
   const [reposLoading, setReposLoading] = useState(true);
@@ -69,7 +70,7 @@ export default function Header({ repo, onRepoChange }) {
   useEffect(() => {
     let cancelled = false;
     setReposLoading(true);
-    fetchUserRepos(token)
+    fetchUserRepos()
       .then((data) => {
         if (cancelled) return;
         setRepos(data.map((r) => r.full_name).sort((a, b) => a.localeCompare(b)));
@@ -81,7 +82,7 @@ export default function Header({ repo, onRepoChange }) {
         setReposLoading(false);
       });
     return () => { cancelled = true; };
-  }, [token]);
+  }, []);
 
   // Auto-load issues when repo is selected (including restored value from localStorage)
   useEffect(() => {
@@ -90,7 +91,7 @@ export default function Header({ repo, onRepoChange }) {
     if (!owner || !repoName) return;
     setError(null);
     setLoading(true);
-    fetchAllIssues(owner, repoName, token)
+    fetchAllIssues(owner, repoName)
       .then((issues) => setIssues(issues))
       .catch((e) => setError(e?.response?.data?.message || e.message || "Failed to load"))
       .finally(() => setLoading(false));
@@ -134,7 +135,10 @@ export default function Header({ repo, onRepoChange }) {
           <img src={user.avatar_url} alt={user.login} style={s.avatar} />
         )}
         <span style={s.userName}>{user?.login}</span>
-        <button style={s.signOutBtn} onClick={signOut}>
+        <button style={s.signOutBtn} onClick={() => {
+          signOut();
+          window.location.href = getLogoutUrl();
+        }}>
           Sign out
         </button>
       </div>
