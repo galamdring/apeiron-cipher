@@ -888,13 +888,14 @@ mod tests {
                 InputSlot {
                     index: 0,
                     material: None,
+                    top_y: slot_pos.y,
                 },
                 Transform::from_translation(slot_pos),
                 GlobalTransform::from_translation(slot_pos),
             ))
             .id();
 
-        let start_pos = Vec3::new(slot_pos.x, slot_pos.y + PLACE_GAP, slot_pos.z);
+        let start_pos = Vec3::new(slot_pos.x, slot_pos.y + MATERIAL_SURFACE_GAP, slot_pos.z);
         let item = app
             .world_mut()
             .spawn((

@@ -182,7 +182,6 @@ fn player_move(
     ) {
         transform.translation.x = proposed.x;
     }
-
     proposed = transform.translation;
     proposed.z += delta.z;
     if !room_shell.blocks_circle_xz(
