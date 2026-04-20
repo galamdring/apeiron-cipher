@@ -14,6 +14,20 @@
 //! The code is commented heavily on purpose. Deterministic generation is the
 //! kind of system that can feel "obvious" when you just wrote it and opaque a
 //! week later when you are trying to prove that nothing is secretly random.
+//!
+//! ## Surface Query Abstraction (Story 5.3)
+//!
+//! The placement pipeline does **not** assume `y = 0` or any fixed height.
+//! Instead it queries a [`SurfaceProvider`] trait to resolve the surface at
+//! any X/Z position. This trait is pure Rust — no Bevy `Query`, no ECS — so
+//! the entire placement pipeline is unit-testable against synthetic surfaces
+//! (flat, sloped, stepped, whatever) without rendering terrain or spinning up
+//! an `App`.
+//!
+//! The current exterior is still flat, so [`FlatSurface`] is the live
+//! implementation. But the placement code never knows that. When non-flat
+//! terrain arrives later, a new [`SurfaceProvider`] implementation can slot in
+//! without touching generation logic.
 
 pub mod exterior;
 
@@ -25,6 +39,339 @@ use serde::{Deserialize, Serialize};
 
 use crate::player::Player;
 use crate::scene::PositionXZ;
+
+// ── Surface Query Abstraction (Story 5.3) ────────────────────────────────
+//
+// WHY THIS IS PURE RUST AND NOT AN ECS QUERY:
+//
+// The story explicitly requires that placement logic be unit-testable against
+// synthetic surfaces without rendering terrain. A trait with no Bevy dependency
+// in its signature achieves that: tests implement the trait with whatever
+// surface shape they want, and the same generation functions run in both tests
+// and the live game.
+//
+// WHY PLACEMENT DOES NOT ASSUME y = 0:
+//
+// The current exterior happens to be flat at surface_y ≈ −0.01, but that is an
+// implementation detail of FlatSurface. The generation pipeline never reads a
+// hardcoded height — it always asks the SurfaceProvider. When the game adds
+// hills, craters, or planet curvature, a new provider answers differently and
+// the placement pipeline keeps working.
+
+/// Result of querying the surface at a given X/Z world-space position.
+///
+/// This operates in **world space**, not sampling space. The caller provides a
+/// world-space X/Z coordinate; the provider returns the world-space Y height
+/// and the surface normal at that point.
+///
+/// ## Coordinate Convention
+///
+/// - `position_y`: the world-space height of the surface directly below (or at)
+///   the queried X/Z. For a flat surface this is constant. For terrain with
+///   elevation changes this varies per query.
+/// - `normal`: the unit-length surface normal at the queried point. For a flat
+///   horizontal surface this is `(0, 1, 0)`. For a slope tilted 45° toward +X
+///   this would be approximately `(−0.707, 0.707, 0)`.
+/// - `valid`: whether the surface exists and is usable at this location. A
+///   query outside the playable area, over a void, or on geometry that has no
+///   meaningful surface should return `valid = false`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SurfaceQueryResult {
+    /// World-space Y height of the surface at the queried X/Z.
+    pub position_y: f32,
+    /// Unit-length surface normal at the queried point.
+    ///
+    /// Stored as `[x, y, z]` rather than a Bevy `Vec3` so the trait stays
+    /// pure Rust with no Bevy dependency in its signature.
+    pub normal: [f32; 3],
+    /// Whether the surface is usable for placement at this location.
+    ///
+    /// `false` means "there is no ground here" — the caller should skip or
+    /// retry this placement candidate.
+    pub valid: bool,
+}
+
+impl SurfaceQueryResult {
+    /// Compute the slope angle in radians between the surface normal and
+    /// straight up `(0, 1, 0)`.
+    ///
+    /// Returns 0.0 for a perfectly flat horizontal surface.
+    /// Returns π/2 (90°) for a vertical wall.
+    ///
+    /// The math: `cos(angle) = dot(normal, up)` where `up = (0, 1, 0)`,
+    /// so `cos(angle) = normal.y`. We clamp to `[-1, 1]` before `acos` to
+    /// guard against floating-point drift outside the valid domain.
+    pub fn slope_angle_radians(&self) -> f32 {
+        self.normal[1].clamp(-1.0, 1.0).acos()
+    }
+}
+
+/// Pure Rust abstraction for querying the world surface at any X/Z position.
+///
+/// ## Why a trait instead of a function pointer or closure
+///
+/// A trait lets each implementation carry its own state (bounds, heightmap data,
+/// config) without the generation functions needing to know what that state is.
+/// Tests implement this with a two-line struct; the live game implements it from
+/// `ExteriorGroundPatch`; future terrain systems implement it from heightmap
+/// data. The generation code never changes.
+///
+/// ## Contract
+///
+/// - Implementations MUST be deterministic: the same X/Z input MUST produce the
+///   same result every time. Non-deterministic surfaces break seed reproducibility.
+/// - The normal MUST be unit-length (or very close). Placement code uses it for
+///   slope checks and object orientation.
+pub trait SurfaceProvider {
+    /// Query the surface at the given world-space X/Z position.
+    ///
+    /// The provider returns the surface height, normal, and validity at that
+    /// point. See [`SurfaceQueryResult`] for field semantics.
+    fn query_surface(&self, x: f32, z: f32) -> SurfaceQueryResult;
+}
+
+/// The current flat exterior surface.
+///
+/// This is the live implementation of [`SurfaceProvider`] for the POC exterior.
+/// It models a perfectly horizontal plane at `surface_y` within `bounds_xz`.
+/// Any query outside the bounds returns `valid = false`.
+///
+/// When the game eventually adds non-flat terrain, this struct is not deleted —
+/// it remains a valid (if boring) implementation. A new provider takes over for
+/// terrain chunks that have actual elevation data.
+#[derive(Clone, Debug)]
+pub struct FlatSurface {
+    /// The constant world-space Y height of the flat surface.
+    pub surface_y: f32,
+    /// The X/Z bounding rectangle where this surface is valid.
+    ///
+    /// Queries outside this rectangle return `valid = false` because there is
+    /// no playable ground there.
+    pub min_x: f32,
+    pub max_x: f32,
+    pub min_z: f32,
+    pub max_z: f32,
+}
+
+impl SurfaceProvider for FlatSurface {
+    fn query_surface(&self, x: f32, z: f32) -> SurfaceQueryResult {
+        // A flat horizontal surface always has normal straight up and a
+        // constant height. The only variable is whether the query point is
+        // within the playable bounds.
+        let in_bounds = x >= self.min_x && x <= self.max_x && z >= self.min_z && z <= self.max_z;
+        SurfaceQueryResult {
+            position_y: self.surface_y,
+            normal: [0.0, 1.0, 0.0],
+            valid: in_bounds,
+        }
+    }
+}
+
+/// Maximum slope angle (in radians) above which placement is rejected.
+///
+/// This default is approximately 40°. The value lives here as a module constant
+/// rather than in a config file because it is a generation-pipeline parameter,
+/// not a tuning knob the player or designer adjusts. If that changes later,
+/// move it to the deposit catalog config.
+///
+/// Why 40°? It is steep enough that gentle hills and rolling terrain still get
+/// deposits, but steep enough to reject cliff faces and near-vertical surfaces
+/// where a "resting on the ground" deposit would look absurd.
+pub const DEFAULT_MAX_PLACEMENT_SLOPE_RADIANS: f32 = 0.6981; // ~40°
+
+/// Check whether a surface query result is acceptable for object placement.
+///
+/// A candidate is rejected if:
+/// - the surface is invalid at that location (`valid == false`)
+/// - the slope exceeds the maximum allowed angle
+///
+/// This function is intentionally separate from [`SurfaceProvider`] so that
+/// different object types could use different thresholds in the future without
+/// changing the provider itself.
+pub fn is_placement_valid(result: &SurfaceQueryResult, max_slope_radians: f32) -> bool {
+    result.valid && result.slope_angle_radians() <= max_slope_radians
+}
+
+/// Compute the world-space up-axis rotation that aligns an object to a surface
+/// normal.
+///
+/// For a flat surface (normal = `[0, 1, 0]`), this returns the identity
+/// quaternion — no rotation needed. For a tilted surface, the object is rotated
+/// so its local "up" axis matches the surface normal, giving placed objects a
+/// natural lean on slopes.
+///
+/// The math: we compute the rotation from `(0, 1, 0)` to `normal` using the
+/// cross-product (rotation axis) and dot-product (cosine of rotation angle).
+/// The special case where the normal points straight down (antiparallel to up)
+/// uses an arbitrary perpendicular axis since the cross product would be zero.
+pub fn surface_alignment_rotation(normal: [f32; 3]) -> [f32; 4] {
+    let up = [0.0_f32, 1.0, 0.0];
+    let dot = normal[1]; // dot(up, normal) = normal.y since up = (0,1,0)
+
+    // If normal ≈ up, no rotation needed.
+    if dot > 0.9999 {
+        return [0.0, 0.0, 0.0, 1.0]; // identity quaternion [x, y, z, w]
+    }
+
+    // If normal ≈ −up (surface points straight down), pick an arbitrary axis.
+    if dot < -0.9999 {
+        return [0.0, 0.0, 1.0, 0.0]; // 180° around Z
+    }
+
+    // Cross product: up × normal
+    let cx = up[1] * normal[2] - up[2] * normal[1]; // = normal[2]
+    let cy = up[2] * normal[0] - up[0] * normal[2]; // = 0
+    let cz = up[0] * normal[1] - up[1] * normal[0]; // = -normal[0]
+
+    // Quaternion from axis-angle: q = (axis * sin(θ/2), cos(θ/2))
+    // Using the half-angle identity: q = (cross, 1 + dot) normalized.
+    let w = 1.0 + dot;
+    let len = (cx * cx + cy * cy + cz * cz + w * w).sqrt();
+    let inv_len = 1.0 / len;
+
+    [cx * inv_len, cy * inv_len, cz * inv_len, w * inv_len]
+}
+
+/// A stepped / terraced surface for testing non-flat terrain.
+///
+/// This divides the X axis into steps of `step_width` world units. Each step
+/// has a different height: `base_y + step_index * step_height`. The surface
+/// normal on each flat terrace is straight up `(0, 1, 0)`, but at the step
+/// edges the normal tilts to indicate the slope transition.
+///
+/// This exists purely for testing AC2 and AC3. It is not used in the live game.
+#[cfg(test)]
+#[derive(Clone, Debug)]
+pub struct SteppedSurface {
+    /// Y height of the lowest step.
+    pub base_y: f32,
+    /// Width of each step along the X axis in world units.
+    pub step_width: f32,
+    /// Height difference between adjacent steps.
+    pub step_height: f32,
+    /// X/Z bounds — queries outside return `valid = false`.
+    pub min_x: f32,
+    pub max_x: f32,
+    pub min_z: f32,
+    pub max_z: f32,
+    /// Width of the transition zone at each step edge where the normal tilts.
+    /// Within this zone the surface linearly interpolates between step heights
+    /// and the normal reflects the slope.
+    pub edge_transition_width: f32,
+}
+
+#[cfg(test)]
+impl SurfaceProvider for SteppedSurface {
+    fn query_surface(&self, x: f32, z: f32) -> SurfaceQueryResult {
+        let in_bounds = x >= self.min_x && x <= self.max_x && z >= self.min_z && z <= self.max_z;
+        if !in_bounds {
+            return SurfaceQueryResult {
+                position_y: self.base_y,
+                normal: [0.0, 1.0, 0.0],
+                valid: false,
+            };
+        }
+
+        // Which step are we on? Steps increase along +X.
+        // step_index 0 starts at min_x.
+        let relative_x = x - self.min_x;
+        let step_float = relative_x / self.step_width;
+        let step_index = step_float.floor();
+        let frac_within_step = step_float - step_index;
+        let position_within_step = frac_within_step * self.step_width;
+
+        // The edge transition zone is at the END of each step (the riser
+        // leading up to the next step).
+        let flat_width = self.step_width - self.edge_transition_width;
+
+        if position_within_step <= flat_width || self.edge_transition_width <= f32::EPSILON {
+            // On the flat part of the step — normal is straight up.
+            let y = self.base_y + step_index * self.step_height;
+            SurfaceQueryResult {
+                position_y: y,
+                normal: [0.0, 1.0, 0.0],
+                valid: true,
+            }
+        } else {
+            // In the transition zone between this step and the next.
+            // Linearly interpolate height and compute the corresponding slope.
+            let t = (position_within_step - flat_width) / self.edge_transition_width;
+            let y_low = self.base_y + step_index * self.step_height;
+            let y_high = self.base_y + (step_index + 1.0) * self.step_height;
+            let y = y_low + t * (y_high - y_low);
+
+            // The slope of the riser: rise = step_height over run = edge_transition_width.
+            // Normal perpendicular to slope direction (in the X/Y plane):
+            // slope direction = (edge_transition_width, step_height, 0) normalized
+            // normal = rotate 90° in X/Y plane = (-step_height, edge_transition_width, 0) normalized
+            let nx = -self.step_height;
+            let ny = self.edge_transition_width;
+            let len = (nx * nx + ny * ny).sqrt();
+            let normal = if len > f32::EPSILON {
+                [nx / len, ny / len, 0.0]
+            } else {
+                [0.0, 1.0, 0.0]
+            };
+
+            SurfaceQueryResult {
+                position_y: y,
+                normal,
+                valid: true,
+            }
+        }
+    }
+}
+
+/// A simple tilted plane for testing slope rejection.
+///
+/// The surface tilts along the X axis: at `x = min_x` the height is `base_y`,
+/// at `x = max_x` the height is `base_y + slope * (max_x - min_x)`. The
+/// normal is constant everywhere (perpendicular to the slope direction).
+///
+/// This exists purely for testing. It is not used in the live game.
+#[cfg(test)]
+#[derive(Clone, Debug)]
+pub struct TiltedSurface {
+    /// Y height at `min_x`.
+    pub base_y: f32,
+    /// Rise per unit of X distance. A slope of 1.0 means 45° tilt.
+    pub slope: f32,
+    /// X/Z bounds.
+    pub min_x: f32,
+    pub max_x: f32,
+    pub min_z: f32,
+    pub max_z: f32,
+}
+
+#[cfg(test)]
+impl SurfaceProvider for TiltedSurface {
+    fn query_surface(&self, x: f32, z: f32) -> SurfaceQueryResult {
+        let in_bounds = x >= self.min_x && x <= self.max_x && z >= self.min_z && z <= self.max_z;
+        if !in_bounds {
+            return SurfaceQueryResult {
+                position_y: self.base_y,
+                normal: [0.0, 1.0, 0.0],
+                valid: false,
+            };
+        }
+
+        let relative_x = x - self.min_x;
+        let y = self.base_y + self.slope * relative_x;
+
+        // The slope direction in the X/Y plane is (1, slope, 0).
+        // The normal perpendicular to this is (-slope, 1, 0) normalized.
+        let nx = -self.slope;
+        let ny = 1.0;
+        let len = (nx * nx + ny * ny).sqrt();
+        let normal = [nx / len, ny / len, 0.0];
+
+        SurfaceQueryResult {
+            position_y: y,
+            normal,
+            valid: true,
+        }
+    }
+}
 
 const CONFIG_PATH: &str = "assets/config/world_generation.toml";
 const PLACEMENT_DENSITY_CHANNEL: u64 = 0xD3E5_17A1_0000_0001;
@@ -504,5 +851,183 @@ mod tests {
             derive_generated_object_id(&profile, ChunkCoord::new(-2, 3), "ferrite_surface", 7, 1);
 
         assert_eq!(a, b);
+    }
+
+    // ── Surface abstraction tests (Story 5.3) ────────────────────────────
+
+    #[test]
+    fn flat_surface_returns_constant_height_and_up_normal() {
+        let surface = FlatSurface {
+            surface_y: -0.01,
+            min_x: -10.0,
+            max_x: 10.0,
+            min_z: -10.0,
+            max_z: 10.0,
+        };
+        let result = surface.query_surface(0.0, 0.0);
+        assert!(result.valid);
+        assert_eq!(result.position_y, -0.01);
+        assert_eq!(result.normal, [0.0, 1.0, 0.0]);
+        assert!((result.slope_angle_radians()).abs() < 0.001);
+    }
+
+    #[test]
+    fn flat_surface_out_of_bounds_returns_invalid() {
+        let surface = FlatSurface {
+            surface_y: 0.0,
+            min_x: -5.0,
+            max_x: 5.0,
+            min_z: -5.0,
+            max_z: 5.0,
+        };
+        let result = surface.query_surface(100.0, 0.0);
+        assert!(!result.valid);
+    }
+
+    #[test]
+    fn tilted_surface_slope_angle_correct() {
+        // slope = 1.0 means 45° tilt
+        let surface = TiltedSurface {
+            base_y: 0.0,
+            slope: 1.0,
+            min_x: -10.0,
+            max_x: 10.0,
+            min_z: -10.0,
+            max_z: 10.0,
+        };
+        let result = surface.query_surface(0.0, 0.0);
+        assert!(result.valid);
+        let angle_degrees = result.slope_angle_radians().to_degrees();
+        assert!(
+            (angle_degrees - 45.0).abs() < 1.0,
+            "slope=1.0 should produce ~45° angle, got {angle_degrees}°"
+        );
+    }
+
+    #[test]
+    fn tilted_surface_height_varies_with_x() {
+        let surface = TiltedSurface {
+            base_y: 0.0,
+            slope: 0.5,
+            min_x: 0.0,
+            max_x: 20.0,
+            min_z: -10.0,
+            max_z: 10.0,
+        };
+        let at_0 = surface.query_surface(0.0, 0.0);
+        let at_10 = surface.query_surface(10.0, 0.0);
+        assert_eq!(at_0.position_y, 0.0);
+        assert_eq!(at_10.position_y, 5.0);
+    }
+
+    #[test]
+    fn stepped_surface_flat_terrace_is_horizontal() {
+        let surface = SteppedSurface {
+            base_y: 0.0,
+            step_width: 10.0,
+            step_height: 2.0,
+            min_x: 0.0,
+            max_x: 40.0,
+            min_z: -10.0,
+            max_z: 10.0,
+            edge_transition_width: 1.0,
+        };
+        // Middle of the first step (well before the transition zone)
+        let result = surface.query_surface(3.0, 0.0);
+        assert!(result.valid);
+        assert_eq!(result.normal, [0.0, 1.0, 0.0]);
+        assert_eq!(result.position_y, 0.0);
+    }
+
+    #[test]
+    fn stepped_surface_riser_has_steep_normal() {
+        let surface = SteppedSurface {
+            base_y: 0.0,
+            step_width: 10.0,
+            step_height: 10.0, // very tall riser
+            min_x: 0.0,
+            max_x: 40.0,
+            min_z: -10.0,
+            max_z: 10.0,
+            edge_transition_width: 1.0,
+        };
+        // In the transition zone near the end of the first step
+        let result = surface.query_surface(9.5, 0.0);
+        assert!(result.valid);
+        let angle = result.slope_angle_radians().to_degrees();
+        assert!(
+            angle > 40.0,
+            "steep riser should have slope > 40°, got {angle}°"
+        );
+    }
+
+    #[test]
+    fn is_placement_valid_accepts_flat_surface() {
+        let result = SurfaceQueryResult {
+            position_y: 0.0,
+            normal: [0.0, 1.0, 0.0],
+            valid: true,
+        };
+        assert!(is_placement_valid(
+            &result,
+            DEFAULT_MAX_PLACEMENT_SLOPE_RADIANS
+        ));
+    }
+
+    #[test]
+    fn is_placement_valid_rejects_invalid_surface() {
+        let result = SurfaceQueryResult {
+            position_y: 0.0,
+            normal: [0.0, 1.0, 0.0],
+            valid: false,
+        };
+        assert!(!is_placement_valid(
+            &result,
+            DEFAULT_MAX_PLACEMENT_SLOPE_RADIANS
+        ));
+    }
+
+    #[test]
+    fn is_placement_valid_rejects_steep_slope() {
+        // 60° slope
+        let cos60 = 0.5_f32;
+        let sin60 = (1.0 - cos60 * cos60).sqrt();
+        let result = SurfaceQueryResult {
+            position_y: 0.0,
+            normal: [-sin60, cos60, 0.0],
+            valid: true,
+        };
+        assert!(!is_placement_valid(
+            &result,
+            DEFAULT_MAX_PLACEMENT_SLOPE_RADIANS
+        ));
+    }
+
+    #[test]
+    fn surface_alignment_rotation_identity_for_flat() {
+        let [x, y, z, w] = surface_alignment_rotation([0.0, 1.0, 0.0]);
+        assert!(
+            (x.abs() + y.abs() + z.abs()) < 0.001,
+            "should be near identity"
+        );
+        assert!((w - 1.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn surface_alignment_rotation_nontrivial_for_slope() {
+        // A surface tilted ~30° toward +X
+        let nx = -0.5_f32;
+        let ny = (1.0 - nx * nx).sqrt();
+        let [qx, qy, qz, qw] = surface_alignment_rotation([nx, ny, 0.0]);
+        // Quaternion should not be identity
+        let is_identity =
+            qx.abs() < 0.001 && qy.abs() < 0.001 && qz.abs() < 0.001 && (qw - 1.0).abs() < 0.001;
+        assert!(
+            !is_identity,
+            "tilted surface should produce non-identity rotation"
+        );
+        // Should be unit quaternion
+        let len = (qx * qx + qy * qy + qz * qz + qw * qw).sqrt();
+        assert!((len - 1.0).abs() < 0.01);
     }
 }
