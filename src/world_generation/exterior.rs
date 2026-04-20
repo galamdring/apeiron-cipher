@@ -2120,4 +2120,243 @@ cluster_compactness = 0.75
             &bounds
         ));
     }
+
+    // ── Error / edge-case tests ──────────────────────────────────────────
+    //
+    // The tests above verify happy-path behavior. These tests exercise
+    // boundary conditions, degenerate inputs, and error scenarios to ensure
+    // the persistence layer degrades gracefully rather than panicking or
+    // producing silently wrong results.
+
+    // ── Story 5.4 edge cases: removal deltas ─────────────────────────────
+
+    #[test]
+    fn removal_of_nonexistent_id_is_harmless() {
+        // If the removal set contains an ID that doesn't appear in the
+        // baseline (e.g. stale save data, or a bug), the filter should
+        // simply pass all baseline objects through — no panic, no data loss.
+        let profile = sample_profile();
+        let catalog = sample_catalog();
+        let surface = sample_flat_surface();
+        let chunk = ChunkCoord::new(0, -1);
+
+        let baseline = generate_surface_mineral_chunk_baseline(&profile, &catalog, &surface, chunk);
+        let original_count = baseline.len();
+
+        // Fabricate a bogus ID that cannot exist in the baseline.
+        let bogus_id = super::super::derive_generated_object_id(
+            &profile,
+            ChunkCoord::new(999, 999),
+            "nonexistent_mineral",
+            9999,
+            99,
+        );
+        let mut removals = HashSet::new();
+        removals.insert(bogus_id);
+
+        let filtered = apply_removal_deltas(baseline, Some(&removals));
+        assert_eq!(
+            filtered.len(),
+            original_count,
+            "bogus removal ID must not discard any real objects"
+        );
+    }
+
+    #[test]
+    fn removal_of_all_baseline_objects_produces_empty_list() {
+        // If the player picks up every single generated object in a chunk,
+        // the removal filter should return an empty vec — not panic.
+        let profile = sample_profile();
+        let catalog = sample_catalog();
+        let surface = sample_flat_surface();
+        let chunk = ChunkCoord::new(0, -1);
+
+        let baseline = generate_surface_mineral_chunk_baseline(&profile, &catalog, &surface, chunk);
+        assert!(!baseline.is_empty(), "test requires a non-empty baseline");
+
+        // Collect every generated ID into the removal set.
+        let all_ids: HashSet<GeneratedObjectId> =
+            baseline.iter().map(|p| p.generated_id.clone()).collect();
+
+        let filtered = apply_removal_deltas(baseline, Some(&all_ids));
+        assert!(
+            filtered.is_empty(),
+            "removing all baseline IDs must yield an empty spawn list"
+        );
+    }
+
+    #[test]
+    fn removal_from_empty_baseline_is_safe() {
+        // A chunk with zero generated objects (e.g. entirely steep terrain)
+        // should survive removal filtering without issues.
+        let empty_baseline: Vec<GeneratedSurfaceMineralPlacement> = Vec::new();
+        let profile = sample_profile();
+        let bogus_id = super::super::derive_generated_object_id(
+            &profile,
+            ChunkCoord::new(0, 0),
+            "whatever",
+            0,
+            1,
+        );
+        let mut removals = HashSet::new();
+        removals.insert(bogus_id);
+
+        let filtered = apply_removal_deltas(empty_baseline, Some(&removals));
+        assert!(
+            filtered.is_empty(),
+            "filtering an empty baseline must return empty, not panic"
+        );
+    }
+
+    // ── Story 5.5 edge cases: player additions ──────────────────────────
+
+    /// Build a `PlayerAddedObjectRecord` with sensible defaults so tests
+    /// can focus on the field(s) they actually care about.
+    fn sample_player_record(id: u64, name: &str) -> PlayerAddedObjectRecord {
+        PlayerAddedObjectRecord {
+            id,
+            material: sample_game_material(name),
+            position: [0.0, 0.0, 0.0],
+            visual_scale: 1.0,
+        }
+    }
+
+    /// Build a `ChunkPlayerAdditions` pre-populated with `records` for
+    /// a single chunk — the most common test scenario.
+    fn sample_additions_with(
+        chunk: ChunkCoord,
+        records: Vec<PlayerAddedObjectRecord>,
+    ) -> ChunkPlayerAdditions {
+        let mut additions = ChunkPlayerAdditions::default();
+        additions.added_by_chunk.insert(chunk, records);
+        additions
+    }
+
+    #[test]
+    fn player_added_id_counter_monotonically_increases() {
+        // The counter must never produce duplicate IDs within a session.
+        let mut counter = PlayerAddedIdCounter::default();
+        let first = counter.next();
+        let second = counter.next();
+        let third = counter.next();
+        assert_eq!(first, 0);
+        assert_eq!(second, 1);
+        assert_eq!(third, 2);
+    }
+
+    #[test]
+    fn is_within_exterior_bounds_degenerate_zero_area() {
+        // A zero-area bounds (min == max) should only match the exact point.
+        let bounds = RectXZ {
+            min_x: 5.0,
+            max_x: 5.0,
+            min_z: -10.0,
+            max_z: -10.0,
+        };
+        // Exact point — inclusive boundary means this should match.
+        assert!(is_within_exterior_bounds(
+            Vec3::new(5.0, 0.0, -10.0),
+            &bounds
+        ));
+        // Anything else is outside.
+        assert!(!is_within_exterior_bounds(
+            Vec3::new(5.001, 0.0, -10.0),
+            &bounds
+        ));
+        assert!(!is_within_exterior_bounds(
+            Vec3::new(5.0, 0.0, -9.999),
+            &bounds
+        ));
+    }
+
+    #[test]
+    fn is_within_exterior_bounds_infinity_inputs() {
+        // Pathological floating-point values must not cause panics.
+        let bounds = RectXZ {
+            min_x: -12.0,
+            max_x: 12.0,
+            min_z: -36.0,
+            max_z: -4.0,
+        };
+        // Infinity is always outside finite bounds.
+        assert!(!is_within_exterior_bounds(
+            Vec3::new(f32::INFINITY, 0.0, -20.0),
+            &bounds
+        ));
+        assert!(!is_within_exterior_bounds(
+            Vec3::new(0.0, 0.0, f32::NEG_INFINITY),
+            &bounds
+        ));
+        // NaN comparisons always return false, so NaN should be "outside."
+        assert!(!is_within_exterior_bounds(
+            Vec3::new(f32::NAN, 0.0, -20.0),
+            &bounds
+        ));
+    }
+
+    #[test]
+    fn release_player_added_with_nonexistent_id_leaves_records_intact() {
+        // Simulates the core logic of `release_collected_player_added_objects`
+        // when an entity has a `PlayerAddedExteriorObject` marker but the
+        // corresponding record was already removed (or never existed) in
+        // `ChunkPlayerAdditions`. The retain logic must not panic or remove
+        // unrelated records.
+        let chunk = ChunkCoord::new(0, -1);
+        let mut additions = sample_additions_with(
+            chunk,
+            vec![
+                sample_player_record(10, "RealA"),
+                sample_player_record(20, "RealB"),
+            ],
+        );
+
+        // Attempt to remove an ID that was never added (id: 999).
+        // This mirrors the retain call in release_collected_player_added_objects.
+        let bogus_id: u64 = 999;
+        if let Some(records) = additions.added_by_chunk.get_mut(&chunk) {
+            records.retain(|r| r.id != bogus_id);
+        }
+
+        // Both real records must survive.
+        let records = additions.added_by_chunk.get(&chunk).unwrap();
+        assert_eq!(
+            records.len(),
+            2,
+            "bogus removal must not delete real records"
+        );
+        assert_eq!(records[0].id, 10);
+        assert_eq!(records[1].id, 20);
+    }
+
+    #[test]
+    fn release_player_added_from_nonexistent_chunk_is_harmless() {
+        // If the marker references a chunk that has no entries in
+        // `ChunkPlayerAdditions` at all (e.g. chunk was already fully
+        // cleaned up), the `if let Some(...)` guard must skip silently.
+        let populated_chunk = ChunkCoord::new(1, 1);
+        let mut additions =
+            sample_additions_with(populated_chunk, vec![sample_player_record(0, "Existing")]);
+
+        // Try to release from a chunk that has no records.
+        let missing_chunk = ChunkCoord::new(99, 99);
+        if let Some(records) = additions.added_by_chunk.get_mut(&missing_chunk) {
+            records.retain(|r| r.id != 42);
+        }
+
+        // The populated chunk's data must be untouched.
+        assert_eq!(
+            additions
+                .added_by_chunk
+                .get(&populated_chunk)
+                .unwrap()
+                .len(),
+            1,
+            "release from missing chunk must not corrupt other chunks"
+        );
+        // The missing chunk must not have been created.
+        assert!(
+            !additions.added_by_chunk.contains_key(&missing_chunk),
+            "release must not create empty entries for missing chunks"
+        );
+    }
 }
