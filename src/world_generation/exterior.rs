@@ -882,7 +882,7 @@ fn lerp(a: f32, b: f32, t: f32) -> f32 {
 mod tests {
     use super::*;
     use crate::world_generation::{
-        FlatSurface, SteppedSurface, SurfaceProvider, TiltedSurface, WorldGenerationConfig,
+        FlatSurface, SteppedSurface, TiltedSurface, WorldGenerationConfig,
     };
 
     fn sample_profile() -> WorldProfile {
