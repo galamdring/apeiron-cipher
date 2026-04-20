@@ -96,7 +96,7 @@ export default function App({ config }) {
             <Board repo={repo} />
           </>
         ) : (
-          <BacklogView />
+          <BacklogView repo={repo} />
         )}
       </div>
       {selectedIssue && <IssueDetail repo={repo} />}

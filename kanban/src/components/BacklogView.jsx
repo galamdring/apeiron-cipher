@@ -1,5 +1,6 @@
-import React, { useState } from "react";
+import React, { useState, useCallback } from "react";
 import { useIssueStore, issueType, issueColumn, TYPES, TYPE_COLORS, COLUMNS, COLUMN_COLORS } from "../store/issues";
+import { fetchSubIssues } from "../api/github";
 
 const MODES = [
   { key: "flat", label: "Flat List" },
@@ -121,6 +122,34 @@ const s = {
     fontFamily: "monospace",
     minWidth: 40,
     textAlign: "right",
+  },
+  epicRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: 10,
+    padding: "10px 12px",
+    borderBottom: "1px solid #21262d",
+    cursor: "pointer",
+    userSelect: "none",
+  },
+  epicRowDimmed: {
+    opacity: 0.5,
+  },
+  epicTitle: {
+    fontSize: 14,
+    fontWeight: 600,
+    color: "#e6edf3",
+    flex: 1,
+  },
+  childRow: {
+    paddingLeft: 32,
+  },
+  loadingText: {
+    paddingLeft: 32,
+    padding: "6px 12px 6px 32px",
+    fontSize: 13,
+    color: "#8b949e",
+    fontStyle: "italic",
   },
 };
 
@@ -290,7 +319,74 @@ function PriorityRow({ issue, rank, onSelect }) {
   );
 }
 
-export default function BacklogView() {
+function EpicTree({ issues, onSelect, repo }) {
+  const epics = issues.filter((i) => issueType(i) === "epic").sort((a, b) => a.number - b.number);
+  const [expanded, setExpanded] = useState(new Set());
+  const [children, setChildren] = useState({}); // { epicNumber: Issue[] }
+  const [loading, setLoading] = useState(new Set());
+
+  const toggleEpic = useCallback(async (epic) => {
+    const num = epic.number;
+    if (expanded.has(num)) {
+      setExpanded((prev) => { const next = new Set(prev); next.delete(num); return next; });
+      return;
+    }
+
+    setExpanded((prev) => new Set(prev).add(num));
+
+    // Fetch children on first expand
+    if (!children[num]) {
+      if (!repo) return;
+      const [owner, repoName] = repo.split("/");
+      if (!owner || !repoName) return;
+
+      setLoading((prev) => new Set(prev).add(num));
+      try {
+        const subs = await fetchSubIssues(owner, repoName, num);
+        setChildren((prev) => ({ ...prev, [num]: subs }));
+      } catch {
+        setChildren((prev) => ({ ...prev, [num]: [] }));
+      }
+      setLoading((prev) => { const next = new Set(prev); next.delete(num); return next; });
+    }
+  }, [expanded, children, repo]);
+
+  return epics.map((epic) => {
+    const isExpanded = expanded.has(epic.number);
+    const epicChildren = children[epic.number];
+    const isLoading = loading.has(epic.number);
+    const hasChildren = epicChildren && epicChildren.length > 0;
+    const dimmed = epicChildren && epicChildren.length === 0 && !isLoading;
+
+    return (
+      <div key={epic.number}>
+        <div
+          style={{ ...s.epicRow, ...(dimmed ? s.epicRowDimmed : {}) }}
+          onClick={() => toggleEpic(epic)}
+        >
+          <span style={{ ...s.chevron, transform: isExpanded ? "rotate(0deg)" : "rotate(-90deg)" }}>
+            ▼
+          </span>
+          <span style={s.issueNumber}>#{epic.number}</span>
+          <span style={s.epicTitle}>{epic.title}</span>
+          {epicChildren && (
+            <span style={s.countBadge}>{epicChildren.length}</span>
+          )}
+        </div>
+        {isExpanded && isLoading && (
+          <div style={s.loadingText}>Loading sub-issues…</div>
+        )}
+        {isExpanded && hasChildren && epicChildren.map((child) => (
+          <div key={child.number} style={s.childRow}>
+            <IssueRow issue={child} onSelect={onSelect} />
+          </div>
+        ))}
+      </div>
+    );
+  });
+}
+
+export default function BacklogView({ repo }) {
   const [mode, setMode] = useState("flat");
   const filteredIssues = useIssueStore((s) => s.filteredIssues());
   const selectIssue = useIssueStore((s) => s.selectIssue);
@@ -308,6 +404,8 @@ export default function BacklogView() {
         return <GroupByStatus issues={openIssues} onSelect={selectIssue} />;
       case "priority":
         return <PriorityOrder issues={openIssues} onSelect={selectIssue} />;
+      case "epic":
+        return <EpicTree issues={openIssues} onSelect={selectIssue} repo={repo} />;
       default:
         return <div style={s.placeholder}>mode: {mode}</div>;
     }
