@@ -70,7 +70,10 @@ The full workflow (pick story → implement → PR → review) is documented in 
 - **Game code (Bevy/Rust):** `feat/{work-description}` or `epic-N/story-N.N-short-description` — no subsystem prefix.
 - **Kanban board frontend:** `feat/kanban/{work-description}` — always prefix with `kanban/`.
 - **Orchestrator (Go backend):** `feat/orchestrator/{work-description}` — always prefix with `orchestrator/`.
-- PR titles must match: `feat(kanban): ...`, `feat(orchestrator): ...`, or plain `feat: ...` for game code.
+- **PR titles drive semantic-release.** Every PR title **must** use a Conventional Commits prefix (`feat:`, `fix:`, etc.) or it will not trigger a release on merge. The `epic-N/story-N.N` pattern is for branch names only.
+  - **Game code:** `feat: N.N - short description` (e.g. `feat: 4.1 - add terrain generation`)
+  - **Kanban:** `feat(kanban): short description`
+  - **Orchestrator:** `feat(orchestrator): short description`
 - `make check` applies to game code only. Kanban and orchestrator have their own check targets (`kb-check`, `o-check`).
 
 ## 5. Coding Golden Rules
