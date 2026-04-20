@@ -16,7 +16,7 @@ use leafwing_input_manager::prelude::*;
 
 use crate::carry::CarryMovementState;
 use crate::input::InputAction;
-use crate::scene::{PositionXZ, RoomShellCollision, SceneConfig};
+use crate::scene::{PlayerSceneConfig, PositionXZ, RoomShellCollision};
 
 /// Converts the leafwing axis_pair output (pixels * config sensitivity) to radians.
 /// Tune by adjusting `sensitivity_x` / `sensitivity_y` in input.toml rather than
@@ -79,17 +79,13 @@ struct CameraPitch(f32);
 
 pub fn spawn_player(
     mut commands: Commands,
-    scene: Res<SceneConfig>,
+    scene: Res<PlayerSceneConfig>,
     carry_movement: Res<CarryMovementState>,
 ) {
     commands
         .spawn((
             Player,
-            Transform::from_xyz(
-                scene.player.spawn_x,
-                scene.player.eye_height,
-                scene.player.spawn_z,
-            ),
+            Transform::from_xyz(scene.spawn_x, scene.eye_height, scene.spawn_z),
             Visibility::default(),
             // leafwing tracks which actions are active on this entity.
             // The InputMap is attached separately by InputPlugin after spawn.
@@ -171,7 +167,7 @@ fn player_look(
 fn player_move(
     time: Res<Time>,
     cursor_options: Single<&CursorOptions>,
-    scene: Res<SceneConfig>,
+    scene: Res<PlayerSceneConfig>,
     room_shell: Res<RoomShellCollision>,
     carry_movement: Res<CarryMovementState>,
     mut player_query: Query<
@@ -187,7 +183,7 @@ fn player_move(
         return;
     };
 
-    enforce_eye_height(&mut transform.translation, scene.player.eye_height);
+    enforce_eye_height(&mut transform.translation, scene.eye_height);
 
     let input = action_state.clamped_axis_pair(&InputAction::Move);
 
@@ -228,8 +224,7 @@ fn player_move(
     } else {
         1.0
     };
-    let effective_speed =
-        scene.player.move_speed * carry_movement.speed_modifier * sprint_multiplier;
+    let effective_speed = scene.move_speed * carry_movement.speed_modifier * sprint_multiplier;
     let delta = direction * effective_speed * time.delta_secs();
     let mut proposed = transform.translation;
     proposed.x += delta.x;
@@ -248,7 +243,7 @@ fn player_move(
         transform.translation.z = proposed.z;
     }
 
-    enforce_eye_height(&mut transform.translation, scene.player.eye_height);
+    enforce_eye_height(&mut transform.translation, scene.eye_height);
 }
 
 #[cfg(test)]

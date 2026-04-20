@@ -140,7 +140,7 @@ pub struct SceneConfig {
     pub heat_source: HeatSourceConfig,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, Resource)]
 pub struct RoomConfig {
     #[serde(default = "default_half_extent_x")]
     pub half_extent_x: f32,
@@ -182,7 +182,7 @@ impl Default for RoomConfig {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, Resource)]
 pub struct PlayerSceneConfig {
     #[serde(default = "default_eye_height")]
     pub eye_height: f32,
@@ -215,7 +215,7 @@ impl Default for PlayerSceneConfig {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, Resource)]
 pub struct LightingConfig {
     #[serde(default = "default_ambient_brightness")]
     pub ambient_brightness: f32,
@@ -281,7 +281,7 @@ impl Default for LightingConfig {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, Resource)]
 pub struct FurnitureConfig {
     #[serde(default = "default_workbench_width")]
     pub workbench_width: f32,
@@ -367,7 +367,7 @@ pub struct ShelfConfig {
 
 // ── Fabricator config ────────────────────────────────────────────────────
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, Resource)]
 pub struct FabricatorSceneConfig {
     #[serde(default = "default_fab_slot_offset_x")]
     pub slot_offset_x: f32,
@@ -435,7 +435,7 @@ impl Default for FabricatorSceneConfig {
 
 // ── Heat source config ──────────────────────────────────────────────────
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, Resource)]
 pub struct HeatSourceConfig {
     #[serde(default = "default_hs_offset_x")]
     pub offset_x: f32,
@@ -515,6 +515,12 @@ fn load_scene_config(mut commands: Commands) {
         warn!("{CONFIG_PATH} not found, using defaults");
         SceneConfig::default()
     };
+    commands.insert_resource(config.room.clone());
+    commands.insert_resource(config.player.clone());
+    commands.insert_resource(config.lighting.clone());
+    commands.insert_resource(config.furniture.clone());
+    commands.insert_resource(config.fabricator.clone());
+    commands.insert_resource(config.heat_source.clone());
     commands.insert_resource(config);
 }
 
@@ -603,12 +609,14 @@ fn setup_scene(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    cfg: Res<SceneConfig>,
+    room: Res<RoomConfig>,
+    lighting: Res<LightingConfig>,
+    fur: Res<FurnitureConfig>,
 ) {
-    let hx = cfg.room.half_extent_x;
-    let hz = cfg.room.half_extent_z;
-    let h = cfg.room.wall_height;
-    let t = cfg.room.wall_thickness;
+    let hx = room.half_extent_x;
+    let hz = room.half_extent_z;
+    let h = room.wall_height;
+    let t = room.wall_thickness;
 
     // Room shell materials — darker than furniture so interactive materials read clearly.
     let floor_mat = materials.add(StandardMaterial {
@@ -732,7 +740,6 @@ fn setup_scene(
     ));
 
     // Workbench — lighter, lower roughness than walls (future fabricator site).
-    let fur = &cfg.furniture;
     let wb_half_y = fur.workbench_height * 0.5;
     let workbench_mat = materials.add(StandardMaterial {
         base_color: Color::srgb(0.52, 0.48, 0.42),
@@ -790,29 +797,29 @@ fn setup_scene(
     // Directional fill — angled so forms read; lower than the open-plane setup.
     commands.spawn((
         DirectionalLight {
-            illuminance: cfg.lighting.directional_illuminance,
-            shadows_enabled: cfg.lighting.directional_shadows,
+            illuminance: lighting.directional_illuminance,
+            shadows_enabled: lighting.directional_shadows,
             ..default()
         },
         Transform::from_xyz(6.0, 9.0, 4.0).looking_at(Vec3::new(0.0, 0.6, 0.0), Vec3::Y),
     ));
 
     commands.spawn(AmbientLight {
-        brightness: cfg.lighting.ambient_brightness,
+        brightness: lighting.ambient_brightness,
         ..default()
     });
 
     // Focused spot over the workbench — contrast for future material placement.
-    let spot_y = cfg.lighting.spot_height;
-    let target_y = cfg.lighting.spot_target_y;
+    let spot_y = lighting.spot_height;
+    let target_y = lighting.spot_target_y;
     commands.spawn((
         SpotLight {
             color: Color::srgb(1.0, 0.97, 0.92),
-            intensity: cfg.lighting.spot_intensity,
-            range: cfg.lighting.spot_range,
+            intensity: lighting.spot_intensity,
+            range: lighting.spot_range,
             shadows_enabled: true,
-            inner_angle: cfg.lighting.spot_inner_angle,
-            outer_angle: cfg.lighting.spot_outer_angle,
+            inner_angle: lighting.spot_inner_angle,
+            outer_angle: lighting.spot_outer_angle,
             ..default()
         },
         Transform::from_xyz(fur.workbench_x, spot_y, fur.workbench_z).looking_at(

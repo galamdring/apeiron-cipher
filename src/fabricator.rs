@@ -18,7 +18,7 @@ use crate::journal::RecordFabrication;
 use crate::materials::{
     GameMaterial, MATERIAL_SURFACE_GAP, MaterialObject, MaterialProperty, PropertyVisibility,
 };
-use crate::scene::{SceneConfig, Workbench};
+use crate::scene::{FabricatorSceneConfig, FurnitureConfig, Workbench};
 
 pub struct FabricatorPlugin;
 
@@ -80,7 +80,8 @@ fn spawn_fabricator_slots(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    cfg: Res<SceneConfig>,
+    fab: Res<FabricatorSceneConfig>,
+    fur: Res<FurnitureConfig>,
     workbench_query: Query<&Transform, With<Workbench>>,
 ) {
     let Ok(wb_tf) = workbench_query.single() else {
@@ -88,8 +89,6 @@ fn spawn_fabricator_slots(
         return;
     };
 
-    let fab = &cfg.fabricator;
-    let fur = &cfg.furniture;
     let wb_top_y = fur.workbench_height;
     let wb_center = wb_tf.translation;
 
@@ -182,7 +181,7 @@ fn process_activation(
 fn tick_processing(
     mut commands: Commands,
     time: Res<Time>,
-    cfg: Res<SceneConfig>,
+    cfg: Res<FabricatorSceneConfig>,
     rules: Res<CombinationRules>,
     mut journal_writer: MessageWriter<RecordFabrication>,
     mut state: ResMut<FabricatorState>,
@@ -198,7 +197,7 @@ fn tick_processing(
 
     *elapsed += time.delta_secs();
 
-    if *elapsed < cfg.fabricator.process_seconds {
+    if *elapsed < cfg.process_seconds {
         return;
     }
 
@@ -268,13 +267,13 @@ fn tick_processing(
 
 fn apply_processing_visuals(
     state: Res<FabricatorState>,
-    cfg: Res<SceneConfig>,
+    cfg: Res<FabricatorSceneConfig>,
     slot_query: Query<&MeshMaterial3d<StandardMaterial>, With<InputSlot>>,
     mut std_materials: ResMut<Assets<StandardMaterial>>,
 ) {
     let glow = match *state {
         FabricatorState::Processing { elapsed } => {
-            let frac = (elapsed / cfg.fabricator.process_seconds).clamp(0.0, 1.0);
+            let frac = (elapsed / cfg.process_seconds).clamp(0.0, 1.0);
             let pulse = (frac * std::f32::consts::TAU * 3.0).sin().abs();
             LinearRgba::new(pulse * 60.0, pulse * 40.0, pulse * 80.0, 1.0)
         }
