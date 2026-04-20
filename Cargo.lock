@@ -184,6 +184,7 @@ dependencies = [
  "bevy",
  "leafwing-input-manager",
  "serde",
+ "serde_json",
  "toml",
 ]
 
