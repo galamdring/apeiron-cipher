@@ -15,6 +15,8 @@
 //! kind of system that can feel "obvious" when you just wrote it and opaque a
 //! week later when you are trying to prove that nothing is secretly random.
 
+pub mod exterior;
+
 use std::fs;
 use std::path::Path;
 

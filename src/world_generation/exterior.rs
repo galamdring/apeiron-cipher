@@ -22,14 +22,14 @@ use std::path::Path;
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 
+use super::{
+    ActiveChunkNeighborhood, ChunkCoord, GeneratedObjectId, WorldProfile, chunk_origin_xz,
+    derive_chunk_generation_key, derive_generated_object_id,
+};
 use crate::carry::InCarry;
 use crate::interaction::HeldItem;
 use crate::materials::{MaterialCatalog, MaterialObject};
 use crate::scene::{ExteriorGroundPatch, PositionXZ, RectXZ};
-use crate::world_generation::{
-    ActiveChunkNeighborhood, ChunkCoord, GeneratedObjectId, WorldProfile, chunk_origin_xz,
-    derive_chunk_generation_key, derive_generated_object_id,
-};
 
 const DEPOSIT_CONFIG_PATH: &str = "assets/exterior/surface_mineral_deposits.toml";
 const SURFACE_MINERAL_DEPOSIT_GENERATOR_VERSION: u32 = 1;
