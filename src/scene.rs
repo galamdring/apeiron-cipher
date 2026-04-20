@@ -11,7 +11,7 @@ use std::path::Path;
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 
-pub(crate) struct ScenePlugin;
+pub struct ScenePlugin;
 
 impl Plugin for ScenePlugin {
     fn build(&self, app: &mut App) {
@@ -25,13 +25,13 @@ impl Plugin for ScenePlugin {
 
 /// Marks the central workbench mesh — future fabricator anchor (Epic 3).
 #[derive(Component)]
-pub(crate) struct Workbench;
+pub struct Workbench;
 
 /// A placement plane: the actual top of a piece of furniture where objects
 /// can be set down. Spawned as its own entity at the true surface Y so
 /// the placement system never needs offset math.
 #[derive(Component)]
-pub(crate) struct Surface {
+pub struct Surface {
     pub half_extent_x: f32,
     pub half_extent_z: f32,
 }
@@ -39,27 +39,27 @@ pub(crate) struct Surface {
 /// Distinguishes storage shelves from the experiment workbench so initial
 /// material spawning only targets shelves.
 #[derive(Component)]
-pub(crate) struct Shelf;
+pub struct Shelf;
 
 /// Ground-plane position using world X/Z coordinates.
 ///
 /// Bevy uses Y as vertical, so any "flat" room-shell collision math happens on
 /// the X/Z plane instead of the X/Y plane familiar from CAD or 3D printing.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct PositionXZ {
+pub struct PositionXZ {
     pub x: f32,
     pub z: f32,
 }
 
 impl PositionXZ {
-    pub(crate) fn new(x: f32, z: f32) -> Self {
+    pub fn new(x: f32, z: f32) -> Self {
         Self { x, z }
     }
 }
 
 /// Axis-aligned rectangle on the world X/Z plane.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct RectXZ {
+pub struct RectXZ {
     pub min_x: f32,
     pub max_x: f32,
     pub min_z: f32,
@@ -67,7 +67,7 @@ pub(crate) struct RectXZ {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct WallCollider {
+pub struct WallCollider {
     pub footprint_xz: RectXZ,
 }
 
@@ -94,12 +94,12 @@ impl WallCollider {
 }
 
 #[derive(Resource, Clone, Debug, Default)]
-pub(crate) struct RoomShellCollision {
+pub struct RoomShellCollision {
     pub wall_colliders: Vec<WallCollider>,
 }
 
 impl RoomShellCollision {
-    pub(crate) fn blocks_circle_xz(&self, position_xz: PositionXZ, radius: f32) -> bool {
+    pub fn blocks_circle_xz(&self, position_xz: PositionXZ, radius: f32) -> bool {
         self.wall_colliders
             .iter()
             .any(|collider| collider.blocks_circle_xz(position_xz, radius))
@@ -114,7 +114,7 @@ impl RoomShellCollision {
 /// playable exterior surface?" instead of hardcoding scene dimensions a second
 /// time in a different module.
 #[derive(Resource, Clone, Debug)]
-pub(crate) struct ExteriorGroundPatch {
+pub struct ExteriorGroundPatch {
     pub bounds_xz: RectXZ,
     pub surface_y: f32,
 }
@@ -125,7 +125,7 @@ const CONFIG_PATH: &str = "assets/config/scene.toml";
 
 /// Top-level structure of `assets/config/scene.toml`.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, Resource)]
-pub(crate) struct SceneConfig {
+pub struct SceneConfig {
     #[serde(default)]
     pub room: RoomConfig,
     #[serde(default)]
@@ -141,7 +141,7 @@ pub(crate) struct SceneConfig {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) struct RoomConfig {
+pub struct RoomConfig {
     #[serde(default = "default_half_extent_x")]
     pub half_extent_x: f32,
     #[serde(default = "default_half_extent_z")]
@@ -183,7 +183,7 @@ impl Default for RoomConfig {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) struct PlayerSceneConfig {
+pub struct PlayerSceneConfig {
     #[serde(default = "default_eye_height")]
     pub eye_height: f32,
     #[serde(default)]
@@ -216,7 +216,7 @@ impl Default for PlayerSceneConfig {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) struct LightingConfig {
+pub struct LightingConfig {
     #[serde(default = "default_ambient_brightness")]
     pub ambient_brightness: f32,
     #[serde(default = "default_directional_illuminance")]
@@ -282,7 +282,7 @@ impl Default for LightingConfig {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) struct FurnitureConfig {
+pub struct FurnitureConfig {
     #[serde(default = "default_workbench_width")]
     pub workbench_width: f32,
     #[serde(default = "default_workbench_height")]
@@ -359,7 +359,7 @@ impl Default for FurnitureConfig {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) struct ShelfConfig {
+pub struct ShelfConfig {
     pub x: f32,
     pub z: f32,
     pub y: f32,
@@ -368,7 +368,7 @@ pub(crate) struct ShelfConfig {
 // ── Fabricator config ────────────────────────────────────────────────────
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) struct FabricatorSceneConfig {
+pub struct FabricatorSceneConfig {
     #[serde(default = "default_fab_slot_offset_x")]
     pub slot_offset_x: f32,
     #[serde(default = "default_fab_slot_spacing_z")]
@@ -436,7 +436,7 @@ impl Default for FabricatorSceneConfig {
 // ── Heat source config ──────────────────────────────────────────────────
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) struct HeatSourceConfig {
+pub struct HeatSourceConfig {
     #[serde(default = "default_hs_offset_x")]
     pub offset_x: f32,
     #[serde(default = "default_hs_offset_z")]
@@ -539,7 +539,7 @@ fn north_wall_center_z(room_half_depth: f32, wall_thickness: f32) -> f32 {
     room_half_depth + wall_thickness * 0.5
 }
 
-pub(crate) fn build_room_shell_collision(
+pub fn build_room_shell_collision(
     room_half_width: f32,
     room_half_depth: f32,
     wall_thickness: f32,

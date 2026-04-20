@@ -18,7 +18,7 @@ use std::path::Path;
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 
-pub(crate) struct CombinationPlugin;
+pub struct CombinationPlugin;
 
 impl Plugin for CombinationPlugin {
     fn build(&self, app: &mut App) {
@@ -30,7 +30,7 @@ impl Plugin for CombinationPlugin {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type")]
-pub(crate) enum PropertyRule {
+pub enum PropertyRule {
     Blend { weight_a: f32, weight_b: f32 },
     Max,
     Min,
@@ -39,7 +39,7 @@ pub(crate) enum PropertyRule {
 }
 
 impl PropertyRule {
-    pub(crate) fn apply(&self, a: f32, b: f32) -> f32 {
+    pub fn apply(&self, a: f32, b: f32) -> f32 {
         match self {
             PropertyRule::Blend { weight_a, weight_b } => {
                 let total = weight_a + weight_b;
@@ -68,7 +68,7 @@ impl Default for PropertyRule {
 // ── Rule set for a material pair ────────────────────────────────────────
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) struct PairRuleSet {
+pub struct PairRuleSet {
     pub density: PropertyRule,
     pub thermal_resistance: PropertyRule,
     pub reactivity: PropertyRule,
@@ -79,7 +79,7 @@ pub(crate) struct PairRuleSet {
 impl PairRuleSet {
     /// Used in tests and by future waste-detection visuals (e.g. grey-out output).
     #[allow(dead_code)]
-    pub(crate) fn all_inert() -> Self {
+    pub fn all_inert() -> Self {
         Self {
             density: PropertyRule::Inert,
             thermal_resistance: PropertyRule::Inert,
@@ -91,7 +91,7 @@ impl PairRuleSet {
 
     /// Used in tests and by future waste-detection visuals.
     #[allow(dead_code)]
-    pub(crate) fn is_inert(&self) -> bool {
+    pub fn is_inert(&self) -> bool {
         self.density == PropertyRule::Inert
             && self.thermal_resistance == PropertyRule::Inert
             && self.reactivity == PropertyRule::Inert
@@ -139,14 +139,14 @@ fn pair_key(a: &str, b: &str) -> (String, String) {
 
 /// Loaded combination rules, keyed by sorted material name pairs.
 #[derive(Resource, Debug, Default)]
-pub(crate) struct CombinationRules {
+pub struct CombinationRules {
     pub default_rule: PropertyRule,
     pub pair_rules: HashMap<(String, String), PairRuleSet>,
 }
 
 impl CombinationRules {
     /// Look up the rule set for a pair, falling back to the default for each property.
-    pub(crate) fn rules_for(&self, name_a: &str, name_b: &str) -> PairRuleSet {
+    pub fn rules_for(&self, name_a: &str, name_b: &str) -> PairRuleSet {
         let key = pair_key(name_a, name_b);
         if let Some(rules) = self.pair_rules.get(&key) {
             rules.clone()

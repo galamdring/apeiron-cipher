@@ -22,9 +22,9 @@ use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::scene::Shelf;
-pub(crate) struct MaterialPlugin;
+pub struct MaterialPlugin;
 
-pub(crate) const MATERIAL_SURFACE_GAP: f32 = 0.01;
+pub const MATERIAL_SURFACE_GAP: f32 = 0.01;
 
 impl Plugin for MaterialPlugin {
     fn build(&self, app: &mut App) {
@@ -41,7 +41,7 @@ impl Plugin for MaterialPlugin {
 /// weight). `Hidden` properties require environmental testing to discover.
 /// `Revealed` is set at runtime once the player has uncovered a hidden property.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Reflect)]
-pub(crate) enum PropertyVisibility {
+pub enum PropertyVisibility {
     Observable,
     Hidden,
     Revealed,
@@ -53,7 +53,7 @@ pub(crate) enum PropertyVisibility {
 ///
 /// Values are clamped to \[0.0, 1.0\] for uniform combination math (Story 3.2).
 #[derive(Clone, Debug, Serialize, Deserialize, Reflect)]
-pub(crate) struct MaterialProperty {
+pub struct MaterialProperty {
     pub value: f32,
     pub visibility: PropertyVisibility,
 }
@@ -70,7 +70,7 @@ pub(crate) struct MaterialProperty {
 /// Base materials define seed explicitly; derived materials compute it from
 /// input seeds.
 #[derive(Component, Clone, Debug, Serialize, Deserialize, Reflect)]
-pub(crate) struct GameMaterial {
+pub struct GameMaterial {
     pub name: String,
     pub seed: u64,
     /// Display colour as \[R, G, B\] in sRGB 0.0–1.0.
@@ -84,13 +84,13 @@ pub(crate) struct GameMaterial {
 
 impl GameMaterial {
     /// Converts the stored colour triple to a Bevy [`Color`].
-    pub(crate) fn bevy_color(&self) -> Color {
+    pub fn bevy_color(&self) -> Color {
         Color::srgb(self.color[0], self.color[1], self.color[2])
     }
 
     /// Chooses a mesh shape based on material density.
     /// Light materials → sphere, heavy → cube, medium → capsule.
-    pub(crate) fn mesh_for_density(&self, meshes: &mut Assets<Mesh>) -> Handle<Mesh> {
+    pub fn mesh_for_density(&self, meshes: &mut Assets<Mesh>) -> Handle<Mesh> {
         let density = self.density.value;
         if density < 0.3 {
             meshes.add(Sphere::new(0.12).mesh().build())
@@ -102,7 +102,7 @@ impl GameMaterial {
     }
 
     /// Height from the support surface to the entity origin for the selected mesh.
-    pub(crate) fn support_height(&self) -> f32 {
+    pub fn support_height(&self) -> f32 {
         let density = self.density.value;
         if density < 0.3 {
             0.12
@@ -113,11 +113,11 @@ impl GameMaterial {
         }
     }
 
-    pub(crate) fn resting_center_y(&self, surface_y: f32) -> f32 {
+    pub fn resting_center_y(&self, surface_y: f32) -> f32 {
         surface_y + self.support_height() + MATERIAL_SURFACE_GAP
     }
 
-    pub(crate) fn footprint_radius(&self) -> f32 {
+    pub fn footprint_radius(&self) -> f32 {
         let density = self.density.value;
         if density < 0.3 {
             0.12
@@ -136,7 +136,7 @@ impl GameMaterial {
 /// Later stories use this to spawn material entities and to look up base
 /// definitions during fabrication.
 #[derive(Resource, Debug, Default)]
-pub(crate) struct MaterialCatalog {
+pub struct MaterialCatalog {
     pub materials: HashMap<String, GameMaterial>,
 }
 
@@ -145,7 +145,7 @@ pub(crate) struct MaterialCatalog {
 /// Marks an entity as a material object that exists physically in the world.
 /// The material's data is on the same entity as a [`GameMaterial`] component.
 #[derive(Component, Debug)]
-pub(crate) struct MaterialObject;
+pub struct MaterialObject;
 
 // ── Spawning ─────────────────────────────────────────────────────────────
 

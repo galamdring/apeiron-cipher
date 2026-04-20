@@ -17,7 +17,7 @@ use std::collections::HashMap;
 
 use bevy::prelude::*;
 
-pub(crate) struct ObservationPlugin;
+pub struct ObservationPlugin;
 
 impl Plugin for ObservationPlugin {
     fn build(&self, app: &mut App) {
@@ -31,7 +31,7 @@ impl Plugin for ObservationPlugin {
 /// Used by the examine panel in the next PR to select descriptor language.
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ConfidenceLevel {
+pub enum ConfidenceLevel {
     /// One observation — tentative language.
     Tentative,
     /// 2–3 observations — factual but unqualified.
@@ -42,7 +42,7 @@ pub(crate) enum ConfidenceLevel {
 
 impl ConfidenceLevel {
     #[allow(dead_code)]
-    pub(crate) fn from_count(count: u32) -> Self {
+    pub fn from_count(count: u32) -> Self {
         match count {
             0 => ConfidenceLevel::Tentative,
             1 => ConfidenceLevel::Tentative,
@@ -64,7 +64,7 @@ fn describe_thermal_behavior(value: f32) -> &'static str {
     }
 }
 
-pub(crate) fn describe_thermal_observation(value: f32, confidence: ConfidenceLevel) -> String {
+pub fn describe_thermal_observation(value: f32, confidence: ConfidenceLevel) -> String {
     let behavior = describe_thermal_behavior(value);
     match confidence {
         ConfidenceLevel::Tentative => format!("Seemed to {behavior}"),
@@ -89,7 +89,7 @@ type ObsKey = (u64, String);
 /// Fields read by the examine panel and heat systems in the next PRs.
 #[allow(dead_code)]
 #[derive(Resource, Debug, Default)]
-pub(crate) struct ConfidenceTracker {
+pub struct ConfidenceTracker {
     counts: HashMap<ObsKey, u32>,
 }
 
@@ -97,7 +97,7 @@ impl ConfidenceTracker {
     /// Record one observation. Returns the new count.
     /// Called by the heat revelation system in the next PR.
     #[allow(dead_code)]
-    pub(crate) fn record(&mut self, seed: u64, property: &str) -> u32 {
+    pub fn record(&mut self, seed: u64, property: &str) -> u32 {
         let key = (seed, property.to_string());
         let count = self.counts.entry(key).or_insert(0);
         *count += 1;
@@ -107,7 +107,7 @@ impl ConfidenceTracker {
     /// Current observation count (0 if never observed).
     /// Used by the examine panel in the next PR.
     #[allow(dead_code)]
-    pub(crate) fn count(&self, seed: u64, property: &str) -> u32 {
+    pub fn count(&self, seed: u64, property: &str) -> u32 {
         self.counts
             .get(&(seed, property.to_string()))
             .copied()
@@ -117,7 +117,7 @@ impl ConfidenceTracker {
     /// Confidence level for a specific (material, property) pair.
     /// Used by the examine panel in the next PR.
     #[allow(dead_code)]
-    pub(crate) fn level(&self, seed: u64, property: &str) -> ConfidenceLevel {
+    pub fn level(&self, seed: u64, property: &str) -> ConfidenceLevel {
         ConfidenceLevel::from_count(self.count(seed, property))
     }
 }
