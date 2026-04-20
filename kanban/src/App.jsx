@@ -4,6 +4,7 @@ import Sidebar from "./components/Sidebar";
 import Board from "./components/Board";
 import IssueDetail from "./components/IssueDetail";
 import LoginScreen from "./components/LoginScreen";
+import BacklogView from "./components/BacklogView";
 import { checkSession, parseErrorFromHash } from "./api/auth";
 import { useIssueStore } from "./store/issues";
 import { useAuthStore } from "./store/auth";
@@ -40,6 +41,8 @@ export default function App({ config }) {
   const [repo, setRepo] = useState(() => {
     return localStorage.getItem("gh_kanban_repo") || "";
   });
+
+  const [view, setView] = useState("board");
 
   useEffect(() => {
     async function bootstrap() {
@@ -85,10 +88,16 @@ export default function App({ config }) {
 
   return (
     <div style={styles.app}>
-      <Header repo={repo} onRepoChange={handleRepoChange} />
+      <Header repo={repo} onRepoChange={handleRepoChange} view={view} onViewChange={setView} />
       <div style={styles.body}>
-        <Sidebar />
-        <Board repo={repo} />
+        {view === "board" ? (
+          <>
+            <Sidebar />
+            <Board repo={repo} />
+          </>
+        ) : (
+          <BacklogView />
+        )}
       </div>
       {selectedIssue && <IssueDetail repo={repo} />}
     </div>
