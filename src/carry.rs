@@ -39,6 +39,7 @@ impl Plugin for CarryPlugin {
             .add_message::<CycleCarryIntent>()
             .add_message::<DropCarryIntent>()
             .add_message::<CarryWeightChanged>()
+            .add_message::<CarryActionRejected>()
             .init_resource::<CarryConfig>()
             .init_resource::<ActiveCarryProfile>()
             .add_systems(PreStartup, load_carry_config)
@@ -73,6 +74,30 @@ pub(crate) struct CycleCarryIntent;
 /// Story 4.2 will emit this when the player wants to drop an item out of carry.
 #[derive(Message)]
 pub(crate) struct DropCarryIntent;
+
+/// Emitted when a carry action fails so downstream systems can provide diegetic
+/// feedback (visual strain, item bounce-back, audio cue, etc.).
+///
+/// The game never tells the player — it *shows* them. A silent no-op on a failed
+/// stash leaves the player confused. This event is the hook that lets future
+/// visual/audio systems translate "you can't do that" into something observable.
+#[derive(Message, Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct CarryActionRejected {
+    pub reason: CarryRejectionReason,
+}
+
+/// Why a carry action was rejected.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CarryRejectionReason {
+    /// Stash attempted but nothing is held in hand.
+    NothingHeld,
+    /// Stash attempted but adding the item would exceed effective capacity.
+    OverCapacity,
+    /// Cycle or drop attempted but carry container is empty.
+    CarryEmpty,
+    /// The next entity in carry order has been despawned (evicted from carry).
+    StaleEntity,
+}
 
 /// Later stories will emit this whenever carry weight changes so movement/stamina
 /// systems can respond without polling and guessing.
@@ -187,6 +212,37 @@ impl CarryState {
             CarryCycleOrder::Fifo => self.carried_items.first().map(|item| item.entity),
             CarryCycleOrder::Lifo => self.carried_items.last().map(|item| item.entity),
         }
+    }
+
+    /// Returns true when the carry container can accept an item of the given weight.
+    ///
+    /// When `hard_limit_enabled` is true, the item is rejected if it would push
+    /// `current_weight` above `effective_capacity`. When hard limits are off, the
+    /// container always accepts (soft-limit feedback is handled elsewhere).
+    pub(crate) fn can_accept(&self, weight: f32) -> bool {
+        if !self.hard_limit_enabled {
+            return true;
+        }
+        self.current_weight + weight <= self.effective_capacity
+    }
+
+    /// Remove a carried item by entity without needing the material reference.
+    ///
+    /// Used to evict stale/despawned entities from carry state. We cannot look up
+    /// the material's density for a despawned entity, so weight is left unchanged.
+    /// This prevents the carry from soft-locking on a dead entity while accepting
+    /// that weight accounting may drift slightly. A future integrity-check system
+    /// can reconcile weight by scanning remaining items.
+    pub(crate) fn evict_stale_entity(&mut self, entity: Entity) -> bool {
+        let Some(index) = self
+            .carried_items
+            .iter()
+            .position(|item| item.entity == entity)
+        else {
+            return false;
+        };
+        self.carried_items.remove(index);
+        true
     }
 }
 
@@ -634,16 +690,27 @@ fn process_stash_intent(
     mut commands: Commands,
     mut reader: MessageReader<StashIntent>,
     mut weight_writer: MessageWriter<CarryWeightChanged>,
+    mut reject_writer: MessageWriter<CarryActionRejected>,
     mut player_query: Query<&mut CarryState, With<Player>>,
     held_query: Query<(Entity, &GameMaterial), With<HeldItem>>,
 ) {
     for _intent in reader.read() {
         let Some((held_entity, held_material)) = held_query.iter().next() else {
+            reject_writer.write(CarryActionRejected {
+                reason: CarryRejectionReason::NothingHeld,
+            });
             continue;
         };
         let Ok(mut carry_state) = player_query.single_mut() else {
             continue;
         };
+
+        if !carry_state.can_accept(held_material.density.value) {
+            reject_writer.write(CarryActionRejected {
+                reason: CarryRejectionReason::OverCapacity,
+            });
+            continue;
+        }
 
         stash_entity_into_carry(&mut commands, &mut carry_state, held_entity, held_material);
         emit_carry_weight_changed(&mut weight_writer, &carry_state);
@@ -658,6 +725,7 @@ fn process_cycle_carry_intent(
     mut commands: Commands,
     mut reader: MessageReader<CycleCarryIntent>,
     mut weight_writer: MessageWriter<CarryWeightChanged>,
+    mut reject_writer: MessageWriter<CarryActionRejected>,
     config: Res<CarryConfig>,
     mut player_query: Query<&mut CarryState, With<Player>>,
     camera_query: Query<Entity, With<PlayerCamera>>,
@@ -670,10 +738,18 @@ fn process_cycle_carry_intent(
         };
 
         let Some(next_entity) = carry_state.next_carried_entity(config.cycle_order) else {
+            reject_writer.write(CarryActionRejected {
+                reason: CarryRejectionReason::CarryEmpty,
+            });
             continue;
         };
 
         let Ok(next_material) = carried_material_query.get(next_entity) else {
+            // Entity was despawned — evict it so carry doesn't soft-lock.
+            carry_state.evict_stale_entity(next_entity);
+            reject_writer.write(CarryActionRejected {
+                reason: CarryRejectionReason::StaleEntity,
+            });
             continue;
         };
         let Ok(camera_entity) = camera_query.single() else {
@@ -700,10 +776,12 @@ fn process_cycle_carry_intent(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn process_drop_carry_intent(
     mut commands: Commands,
     mut reader: MessageReader<DropCarryIntent>,
     mut weight_writer: MessageWriter<CarryWeightChanged>,
+    mut reject_writer: MessageWriter<CarryActionRejected>,
     config: Res<CarryConfig>,
     scene: Res<SceneConfig>,
     mut player_query: Query<(&GlobalTransform, &mut CarryState), With<Player>>,
@@ -715,9 +793,17 @@ fn process_drop_carry_intent(
         };
 
         let Some(next_entity) = carry_state.next_carried_entity(config.cycle_order) else {
+            reject_writer.write(CarryActionRejected {
+                reason: CarryRejectionReason::CarryEmpty,
+            });
             continue;
         };
         let Ok(next_material) = carried_material_query.get(next_entity) else {
+            // Entity was despawned — evict it so carry doesn't soft-lock.
+            carry_state.evict_stale_entity(next_entity);
+            reject_writer.write(CarryActionRejected {
+                reason: CarryRejectionReason::StaleEntity,
+            });
             continue;
         };
 
@@ -888,5 +974,43 @@ exponent = 1.0
             state.next_carried_entity(CarryCycleOrder::Lifo),
             Some(second)
         );
+    }
+
+    #[test]
+    fn can_accept_allows_within_capacity() {
+        let state = CarryState::new(5.0, true);
+        assert!(state.can_accept(4.9));
+        assert!(state.can_accept(5.0));
+    }
+
+    #[test]
+    fn can_accept_rejects_over_capacity_when_hard_limit_enabled() {
+        let mut state = CarryState::new(5.0, true);
+        state.current_weight = 4.5;
+        assert!(!state.can_accept(0.6));
+    }
+
+    #[test]
+    fn can_accept_allows_over_capacity_when_hard_limit_disabled() {
+        let mut state = CarryState::new(5.0, false);
+        state.current_weight = 4.5;
+        assert!(state.can_accept(10.0));
+    }
+
+    #[test]
+    fn evict_stale_entity_removes_from_carried_items() {
+        let first = Entity::from_bits(1);
+        let second = Entity::from_bits(2);
+        let mut state = CarryState::new(5.0, true);
+        state.carried_items = vec![CarriedItem::new(first), CarriedItem::new(second)];
+
+        assert!(state.evict_stale_entity(first));
+        assert_eq!(state.carried_items, vec![CarriedItem::new(second)]);
+    }
+
+    #[test]
+    fn evict_stale_entity_returns_false_for_unknown() {
+        let mut state = CarryState::new(5.0, true);
+        assert!(!state.evict_stale_entity(Entity::from_bits(999)));
     }
 }
