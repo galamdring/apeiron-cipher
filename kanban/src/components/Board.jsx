@@ -25,7 +25,7 @@ const s = {
 };
 
 export default function Board({ repo, token }) {
-  const { filteredIssues, moveIssue, updateIssueInStore } = useIssueStore();
+  const { filteredIssues, moveIssue, updateIssueInStore, hiddenColumns } = useIssueStore();
   const [activeIssue, setActiveIssue] = useState(null);
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } })
@@ -33,8 +33,10 @@ export default function Board({ repo, token }) {
 
   const issues = filteredIssues();
 
+  const visibleColumns = COLUMNS.filter((col) => !hiddenColumns.has(col));
+
   const columnIssues = {};
-  COLUMNS.forEach((col) => {
+  visibleColumns.forEach((col) => {
     columnIssues[col] = issues.filter((i) => {
       return useIssueStore.getState().getColumn(i) === col;
     });
@@ -104,7 +106,7 @@ export default function Board({ repo, token }) {
       onDragEnd={handleDragEnd}
     >
       <div style={s.board}>
-        {COLUMNS.map((col) => (
+        {visibleColumns.map((col) => (
           <Column key={col} title={col} issues={columnIssues[col] || []} />
         ))}
       </div>

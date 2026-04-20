@@ -1,6 +1,7 @@
 import { create } from "zustand";
 
 const COLLAPSED_KEY = "gh_kanban_collapsed";
+const HIDDEN_COLUMNS_KEY = "gh_kanban_hidden_columns";
 
 // These are populated by initColumns() before React mounts.
 // Treat as read-only after initialisation.
@@ -13,8 +14,9 @@ export let TYPE_COLORS = {};
 
 let _defaultColumn = "Backlog";
 let _closeIssueColumn = "Complete";
+export let defaultHiddenColumns = new Set();
 
-export function initColumns(columns, types) {
+export function initColumns(columns, types, hiddenColumns = []) {
   COLUMNS = columns.map((c) => c.name);
 
   COLUMN_LABELS = {};
@@ -34,6 +36,8 @@ export function initColumns(columns, types) {
   for (const t of types) {
     TYPE_COLORS[t.name] = t.color || "#8b949e";
   }
+
+  defaultHiddenColumns = new Set(hiddenColumns);
 }
 
 export function getCloseIssueColumn() {
@@ -75,6 +79,19 @@ function saveCollapsed(set) {
   localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...set]));
 }
 
+function loadHiddenColumns() {
+  try {
+    const raw = localStorage.getItem(HIDDEN_COLUMNS_KEY);
+    return raw ? new Set(JSON.parse(raw)) : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveHiddenColumns(set) {
+  localStorage.setItem(HIDDEN_COLUMNS_KEY, JSON.stringify([...set]));
+}
+
 export const useIssueStore = create((set, get) => ({
   issues: [],
   loading: false,
@@ -83,9 +100,15 @@ export const useIssueStore = create((set, get) => ({
   activeTypes: new Set(TYPES),
   columnOrder: {},
   collapsedColumns: loadCollapsed(),
+  hiddenColumns: loadHiddenColumns() ?? new Set(defaultHiddenColumns),
 
   setIssues(issues) {
-    set({ issues, activeTypes: new Set(TYPES) });
+    const persisted = loadHiddenColumns();
+    set({
+      issues,
+      activeTypes: new Set(TYPES),
+      hiddenColumns: persisted ?? new Set(defaultHiddenColumns),
+    });
   },
 
   setLoading(loading) {
@@ -120,6 +143,16 @@ export const useIssueStore = create((set, get) => ({
       else next.add(name);
       saveCollapsed(next);
       return { collapsedColumns: next };
+    });
+  },
+
+  toggleHiddenColumn(name) {
+    set((state) => {
+      const next = new Set(state.hiddenColumns);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      saveHiddenColumns(next);
+      return { hiddenColumns: next };
     });
   },
 
