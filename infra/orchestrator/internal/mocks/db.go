@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"time"
 
 	"github.com/galamdring/apeiron-cipher/infra/orchestrator/internal/db"
 )
@@ -33,6 +34,12 @@ type MockDBClient struct {
 	GetJobStepsFunc           func(ctx context.Context, jobID int64) ([]db.JobStepRow, error)
 	UpsertTemplateFunc        func(ctx context.Context, name, body string) error
 	GetTemplateFunc           func(ctx context.Context, name string) (string, error)
+	// --- Kanban Auth ---
+	UpsertKanbanSessionFunc        func(ctx context.Context, session db.KanbanSession) error
+	GetKanbanSessionFunc           func(ctx context.Context, sessionID string) (*db.KanbanSession, error)
+	DeleteKanbanSessionFunc        func(ctx context.Context, sessionID string) error
+	UpdateKanbanSessionTokensFunc  func(ctx context.Context, sessionID, accessToken, refreshToken string, expiresAt *time.Time) error
+	// --- End Kanban Auth ---
 }
 
 func (m *MockDBClient) Close() error {
@@ -173,3 +180,32 @@ func (m *MockDBClient) GetTemplate(ctx context.Context, name string) (string, er
 	}
 	return "", errors.New("GetTemplateFunc not implemented")
 }
+
+// --- Kanban Auth ---
+
+func (m *MockDBClient) UpsertKanbanSession(ctx context.Context, session db.KanbanSession) error {
+	if m.UpsertKanbanSessionFunc != nil {
+		return m.UpsertKanbanSessionFunc(ctx, session)
+	}
+	return errors.New("UpsertKanbanSessionFunc not implemented")
+}
+func (m *MockDBClient) GetKanbanSession(ctx context.Context, sessionID string) (*db.KanbanSession, error) {
+	if m.GetKanbanSessionFunc != nil {
+		return m.GetKanbanSessionFunc(ctx, sessionID)
+	}
+	return nil, errors.New("GetKanbanSessionFunc not implemented")
+}
+func (m *MockDBClient) DeleteKanbanSession(ctx context.Context, sessionID string) error {
+	if m.DeleteKanbanSessionFunc != nil {
+		return m.DeleteKanbanSessionFunc(ctx, sessionID)
+	}
+	return errors.New("DeleteKanbanSessionFunc not implemented")
+}
+func (m *MockDBClient) UpdateKanbanSessionTokens(ctx context.Context, sessionID, accessToken, refreshToken string, expiresAt *time.Time) error {
+	if m.UpdateKanbanSessionTokensFunc != nil {
+		return m.UpdateKanbanSessionTokensFunc(ctx, sessionID, accessToken, refreshToken, expiresAt)
+	}
+	return errors.New("UpdateKanbanSessionTokensFunc not implemented")
+}
+
+// --- End Kanban Auth ---

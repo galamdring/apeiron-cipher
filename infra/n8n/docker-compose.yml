@@ -52,6 +52,25 @@ services:
     # volumes:
     #   - ./kanban-config.json:/usr/share/nginx/html/config.json:ro
 
+  # --- Kanban Auth ---
+  # The orchestrator hosts the kanban OAuth proxy endpoints alongside its
+  # webhook ingestion duties. The kanban auth vars are optional — if omitted
+  # the auth endpoints are simply not registered.
+  orchestrator:
+    image: ghcr.io/galamdring/apeiron-orchestrator:latest
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      - PORT=8080
+      - WEBHOOK_SECRET=${GITHUB_WEBHOOK_SECRET}
+      - DATABASE_URL=${ORCHESTRATOR_DATABASE_URL}
+      - GITHUB_OAUTH_CLIENT_ID=${GITHUB_OAUTH_CLIENT_ID:-}
+      - GITHUB_OAUTH_CLIENT_SECRET=${GITHUB_OAUTH_CLIENT_SECRET:-}
+      - COOKIE_SIGNING_SECRET=${COOKIE_SIGNING_SECRET:-}
+      - KANBAN_ORIGIN=${KANBAN_ORIGIN:-}
+  # --- End Kanban Auth ---
+
   cloudflared:
     image: cloudflare/cloudflared:latest
     restart: unless-stopped
