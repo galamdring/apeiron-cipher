@@ -70,7 +70,7 @@ The full workflow (pick story → implement → PR → review) is documented in 
 - **Game code (Bevy/Rust):** `feat/{work-description}` or `epic-N/story-N.N-short-description` — no subsystem prefix.
 - **Kanban board frontend:** `feat/kanban/{work-description}` — always prefix with `kanban/`.
 - **Orchestrator (Go backend):** `feat/orchestrator/{work-description}` — always prefix with `orchestrator/`.
-- **PR titles drive semantic-release.** Every PR title **must** use a Conventional Commits prefix (`feat:`, `fix:`, etc.) or it will not trigger a release on merge. The `epic-N/story-N.N` pattern is for branch names only.
+- **PR titles drive semantic-release.** Every PR title **must** use a Conventional Commits prefix (`feat:`, `fix:`, etc.) or it will not trigger a release on merge. The `epic-N/story-N.N` pattern is for branch names only. For single-commit PRs, GitHub uses the commit message as the squash title — ensure it also follows this convention.
   - **Game code:** `feat: N.N - short description` (e.g. `feat: 4.1 - add terrain generation`)
   - **Kanban:** `feat(kanban): short description`
   - **Orchestrator:** `feat(orchestrator): short description`

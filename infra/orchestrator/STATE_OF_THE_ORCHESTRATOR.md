@@ -57,11 +57,12 @@ The `DBClient` interface in `internal/db/db.go` defines all database operations.
 
 ## Testing
 
-Two test files exist:
+Four test files exist:
 
 - `cmd/server/main_test.go` — unit tests for webhook signature verification and handler behavior using the mock DB client
 - `cmd/server/main_integration_test.go` — integration tests that run against a real Postgres instance
-- `internal/db/db_unit_test.go` and `db_integration_test.go` — database layer tests
+- `internal/db/db_unit_test.go` — database layer unit tests
+- `internal/db/db_integration_test.go` — database layer integration tests
 
 ---
 

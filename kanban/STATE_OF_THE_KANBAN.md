@@ -78,7 +78,7 @@ A "New Issue" button in the header opens a form where you can set a title, body,
 - **Testing:** None
 - **Deployment:** Static files served from `dist/` after `npm run build`
 
-All GitHub API calls go directly from the browser to `api.github.com`. There is no backend proxy.
+All GitHub API data calls (issues, labels, comments) go directly from the browser to `api.github.com`. The OAuth token exchange uses an external callback service, but there is no backend proxy for day-to-day API traffic.
 
 ---
 
