@@ -38,10 +38,10 @@
 - Pin every crate to a specific version in `Cargo.toml` (no `*` or ranges). Add a brief comment explaining what the dependency is for. Prefer actively maintained crates with high download counts. No dependencies without explicit need — dependency count is a complexity cost.
 
 **Visibility Rules:**
-- `pub` — ONLY on types in the plugin's API table (Decision 5): its Resources, Events, Components. These are the contract.
-- `pub(super)` — sub-module internals that the plugin's root module needs for `impl Plugin` orchestration (system functions in `systems.rs`, etc.).
-- Private — everything else. Helpers, internal data structures, intermediate types.
-- `pub(crate)` — NEVER. No exceptions. If something needs wider visibility for any reason — including test harnesses — the design is wrong. Stop and redesign. The test harness works through the plugin's public API (Resources, Events, Components) the same way any other consumer does.
+- `pub` — any type, function, or field that another module in the crate needs. This is a binary crate, so `pub` carries no library-export risk. Shared domain vocabulary types (`GameMaterial`, `MaterialObject`, `Player`, `InputAction`, `ConfidenceTracker`, etc.) are `pub` because multiple plugins legitimately depend on them.
+- `pub(super)` — sub-module internals that only the parent module needs for `impl Plugin` orchestration (system functions in child modules, etc.).
+- Private — everything else. Helpers, internal data structures, intermediate types that never leave their module.
+- `pub(crate)` — NEVER. No exceptions. This is a binary crate where `pub(crate)` and `pub` are functionally identical; the extra qualifier adds noise without value. If you see `pub(crate)` in the codebase, convert it to `pub`.
 
 ## Documentation Patterns
 
