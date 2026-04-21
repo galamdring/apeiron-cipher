@@ -1,4 +1,4 @@
-.PHONY: build test lint fmt-check fmt run check clean install-hooks coverage coverage-html
+.PHONY: build test lint fmt-check fmt run check clean install-hooks kb-check o-check coverage coverage-html
 
 build:
 	cargo build
@@ -22,6 +22,14 @@ check: fmt-check lint test build
 
 clean:
 	cargo clean
+
+# --- Kanban checks ---
+kb-check:
+	cd kanban && npm run lint && npm test && npm run build
+
+# --- Orchestrator checks ---
+o-check:
+	cd infra/orchestrator && go vet ./... && go test ./...
 
 install-hooks:
 	cp hooks/pre-commit .git/hooks/pre-commit

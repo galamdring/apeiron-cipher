@@ -75,6 +75,10 @@ The full workflow (pick story → implement → PR → review) is documented in 
   - **Kanban:** `feat(kanban): short description`
   - **Orchestrator:** `feat(orchestrator): short description`
 - `make check` applies to game code only. Kanban and orchestrator have their own check targets (`kb-check`, `o-check`).
+  - **Game code:** `make check` (fmt, clippy, test, build)
+  - **Kanban:** `make kb-check` (eslint, vitest, vite build)
+  - **Orchestrator:** `make o-check` (go vet, go test)
+- The pre-commit hook runs these automatically based on staged files.
 
 ## 5. Coding Golden Rules
 
