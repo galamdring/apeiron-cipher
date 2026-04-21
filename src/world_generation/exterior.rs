@@ -1282,6 +1282,226 @@ fn lerp(a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t
 }
 
+// ── Story 5.6: Delta-Sync Architecture Validation ───────────────────────
+//
+// ## Purpose
+//
+// This section contains pure-logic functions that validate the delta model's
+// correctness for future multiplayer merge scenarios. No ECS wiring — these
+// functions operate entirely on the `ChunkRemovalDeltas` and
+// `ChunkPlayerAdditions` types defined above.
+//
+// These types and functions are currently only exercised by tests. They will
+// be promoted to production use when multiplayer (Epic 22) lands. The
+// `allow(dead_code)` annotations will be removed at that point.
+//
+// ## Why this matters
+//
+// When two players independently modify the same base (Epic 22), the server
+// must merge their deltas. Removals are set-based and naturally commutative.
+// Player additions can conflict spatially — two objects in the same building
+// cell. Rather than silently resolving these, the system flags them so the
+// base owner can decide.
+//
+// ## Building cells
+//
+// A building cell is a 3D grid cell addressed by `(i64, i64, i64)`. Unlike
+// chunks (2D XZ columns), building cells include the Y axis to discriminate
+// vertically stacked structures. The cell key is computed as:
+//   `(floor(x / cell_size), floor(y / cell_size), floor(z / cell_size))`
+//
+// Cell size is configurable. Two objects in the same cell are considered
+// spatially overlapping. Grid-cell collision avoids the edge cases of
+// radius-based overlap with non-circular footprints (e.g. square buildings).
+
+/// A 3D building cell coordinate, unique across the solar system.
+///
+/// Computed by quantizing a world-space position into a grid with a
+/// configurable cell size. Two player-added objects in the same cell are
+/// considered to be in spatial conflict when merging deltas from different
+/// sources.
+///
+/// Unlike [`ChunkCoord`] (which is 2D on the XZ ground plane), building cells
+/// include the Y axis so vertically stacked structures occupy distinct cells.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[allow(dead_code)]
+struct BuildingCell {
+    pub x: i64,
+    pub y: i64,
+    pub z: i64,
+}
+
+impl BuildingCell {
+    /// Quantize a world-space position into a building cell.
+    ///
+    /// Each axis is independently divided by `cell_size` and floored to produce
+    /// a signed integer cell coordinate. This means a `cell_size` of 1.0 gives
+    /// meter-resolution cells; a `cell_size` of 0.5 gives half-meter cells.
+    ///
+    /// ## Panics
+    ///
+    /// Panics if `cell_size` is not positive and finite. A zero or negative
+    /// cell size has no physical meaning and would produce nonsensical or
+    /// infinite coordinates.
+    fn from_position(position: [f32; 3], cell_size: f32) -> Self {
+        assert!(
+            cell_size > 0.0 && cell_size.is_finite(),
+            "building cell size must be positive and finite, got {cell_size}"
+        );
+        Self {
+            x: (position[0] as f64 / cell_size as f64).floor() as i64,
+            y: (position[1] as f64 / cell_size as f64).floor() as i64,
+            z: (position[2] as f64 / cell_size as f64).floor() as i64,
+        }
+    }
+}
+
+/// A single spatial conflict detected during delta merging.
+///
+/// When two player-added objects from different sources occupy the same
+/// [`BuildingCell`], neither is automatically discarded. Instead, a conflict
+/// record is created so the base owner can resolve it manually (Epic 22).
+///
+/// The record identifies the conflicting cell and the IDs + source labels
+/// of both objects involved.
+#[derive(Clone, Debug)]
+#[allow(dead_code)]
+struct DeltaMergeConflict {
+    /// The chunk containing the conflicting cell.
+    pub chunk: ChunkCoord,
+    /// The building cell where both objects overlap.
+    pub cell: BuildingCell,
+    /// The player-added object ID from source A.
+    pub id_a: u64,
+    /// Identifying label for the first delta source (e.g. player name).
+    pub source_a: String,
+    /// The player-added object ID from source B.
+    pub id_b: u64,
+    /// Identifying label for the second delta source.
+    pub source_b: String,
+}
+
+/// The result of merging two sets of player additions.
+///
+/// Non-conflicting additions are combined into `merged`. Any same-cell
+/// overlaps are reported in `conflicts` for the base owner to resolve.
+#[allow(dead_code)]
+struct MergedPlayerAdditions {
+    /// The combined player additions (excluding conflicting entries).
+    pub merged: ChunkPlayerAdditions,
+    /// Spatial conflicts that require human resolution.
+    pub conflicts: Vec<DeltaMergeConflict>,
+}
+
+/// Merge two removal delta sets into one.
+///
+/// Removal deltas are set-based (each entry is a `GeneratedObjectId` that was
+/// removed). Merging is a per-chunk set union. This operation is:
+/// - **Commutative:** `merge(A, B) == merge(B, A)` — union is symmetric.
+/// - **Idempotent:** removing the same object from both sources produces the
+///   same result as removing it from one.
+///
+/// No conflicts are possible with removals — if both sources removed the same
+/// generated object, the merged result simply contains that removal once.
+#[allow(dead_code)]
+fn merge_removal_deltas(a: &ChunkRemovalDeltas, b: &ChunkRemovalDeltas) -> ChunkRemovalDeltas {
+    let mut merged = a.clone();
+    for (chunk, ids) in &b.removed_by_chunk {
+        merged
+            .removed_by_chunk
+            .entry(*chunk)
+            .or_default()
+            .extend(ids.iter().cloned());
+    }
+    merged
+}
+
+/// Merge two sets of player additions, detecting spatial conflicts.
+///
+/// Non-conflicting additions (different building cells) are combined into the
+/// merged result. When two additions from different sources occupy the same
+/// [`BuildingCell`], both are excluded from the merged result and a
+/// [`DeltaMergeConflict`] is recorded instead.
+///
+/// ## Conflict detection strategy
+///
+/// For each chunk, every addition is mapped to its `BuildingCell` via
+/// `floor(position / cell_size)`. If an addition from source B lands in a cell
+/// already occupied by source A, that pair is a conflict. Within a single
+/// source, objects in the same cell are allowed (the player placed them
+/// intentionally and is aware of the overlap).
+///
+/// ## Parameters
+///
+/// - `a`, `b`: the two addition sets to merge
+/// - `source_a_label`, `source_b_label`: human-readable labels identifying
+///   each source (e.g. player names) for the conflict records
+/// - `cell_size`: the building cell size used for spatial quantization
+#[allow(dead_code)]
+fn merge_player_additions(
+    a: &ChunkPlayerAdditions,
+    b: &ChunkPlayerAdditions,
+    source_a_label: &str,
+    source_b_label: &str,
+    cell_size: f32,
+) -> MergedPlayerAdditions {
+    let mut merged = ChunkPlayerAdditions::default();
+    let mut conflicts = Vec::new();
+
+    // Collect all chunk coords from both sources.
+    let all_chunks: HashSet<ChunkCoord> = a
+        .added_by_chunk
+        .keys()
+        .chain(b.added_by_chunk.keys())
+        .copied()
+        .collect();
+
+    for chunk in all_chunks {
+        let records_a = a.added_by_chunk.get(&chunk);
+        let records_b = b.added_by_chunk.get(&chunk);
+
+        // Build a cell → record-ID index for source A's objects in this chunk.
+        let mut cells_a: HashMap<BuildingCell, u64> = HashMap::new();
+        let mut merged_records: Vec<PlayerAddedObjectRecord> = Vec::new();
+
+        if let Some(recs) = records_a {
+            for rec in recs {
+                let cell = BuildingCell::from_position(rec.position, cell_size);
+                cells_a.insert(cell, rec.id);
+                merged_records.push(rec.clone());
+            }
+        }
+
+        if let Some(recs) = records_b {
+            for rec in recs {
+                let cell = BuildingCell::from_position(rec.position, cell_size);
+                if let Some(&existing_id) = cells_a.get(&cell) {
+                    // Spatial conflict: source B's object lands in a cell
+                    // already occupied by source A. Exclude both from the
+                    // merged result and record the conflict.
+                    merged_records.retain(|r| r.id != existing_id);
+                    conflicts.push(DeltaMergeConflict {
+                        chunk,
+                        cell,
+                        id_a: existing_id,
+                        source_a: source_a_label.to_string(),
+                        id_b: rec.id,
+                        source_b: source_b_label.to_string(),
+                    });
+                } else {
+                    merged_records.push(rec.clone());
+                }
+            }
+        }
+
+        if !merged_records.is_empty() {
+            merged.added_by_chunk.insert(chunk, merged_records);
+        }
+    }
+
+    MergedPlayerAdditions { merged, conflicts }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1294,6 +1514,7 @@ mod tests {
             planet_seed: 2026,
             chunk_size_world_units: 45.0,
             active_chunk_radius: 1,
+            building_cell_size: 1.0,
         })
     }
 
@@ -2358,5 +2579,483 @@ cluster_compactness = 0.75
             !additions.added_by_chunk.contains_key(&missing_chunk),
             "release must not create empty entries for missing chunks"
         );
+    }
+
+    // ── Story 5.6: Delta-sync architecture validation ─────────────────────
+
+    /// Build a `PlayerAddedObjectRecord` at a specific position so merge
+    /// tests can control which building cell each record lands in.
+    fn sample_record_at(id: u64, name: &str, position: [f32; 3]) -> PlayerAddedObjectRecord {
+        PlayerAddedObjectRecord {
+            id,
+            material: sample_game_material(name),
+            position,
+            visual_scale: 1.0,
+        }
+    }
+
+    // ── BuildingCell quantization ─────────────────────────────────────────
+
+    #[test]
+    fn building_cell_quantizes_positive_positions() {
+        // A position at (1.5, 2.9, 0.1) with cell_size 1.0 should map to
+        // cell (1, 2, 0) — floor of each axis.
+        let cell = BuildingCell::from_position([1.5, 2.9, 0.1], 1.0);
+        assert_eq!(cell, BuildingCell { x: 1, y: 2, z: 0 });
+    }
+
+    #[test]
+    fn building_cell_quantizes_negative_positions() {
+        // Negative coordinates must floor correctly: -0.1 / 1.0 = -0.1,
+        // floor(-0.1) = -1. This matters for positions near the origin.
+        let cell = BuildingCell::from_position([-0.1, -2.5, -10.9], 1.0);
+        assert_eq!(
+            cell,
+            BuildingCell {
+                x: -1,
+                y: -3,
+                z: -11
+            }
+        );
+    }
+
+    #[test]
+    fn building_cell_respects_cell_size() {
+        // With cell_size 2.0, positions 0.0–1.99 should all map to cell 0,
+        // and 2.0–3.99 should map to cell 1.
+        let cell_a = BuildingCell::from_position([1.9, 0.0, 0.0], 2.0);
+        let cell_b = BuildingCell::from_position([2.0, 0.0, 0.0], 2.0);
+        assert_eq!(cell_a.x, 0, "1.9 / 2.0 should floor to 0");
+        assert_eq!(cell_b.x, 1, "2.0 / 2.0 should floor to 1");
+    }
+
+    #[test]
+    fn building_cell_includes_y_axis() {
+        // Two positions at the same XZ but different Y must produce different
+        // cells — this is the vertical discrimination that chunks lack.
+        let ground = BuildingCell::from_position([5.0, 0.0, 5.0], 1.0);
+        let stacked = BuildingCell::from_position([5.0, 3.0, 5.0], 1.0);
+        assert_ne!(
+            ground, stacked,
+            "vertically stacked positions must be distinct cells"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "positive and finite")]
+    fn building_cell_rejects_zero_cell_size() {
+        BuildingCell::from_position([0.0, 0.0, 0.0], 0.0);
+    }
+
+    #[test]
+    #[should_panic(expected = "positive and finite")]
+    fn building_cell_rejects_negative_cell_size() {
+        BuildingCell::from_position([0.0, 0.0, 0.0], -1.0);
+    }
+
+    // ── Removal delta merging ─────────────────────────────────────────────
+
+    /// Build a distinct `GeneratedObjectId` for merge tests. Each unique
+    /// `index` produces a different ID, all in chunk (0,0).
+    fn sample_generated_id(index: u32) -> GeneratedObjectId {
+        let profile = sample_profile();
+        super::super::derive_generated_object_id(
+            &profile,
+            ChunkCoord::new(0, 0),
+            "test_mineral",
+            index,
+            1,
+        )
+    }
+
+    #[test]
+    fn removal_merge_is_commutative() {
+        // merge(A, B) must equal merge(B, A) for any two removal sets.
+        let chunk = ChunkCoord::new(0, 0);
+        let id_1 = sample_generated_id(1);
+        let id_2 = sample_generated_id(2);
+        let id_3 = sample_generated_id(3);
+
+        let mut a = ChunkRemovalDeltas::default();
+        a.removed_by_chunk
+            .entry(chunk)
+            .or_default()
+            .extend([id_1, id_2.clone()]);
+
+        let mut b = ChunkRemovalDeltas::default();
+        b.removed_by_chunk
+            .entry(chunk)
+            .or_default()
+            .extend([id_2, id_3]);
+
+        let ab = merge_removal_deltas(&a, &b);
+        let ba = merge_removal_deltas(&b, &a);
+
+        assert_eq!(
+            ab.removed_by_chunk.get(&chunk),
+            ba.removed_by_chunk.get(&chunk),
+            "removal merge must be commutative"
+        );
+    }
+
+    #[test]
+    fn removal_merge_is_idempotent() {
+        // Removing the same object from both sources must produce the same
+        // result as removing it from one.
+        let chunk = ChunkCoord::new(1, 1);
+        let id = sample_generated_id(42);
+
+        let mut a = ChunkRemovalDeltas::default();
+        a.removed_by_chunk
+            .entry(chunk)
+            .or_default()
+            .insert(id.clone());
+
+        let mut b = ChunkRemovalDeltas::default();
+        b.removed_by_chunk
+            .entry(chunk)
+            .or_default()
+            .insert(id.clone());
+
+        let merged = merge_removal_deltas(&a, &b);
+        let removals = merged
+            .removed_by_chunk
+            .get(&chunk)
+            .expect("chunk must exist");
+        assert!(removals.contains(&id), "the shared removal must be present");
+        assert_eq!(removals.len(), 1, "duplicate removal must not double-count");
+    }
+
+    #[test]
+    fn removal_merge_combines_different_chunks() {
+        // Removals from different chunks must both appear in the merged result.
+        let chunk_a = ChunkCoord::new(0, 0);
+        let chunk_b = ChunkCoord::new(1, 0);
+        let id_a = sample_generated_id(10);
+        let id_b = sample_generated_id(20);
+
+        let mut a = ChunkRemovalDeltas::default();
+        a.removed_by_chunk
+            .entry(chunk_a)
+            .or_default()
+            .insert(id_a.clone());
+
+        let mut b = ChunkRemovalDeltas::default();
+        b.removed_by_chunk
+            .entry(chunk_b)
+            .or_default()
+            .insert(id_b.clone());
+
+        let merged = merge_removal_deltas(&a, &b);
+        assert!(
+            merged
+                .removed_by_chunk
+                .get(&chunk_a)
+                .expect("chunk_a must exist")
+                .contains(&id_a)
+        );
+        assert!(
+            merged
+                .removed_by_chunk
+                .get(&chunk_b)
+                .expect("chunk_b must exist")
+                .contains(&id_b)
+        );
+    }
+
+    #[test]
+    fn removal_merge_with_empty_is_identity() {
+        // Merging with an empty set must return the original unchanged.
+        let chunk = ChunkCoord::new(0, 0);
+        let id = sample_generated_id(99);
+
+        let mut a = ChunkRemovalDeltas::default();
+        a.removed_by_chunk.entry(chunk).or_default().insert(id);
+
+        let empty = ChunkRemovalDeltas::default();
+
+        let merged = merge_removal_deltas(&a, &empty);
+        assert_eq!(
+            merged.removed_by_chunk.get(&chunk).map(|s| s.len()),
+            Some(1)
+        );
+    }
+
+    // ── Player addition merging ───────────────────────────────────────────
+
+    #[test]
+    fn addition_merge_combines_non_conflicting_objects() {
+        // Two sources placing objects in different cells — no conflict, both
+        // appear in the merged result.
+        let chunk = ChunkCoord::new(0, 0);
+        let cell_size = 1.0;
+
+        let a = sample_additions_with(chunk, vec![sample_record_at(1, "iron", [0.5, 0.0, 0.5])]);
+        let b = sample_additions_with(chunk, vec![sample_record_at(2, "copper", [5.5, 0.0, 5.5])]);
+
+        let result = merge_player_additions(&a, &b, "alice", "bob", cell_size);
+
+        assert!(result.conflicts.is_empty(), "no conflicts expected");
+        let merged_recs = result
+            .merged
+            .added_by_chunk
+            .get(&chunk)
+            .expect("chunk must exist");
+        assert_eq!(
+            merged_recs.len(),
+            2,
+            "both objects must be in the merged result"
+        );
+    }
+
+    #[test]
+    fn addition_merge_detects_same_cell_conflict() {
+        // Two sources place objects in the same building cell — conflict.
+        let chunk = ChunkCoord::new(0, 0);
+        let cell_size = 1.0;
+
+        // Both at (0.1, 0.0, 0.1) and (0.9, 0.0, 0.9) — same cell (0, 0, 0).
+        let a = sample_additions_with(chunk, vec![sample_record_at(1, "iron", [0.1, 0.0, 0.1])]);
+        let b = sample_additions_with(chunk, vec![sample_record_at(2, "copper", [0.9, 0.0, 0.9])]);
+
+        let result = merge_player_additions(&a, &b, "alice", "bob", cell_size);
+
+        assert_eq!(result.conflicts.len(), 1, "one conflict expected");
+        let conflict = &result.conflicts[0];
+        assert_eq!(conflict.chunk, chunk);
+        assert_eq!(conflict.id_a, 1);
+        assert_eq!(conflict.id_b, 2);
+        assert_eq!(conflict.source_a, "alice");
+        assert_eq!(conflict.source_b, "bob");
+
+        // Conflicting objects must be excluded from the merged result.
+        let merged_recs = result.merged.added_by_chunk.get(&chunk);
+        let count = merged_recs.map(|r| r.len()).unwrap_or(0);
+        assert_eq!(
+            count, 0,
+            "conflicting objects must not appear in merged result"
+        );
+    }
+
+    #[test]
+    fn addition_merge_is_commutative_for_non_conflicting() {
+        // merge(A, B) and merge(B, A) must produce the same set of objects
+        // (though order may differ).
+        let chunk = ChunkCoord::new(0, 0);
+        let cell_size = 1.0;
+
+        let a = sample_additions_with(chunk, vec![sample_record_at(1, "iron", [0.5, 0.0, 0.5])]);
+        let b = sample_additions_with(chunk, vec![sample_record_at(2, "copper", [5.5, 0.0, 5.5])]);
+
+        let ab = merge_player_additions(&a, &b, "alice", "bob", cell_size);
+        let ba = merge_player_additions(&b, &a, "bob", "alice", cell_size);
+
+        let mut ids_ab: Vec<u64> = ab
+            .merged
+            .added_by_chunk
+            .get(&chunk)
+            .unwrap()
+            .iter()
+            .map(|r| r.id)
+            .collect();
+        ids_ab.sort();
+
+        let mut ids_ba: Vec<u64> = ba
+            .merged
+            .added_by_chunk
+            .get(&chunk)
+            .unwrap()
+            .iter()
+            .map(|r| r.id)
+            .collect();
+        ids_ba.sort();
+
+        assert_eq!(
+            ids_ab, ids_ba,
+            "addition merge must be commutative for non-conflicting"
+        );
+        assert!(ab.conflicts.is_empty());
+        assert!(ba.conflicts.is_empty());
+    }
+
+    #[test]
+    fn addition_merge_is_commutative_for_conflicts() {
+        // When there IS a conflict, both orderings must detect the same
+        // conflict (same cell, same pair of IDs).
+        let chunk = ChunkCoord::new(0, 0);
+        let cell_size = 1.0;
+
+        let a = sample_additions_with(chunk, vec![sample_record_at(1, "iron", [0.5, 0.0, 0.5])]);
+        let b = sample_additions_with(chunk, vec![sample_record_at(2, "copper", [0.1, 0.0, 0.1])]);
+
+        let ab = merge_player_additions(&a, &b, "alice", "bob", cell_size);
+        let ba = merge_player_additions(&b, &a, "bob", "alice", cell_size);
+
+        assert_eq!(ab.conflicts.len(), 1);
+        assert_eq!(ba.conflicts.len(), 1);
+        // Both must flag the same cell.
+        assert_eq!(ab.conflicts[0].cell, ba.conflicts[0].cell);
+    }
+
+    #[test]
+    fn addition_merge_allows_same_cell_within_single_source() {
+        // A single player can intentionally place two objects in the same cell.
+        // Conflict detection only applies across sources, not within one.
+        let chunk = ChunkCoord::new(0, 0);
+        let cell_size = 1.0;
+
+        let a = sample_additions_with(
+            chunk,
+            vec![
+                sample_record_at(1, "iron", [0.1, 0.0, 0.1]),
+                sample_record_at(2, "copper", [0.9, 0.0, 0.9]),
+            ],
+        );
+        let b = ChunkPlayerAdditions::default();
+
+        let result = merge_player_additions(&a, &b, "alice", "bob", cell_size);
+
+        assert!(
+            result.conflicts.is_empty(),
+            "same-source overlap must not conflict"
+        );
+        let merged_recs = result
+            .merged
+            .added_by_chunk
+            .get(&chunk)
+            .expect("chunk must exist");
+        assert_eq!(
+            merged_recs.len(),
+            2,
+            "both same-source objects must survive"
+        );
+    }
+
+    #[test]
+    fn addition_merge_with_empty_is_identity() {
+        // Merging with an empty set must return the original unchanged.
+        let chunk = ChunkCoord::new(0, 0);
+        let cell_size = 1.0;
+
+        let a = sample_additions_with(chunk, vec![sample_record_at(1, "iron", [0.5, 0.0, 0.5])]);
+        let empty = ChunkPlayerAdditions::default();
+
+        let result = merge_player_additions(&a, &empty, "alice", "bob", cell_size);
+
+        assert!(result.conflicts.is_empty());
+        assert_eq!(
+            result.merged.added_by_chunk.get(&chunk).map(|r| r.len()),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn addition_merge_across_different_chunks_is_independent() {
+        // Objects in different chunks cannot conflict, even if they happen to
+        // be at the same position within their respective chunks.
+        let chunk_a = ChunkCoord::new(0, 0);
+        let chunk_b = ChunkCoord::new(1, 0);
+        let cell_size = 1.0;
+
+        let a = sample_additions_with(chunk_a, vec![sample_record_at(1, "iron", [0.5, 0.0, 0.5])]);
+        let b = sample_additions_with(
+            chunk_b,
+            vec![sample_record_at(2, "copper", [0.5, 0.0, 0.5])],
+        );
+
+        let result = merge_player_additions(&a, &b, "alice", "bob", cell_size);
+
+        assert!(
+            result.conflicts.is_empty(),
+            "different chunks cannot conflict"
+        );
+        assert!(result.merged.added_by_chunk.contains_key(&chunk_a));
+        assert!(result.merged.added_by_chunk.contains_key(&chunk_b));
+    }
+
+    #[test]
+    fn addition_merge_vertical_stacking_does_not_conflict() {
+        // Two objects at the same XZ but different Y are in different cells
+        // and must not conflict.
+        let chunk = ChunkCoord::new(0, 0);
+        let cell_size = 1.0;
+
+        let a = sample_additions_with(chunk, vec![sample_record_at(1, "iron", [5.0, 0.0, 5.0])]);
+        let b = sample_additions_with(chunk, vec![sample_record_at(2, "copper", [5.0, 3.0, 5.0])]);
+
+        let result = merge_player_additions(&a, &b, "alice", "bob", cell_size);
+
+        assert!(
+            result.conflicts.is_empty(),
+            "vertical stacking must not conflict"
+        );
+        assert_eq!(
+            result.merged.added_by_chunk.get(&chunk).map(|r| r.len()),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn two_independent_delta_sources_merged_end_to_end() {
+        // Full integration test: two players independently modify a chunk.
+        // Player A removes a generated object and places a new one.
+        // Player B removes a different generated object and places a new one
+        // in a different cell.
+        //
+        // The merged state must contain:
+        // - Both removals (union)
+        // - Both additions (no conflict)
+        let chunk = ChunkCoord::new(0, 0);
+        let cell_size = 1.0;
+        let gen_id_a = sample_generated_id(100);
+        let gen_id_b = sample_generated_id(200);
+
+        // Player A's deltas.
+        let mut removals_a = ChunkRemovalDeltas::default();
+        removals_a
+            .removed_by_chunk
+            .entry(chunk)
+            .or_default()
+            .insert(gen_id_a.clone());
+        let additions_a =
+            sample_additions_with(chunk, vec![sample_record_at(1, "alloy", [10.0, 0.0, 10.0])]);
+
+        // Player B's deltas.
+        let mut removals_b = ChunkRemovalDeltas::default();
+        removals_b
+            .removed_by_chunk
+            .entry(chunk)
+            .or_default()
+            .insert(gen_id_b.clone());
+        let additions_b =
+            sample_additions_with(chunk, vec![sample_record_at(2, "glass", [20.0, 0.0, 20.0])]);
+
+        // Merge.
+        let merged_removals = merge_removal_deltas(&removals_a, &removals_b);
+        let merged_additions =
+            merge_player_additions(&additions_a, &additions_b, "alice", "bob", cell_size);
+
+        // Verify removals: both IDs present.
+        let removal_set = merged_removals
+            .removed_by_chunk
+            .get(&chunk)
+            .expect("chunk must exist");
+        assert!(
+            removal_set.contains(&gen_id_a),
+            "player A's removal must be present"
+        );
+        assert!(
+            removal_set.contains(&gen_id_b),
+            "player B's removal must be present"
+        );
+
+        // Verify additions: both objects present, no conflicts.
+        assert!(merged_additions.conflicts.is_empty());
+        let addition_recs = merged_additions
+            .merged
+            .added_by_chunk
+            .get(&chunk)
+            .expect("chunk must exist");
+        assert_eq!(addition_recs.len(), 2);
     }
 }

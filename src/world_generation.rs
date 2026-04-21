@@ -425,6 +425,8 @@ impl ChunkCoord {
 /// - `chunk_size_world_units`: how wide/deep one chunk is in Bevy world units
 /// - `active_chunk_radius`: how many chunks around the player's chunk are
 ///   considered logically active
+/// - `building_cell_size`: side length of 3D building cells for spatial overlap
+///   detection during delta merging (Story 5.6)
 #[derive(Clone, Debug, Resource, PartialEq, Serialize, Deserialize)]
 pub struct WorldGenerationConfig {
     #[serde(default = "default_planet_seed")]
@@ -433,6 +435,14 @@ pub struct WorldGenerationConfig {
     pub chunk_size_world_units: f32,
     #[serde(default = "default_active_chunk_radius")]
     pub active_chunk_radius: i32,
+    /// Side length (in world units) of the 3D building cells used for spatial
+    /// overlap detection when merging player additions from different sources.
+    ///
+    /// A cell is `floor(pos / cell_size)` per axis, producing an `(i64, i64,
+    /// i64)` key unique across the solar system. Smaller values give finer
+    /// collision granularity; larger values are more forgiving.
+    #[serde(default = "default_building_cell_size")]
+    pub building_cell_size: f32,
 }
 
 impl Default for WorldGenerationConfig {
@@ -441,6 +451,7 @@ impl Default for WorldGenerationConfig {
             planet_seed: default_planet_seed(),
             chunk_size_world_units: default_chunk_size_world_units(),
             active_chunk_radius: default_active_chunk_radius(),
+            building_cell_size: default_building_cell_size(),
         }
     }
 }
@@ -467,6 +478,14 @@ fn default_active_chunk_radius() -> i32 {
     // simple 3x3 active neighborhood. That is enough to prove the model
     // without pretending we already have full streaming and persistence.
     1
+}
+
+fn default_building_cell_size() -> f32 {
+    // 1.0 world unit per cell side — roughly one meter of granularity.
+    // This is a starting point for spatial overlap detection during delta
+    // merging. The value is configurable in world_generation.toml so it can
+    // be tuned without recompiling once building gameplay takes shape.
+    1.0
 }
 
 /// Derived deterministic world profile.
@@ -738,6 +757,7 @@ mod tests {
             planet_seed: 123_456,
             chunk_size_world_units: 45.0,
             active_chunk_radius: 2,
+            building_cell_size: 1.0,
         };
 
         let a = WorldProfile::from_config(&config);
@@ -817,6 +837,7 @@ mod tests {
             planet_seed: 777,
             chunk_size_world_units: 45.0,
             active_chunk_radius: 1,
+            building_cell_size: 1.0,
         });
         let chunk = ChunkCoord::new(-3, 4);
 
@@ -843,6 +864,7 @@ mod tests {
             planet_seed: 42,
             chunk_size_world_units: 45.0,
             active_chunk_radius: 1,
+            building_cell_size: 1.0,
         });
 
         let a =
