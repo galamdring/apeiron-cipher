@@ -8,6 +8,7 @@
 use bevy::prelude::*;
 
 mod carry;
+mod carry_feedback;
 mod combination;
 mod fabricator;
 mod heat;
@@ -39,6 +40,8 @@ fn main() {
         .add_plugins(player::PlayerPlugin)
         // Carry: config + player carry state foundation for Epic 4.
         .add_plugins(carry::CarryPlugin)
+        // Carry feedback: subtle bob / audio cues driven by current encumbrance.
+        .add_plugins(carry_feedback::CarryFeedbackPlugin)
         // Input: loads TOML config, maps raw inputs to named actions via leafwing.
         .add_plugins(input::InputPlugin)
         // Materials: data-driven material definitions with observable/hidden properties.
