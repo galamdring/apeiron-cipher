@@ -23,6 +23,9 @@ There is no tutorial. No quest marker. No explanation. The world teaches through
 | Pick up / Place | E | Context-sensitive — picks up when empty-handed, places when holding |
 | Place (alternate) | R | Same as E when holding an item |
 | Examine | Q | Inspect what you're holding or looking at |
+| Stash | T | Move held material into carry container |
+| Cycle carry | C | Swap held material with next carried item |
+| Drop | G | Drop next carried item at your feet |
 | Activate fabricator | F | Only when both input slots are filled |
 | Open journal | J | Toggle your discovery journal |
 | Release cursor | Escape | Frees the mouse from the game window |
@@ -46,7 +49,7 @@ Ten distinct materials sit on your shelves. Each one has a name, a color, and hi
 
 ## Picking Things Up
 
-Look at a material within arm's reach and press **E**. It lifts into your hand, hovering at the edge of your view. You can carry one object at a time.
+Look at a material within arm's reach and press **E**. It lifts into your hand, hovering at the edge of your view. You can carry one object at a time in your hand — but now you have pockets.
 
 The crosshair tells you what's possible:
 - **White** — nothing in range
@@ -55,6 +58,18 @@ The crosshair tells you what's possible:
 - **Cyan** — you're aiming at an empty fabricator slot
 
 Press **E** or **R** to set it down. Items land on surfaces you're looking at — the workbench, a shelf, or the floor if nothing else is in range.
+
+---
+
+## Carrying Multiple Materials
+
+Your hand holds one material. Your carry container holds more.
+
+Press **T** to stash what you're holding. It disappears from your hand into carry, freeing you to pick up something else. Press **C** to cycle — the held item goes into carry and the next carried item comes to hand. Press **G** to drop the next carried item at your feet without touching what's in your hand.
+
+Every material has weight. Your carry container has a capacity limit based on your carry strength. If you try to stash something that would push you over, it stays in your hand — no error message, just refusal. The game shows, it doesn't tell.
+
+The cycle order is configurable in `assets/config/carry.toml` — FIFO (oldest first) or LIFO (newest first), defaulting to FIFO.
 
 ---
 
@@ -96,6 +111,6 @@ The journal is your memory. As you test, combine, and re-test, it fills with the
 
 ## What Lies Ahead
 
-The carry system is taking shape beneath the surface. Soon you'll be able to stash multiple materials, feel their weight slow your steps, and hear the strain of a heavy load. Your strength will grow with use. The world beyond the doorway is waiting.
+The carry system now lets you juggle multiple materials, but you can't yet feel their weight. Soon your steps will slow under a heavy load, your stamina will drain faster, and your carry strength will grow with use. The world beyond the doorway is waiting.
 
-But for now — ten materials, one burner, one fabricator, and a journal full of blank pages. The rest is up to you.
+But for now — ten materials, one burner, one fabricator, a carry container, and a journal full of blank pages. The rest is up to you.

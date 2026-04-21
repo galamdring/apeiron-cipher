@@ -31,7 +31,7 @@ use crate::scene::{SceneConfig, Surface};
 use leafwing_input_manager::prelude::*;
 
 const INTERACTION_RANGE: f32 = 3.0;
-const HOLD_OFFSET: Vec3 = Vec3::new(0.2, -0.15, -0.5);
+pub(crate) const HOLD_OFFSET: Vec3 = Vec3::new(0.2, -0.15, -0.5);
 
 pub(crate) struct InteractionPlugin;
 
@@ -472,7 +472,7 @@ fn can_place_material(
     })
 }
 
-fn floor_drop_position(
+pub(crate) fn floor_drop_position(
     player_gtf: &GlobalTransform,
     scene: &SceneConfig,
     material: &GameMaterial,
@@ -874,6 +874,7 @@ mod tests {
             .add_message::<PlaceIntent>()
             .insert_resource(InteractionTarget::default())
             .insert_resource(SlotTarget::default())
+            .insert_resource(SceneConfig::default())
             .add_systems(Update, (process_pickup, process_place));
 
         let camera = app
@@ -895,11 +896,17 @@ mod tests {
             ))
             .id();
 
-        let start_pos = Vec3::new(slot_pos.x, slot_pos.y + MATERIAL_SURFACE_GAP, slot_pos.z);
+        let mat = test_material();
+        let start_pos = Vec3::new(
+            slot_pos.x,
+            slot_pos.y + mat.support_height() + MATERIAL_SURFACE_GAP,
+            slot_pos.z,
+        );
         let item = app
             .world_mut()
             .spawn((
                 MaterialObject,
+                mat,
                 Transform::from_translation(start_pos),
                 GlobalTransform::from_translation(start_pos),
             ))
