@@ -121,6 +121,14 @@ pub(crate) struct CarryMovementState {
     pub stamina_drain_multiplier: f32,
     pub encumbrance_ratio: f32,
     pub creative_mode: bool,
+    /// Sprint speed multiplier sourced from the active carry profile config.
+    pub sprint_speed_multiplier: f32,
+    /// Maximum stamina from the active carry profile config.
+    pub base_stamina: f32,
+    /// Stamina drain per second (before the weight-based multiplier) from config.
+    pub stamina_drain_per_second: f32,
+    /// Stamina regen per second from config.
+    pub stamina_regen_per_second: f32,
 }
 
 impl Default for CarryMovementState {
@@ -130,6 +138,10 @@ impl Default for CarryMovementState {
             stamina_drain_multiplier: 1.0,
             encumbrance_ratio: 0.0,
             creative_mode: false,
+            sprint_speed_multiplier: default_sprint_speed_multiplier(),
+            base_stamina: default_base_stamina(),
+            stamina_drain_per_second: default_stamina_drain_per_second(),
+            stamina_regen_per_second: default_stamina_regen_per_second(),
         }
     }
 }
@@ -416,6 +428,17 @@ pub(crate) struct CarryProfileConfig {
     pub stamina_cost_multiplier: f32,
     #[serde(default = "default_hard_limit_enabled")]
     pub hard_limit_enabled: bool,
+    /// When true, carry weight has no effect on movement or stamina.
+    #[serde(default)]
+    pub creative_mode: bool,
+    #[serde(default = "default_sprint_speed_multiplier")]
+    pub sprint_speed_multiplier: f32,
+    #[serde(default = "default_base_stamina")]
+    pub base_stamina: f32,
+    #[serde(default = "default_stamina_drain_per_second")]
+    pub stamina_drain_per_second: f32,
+    #[serde(default = "default_stamina_regen_per_second")]
+    pub stamina_regen_per_second: f32,
 }
 
 fn default_profile_config() -> CarryProfileConfig {
@@ -423,6 +446,11 @@ fn default_profile_config() -> CarryProfileConfig {
         speed_curve: CarryCurveConfig::default(),
         stamina_cost_multiplier: default_stamina_cost_multiplier(),
         hard_limit_enabled: default_hard_limit_enabled(),
+        creative_mode: false,
+        sprint_speed_multiplier: default_sprint_speed_multiplier(),
+        base_stamina: default_base_stamina(),
+        stamina_drain_per_second: default_stamina_drain_per_second(),
+        stamina_regen_per_second: default_stamina_regen_per_second(),
     }
 }
 
@@ -435,6 +463,11 @@ fn relaxed_profile_config() -> CarryProfileConfig {
         },
         stamina_cost_multiplier: 1.15,
         hard_limit_enabled: false,
+        creative_mode: false,
+        sprint_speed_multiplier: default_sprint_speed_multiplier(),
+        base_stamina: default_base_stamina(),
+        stamina_drain_per_second: default_stamina_drain_per_second(),
+        stamina_regen_per_second: default_stamina_regen_per_second(),
     }
 }
 
@@ -447,6 +480,11 @@ fn creative_profile_config() -> CarryProfileConfig {
         },
         stamina_cost_multiplier: 1.0,
         hard_limit_enabled: false,
+        creative_mode: true,
+        sprint_speed_multiplier: default_sprint_speed_multiplier(),
+        base_stamina: default_base_stamina(),
+        stamina_drain_per_second: default_stamina_drain_per_second(),
+        stamina_regen_per_second: default_stamina_regen_per_second(),
     }
 }
 
@@ -456,6 +494,18 @@ fn default_stamina_cost_multiplier() -> f32 {
 
 fn default_hard_limit_enabled() -> bool {
     true
+}
+fn default_sprint_speed_multiplier() -> f32 {
+    1.45
+}
+fn default_base_stamina() -> f32 {
+    100.0
+}
+fn default_stamina_drain_per_second() -> f32 {
+    22.0
+}
+fn default_stamina_regen_per_second() -> f32 {
+    14.0
 }
 
 /// Config shape for future speed degradation curves.
@@ -598,12 +648,23 @@ fn update_carry_movement_state(
         return;
     };
 
-    if active_profile.profile_name == "creative" {
+    // Always propagate the stamina tuning knobs from the active profile so
+    // player.rs never needs its own hardcoded copies.
+    let sprint_speed_multiplier = active_profile.tuning.sprint_speed_multiplier;
+    let base_stamina = active_profile.tuning.base_stamina;
+    let stamina_drain_per_second = active_profile.tuning.stamina_drain_per_second;
+    let stamina_regen_per_second = active_profile.tuning.stamina_regen_per_second;
+
+    if active_profile.tuning.creative_mode {
         *movement_state = CarryMovementState {
             speed_modifier: 1.0,
             stamina_drain_multiplier: 1.0,
             encumbrance_ratio: 0.0,
             creative_mode: true,
+            sprint_speed_multiplier,
+            base_stamina,
+            stamina_drain_per_second,
+            stamina_regen_per_second,
         };
         return;
     }
@@ -631,6 +692,10 @@ fn update_carry_movement_state(
         stamina_drain_multiplier,
         encumbrance_ratio,
         creative_mode: false,
+        sprint_speed_multiplier,
+        base_stamina,
+        stamina_drain_per_second,
+        stamina_regen_per_second,
     };
 }
 
@@ -1135,5 +1200,26 @@ exponent = 1.0
         };
 
         assert!(evaluate_speed_curve(&curve, 3.0, false) < 0.45);
+    }
+
+    #[test]
+    fn exponential_speed_curve_degrades_faster_at_high_encumbrance() {
+        let curve = CarryCurveConfig {
+            kind: CarryCurveKind::Exponential,
+            min_multiplier: 0.45,
+            exponent: 2.0,
+        };
+
+        let at_25 = evaluate_speed_curve(&curve, 0.25, true);
+        let at_75 = evaluate_speed_curve(&curve, 0.75, true);
+
+        // Exponential curve should produce meaningful degradation.
+        assert!(at_25 > at_75, "higher encumbrance should be slower");
+        // At 75% load the multiplier should sit between min and the 25% value.
+        assert!(at_75 >= 0.45, "should not drop below min_multiplier");
+        assert!(at_75 < at_25, "75% load slower than 25% load");
+        // At 0% load there should be no penalty.
+        let at_0 = evaluate_speed_curve(&curve, 0.0, true);
+        assert!((at_0 - 1.0).abs() < f32::EPSILON, "zero load = full speed");
     }
 }

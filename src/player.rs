@@ -24,10 +24,6 @@ use crate::scene::{PositionXZ, RoomShellCollision, SceneConfig};
 const LOOK_SCALE: f32 = 0.003;
 const PITCH_LIMIT: f32 = std::f32::consts::FRAC_PI_2 * 0.99;
 const PLAYER_COLLISION_RADIUS: f32 = 0.2;
-const SPRINT_SPEED_MULTIPLIER: f32 = 1.45;
-const BASE_STAMINA: f32 = 100.0;
-const BASE_STAMINA_DRAIN_PER_SECOND: f32 = 22.0;
-const BASE_STAMINA_REGEN_PER_SECOND: f32 = 14.0;
 
 /// Minimal stamina framework for Story 4.3.
 ///
@@ -81,7 +77,11 @@ pub(crate) struct PlayerCamera;
 #[derive(Component, Default)]
 struct CameraPitch(f32);
 
-pub(crate) fn spawn_player(mut commands: Commands, scene: Res<SceneConfig>) {
+pub(crate) fn spawn_player(
+    mut commands: Commands,
+    scene: Res<SceneConfig>,
+    carry_movement: Res<CarryMovementState>,
+) {
     commands
         .spawn((
             Player,
@@ -95,8 +95,8 @@ pub(crate) fn spawn_player(mut commands: Commands, scene: Res<SceneConfig>) {
             // The InputMap is attached separately by InputPlugin after spawn.
             ActionState::<InputAction>::default(),
             StaminaState {
-                current: BASE_STAMINA,
-                max: BASE_STAMINA,
+                current: carry_movement.base_stamina,
+                max: carry_movement.base_stamina,
             },
         ))
         .with_children(|parent| {
@@ -190,7 +190,27 @@ fn player_move(
     enforce_eye_height(&mut transform.translation, scene.player.eye_height);
 
     let input = action_state.clamped_axis_pair(&InputAction::Move);
-    if input == Vec2::ZERO {
+
+    // Stamina must update even when stationary so the player can "catch their
+    // breath" by standing still after exhausting sprint.
+    let wants_sprint = action_state.pressed(&InputAction::Sprint);
+    let can_sprint = carry_movement.creative_mode || stamina.current > f32::EPSILON;
+    let is_moving = input != Vec2::ZERO;
+    let is_sprinting = wants_sprint && can_sprint && is_moving;
+
+    if carry_movement.creative_mode {
+        stamina.current = stamina.max;
+    } else if is_sprinting {
+        let drain = carry_movement.stamina_drain_per_second
+            * carry_movement.stamina_drain_multiplier
+            * time.delta_secs();
+        stamina.current = (stamina.current - drain).max(0.0);
+    } else {
+        let regen = carry_movement.stamina_regen_per_second * time.delta_secs();
+        stamina.current = (stamina.current + regen).min(stamina.max);
+    }
+
+    if !is_moving {
         return;
     }
 
@@ -202,12 +222,9 @@ fn player_move(
     let right_xz = Vec3::new(right.x, 0.0, right.z).normalize_or_zero();
 
     let direction = (forward_xz * input.y + right_xz * input.x).normalize_or_zero();
-    let wants_sprint = action_state.pressed(&InputAction::Sprint);
-    let can_sprint = !carry_movement.creative_mode && stamina.current > f32::EPSILON;
-    let is_sprinting = wants_sprint && can_sprint;
 
     let sprint_multiplier = if is_sprinting {
-        SPRINT_SPEED_MULTIPLIER
+        carry_movement.sprint_speed_multiplier
     } else {
         1.0
     };
@@ -229,19 +246,6 @@ fn player_move(
         PLAYER_COLLISION_RADIUS,
     ) {
         transform.translation.z = proposed.z;
-    }
-
-    let is_moving = input != Vec2::ZERO;
-    if carry_movement.creative_mode {
-        stamina.current = stamina.max;
-    } else if is_sprinting && is_moving {
-        let drain = BASE_STAMINA_DRAIN_PER_SECOND
-            * carry_movement.stamina_drain_multiplier
-            * time.delta_secs();
-        stamina.current = (stamina.current - drain).max(0.0);
-    } else {
-        let regen = BASE_STAMINA_REGEN_PER_SECOND * time.delta_secs();
-        stamina.current = (stamina.current + regen).min(stamina.max);
     }
 
     enforce_eye_height(&mut transform.translation, scene.player.eye_height);
