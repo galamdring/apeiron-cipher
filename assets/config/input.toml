@@ -6,6 +6,7 @@ sensitivity_y = 0.3
 Move = { up = "W", down = "S", left = "A", right = "D" }
 CaptureCursor = ["MouseLeft"]
 Interact = ["E"]
+Sprint = ["ShiftLeft"]
 Examine = ["Q"]
 Stash = ["T"]
 CycleCarry = ["C"]

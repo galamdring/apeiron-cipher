@@ -42,6 +42,7 @@ impl Plugin for CarryPlugin {
             .add_message::<CarryActionRejected>()
             .init_resource::<CarryConfig>()
             .init_resource::<ActiveCarryProfile>()
+            .init_resource::<CarryMovementState>()
             .add_systems(PreStartup, load_carry_config)
             .add_systems(
                 Startup,
@@ -50,6 +51,7 @@ impl Plugin for CarryPlugin {
             .add_systems(
                 Update,
                 (
+                    update_carry_movement_state,
                     emit_stash_intent,
                     emit_cycle_carry_intent,
                     emit_drop_carry_intent,
@@ -105,6 +107,43 @@ pub(crate) enum CarryRejectionReason {
 pub(crate) struct CarryWeightChanged {
     pub current_weight: f32,
     pub effective_capacity: f32,
+}
+
+/// Current movement-facing interpretation of carry consequences.
+///
+/// `CarryState` is the source of truth for inventory mass. This resource is the
+/// source of truth for *how that mass affects locomotion right now*. Keeping the
+/// two separated lets later stories change the feedback model without rewriting
+/// how carry contents are tracked.
+#[derive(Clone, Debug, Resource, PartialEq)]
+pub(crate) struct CarryMovementState {
+    pub speed_modifier: f32,
+    pub stamina_drain_multiplier: f32,
+    pub encumbrance_ratio: f32,
+    pub creative_mode: bool,
+    /// Sprint speed multiplier sourced from the active carry profile config.
+    pub sprint_speed_multiplier: f32,
+    /// Maximum stamina from the active carry profile config.
+    pub base_stamina: f32,
+    /// Stamina drain per second (before the weight-based multiplier) from config.
+    pub stamina_drain_per_second: f32,
+    /// Stamina regen per second from config.
+    pub stamina_regen_per_second: f32,
+}
+
+impl Default for CarryMovementState {
+    fn default() -> Self {
+        Self {
+            speed_modifier: 1.0,
+            stamina_drain_multiplier: 1.0,
+            encumbrance_ratio: 0.0,
+            creative_mode: false,
+            sprint_speed_multiplier: default_sprint_speed_multiplier(),
+            base_stamina: default_base_stamina(),
+            stamina_drain_per_second: default_stamina_drain_per_second(),
+            stamina_regen_per_second: default_stamina_regen_per_second(),
+        }
+    }
 }
 
 /// Marks a material entity as being in the player's carry container rather than
@@ -389,6 +428,17 @@ pub(crate) struct CarryProfileConfig {
     pub stamina_cost_multiplier: f32,
     #[serde(default = "default_hard_limit_enabled")]
     pub hard_limit_enabled: bool,
+    /// When true, carry weight has no effect on movement or stamina.
+    #[serde(default)]
+    pub creative_mode: bool,
+    #[serde(default = "default_sprint_speed_multiplier")]
+    pub sprint_speed_multiplier: f32,
+    #[serde(default = "default_base_stamina")]
+    pub base_stamina: f32,
+    #[serde(default = "default_stamina_drain_per_second")]
+    pub stamina_drain_per_second: f32,
+    #[serde(default = "default_stamina_regen_per_second")]
+    pub stamina_regen_per_second: f32,
 }
 
 fn default_profile_config() -> CarryProfileConfig {
@@ -396,6 +446,11 @@ fn default_profile_config() -> CarryProfileConfig {
         speed_curve: CarryCurveConfig::default(),
         stamina_cost_multiplier: default_stamina_cost_multiplier(),
         hard_limit_enabled: default_hard_limit_enabled(),
+        creative_mode: false,
+        sprint_speed_multiplier: default_sprint_speed_multiplier(),
+        base_stamina: default_base_stamina(),
+        stamina_drain_per_second: default_stamina_drain_per_second(),
+        stamina_regen_per_second: default_stamina_regen_per_second(),
     }
 }
 
@@ -408,6 +463,11 @@ fn relaxed_profile_config() -> CarryProfileConfig {
         },
         stamina_cost_multiplier: 1.15,
         hard_limit_enabled: false,
+        creative_mode: false,
+        sprint_speed_multiplier: default_sprint_speed_multiplier(),
+        base_stamina: default_base_stamina(),
+        stamina_drain_per_second: default_stamina_drain_per_second(),
+        stamina_regen_per_second: default_stamina_regen_per_second(),
     }
 }
 
@@ -420,6 +480,11 @@ fn creative_profile_config() -> CarryProfileConfig {
         },
         stamina_cost_multiplier: 1.0,
         hard_limit_enabled: false,
+        creative_mode: true,
+        sprint_speed_multiplier: default_sprint_speed_multiplier(),
+        base_stamina: default_base_stamina(),
+        stamina_drain_per_second: default_stamina_drain_per_second(),
+        stamina_regen_per_second: default_stamina_regen_per_second(),
     }
 }
 
@@ -429,6 +494,18 @@ fn default_stamina_cost_multiplier() -> f32 {
 
 fn default_hard_limit_enabled() -> bool {
     true
+}
+fn default_sprint_speed_multiplier() -> f32 {
+    1.45
+}
+fn default_base_stamina() -> f32 {
+    100.0
+}
+fn default_stamina_drain_per_second() -> f32 {
+    22.0
+}
+fn default_stamina_regen_per_second() -> f32 {
+    14.0
 }
 
 /// Config shape for future speed degradation curves.
@@ -555,6 +632,95 @@ fn attach_carry_state_to_player(
         },
         device_state,
     ));
+}
+
+/// Convert current carry state into movement-facing consequences.
+///
+/// This runs every frame instead of only on `CarryWeightChanged` because Story 4.3
+/// is the first consumer and simplicity matters more than event fan-out here.
+/// Later stories can make this reactive if needed.
+fn update_carry_movement_state(
+    active_profile: Res<ActiveCarryProfile>,
+    mut movement_state: ResMut<CarryMovementState>,
+    player_query: Query<&CarryState, With<Player>>,
+) {
+    let Ok(carry_state) = player_query.single() else {
+        return;
+    };
+
+    // Always propagate the stamina tuning knobs from the active profile so
+    // player.rs never needs its own hardcoded copies.
+    let sprint_speed_multiplier = active_profile.tuning.sprint_speed_multiplier;
+    let base_stamina = active_profile.tuning.base_stamina;
+    let stamina_drain_per_second = active_profile.tuning.stamina_drain_per_second;
+    let stamina_regen_per_second = active_profile.tuning.stamina_regen_per_second;
+
+    if active_profile.tuning.creative_mode {
+        *movement_state = CarryMovementState {
+            speed_modifier: 1.0,
+            stamina_drain_multiplier: 1.0,
+            encumbrance_ratio: 0.0,
+            creative_mode: true,
+            sprint_speed_multiplier,
+            base_stamina,
+            stamina_drain_per_second,
+            stamina_regen_per_second,
+        };
+        return;
+    }
+
+    let encumbrance_ratio = if carry_state.effective_capacity <= f32::EPSILON {
+        if carry_state.current_weight > 0.0 {
+            1.0
+        } else {
+            0.0
+        }
+    } else {
+        (carry_state.current_weight / carry_state.effective_capacity).max(0.0)
+    };
+
+    let speed_modifier = evaluate_speed_curve(
+        &active_profile.tuning.speed_curve,
+        encumbrance_ratio,
+        carry_state.hard_limit_enabled,
+    );
+    let stamina_drain_multiplier =
+        1.0 + encumbrance_ratio.max(0.0) * (active_profile.tuning.stamina_cost_multiplier - 1.0);
+
+    *movement_state = CarryMovementState {
+        speed_modifier,
+        stamina_drain_multiplier,
+        encumbrance_ratio,
+        creative_mode: false,
+        sprint_speed_multiplier,
+        base_stamina,
+        stamina_drain_per_second,
+        stamina_regen_per_second,
+    };
+}
+
+fn evaluate_speed_curve(
+    curve: &CarryCurveConfig,
+    encumbrance_ratio: f32,
+    hard_limit_enabled: bool,
+) -> f32 {
+    let clamped_ratio = if hard_limit_enabled {
+        encumbrance_ratio.clamp(0.0, 1.0)
+    } else {
+        encumbrance_ratio.max(0.0)
+    };
+
+    let falloff = match curve.kind {
+        CarryCurveKind::Linear => clamped_ratio.powf(curve.exponent.max(0.01)),
+        CarryCurveKind::Exponential => 1.0 - (-clamped_ratio * curve.exponent.max(0.01)).exp(),
+    };
+
+    let base = 1.0 - (1.0 - curve.min_multiplier) * falloff;
+    if hard_limit_enabled {
+        base.max(curve.min_multiplier)
+    } else {
+        base.max(0.1)
+    }
 }
 
 /// Capacity depends on both the configured base capacity and the carry-device rule.
@@ -1012,5 +1178,48 @@ exponent = 1.0
     fn evict_stale_entity_returns_false_for_unknown() {
         let mut state = CarryState::new(5.0, true);
         assert!(!state.evict_stale_entity(Entity::from_bits(999)));
+    }
+
+    #[test]
+    fn linear_speed_curve_clamps_at_min_multiplier_when_hard_limit_is_enabled() {
+        let curve = CarryCurveConfig {
+            kind: CarryCurveKind::Linear,
+            min_multiplier: 0.45,
+            exponent: 1.0,
+        };
+
+        assert!((evaluate_speed_curve(&curve, 3.0, true) - 0.45).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn linear_speed_curve_continues_degrading_when_hard_limit_is_disabled() {
+        let curve = CarryCurveConfig {
+            kind: CarryCurveKind::Linear,
+            min_multiplier: 0.45,
+            exponent: 1.0,
+        };
+
+        assert!(evaluate_speed_curve(&curve, 3.0, false) < 0.45);
+    }
+
+    #[test]
+    fn exponential_speed_curve_degrades_faster_at_high_encumbrance() {
+        let curve = CarryCurveConfig {
+            kind: CarryCurveKind::Exponential,
+            min_multiplier: 0.45,
+            exponent: 2.0,
+        };
+
+        let at_25 = evaluate_speed_curve(&curve, 0.25, true);
+        let at_75 = evaluate_speed_curve(&curve, 0.75, true);
+
+        // Exponential curve should produce meaningful degradation.
+        assert!(at_25 > at_75, "higher encumbrance should be slower");
+        // At 75% load the multiplier should sit between min and the 25% value.
+        assert!(at_75 >= 0.45, "should not drop below min_multiplier");
+        assert!(at_75 < at_25, "75% load slower than 25% load");
+        // At 0% load there should be no penalty.
+        let at_0 = evaluate_speed_curve(&curve, 0.0, true);
+        assert!((at_0 - 1.0).abs() < f32::EPSILON, "zero load = full speed");
     }
 }

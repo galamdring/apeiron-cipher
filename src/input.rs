@@ -58,6 +58,7 @@ pub(crate) enum InputAction {
     #[actionlike(DualAxis)]
     Look,
     CaptureCursor,
+    Sprint,
     Interact,
     Examine,
     Stash,
@@ -109,6 +110,8 @@ pub(crate) struct BindingsConfig {
     pub interact: Vec<String>,
     #[serde(default = "default_capture_cursor", rename = "CaptureCursor")]
     pub capture_cursor: Vec<String>,
+    #[serde(default = "default_sprint", rename = "Sprint")]
+    pub sprint: Vec<String>,
     #[serde(default = "default_examine", rename = "Examine")]
     pub examine: Vec<String>,
     #[serde(default = "default_stash", rename = "Stash")]
@@ -133,6 +136,7 @@ impl Default for BindingsConfig {
             movement: MoveBindings::default(),
             interact: default_interact(),
             capture_cursor: default_capture_cursor(),
+            sprint: default_sprint(),
             examine: default_examine(),
             stash: default_stash(),
             cycle_carry: default_cycle_carry(),
@@ -185,6 +189,9 @@ fn default_interact() -> Vec<String> {
 }
 fn default_capture_cursor() -> Vec<String> {
     vec!["MouseLeft".into()]
+}
+fn default_sprint() -> Vec<String> {
+    vec!["ShiftLeft".into()]
 }
 fn default_examine() -> Vec<String> {
     vec!["Q".into()]
@@ -348,6 +355,7 @@ pub(crate) fn build_input_map(config: &InputConfig) -> InputMap<InputAction> {
         InputAction::CaptureCursor,
         &bindings.capture_cursor,
     );
+    insert_bindings(&mut input_map, InputAction::Sprint, &bindings.sprint);
     insert_bindings(&mut input_map, InputAction::Examine, &bindings.examine);
     insert_bindings(&mut input_map, InputAction::Stash, &bindings.stash);
     insert_bindings(
@@ -456,6 +464,7 @@ sensitivity_y = 0.4
 Move = { up = "I", down = "K", left = "J", right = "L" }
 Interact = ["F"]
 CaptureCursor = ["MouseRight"]
+Sprint = ["ShiftLeft"]
 Stash = ["T"]
 CycleCarry = ["C"]
 Drop = ["G"]
@@ -464,6 +473,7 @@ Drop = ["G"]
         assert_eq!(config.bindings.movement.up, "I");
         assert_eq!(config.bindings.interact, vec!["F"]);
         assert_eq!(config.bindings.capture_cursor, vec!["MouseRight"]);
+        assert_eq!(config.bindings.sprint, vec!["ShiftLeft"]);
         assert_eq!(config.bindings.stash, vec!["T"]);
         assert_eq!(config.bindings.cycle_carry, vec!["C"]);
         assert_eq!(config.bindings.drop_item, vec!["G"]);
@@ -502,6 +512,7 @@ Drop = ["G"]
         let config_str = r#"
 [bindings]
 CaptureCursor = ["MouseLeft"]
+Sprint = ["ShiftLeft"]
 Interact = ["MouseLeft"]
 Examine = ["MouseRight"]
 Stash = ["T"]
@@ -515,6 +526,10 @@ Drop = ["G"]
                 .get_buttonlike(&InputAction::CaptureCursor)
                 .is_some(),
             "CaptureCursor should accept MouseButton bindings"
+        );
+        assert!(
+            input_map.get_buttonlike(&InputAction::Sprint).is_some(),
+            "Sprint should have bindings"
         );
         assert!(
             input_map.get_buttonlike(&InputAction::Interact).is_some(),

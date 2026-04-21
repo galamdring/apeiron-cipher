@@ -14,6 +14,7 @@ use bevy::prelude::*;
 use bevy::window::{CursorGrabMode, CursorOptions};
 use leafwing_input_manager::prelude::*;
 
+use crate::carry::CarryMovementState;
 use crate::input::InputAction;
 use crate::scene::{PositionXZ, RoomShellCollision, SceneConfig};
 
@@ -23,6 +24,22 @@ use crate::scene::{PositionXZ, RoomShellCollision, SceneConfig};
 const LOOK_SCALE: f32 = 0.003;
 const PITCH_LIMIT: f32 = std::f32::consts::FRAC_PI_2 * 0.99;
 const PLAYER_COLLISION_RADIUS: f32 = 0.2;
+
+/// Minimal stamina framework for Story 4.3.
+///
+/// The design docs describe richer future stamina, but carry feedback only
+/// needs a small truthful model right now:
+/// - sprinting drains stamina
+/// - not sprinting regenerates stamina
+/// - low stamina prevents sustained sprint
+///
+/// This is intentionally enough to make weight feel physical without pretending
+/// we already have the final progression system.
+#[derive(Component, Clone, Copy, Debug, PartialEq)]
+pub(crate) struct StaminaState {
+    pub current: f32,
+    pub max: f32,
+}
 
 pub(crate) fn cursor_is_captured(grab_mode: CursorGrabMode) -> bool {
     grab_mode != CursorGrabMode::None
@@ -60,7 +77,11 @@ pub(crate) struct PlayerCamera;
 #[derive(Component, Default)]
 struct CameraPitch(f32);
 
-pub(crate) fn spawn_player(mut commands: Commands, scene: Res<SceneConfig>) {
+pub(crate) fn spawn_player(
+    mut commands: Commands,
+    scene: Res<SceneConfig>,
+    carry_movement: Res<CarryMovementState>,
+) {
     commands
         .spawn((
             Player,
@@ -73,6 +94,10 @@ pub(crate) fn spawn_player(mut commands: Commands, scene: Res<SceneConfig>) {
             // leafwing tracks which actions are active on this entity.
             // The InputMap is attached separately by InputPlugin after spawn.
             ActionState::<InputAction>::default(),
+            StaminaState {
+                current: carry_movement.base_stamina,
+                max: carry_movement.base_stamina,
+            },
         ))
         .with_children(|parent| {
             parent.spawn((PlayerCamera, CameraPitch::default(), Camera3d::default()));
@@ -148,20 +173,44 @@ fn player_move(
     cursor_options: Single<&CursorOptions>,
     scene: Res<SceneConfig>,
     room_shell: Res<RoomShellCollision>,
-    mut player_query: Query<(&ActionState<InputAction>, &mut Transform), With<Player>>,
+    carry_movement: Res<CarryMovementState>,
+    mut player_query: Query<
+        (&ActionState<InputAction>, &mut Transform, &mut StaminaState),
+        With<Player>,
+    >,
 ) {
     if !cursor_is_captured(cursor_options.grab_mode) {
         return;
     }
 
-    let Ok((action_state, mut transform)) = player_query.single_mut() else {
+    let Ok((action_state, mut transform, mut stamina)) = player_query.single_mut() else {
         return;
     };
 
     enforce_eye_height(&mut transform.translation, scene.player.eye_height);
 
     let input = action_state.clamped_axis_pair(&InputAction::Move);
-    if input == Vec2::ZERO {
+
+    // Stamina must update even when stationary so the player can "catch their
+    // breath" by standing still after exhausting sprint.
+    let wants_sprint = action_state.pressed(&InputAction::Sprint);
+    let can_sprint = carry_movement.creative_mode || stamina.current > f32::EPSILON;
+    let is_moving = input != Vec2::ZERO;
+    let is_sprinting = wants_sprint && can_sprint && is_moving;
+
+    if carry_movement.creative_mode {
+        stamina.current = stamina.max;
+    } else if is_sprinting {
+        let drain = carry_movement.stamina_drain_per_second
+            * carry_movement.stamina_drain_multiplier
+            * time.delta_secs();
+        stamina.current = (stamina.current - drain).max(0.0);
+    } else {
+        let regen = carry_movement.stamina_regen_per_second * time.delta_secs();
+        stamina.current = (stamina.current + regen).min(stamina.max);
+    }
+
+    if !is_moving {
         return;
     }
 
@@ -173,7 +222,15 @@ fn player_move(
     let right_xz = Vec3::new(right.x, 0.0, right.z).normalize_or_zero();
 
     let direction = (forward_xz * input.y + right_xz * input.x).normalize_or_zero();
-    let delta = direction * scene.player.move_speed * time.delta_secs();
+
+    let sprint_multiplier = if is_sprinting {
+        carry_movement.sprint_speed_multiplier
+    } else {
+        1.0
+    };
+    let effective_speed =
+        scene.player.move_speed * carry_movement.speed_modifier * sprint_multiplier;
+    let delta = direction * effective_speed * time.delta_secs();
     let mut proposed = transform.translation;
     proposed.x += delta.x;
     if !room_shell.blocks_circle_xz(

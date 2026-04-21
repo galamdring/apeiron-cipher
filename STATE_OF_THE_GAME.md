@@ -109,8 +109,20 @@ The journal is your memory. As you test, combine, and re-test, it fills with the
 
 ---
 
+## Weight and Stamina
+
+Carrying materials has consequences now.
+
+The more weight you carry, the slower you move. A single light sphere barely affects your pace, but stash a handful of heavy cubes and you'll feel the difference. The speed curve is smooth — you won't hit a wall, just a steady drag that grows with load.
+
+**Sprinting** (hold **Shift**) gives you a burst of speed, but it costs stamina. Stamina drains faster when you're carrying more weight. Stop sprinting and it regenerates — stand still to catch your breath faster. If your stamina runs out, you can't sprint until it recovers.
+
+All of this is tunable in `assets/config/carry.toml` — sprint speed, base stamina, drain and regen rates are per-profile. Creative mode ignores weight and stamina entirely.
+
+---
+
 ## What Lies Ahead
 
-The carry system now lets you juggle multiple materials, but you can't yet feel their weight. Soon your steps will slow under a heavy load, your stamina will drain faster, and your carry strength will grow with use. The world beyond the doorway is waiting.
+The workshop is functional. You can gather, carry, heat, combine, and record. Your body now responds to what you carry. The world beyond the doorway is waiting.
 
-But for now — ten materials, one burner, one fabricator, a carry container, and a journal full of blank pages. The rest is up to you.
+But for now — ten materials, one burner, one fabricator, a carry container that slows you down, and a journal full of blank pages. The rest is up to you.
