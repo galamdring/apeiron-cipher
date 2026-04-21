@@ -686,6 +686,11 @@ fn load_carry_config(mut commands: Commands) {
     // infinity literals, so authors use a large number like 9999.0. We convert
     // to f32::INFINITY so band lookup never falls through for extreme ratios.
     let mut config = config;
+    config.weight_descriptions.sort_by(|a, b| {
+        a.max_ratio
+            .partial_cmp(&b.max_ratio)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     if let Some(last) = config.weight_descriptions.last_mut()
         && last.max_ratio >= 9999.0
     {
