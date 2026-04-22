@@ -518,6 +518,95 @@ impl SurfaceProvider for PlanetSurface {
     }
 }
 
+/// Generate a subdivided heightmap mesh for a single chunk.
+///
+/// The mesh is a grid of `subdivisions × subdivisions` quads
+/// (`(subdivisions+1)²` vertices). Each vertex samples the elevation from
+/// `surface.query_surface` so the mesh follows the terrain contour.
+///
+/// ## Coordinate space
+///
+/// The returned mesh is in **world space**. Vertex positions use absolute
+/// world X/Y/Z so the caller can spawn the entity at `Transform::IDENTITY`
+/// (or at the origin) — no additional translation is required beyond what
+/// the caller already applies.
+///
+/// ## Normals
+///
+/// Per-vertex normals are computed from the cross product of adjacent vertex
+/// differences (the heightmap gradient). This gives smooth shading across
+/// the chunk and feeds into slope rejection for deposit placement.
+///
+/// ## UVs
+///
+/// UV coordinates span `[0, 1]` across the chunk so textures can be applied
+/// later without revisiting mesh generation.
+pub fn generate_chunk_heightmap_mesh(
+    surface: &PlanetSurface,
+    chunk_coord: ChunkCoord,
+    subdivisions: u32,
+) -> Mesh {
+    let subdivisions = subdivisions.max(1);
+    let verts_per_edge = subdivisions + 1;
+    let num_verts = (verts_per_edge * verts_per_edge) as usize;
+
+    let origin = chunk_origin_xz(chunk_coord, surface.chunk_size_world_units);
+    let chunk_size = surface.chunk_size_world_units;
+    let step = chunk_size / subdivisions as f32;
+
+    let mut positions: Vec<[f32; 3]> = Vec::with_capacity(num_verts);
+    let mut normals: Vec<[f32; 3]> = Vec::with_capacity(num_verts);
+    let mut uvs: Vec<[f32; 2]> = Vec::with_capacity(num_verts);
+
+    // Sample each grid vertex.
+    for iz in 0..verts_per_edge {
+        for ix in 0..verts_per_edge {
+            let world_x = origin.x + ix as f32 * step;
+            let world_z = origin.z + iz as f32 * step;
+            let result = surface.query_surface(world_x, world_z);
+
+            positions.push([world_x, result.position_y, world_z]);
+            normals.push(result.normal);
+            uvs.push([
+                ix as f32 / subdivisions as f32,
+                iz as f32 / subdivisions as f32,
+            ]);
+        }
+    }
+
+    // Build triangle indices: two triangles per quad, counter-clockwise winding.
+    let num_quads = (subdivisions * subdivisions) as usize;
+    let mut indices: Vec<u32> = Vec::with_capacity(num_quads * 6);
+
+    for iz in 0..subdivisions {
+        for ix in 0..subdivisions {
+            let top_left = iz * verts_per_edge + ix;
+            let top_right = top_left + 1;
+            let bottom_left = top_left + verts_per_edge;
+            let bottom_right = bottom_left + 1;
+
+            // First triangle (top-left, bottom-left, top-right)
+            indices.push(top_left);
+            indices.push(bottom_left);
+            indices.push(top_right);
+
+            // Second triangle (top-right, bottom-left, bottom-right)
+            indices.push(top_right);
+            indices.push(bottom_left);
+            indices.push(bottom_right);
+        }
+    }
+
+    Mesh::new(
+        bevy::render::render_resource::PrimitiveTopology::TriangleList,
+        bevy::asset::RenderAssetUsages::default(),
+    )
+    .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
+    .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
+    .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uvs)
+    .with_inserted_indices(bevy::mesh::Indices::U32(indices))
+}
+
 const CONFIG_PATH: &str = "assets/config/world_generation.toml";
 const PLACEMENT_DENSITY_CHANNEL: u64 = 0xD3E5_17A1_0000_0001;
 const PLACEMENT_VARIATION_CHANNEL: u64 = 0xD3E5_17A1_0000_0002;
