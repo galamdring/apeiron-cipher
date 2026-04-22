@@ -390,6 +390,11 @@ const PLANET_SURFACE_RADIUS_CHANNEL: u64 = 0xD3E5_17A1_0000_0004;
 /// moisture) to produce two independent coherent noise fields that together
 /// determine the biome at each chunk position.
 const BIOME_CLIMATE_CHANNEL: u64 = 0xD3E5_17A1_0000_0005;
+/// Channel constant for deriving the elevation seed from the planet seed.
+///
+/// The elevation seed drives multi-octave value noise that produces terrain
+/// height variation across the planet surface.
+const ELEVATION_CHANNEL: u64 = 0xE1EF_0001_0000_0001;
 
 pub struct WorldGenerationPlugin;
 
@@ -474,6 +479,27 @@ pub struct WorldGenerationConfig {
     /// derived from the seed.
     #[serde(default = "default_planet_surface_max_radius")]
     pub planet_surface_max_radius: i32,
+    /// Maximum terrain height deviation from base_y (in world units).
+    #[serde(default = "default_elevation_amplitude")]
+    pub elevation_amplitude: f32,
+    /// Base frequency of the elevation noise field (in world units).
+    #[serde(default = "default_elevation_frequency")]
+    pub elevation_frequency: f32,
+    /// Number of fractal noise octaves layered for terrain elevation.
+    #[serde(default = "default_elevation_octaves")]
+    pub elevation_octaves: u32,
+    /// Blend weight for chunk-level detail noise added on top of the base
+    /// elevation field. 0.0 means no detail layer.
+    #[serde(default = "default_elevation_detail_weight")]
+    pub elevation_detail_weight: f32,
+    /// Sea-level reference height (in world units). Elevation noise is added
+    /// on top of this value.
+    #[serde(default = "default_elevation_base_y")]
+    pub elevation_base_y: f32,
+    /// Number of subdivisions per chunk edge for the heightmap mesh.
+    /// An N×N grid produces (N+1)² vertices.
+    #[serde(default = "default_elevation_subdivisions")]
+    pub elevation_subdivisions: u32,
 }
 
 impl Default for WorldGenerationConfig {
@@ -485,6 +511,12 @@ impl Default for WorldGenerationConfig {
             building_cell_size: default_building_cell_size(),
             planet_surface_min_radius: default_planet_surface_min_radius(),
             planet_surface_max_radius: default_planet_surface_max_radius(),
+            elevation_amplitude: default_elevation_amplitude(),
+            elevation_frequency: default_elevation_frequency(),
+            elevation_octaves: default_elevation_octaves(),
+            elevation_detail_weight: default_elevation_detail_weight(),
+            elevation_base_y: default_elevation_base_y(),
+            elevation_subdivisions: default_elevation_subdivisions(),
         }
     }
 }
@@ -538,6 +570,42 @@ fn default_planet_surface_max_radius() -> i32 {
     5000
 }
 
+fn default_elevation_amplitude() -> f32 {
+    // Maximum height deviation from base_y. 10 world units gives gentle
+    // rolling hills that are clearly visible without being extreme.
+    10.0
+}
+
+fn default_elevation_frequency() -> f32 {
+    // Base noise frequency in world units. Lower values = broader features.
+    // 0.005 produces features on the scale of ~200 world units (~4-5 chunks).
+    0.005
+}
+
+fn default_elevation_octaves() -> u32 {
+    // Number of fractal noise layers. 4 octaves give a good balance of
+    // large-scale hills with smaller-scale detail.
+    4
+}
+
+fn default_elevation_detail_weight() -> f32 {
+    // Blend ratio for chunk-level detail noise. 0.0 means the detail layer
+    // is disabled by default; later phases will tune this.
+    0.0
+}
+
+fn default_elevation_base_y() -> f32 {
+    // Sea-level reference height. -0.01 matches the existing FlatSurface
+    // convention used by the exterior ground patch.
+    -0.01
+}
+
+fn default_elevation_subdivisions() -> u32 {
+    // Number of subdivisions per chunk edge. 8 gives 64 quads per chunk
+    // (9×9 = 81 vertices), a reasonable default for terrain detail.
+    8
+}
+
 /// Derived deterministic world profile.
 ///
 /// The profile exists so later stories do not have to keep reverse engineering
@@ -583,6 +651,10 @@ pub struct WorldProfile {
     /// This is the wrapping period for chunk coordinates. A coordinate of
     /// `planet_surface_diameter` wraps back to `0`.
     pub planet_surface_diameter: i32,
+    /// Per-planet elevation seed, derived from the planet seed via
+    /// `ELEVATION_CHANNEL`. Drives the multi-octave noise field that
+    /// produces terrain height variation.
+    pub elevation_seed: u64,
 }
 
 impl Default for WorldProfile {
@@ -621,6 +693,7 @@ impl WorldProfile {
             biome_climate_seed: mix_seed(planet_seed.0, BIOME_CLIMATE_CHANNEL),
             planet_surface_radius,
             planet_surface_diameter,
+            elevation_seed: mix_seed(planet_seed.0, ELEVATION_CHANNEL),
         }
     }
 }
@@ -1258,6 +1331,7 @@ mod tests {
             building_cell_size: 1.0,
             planet_surface_min_radius: 500,
             planet_surface_max_radius: 5000,
+            ..Default::default()
         };
 
         let a = WorldProfile::from_config(&config);
@@ -1340,6 +1414,7 @@ mod tests {
             building_cell_size: 1.0,
             planet_surface_min_radius: 500,
             planet_surface_max_radius: 5000,
+            ..Default::default()
         });
         let chunk = ChunkCoord::new(-3, 4);
 
@@ -1369,6 +1444,7 @@ mod tests {
             building_cell_size: 1.0,
             planet_surface_min_radius: 500,
             planet_surface_max_radius: 5000,
+            ..Default::default()
         });
 
         let a =
@@ -1688,6 +1764,7 @@ mod tests {
             building_cell_size: 1.0,
             planet_surface_min_radius: 500,
             planet_surface_max_radius: 5000,
+            ..Default::default()
         };
         let profile = WorldProfile::from_config(&config);
 
@@ -1744,6 +1821,7 @@ mod tests {
             building_cell_size: 1.0,
             planet_surface_min_radius: 50,
             planet_surface_max_radius: 50,
+            ..Default::default()
         };
         let profile = WorldProfile::from_config(&config);
         let diameter = profile.planet_surface_diameter; // 100
@@ -1767,6 +1845,7 @@ mod tests {
             building_cell_size: 1.0,
             planet_surface_min_radius: 50,
             planet_surface_max_radius: 50,
+            ..Default::default()
         };
         let profile = WorldProfile::from_config(&config);
         let diameter = profile.planet_surface_diameter; // 100
@@ -1789,6 +1868,7 @@ mod tests {
             building_cell_size: 1.0,
             planet_surface_min_radius: 500,
             planet_surface_max_radius: 5000,
+            ..Default::default()
         }
     }
 
@@ -1910,6 +1990,19 @@ mod tests {
     }
 
     #[test]
+    fn elevation_seed_is_distinct_from_other_seeds() {
+        // The elevation seed must not collide with any other sub-seed
+        // in WorldProfile to avoid correlated noise fields.
+        let profile = WorldProfile::from_config(&sample_config());
+
+        assert_ne!(profile.elevation_seed, profile.placement_density_seed);
+        assert_ne!(profile.elevation_seed, profile.placement_variation_seed);
+        assert_ne!(profile.elevation_seed, profile.object_identity_seed);
+        assert_ne!(profile.elevation_seed, profile.biome_climate_seed);
+        assert_ne!(profile.elevation_seed, profile.planet_seed.0);
+    }
+
+    #[test]
     fn biome_registry_toml_round_trip() {
         // Verify BiomeRegistry serializes to TOML and back without data loss.
         let registry = BiomeRegistry::default();
@@ -1939,6 +2032,7 @@ mod tests {
             building_cell_size: 1.0,
             planet_surface_min_radius: 50,
             planet_surface_max_radius: 50,
+            ..Default::default()
         };
         let profile = WorldProfile::from_config(&config);
         let registry = BiomeRegistry::default();

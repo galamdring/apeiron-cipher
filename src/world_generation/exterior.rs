@@ -1599,6 +1599,7 @@ mod tests {
             building_cell_size: 1.0,
             planet_surface_min_radius: 500,
             planet_surface_max_radius: 5000,
+            ..Default::default()
         })
     }
 

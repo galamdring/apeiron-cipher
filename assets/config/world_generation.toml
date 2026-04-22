@@ -38,3 +38,31 @@ building_cell_size = 1.0
 #   radius 5000 → diameter 10000 × 45 = 450,000 world units (~450 km)
 planet_surface_min_radius = 500
 planet_surface_max_radius = 5000
+
+# ── Terrain Elevation (Story 5a.3) ──────────────────────────────────────
+#
+# Multi-octave value noise produces terrain height variation across the
+# planet surface. The elevation field is seeded from the planet seed via
+# a dedicated channel, so it is deterministic and independent of other
+# noise fields.
+
+# Maximum height deviation from base_y (in world units).
+elevation_amplitude = 10.0
+
+# Base noise frequency (in world units). Lower values = broader features.
+elevation_frequency = 0.005
+
+# Number of fractal noise octaves layered for terrain elevation.
+elevation_octaves = 4
+
+# Blend weight for chunk-level detail noise added on top of the base
+# elevation field. 0.0 disables the detail layer.
+elevation_detail_weight = 0.0
+
+# Sea-level reference height (in world units). Elevation noise is added
+# on top of this value.
+elevation_base_y = -0.01
+
+# Number of subdivisions per chunk edge for the heightmap mesh.
+# N subdivisions produce an (N+1)² vertex grid per chunk.
+elevation_subdivisions = 8
