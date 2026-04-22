@@ -51,8 +51,8 @@ use super::{
     ActiveChunkNeighborhood, BiomeRegistry, ChunkBiome, ChunkCoord,
     DEFAULT_MAX_PLACEMENT_SLOPE_RADIANS, FlatSurface, GeneratedObjectId, PlanetSurface,
     SurfaceProvider, WorldGenerationConfig, WorldProfile, chunk_origin_xz, derive_chunk_biome,
-    derive_chunk_generation_key, derive_generated_object_id, is_placement_valid,
-    surface_alignment_rotation, world_position_to_chunk_coord,
+    derive_chunk_generation_key, derive_generated_object_id, generate_chunk_heightmap_mesh,
+    is_placement_valid, surface_alignment_rotation, world_position_to_chunk_coord,
 };
 use crate::carry::InCarry;
 use crate::interaction::HeldItem;
@@ -572,40 +572,34 @@ fn sync_active_exterior_chunks(
 
         let mut spawned_entities = Vec::new();
 
-        // Story 5a.2: spawn a per-chunk ground tile colored by the biome.
+        // Story 5a.3: spawn a per-chunk heightmap ground tile colored by the
+        // biome.
         //
-        // Each active chunk gets its own `Plane3d` mesh sized to exactly one
-        // chunk, positioned at the chunk's world-space origin (center of the
-        // tile, not corner). The ground tile color comes from the biome
-        // definition, so different biomes produce visibly different ground.
+        // Each active chunk gets a subdivided heightmap mesh whose vertices
+        // sample the planet elevation noise. The mesh vertices are in
+        // world-space so the entity Transform is identity. The ground tile
+        // color comes from the biome definition.
         //
         // These tile entities are tracked in `spawned_entities` alongside
         // material objects, so they are automatically despawned when the chunk
         // deactivates.
         {
-            let origin = chunk_origin_xz(chunk, world_profile.chunk_size_world_units);
-            let half = world_profile.chunk_size_world_units * 0.5;
             let [r, g, b] = chunk_biome.ground_color;
             let ground_material = render_materials.add(StandardMaterial {
                 base_color: Color::srgb(r, g, b),
                 perceptual_roughness: 0.98,
                 ..default()
             });
-            let ground_mesh = meshes.add(Plane3d::default().mesh().size(
-                world_profile.chunk_size_world_units,
-                world_profile.chunk_size_world_units,
+            let ground_mesh = meshes.add(generate_chunk_heightmap_mesh(
+                &surface,
+                chunk,
+                world_gen_config.elevation_subdivisions,
             ));
             let tile_entity = commands
                 .spawn((
                     Mesh3d(ground_mesh),
                     MeshMaterial3d(ground_material),
-                    Transform::from_xyz(
-                        origin.x + half,
-                        surface
-                            .query_surface(origin.x + half, origin.z + half)
-                            .position_y,
-                        origin.z + half,
-                    ),
+                    Transform::default(),
                 ))
                 .id();
             spawned_entities.push(tile_entity);
