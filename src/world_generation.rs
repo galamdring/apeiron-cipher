@@ -2836,4 +2836,61 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn adjacent_chunk_edges_have_identical_heights() {
+        let surface = test_planet_surface();
+        let subdivisions = 8u32;
+        let verts_per_edge = (subdivisions + 1) as usize;
+
+        // Test several adjacent chunk pairs along both axes.
+        let pairs = [
+            // (chunk_a, chunk_b, axis): axis=0 means b is +X neighbor, axis=1 means b is +Z neighbor
+            (ChunkCoord::new(0, 0), ChunkCoord::new(1, 0), 0),
+            (ChunkCoord::new(0, 0), ChunkCoord::new(0, 1), 1),
+            (ChunkCoord::new(-3, 2), ChunkCoord::new(-2, 2), 0),
+            (ChunkCoord::new(5, -1), ChunkCoord::new(5, 0), 1),
+            (ChunkCoord::new(-1, -1), ChunkCoord::new(0, -1), 0),
+        ];
+
+        for (chunk_a, chunk_b, axis) in pairs {
+            let mesh_a = generate_chunk_heightmap_mesh(&surface, chunk_a, subdivisions);
+            let mesh_b = generate_chunk_heightmap_mesh(&surface, chunk_b, subdivisions);
+
+            let positions_a = mesh_a
+                .attribute(Mesh::ATTRIBUTE_POSITION)
+                .expect("mesh must have positions")
+                .as_float3()
+                .expect("positions must be Float32x3");
+            let positions_b = mesh_b
+                .attribute(Mesh::ATTRIBUTE_POSITION)
+                .expect("mesh must have positions")
+                .as_float3()
+                .expect("positions must be Float32x3");
+
+            for i in 0..verts_per_edge {
+                // For axis=0 (+X neighbor): right edge of A (ix=subdivisions) matches left edge of B (ix=0).
+                // For axis=1 (+Z neighbor): bottom edge of A (iz=subdivisions) matches top edge of B (iz=0).
+                let idx_a = if axis == 0 {
+                    i * verts_per_edge + (verts_per_edge - 1) // right column of A
+                } else {
+                    (verts_per_edge - 1) * verts_per_edge + i // bottom row of A
+                };
+                let idx_b = if axis == 0 {
+                    i * verts_per_edge // left column of B
+                } else {
+                    i // top row of B
+                };
+
+                let ha = positions_a[idx_a][1];
+                let hb = positions_b[idx_b][1];
+                assert_eq!(
+                    ha, hb,
+                    "Seam artifact at shared edge vertex {i}: chunk {:?} edge height {ha} != \
+                     chunk {:?} edge height {hb} (axis={axis})",
+                    chunk_a, chunk_b
+                );
+            }
+        }
+    }
 }
