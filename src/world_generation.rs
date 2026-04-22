@@ -442,7 +442,7 @@ impl PlanetSurface {
     /// with lacunarity 2, persistence 0.5). The base `continuous_value_field_01`
     /// returns values in `[0, 1]`, so we center each sample around 0.5 to get
     /// positive and negative deviations from `base_y`.
-    fn sample_elevation(&self, x: f32, z: f32) -> f32 {
+    pub(crate) fn sample_elevation(&self, x: f32, z: f32) -> f32 {
         let x = self.wrap_world_coord(x);
         let z = self.wrap_world_coord(z);
         let mut total = 0.0_f32;
@@ -555,22 +555,62 @@ pub fn generate_chunk_heightmap_mesh(
     let step = chunk_size / subdivisions as f32;
 
     let mut positions: Vec<[f32; 3]> = Vec::with_capacity(num_verts);
-    let mut normals: Vec<[f32; 3]> = Vec::with_capacity(num_verts);
     let mut uvs: Vec<[f32; 2]> = Vec::with_capacity(num_verts);
 
-    // Sample each grid vertex.
+    // First pass: sample elevation at each grid vertex to build the position
+    // and UV arrays. We store heights in a flat grid so the second pass can
+    // compute normals from adjacent vertex height differences.
+    let mut heights: Vec<f32> = Vec::with_capacity(num_verts);
+
     for iz in 0..verts_per_edge {
         for ix in 0..verts_per_edge {
             let world_x = origin.x + ix as f32 * step;
             let world_z = origin.z + iz as f32 * step;
-            let result = surface.query_surface(world_x, world_z);
+            let y = surface.sample_elevation(world_x, world_z);
 
-            positions.push([world_x, result.position_y, world_z]);
-            normals.push(result.normal);
+            positions.push([world_x, y, world_z]);
+            heights.push(y);
             uvs.push([
                 ix as f32 / subdivisions as f32,
                 iz as f32 / subdivisions as f32,
             ]);
+        }
+    }
+
+    // Second pass: compute per-vertex normals from the cross product of
+    // adjacent vertex height differences. For interior vertices we use
+    // central differences; at edges we clamp to the nearest neighbor.
+    let mut normals: Vec<[f32; 3]> = Vec::with_capacity(num_verts);
+    let idx = |ix: u32, iz: u32| -> usize { (iz * verts_per_edge + ix) as usize };
+
+    for iz in 0..verts_per_edge {
+        for ix in 0..verts_per_edge {
+            // Height differences along x-axis (central difference when possible).
+            let dh_dx = if ix == 0 {
+                (heights[idx(ix + 1, iz)] - heights[idx(ix, iz)]) / step
+            } else if ix == subdivisions {
+                (heights[idx(ix, iz)] - heights[idx(ix - 1, iz)]) / step
+            } else {
+                (heights[idx(ix + 1, iz)] - heights[idx(ix - 1, iz)]) / (2.0 * step)
+            };
+
+            // Height differences along z-axis.
+            let dh_dz = if iz == 0 {
+                (heights[idx(ix, iz + 1)] - heights[idx(ix, iz)]) / step
+            } else if iz == subdivisions {
+                (heights[idx(ix, iz)] - heights[idx(ix, iz - 1)]) / step
+            } else {
+                (heights[idx(ix, iz + 1)] - heights[idx(ix, iz - 1)]) / (2.0 * step)
+            };
+
+            // tangent_x = (step, dh_dx * step, 0), tangent_z = (0, dh_dz * step, step)
+            // normal = cross(tangent_z, tangent_x) = (-dh_dx, 1, -dh_dz) (unnormalized)
+            let nx = -dh_dx;
+            let ny = 1.0_f32;
+            let nz = -dh_dz;
+            let len = (nx * nx + ny * ny + nz * nz).sqrt();
+            let inv = if len < 1e-10 { 1.0 } else { 1.0 / len };
+            normals.push([nx * inv, ny * inv, nz * inv]);
         }
     }
 
