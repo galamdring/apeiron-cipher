@@ -57,7 +57,14 @@ elevation_octaves = 4
 
 # Blend weight for chunk-level detail noise added on top of the base
 # elevation field. 0.0 disables the detail layer.
-elevation_detail_weight = 0.0
+elevation_detail_weight = 0.3
+
+# Base frequency for the detail noise layer. Higher than the base
+# elevation_frequency to add fine-grained terrain variation.
+elevation_detail_frequency = 0.02
+
+# Number of fractal noise octaves for the detail noise layer.
+elevation_detail_octaves = 2
 
 # Sea-level reference height (in world units). Elevation noise is added
 # on top of this value.

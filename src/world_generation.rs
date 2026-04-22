@@ -398,6 +398,14 @@ pub struct PlanetSurface {
     pub octaves: u32,
     /// Blend weight for chunk-level detail noise (0.0 = disabled).
     pub detail_weight: f32,
+    /// Seed for the detail noise layer, derived from `elevation_seed` via
+    /// `ELEVATION_DETAIL_CHANNEL` so it is independent of base octaves.
+    pub detail_seed: u64,
+    /// Base frequency for the detail noise layer. Should be higher than the
+    /// base `frequency` to add fine-grained variation.
+    pub detail_frequency: f32,
+    /// Number of fractal noise octaves for the detail layer.
+    pub detail_octaves: u32,
     /// Planet surface diameter in chunks (for torus wrapping).
     pub planet_surface_diameter: i32,
     /// Chunk edge length in world units (for torus wrapping).
@@ -418,6 +426,9 @@ impl PlanetSurface {
             frequency: config.elevation_frequency,
             octaves: config.elevation_octaves,
             detail_weight: config.elevation_detail_weight,
+            detail_seed: mix_seed(profile.elevation_seed, ELEVATION_DETAIL_CHANNEL),
+            detail_frequency: config.elevation_detail_frequency,
+            detail_octaves: config.elevation_detail_octaves,
             planet_surface_diameter: profile.planet_surface_diameter,
             chunk_size_world_units: profile.chunk_size_world_units,
         }
@@ -468,7 +479,37 @@ impl PlanetSurface {
         if weight_sum > 0.0 {
             total /= weight_sum;
         }
-        self.base_y + total * self.amplitude
+        let base_elevation = total * self.amplitude;
+
+        // --- Detail noise layer (chunk-level, higher frequency) ---
+        // Blended additively when detail_weight > 0. Uses a separate seed
+        // sub-channel so the detail pattern is independent of base octaves.
+        let detail_elevation = if self.detail_weight > 0.0 {
+            let mut d_total = 0.0_f32;
+            let mut d_amp = 1.0_f32;
+            let mut d_freq = self.detail_frequency;
+            let mut d_weight_sum = 0.0_f32;
+
+            for octave in 0..self.detail_octaves {
+                let octave_seed = mix_seed(self.detail_seed, octave as u64);
+                let scale = 1.0 / d_freq;
+                let sample =
+                    exterior::continuous_value_field_01(octave_seed, PositionXZ::new(x, z), scale);
+                d_total += (sample - 0.5) * d_amp;
+                d_weight_sum += d_amp;
+                d_amp *= 0.5;
+                d_freq *= 2.0;
+            }
+
+            if d_weight_sum > 0.0 {
+                d_total /= d_weight_sum;
+            }
+            d_total * self.amplitude * self.detail_weight
+        } else {
+            0.0
+        };
+
+        self.base_y + base_elevation + detail_elevation
     }
 
     /// Compute the surface normal from the heightmap gradient using finite
@@ -668,6 +709,10 @@ const BIOME_CLIMATE_CHANNEL: u64 = 0xD3E5_17A1_0000_0005;
 /// The elevation seed drives multi-octave value noise that produces terrain
 /// height variation across the planet surface.
 const ELEVATION_CHANNEL: u64 = 0xE1EF_0001_0000_0001;
+/// Sub-channel for chunk-level detail noise layered on top of the base
+/// elevation field. Derived from the elevation seed (not the planet seed)
+/// so it is guaranteed independent of the base octaves.
+const ELEVATION_DETAIL_CHANNEL: u64 = 0xE1EF_0001_0000_0002;
 
 pub struct WorldGenerationPlugin;
 
@@ -765,6 +810,13 @@ pub struct WorldGenerationConfig {
     /// elevation field. 0.0 means no detail layer.
     #[serde(default = "default_elevation_detail_weight")]
     pub elevation_detail_weight: f32,
+    /// Base frequency for the detail noise layer. Higher than the base
+    /// `elevation_frequency` to add fine-grained terrain variation.
+    #[serde(default = "default_elevation_detail_frequency")]
+    pub elevation_detail_frequency: f32,
+    /// Number of fractal noise octaves for the detail noise layer.
+    #[serde(default = "default_elevation_detail_octaves")]
+    pub elevation_detail_octaves: u32,
     /// Sea-level reference height (in world units). Elevation noise is added
     /// on top of this value.
     #[serde(default = "default_elevation_base_y")]
@@ -788,6 +840,8 @@ impl Default for WorldGenerationConfig {
             elevation_frequency: default_elevation_frequency(),
             elevation_octaves: default_elevation_octaves(),
             elevation_detail_weight: default_elevation_detail_weight(),
+            elevation_detail_frequency: default_elevation_detail_frequency(),
+            elevation_detail_octaves: default_elevation_detail_octaves(),
             elevation_base_y: default_elevation_base_y(),
             elevation_subdivisions: default_elevation_subdivisions(),
         }
@@ -865,6 +919,18 @@ fn default_elevation_detail_weight() -> f32 {
     // Blend ratio for chunk-level detail noise. 0.0 means the detail layer
     // is disabled by default; later phases will tune this.
     0.0
+}
+
+fn default_elevation_detail_frequency() -> f32 {
+    // Base frequency for the detail noise layer — 4× the base elevation
+    // frequency so it adds finer-grained terrain texture.
+    0.02
+}
+
+fn default_elevation_detail_octaves() -> u32 {
+    // Two octaves of detail noise is enough for subtle variation without
+    // overwhelming the base elevation shape.
+    2
 }
 
 fn default_elevation_base_y() -> f32 {
@@ -2393,6 +2459,9 @@ mod tests {
             frequency: 0.005,
             octaves: 4,
             detail_weight: 0.0,
+            detail_seed: mix_seed(0xDEAD_BEEF, ELEVATION_DETAIL_CHANNEL),
+            detail_frequency: 0.02,
+            detail_octaves: 2,
             planet_surface_diameter: 100,
             chunk_size_world_units: 45.0,
         }
