@@ -2408,4 +2408,54 @@ mod tests {
             "multi-octave noise should differ from single octave"
         );
     }
+
+    #[test]
+    fn planet_surface_zero_amplitude_produces_constant_base_y() {
+        let base_y = 42.0;
+        let surface = PlanetSurface {
+            amplitude: 0.0,
+            base_y,
+            ..test_planet_surface()
+        };
+        // Sample a grid of points — every elevation must equal base_y exactly,
+        // and every normal must point straight up, just like FlatSurface.
+        let flat = FlatSurface {
+            surface_y: base_y,
+            min_x: -1000.0,
+            max_x: 1000.0,
+            min_z: -1000.0,
+            max_z: 1000.0,
+        };
+        for ix in 0..20 {
+            for iz in 0..20 {
+                let x = ix as f32 * 23.7 - 100.0;
+                let z = iz as f32 * 19.3 - 100.0;
+
+                let planet_result = surface.query_surface(x, z);
+                let flat_result = flat.query_surface(x, z);
+
+                assert_eq!(
+                    planet_result.position_y, base_y,
+                    "zero-amplitude PlanetSurface must return base_y at ({x}, {z})"
+                );
+                assert_eq!(
+                    planet_result.position_y, flat_result.position_y,
+                    "zero-amplitude PlanetSurface must match FlatSurface elevation at ({x}, {z})"
+                );
+                assert!(
+                    planet_result.valid,
+                    "zero-amplitude surface should always be valid"
+                );
+                // Normal should point straight up (0, 1, 0).
+                let n = planet_result.normal;
+                assert!(
+                    (n[0].abs() < 1e-6) && ((n[1] - 1.0).abs() < 1e-6) && (n[2].abs() < 1e-6),
+                    "zero-amplitude normal should be (0,1,0), got ({}, {}, {}) at ({x}, {z})",
+                    n[0],
+                    n[1],
+                    n[2]
+                );
+            }
+        }
+    }
 }
