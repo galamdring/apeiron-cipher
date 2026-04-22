@@ -2741,6 +2741,42 @@ mod tests {
     }
 
     #[test]
+    fn detail_weight_zero_produces_same_result_as_no_detail() {
+        // A surface with detail_weight = 0 should produce identical elevations
+        // and normals as one that simply has no detail layer, regardless of the
+        // detail_seed, detail_frequency, or detail_octaves values.
+        let baseline = test_planet_surface(); // detail_weight already 0.0
+
+        // Build a variant with non-zero detail parameters but weight still 0.
+        let zero_weight = PlanetSurface {
+            detail_weight: 0.0,
+            detail_seed: 0xCAFE_BABE,
+            detail_frequency: 0.05,
+            detail_octaves: 6,
+            ..test_planet_surface()
+        };
+
+        for i in 0..200 {
+            let x = i as f32 * 7.7 - 300.0;
+            let z = i as f32 * 13.3 + 50.0;
+
+            let elev_base = baseline.sample_elevation(x, z);
+            let elev_zero = zero_weight.sample_elevation(x, z);
+            assert_eq!(
+                elev_base, elev_zero,
+                "detail_weight=0 must match baseline at ({x}, {z}): {elev_base} vs {elev_zero}"
+            );
+
+            let norm_base = baseline.compute_normal(x, z);
+            let norm_zero = zero_weight.compute_normal(x, z);
+            assert_eq!(
+                norm_base, norm_zero,
+                "normals must match when detail_weight=0 at ({x}, {z})"
+            );
+        }
+    }
+
+    #[test]
     fn heightmap_mesh_vertex_count_matches_expected() {
         let surface = test_planet_surface();
         let chunk = ChunkCoord::new(0, 0);
