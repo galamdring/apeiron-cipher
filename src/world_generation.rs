@@ -433,13 +433,18 @@ impl PlanetSurface {
         ((v % period) + period) % period
     }
 
-    /// Sample multi-octave elevation at a canonical (already torus-wrapped) XZ.
+    /// Sample multi-octave elevation at an arbitrary world-space XZ.
+    ///
+    /// Canonical torus wrapping is applied **before** any noise sampling so
+    /// callers are not required to pre-wrap their coordinates.
     ///
     /// Each octave doubles the frequency and halves the amplitude (standard fBm
     /// with lacunarity 2, persistence 0.5). The base `continuous_value_field_01`
     /// returns values in `[0, 1]`, so we center each sample around 0.5 to get
     /// positive and negative deviations from `base_y`.
     fn sample_elevation(&self, x: f32, z: f32) -> f32 {
+        let x = self.wrap_world_coord(x);
+        let z = self.wrap_world_coord(z);
         let mut total = 0.0_f32;
         let mut amp = 1.0_f32;
         let mut freq = self.frequency;
@@ -476,10 +481,10 @@ impl PlanetSurface {
     fn compute_normal(&self, x: f32, z: f32) -> [f32; 3] {
         let eps = 0.1_f32;
 
-        let hx_pos = self.sample_elevation(self.wrap_world_coord(x + eps), z);
-        let hx_neg = self.sample_elevation(self.wrap_world_coord(x - eps), z);
-        let hz_pos = self.sample_elevation(x, self.wrap_world_coord(z + eps));
-        let hz_neg = self.sample_elevation(x, self.wrap_world_coord(z - eps));
+        let hx_pos = self.sample_elevation(x + eps, z);
+        let hx_neg = self.sample_elevation(x - eps, z);
+        let hz_pos = self.sample_elevation(x, z + eps);
+        let hz_neg = self.sample_elevation(x, z - eps);
 
         // Finite-difference partial derivatives:
         let dh_dx = (hx_pos - hx_neg) / (2.0 * eps);
@@ -503,10 +508,8 @@ impl PlanetSurface {
 
 impl SurfaceProvider for PlanetSurface {
     fn query_surface(&self, x: f32, z: f32) -> SurfaceQueryResult {
-        let wx = self.wrap_world_coord(x);
-        let wz = self.wrap_world_coord(z);
-        let position_y = self.sample_elevation(wx, wz);
-        let normal = self.compute_normal(wx, wz);
+        let position_y = self.sample_elevation(x, z);
+        let normal = self.compute_normal(x, z);
         SurfaceQueryResult {
             position_y,
             normal,
