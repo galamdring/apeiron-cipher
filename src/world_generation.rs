@@ -2523,6 +2523,14 @@ mod tests {
                 result_a.position_y,
                 result_b.position_y,
             );
+            // Also verify z-direction wrapping.
+            let result_c = surface.query_surface(x, z + period);
+            assert!(
+                (result_a.position_y - result_c.position_y).abs() < 1e-6,
+                "torus wrap mismatch at z={z}: {} vs {}",
+                result_a.position_y,
+                result_c.position_y,
+            );
         }
     }
 
