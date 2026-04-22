@@ -49,10 +49,10 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     ActiveChunkNeighborhood, BiomeRegistry, ChunkBiome, ChunkCoord,
-    DEFAULT_MAX_PLACEMENT_SLOPE_RADIANS, FlatSurface, GeneratedObjectId, SurfaceProvider,
-    WorldProfile, chunk_origin_xz, derive_chunk_biome, derive_chunk_generation_key,
-    derive_generated_object_id, is_placement_valid, surface_alignment_rotation,
-    world_position_to_chunk_coord,
+    DEFAULT_MAX_PLACEMENT_SLOPE_RADIANS, FlatSurface, GeneratedObjectId, PlanetSurface,
+    SurfaceProvider, WorldGenerationConfig, WorldProfile, chunk_origin_xz, derive_chunk_biome,
+    derive_chunk_generation_key, derive_generated_object_id, is_placement_valid,
+    surface_alignment_rotation, world_position_to_chunk_coord,
 };
 use crate::carry::InCarry;
 use crate::interaction::HeldItem;
@@ -495,6 +495,7 @@ fn sync_active_exterior_chunks(
     mut commands: Commands,
     active_chunks: Res<ActiveChunkNeighborhood>,
     world_profile: Res<WorldProfile>,
+    world_gen_config: Res<WorldGenerationConfig>,
     deposit_catalog: Res<SurfaceMineralDepositCatalog>,
     material_catalog: Res<MaterialCatalog>,
     exterior_patch: Res<ExteriorGroundPatch>,
@@ -526,19 +527,11 @@ fn sync_active_exterior_chunks(
     // Story 5.3: the generation functions receive a &dyn SurfaceProvider so
     // they can be tested against synthetic surfaces without any Bevy dependency.
     //
-    // Story 5a.1: the planet surface is conceptually unbounded — every chunk on
-    // the torus has valid ground. We use effectively-infinite bounds so that
-    // `FlatSurface::query_surface` never rejects a candidate for being "out of
-    // bounds". The *visual* ground mesh is sized separately in scene.rs to
-    // cover the active neighborhood; this surface provider is purely about
-    // generation validity.
-    let surface = FlatSurface {
-        surface_y: exterior_patch.surface_y,
-        min_x: f32::MIN,
-        max_x: f32::MAX,
-        min_z: f32::MIN,
-        max_z: f32::MAX,
-    };
+    // Story 5a.3: at runtime we now use PlanetSurface, which samples
+    // multi-octave elevation noise for realistic terrain variation. The
+    // FlatSurface, SteppedSurface, and TiltedSurface providers remain
+    // available for deterministic tests.
+    let surface = PlanetSurface::new_from_profile(&world_profile, &world_gen_config);
 
     for &chunk in &active_chunks.chunks {
         if spawned_chunks
@@ -606,7 +599,13 @@ fn sync_active_exterior_chunks(
                 .spawn((
                     Mesh3d(ground_mesh),
                     MeshMaterial3d(ground_material),
-                    Transform::from_xyz(origin.x + half, exterior_patch.surface_y, origin.z + half),
+                    Transform::from_xyz(
+                        origin.x + half,
+                        surface
+                            .query_surface(origin.x + half, origin.z + half)
+                            .position_y,
+                        origin.z + half,
+                    ),
                 ))
                 .id();
             spawned_entities.push(tile_entity);
