@@ -2657,6 +2657,89 @@ mod tests {
         }
     }
 
+    /// Helper that returns a `PlanetSurface` with detail noise **enabled**.
+    fn test_planet_surface_with_detail() -> PlanetSurface {
+        PlanetSurface {
+            detail_weight: 0.3,
+            ..test_planet_surface()
+        }
+    }
+
+    #[test]
+    fn detail_noise_elevation_is_deterministic() {
+        let surface = test_planet_surface_with_detail();
+        for i in 0..50 {
+            let x = i as f32 * 17.3 + 3.1;
+            let z = i as f32 * 11.7 + 7.9;
+            let a = surface.sample_elevation(x, z);
+            let b = surface.sample_elevation(x, z);
+            assert_eq!(a, b, "detail noise must be deterministic at ({x}, {z})");
+        }
+    }
+
+    #[test]
+    fn detail_noise_torus_wrapping_continuous() {
+        let surface = test_planet_surface_with_detail();
+        let period = surface.planet_surface_diameter as f32 * surface.chunk_size_world_units;
+
+        for i in 0..20 {
+            let x = i as f32 * 37.1 + 5.5;
+            let z = i as f32 * 23.9 + 2.3;
+            let a = surface.sample_elevation(x, z);
+            let b = surface.sample_elevation(x + period, z);
+            assert!(
+                (a - b).abs() < 1e-6,
+                "detail noise breaks torus continuity at x={x}: {a} vs {b}"
+            );
+            let c = surface.sample_elevation(x, z + period);
+            assert!(
+                (a - c).abs() < 1e-6,
+                "detail noise breaks torus continuity at z={z}: {a} vs {c}"
+            );
+        }
+    }
+
+    #[test]
+    fn detail_noise_elevation_within_bounds() {
+        let surface = test_planet_surface_with_detail();
+        // With detail, max deviation is amplitude * (1 + detail_weight) / 2
+        // since both base and detail are normalized to [-0.5, 0.5] before scaling.
+        let max_deviation = surface.amplitude * (1.0 + surface.detail_weight);
+        let lo = surface.base_y - max_deviation;
+        let hi = surface.base_y + max_deviation;
+        for ix in 0..50 {
+            for iz in 0..50 {
+                let x = ix as f32 * 17.3;
+                let z = iz as f32 * 13.7;
+                let h = surface.sample_elevation(x, z);
+                assert!(
+                    h >= lo && h <= hi,
+                    "elevation {h} out of range [{lo}, {hi}] at ({x}, {z})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn detail_noise_actually_changes_elevation() {
+        let without = test_planet_surface();
+        let with = test_planet_surface_with_detail();
+        let mut any_different = false;
+        for i in 0..100 {
+            let x = i as f32 * 11.1;
+            let e_no = without.sample_elevation(x, 42.0);
+            let e_yes = with.sample_elevation(x, 42.0);
+            if (e_no - e_yes).abs() > 1e-6 {
+                any_different = true;
+                break;
+            }
+        }
+        assert!(
+            any_different,
+            "enabling detail noise should change at least some elevations"
+        );
+    }
+
     #[test]
     fn heightmap_mesh_vertex_count_matches_expected() {
         let surface = test_planet_surface();
