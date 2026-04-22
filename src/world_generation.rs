@@ -2603,4 +2603,41 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn flat_terrain_mesh_normals_all_point_up() {
+        let surface = PlanetSurface {
+            amplitude: 0.0,
+            ..test_planet_surface()
+        };
+
+        // Test across several chunk coordinates and subdivision levels.
+        let chunks = [
+            ChunkCoord::new(0, 0),
+            ChunkCoord::new(3, -2),
+            ChunkCoord::new(-5, 7),
+        ];
+        for chunk in chunks {
+            for subdivisions in [2, 4, 8] {
+                let mesh = generate_chunk_heightmap_mesh(&surface, chunk, subdivisions);
+                let normals = mesh
+                    .attribute(Mesh::ATTRIBUTE_NORMAL)
+                    .expect("mesh must have normals")
+                    .as_float3()
+                    .expect("normals must be Float32x3");
+
+                for (i, n) in normals.iter().enumerate() {
+                    assert!(
+                        n[0].abs() < 1e-5 && (n[1] - 1.0).abs() < 1e-5 && n[2].abs() < 1e-5,
+                        "vertex {i} in chunk {:?} (subdivisions={subdivisions}): \
+                         expected normal ≈ (0,1,0), got ({}, {}, {})",
+                        chunk,
+                        n[0],
+                        n[1],
+                        n[2]
+                    );
+                }
+            }
+        }
+    }
 }
