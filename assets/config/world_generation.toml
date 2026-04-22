@@ -25,3 +25,16 @@ active_chunk_radius = 1
 # Two player-added objects in the same cell are considered a conflict during
 # delta merging. Smaller values = finer granularity, larger = more forgiving.
 building_cell_size = 1.0
+
+# Planet surface size bounds (in chunks).
+#
+# The actual planet radius is derived deterministically from the planet seed
+# within this range. The planet surface is a square grid of (2 * radius) chunks
+# on each side, with torus wrapping — walking off one edge brings you to the
+# opposite side.
+#
+# With a 45-unit chunk size:
+#   radius 500  → diameter 1000  × 45 = 45,000 world units (~45 km)
+#   radius 5000 → diameter 10000 × 45 = 450,000 world units (~450 km)
+planet_surface_min_radius = 500
+planet_surface_max_radius = 5000

@@ -377,6 +377,12 @@ const CONFIG_PATH: &str = "assets/config/world_generation.toml";
 const PLACEMENT_DENSITY_CHANNEL: u64 = 0xD3E5_17A1_0000_0001;
 const PLACEMENT_VARIATION_CHANNEL: u64 = 0xD3E5_17A1_0000_0002;
 const OBJECT_IDENTITY_CHANNEL: u64 = 0xD3E5_17A1_0000_0003;
+/// Channel constant for deriving the planet surface radius from the planet seed.
+///
+/// The planet surface radius (measured in chunks) determines how large the
+/// planet is. It is derived deterministically from the planet seed so that
+/// each planet has a consistent, reproducible size.
+const PLANET_SURFACE_RADIUS_CHANNEL: u64 = 0xD3E5_17A1_0000_0004;
 
 pub struct WorldGenerationPlugin;
 
@@ -443,6 +449,20 @@ pub struct WorldGenerationConfig {
     /// collision granularity; larger values are more forgiving.
     #[serde(default = "default_building_cell_size")]
     pub building_cell_size: f32,
+    /// Minimum planet surface radius in chunks.
+    ///
+    /// The actual radius is derived from the planet seed within the range
+    /// `[planet_surface_min_radius, planet_surface_max_radius]`. The planet
+    /// diameter in chunks is `2 * radius`, and the surface wraps in both X and
+    /// Z using torus topology (walk off one edge, appear on the opposite side).
+    #[serde(default = "default_planet_surface_min_radius")]
+    pub planet_surface_min_radius: i32,
+    /// Maximum planet surface radius in chunks.
+    ///
+    /// See `planet_surface_min_radius` for details on how the planet size is
+    /// derived from the seed.
+    #[serde(default = "default_planet_surface_max_radius")]
+    pub planet_surface_max_radius: i32,
 }
 
 impl Default for WorldGenerationConfig {
@@ -452,6 +472,8 @@ impl Default for WorldGenerationConfig {
             chunk_size_world_units: default_chunk_size_world_units(),
             active_chunk_radius: default_active_chunk_radius(),
             building_cell_size: default_building_cell_size(),
+            planet_surface_min_radius: default_planet_surface_min_radius(),
+            planet_surface_max_radius: default_planet_surface_max_radius(),
         }
     }
 }
@@ -488,11 +510,43 @@ fn default_building_cell_size() -> f32 {
     1.0
 }
 
+fn default_planet_surface_min_radius() -> i32 {
+    // Minimum planet radius in chunks. With a 45-unit chunk size, 500 chunks
+    // gives a surface diameter of 1000 chunks × 45 = 45,000 world units
+    // (~45 km). That is small enough to circumnavigate in a reasonable play
+    // session but large enough that the surface wrapping is not immediately
+    // obvious at ground level.
+    500
+}
+
+fn default_planet_surface_max_radius() -> i32 {
+    // Maximum planet radius in chunks. 5000 chunks gives a diameter of
+    // 10,000 chunks × 45 = 450,000 world units (~450 km). A planet this
+    // large would take real commitment to circumnavigate, making the world
+    // feel genuinely expansive.
+    5000
+}
+
 /// Derived deterministic world profile.
 ///
 /// The profile exists so later stories do not have to keep reverse engineering
 /// "which seed should I use for this purpose?" from the raw planet seed. We
 /// derive explicit sub-seeds up front and document what each one is for.
+///
+/// ## Planet Surface Topology (Story 5a.1)
+///
+/// The planet surface uses **torus topology**: chunk coordinates wrap in both
+/// the X and Z axes. Walking off one edge of the planet brings you back to the
+/// opposite side. The surface is a square grid of chunks with side length
+/// `planet_surface_diameter` (measured in chunks). The diameter is derived
+/// deterministically from the planet seed within the configurable min/max
+/// radius range, so every planet has a consistent, reproducible size.
+///
+/// Chunk coordinates on the planet surface are always in the range
+/// `[0, planet_surface_diameter)` on both axes after wrapping. The
+/// [`wrap_chunk_coord`] function handles this — all code that produces or
+/// consumes chunk coordinates should pass them through wrapping to ensure
+/// consistency.
 #[derive(Clone, Debug, Resource, PartialEq, Serialize, Deserialize)]
 pub struct WorldProfile {
     pub planet_seed: PlanetSeed,
@@ -501,6 +555,16 @@ pub struct WorldProfile {
     pub placement_density_seed: u64,
     pub placement_variation_seed: u64,
     pub object_identity_seed: u64,
+    /// The planet surface radius in chunks, derived from the planet seed.
+    ///
+    /// The full surface is a square grid of `planet_surface_diameter × diameter`
+    /// chunks with torus wrapping. The radius is half the diameter.
+    pub planet_surface_radius: i32,
+    /// The planet surface diameter in chunks (always `2 * planet_surface_radius`).
+    ///
+    /// This is the wrapping period for chunk coordinates. A coordinate of
+    /// `planet_surface_diameter` wraps back to `0`.
+    pub planet_surface_diameter: i32,
 }
 
 impl Default for WorldProfile {
@@ -513,6 +577,22 @@ impl WorldProfile {
     pub fn from_config(config: &WorldGenerationConfig) -> Self {
         let planet_seed = PlanetSeed(config.planet_seed);
 
+        // Derive the planet surface radius from the planet seed. We mix the
+        // seed with a dedicated channel constant so this derivation is
+        // independent of all other seed-derived values (placement density,
+        // variation, identity). The result is scaled into the configured
+        // [min_radius, max_radius] range using Lemire's nearly-unbiased
+        // method: multiply a u32 by the range width as u64, then take the
+        // upper 32 bits. This avoids modulo bias without rejection sampling.
+        let planet_surface_radius = derive_planet_surface_radius(
+            planet_seed,
+            config.planet_surface_min_radius,
+            config.planet_surface_max_radius,
+        );
+        let planet_surface_diameter = planet_surface_radius
+            .checked_mul(2)
+            .expect("planet surface diameter must fit in i32");
+
         Self {
             planet_seed,
             chunk_size_world_units: config.chunk_size_world_units,
@@ -520,6 +600,8 @@ impl WorldProfile {
             placement_density_seed: mix_seed(planet_seed.0, PLACEMENT_DENSITY_CHANNEL),
             placement_variation_seed: mix_seed(planet_seed.0, PLACEMENT_VARIATION_CHANNEL),
             object_identity_seed: mix_seed(planet_seed.0, OBJECT_IDENTITY_CHANNEL),
+            planet_surface_radius,
+            planet_surface_diameter,
         }
     }
 }
@@ -614,6 +696,12 @@ fn update_active_chunk_neighborhood(
         player_transform.translation.x,
         player_transform.translation.z,
     );
+    // Use the raw (unwrapped) chunk coordinate for world-space positioning.
+    // The neighborhood must stay in the player's local coordinate space so
+    // that `chunk_origin_xz` produces positions near the player. Torus
+    // wrapping only matters for *generation keys* — two chunks at the same
+    // canonical (wrapped) coordinate produce identical content, but they
+    // must be rendered at their raw world-space positions.
     let center_chunk =
         world_position_to_chunk_coord(player_position_xz, profile.chunk_size_world_units);
     let center_chunk_origin_xz = chunk_origin_xz(center_chunk, profile.chunk_size_world_units);
@@ -670,8 +758,15 @@ pub fn chunk_origin_xz(chunk_coord: ChunkCoord, chunk_size_world_units: f32) -> 
 /// - one chunk to the north/south
 /// - and the four diagonal neighbors
 ///
-/// The nested loop order is stable, so any later story that iterates this list
-/// gets the same ordering every run.
+/// These coordinates are **raw (unwrapped)** — they stay in the player's local
+/// coordinate space so that `chunk_origin_xz` produces world-space positions
+/// near the player. Torus wrapping is applied later, only when deriving
+/// generation keys (via [`derive_chunk_generation_key`]), so that chunks at
+/// equivalent canonical positions produce identical content regardless of
+/// which "lap" of the torus the player is on.
+///
+/// The nested loop order is stable, so any later story that iterates this
+/// list gets the same ordering every run.
 fn active_chunk_neighborhood(center_chunk: ChunkCoord, radius: i32) -> Vec<ChunkCoord> {
     let mut chunks = Vec::new();
 
@@ -686,18 +781,29 @@ fn active_chunk_neighborhood(center_chunk: ChunkCoord, radius: i32) -> Vec<Chunk
 
 /// Derive stable per-chunk generation keys from the world profile and chunk.
 ///
+/// The input `chunk_coord` may be a raw (unwrapped) coordinate from the
+/// player's local space. We wrap it to the canonical torus position before
+/// mixing, so that chunk `(-1, 0)` on a diameter-1000 planet produces the
+/// same generation keys as chunk `(999, 0)`. This is the **only** place
+/// torus wrapping feeds into content generation — the raw coordinate is
+/// preserved in the returned key for world-space positioning.
+///
 /// We mix the profile's purpose-specific seeds with the chunk coordinate so that:
-/// - the same planet + same chunk always gets the same keys
+/// - the same planet + same canonical chunk always gets the same keys
 /// - different chunks on the same planet get different keys
 /// - later systems can tell which key is meant for which job
 pub fn derive_chunk_generation_key(
     profile: &WorldProfile,
     chunk_coord: ChunkCoord,
 ) -> ChunkGenerationKey {
-    let chunk_mixer = mix_chunk_coord(profile.planet_seed, chunk_coord);
+    // Wrap to canonical torus coordinate for deterministic generation.
+    // Two raw coordinates that differ by a multiple of the planet diameter
+    // will produce identical keys — this is what makes the torus seamless.
+    let canonical = wrap_chunk_coord(chunk_coord, profile.planet_surface_diameter);
+    let chunk_mixer = mix_chunk_coord(profile.planet_seed, canonical);
 
     ChunkGenerationKey {
-        chunk_coord,
+        chunk_coord: canonical,
         placement_density_key: mix_seed(profile.placement_density_seed, chunk_mixer),
         placement_variation_key: mix_seed(profile.placement_variation_seed, chunk_mixer),
         object_identity_key: mix_seed(profile.object_identity_seed, chunk_mixer),
@@ -731,6 +837,72 @@ fn mix_chunk_coord(planet_seed: PlanetSeed, chunk_coord: ChunkCoord) -> u64 {
     mix_seed(planet_seed.0, packed)
 }
 
+/// Derive the planet surface radius (in chunks) from the planet seed.
+///
+/// The radius is derived by mixing the planet seed with a dedicated channel
+/// constant, then scaling the result into the `[min_radius, max_radius]` range
+/// using Lemire's nearly-unbiased method.
+///
+/// ## Lemire's Method (why not modulo?)
+///
+/// A naïve `value % range` biases the lower values when the range doesn't
+/// divide evenly into `u32::MAX`. Lemire's method avoids this: multiply the
+/// random `u32` by the range width to get a `u64`, then take the upper 32 bits.
+/// This is equivalent to `(value / u32::MAX) * range` but done entirely with
+/// integer arithmetic — no floating point, no division, no rejection loop.
+///
+/// For the small ranges we use here (planet radius might span a few thousand
+/// values) the bias from modulo would be negligible, but Lemire's method is
+/// equally simple and has zero bias worth measuring.
+fn derive_planet_surface_radius(planet_seed: PlanetSeed, min_radius: i32, max_radius: i32) -> i32 {
+    debug_assert!(min_radius > 0, "planet surface min radius must be positive");
+    debug_assert!(
+        max_radius >= min_radius,
+        "planet surface max radius must be >= min radius"
+    );
+
+    // Mix the planet seed with the dedicated channel to get a raw u64.
+    let raw = mix_seed(planet_seed.0, PLANET_SURFACE_RADIUS_CHANNEL);
+
+    // Take the lower 32 bits as a u32 for scaling.
+    let raw_u32 = raw as u32;
+
+    // Range width: how many distinct radius values are possible.
+    // +1 because both endpoints are inclusive.
+    let range = (max_radius - min_radius + 1) as u64;
+
+    // Lemire's method: multiply by range, take upper 32 bits.
+    // This maps the u32 space [0, 2^32) proportionally onto [0, range).
+    let scaled = ((raw_u32 as u64) * range) >> 32;
+
+    min_radius + scaled as i32
+}
+
+/// Wrap a chunk coordinate into the planet's torus surface.
+///
+/// The planet surface is a square grid of `diameter × diameter` chunks. Both
+/// axes wrap independently using Euclidean modulo, so walking off any edge
+/// brings you to the opposite side. Coordinates that are already in range
+/// `[0, diameter)` pass through unchanged.
+///
+/// ## Why Euclidean modulo?
+///
+/// Rust's `%` operator is a remainder, not a modulo — it preserves the sign of
+/// the dividend. `-1 % 10` gives `-1` in Rust, but we need `9`. The
+/// `.rem_euclid()` method gives the mathematically correct non-negative result:
+/// `-1_i32.rem_euclid(10)` gives `9`. This is exactly what we need for torus
+/// wrapping where all coordinates must be in `[0, diameter)`.
+pub fn wrap_chunk_coord(coord: ChunkCoord, planet_surface_diameter: i32) -> ChunkCoord {
+    debug_assert!(
+        planet_surface_diameter > 0,
+        "planet surface diameter must be positive for wrapping"
+    );
+    ChunkCoord::new(
+        coord.x.rem_euclid(planet_surface_diameter),
+        coord.z.rem_euclid(planet_surface_diameter),
+    )
+}
+
 pub fn derive_generated_object_id(
     profile: &WorldProfile,
     chunk_coord: ChunkCoord,
@@ -758,6 +930,8 @@ mod tests {
             chunk_size_world_units: 45.0,
             active_chunk_radius: 2,
             building_cell_size: 1.0,
+            planet_surface_min_radius: 500,
+            planet_surface_max_radius: 5000,
         };
 
         let a = WorldProfile::from_config(&config);
@@ -822,12 +996,12 @@ mod tests {
 
     #[test]
     fn active_chunk_neighborhood_uses_configured_radius() {
-        let center = ChunkCoord::new(5, -2);
+        let center = ChunkCoord::new(5, 2);
         let chunks = active_chunk_neighborhood(center, 1);
 
         assert_eq!(chunks.len(), 9);
-        assert_eq!(chunks.first().copied(), Some(ChunkCoord::new(4, -3)));
-        assert_eq!(chunks.last().copied(), Some(ChunkCoord::new(6, -1)));
+        assert_eq!(chunks.first().copied(), Some(ChunkCoord::new(4, 1)));
+        assert_eq!(chunks.last().copied(), Some(ChunkCoord::new(6, 3)));
         assert!(chunks.contains(&center));
     }
 
@@ -838,6 +1012,8 @@ mod tests {
             chunk_size_world_units: 45.0,
             active_chunk_radius: 1,
             building_cell_size: 1.0,
+            planet_surface_min_radius: 500,
+            planet_surface_max_radius: 5000,
         });
         let chunk = ChunkCoord::new(-3, 4);
 
@@ -865,6 +1041,8 @@ mod tests {
             chunk_size_world_units: 45.0,
             active_chunk_radius: 1,
             building_cell_size: 1.0,
+            planet_surface_min_radius: 500,
+            planet_surface_max_radius: 5000,
         });
 
         let a =
@@ -1051,5 +1229,227 @@ mod tests {
         // Should be unit quaternion
         let len = (qx * qx + qy * qy + qz * qz + qw * qw).sqrt();
         assert!((len - 1.0).abs() < 0.01);
+    }
+
+    // ── Story 5a.1: Planet Surface Topology Tests ─────────────────────────
+
+    // ── wrap_chunk_coord ──────────────────────────────────────────────────
+
+    #[test]
+    fn wrap_chunk_coord_passthrough_for_in_range_coords() {
+        // Coordinates already within [0, diameter) should pass through unchanged.
+        let diameter = 100;
+        let coord = ChunkCoord::new(50, 75);
+        let wrapped = wrap_chunk_coord(coord, diameter);
+        assert_eq!(wrapped, coord);
+    }
+
+    #[test]
+    fn wrap_chunk_coord_wraps_positive_overflow() {
+        // A coordinate >= diameter should wrap back around.
+        let diameter = 100;
+        let coord = ChunkCoord::new(105, 200);
+        let wrapped = wrap_chunk_coord(coord, diameter);
+        assert_eq!(wrapped, ChunkCoord::new(5, 0));
+    }
+
+    #[test]
+    fn wrap_chunk_coord_wraps_negative_to_positive() {
+        // Negative coordinates should wrap to the positive range.
+        // -1 mod 100 = 99, -50 mod 100 = 50
+        let diameter = 100;
+        let coord = ChunkCoord::new(-1, -50);
+        let wrapped = wrap_chunk_coord(coord, diameter);
+        assert_eq!(wrapped, ChunkCoord::new(99, 50));
+    }
+
+    #[test]
+    fn wrap_chunk_coord_exact_boundary_wraps_to_zero() {
+        // A coordinate exactly equal to the diameter should wrap to 0.
+        let diameter = 100;
+        let coord = ChunkCoord::new(100, 100);
+        let wrapped = wrap_chunk_coord(coord, diameter);
+        assert_eq!(wrapped, ChunkCoord::new(0, 0));
+    }
+
+    #[test]
+    fn wrap_chunk_coord_zero_passes_through() {
+        let diameter = 100;
+        let coord = ChunkCoord::new(0, 0);
+        let wrapped = wrap_chunk_coord(coord, diameter);
+        assert_eq!(wrapped, ChunkCoord::new(0, 0));
+    }
+
+    #[test]
+    fn wrap_chunk_coord_large_negative() {
+        // -301 mod 100 = 99 (since -301 = -4*100 + 99)
+        let diameter = 100;
+        let coord = ChunkCoord::new(-301, -1);
+        let wrapped = wrap_chunk_coord(coord, diameter);
+        assert_eq!(wrapped, ChunkCoord::new(99, 99));
+    }
+
+    #[test]
+    #[should_panic(expected = "planet surface diameter must be positive")]
+    fn wrap_chunk_coord_panics_on_zero_diameter() {
+        wrap_chunk_coord(ChunkCoord::new(1, 1), 0);
+    }
+
+    // ── derive_planet_surface_radius ──────────────────────────────────────
+
+    #[test]
+    fn derive_planet_surface_radius_is_deterministic() {
+        let seed = PlanetSeed(42);
+        let a = derive_planet_surface_radius(seed, 500, 5000);
+        let b = derive_planet_surface_radius(seed, 500, 5000);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn derive_planet_surface_radius_stays_within_range() {
+        // Test many seeds to increase confidence the result is always in range.
+        for seed_val in 0..1000_u64 {
+            let radius = derive_planet_surface_radius(PlanetSeed(seed_val), 500, 5000);
+            assert!(
+                (500..=5000).contains(&radius),
+                "seed {seed_val} produced out-of-range radius {radius}"
+            );
+        }
+    }
+
+    #[test]
+    fn derive_planet_surface_radius_min_equals_max_returns_exact() {
+        // When min == max, the radius must be exactly that value regardless of seed.
+        let radius = derive_planet_surface_radius(PlanetSeed(99999), 1000, 1000);
+        assert_eq!(radius, 1000);
+    }
+
+    #[test]
+    fn derive_planet_surface_radius_different_seeds_vary() {
+        // Collect radii from several seeds and verify they are not all identical.
+        // This is a statistical property — with 100 seeds across a range of 4501
+        // values it would be astronomically unlikely for all to match.
+        let radii: Vec<i32> = (0..100)
+            .map(|s| derive_planet_surface_radius(PlanetSeed(s), 500, 5000))
+            .collect();
+        let all_same = radii.iter().all(|&r| r == radii[0]);
+        assert!(
+            !all_same,
+            "100 different seeds all produced the same radius"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "planet surface min radius must be positive")]
+    fn derive_planet_surface_radius_panics_on_zero_min() {
+        derive_planet_surface_radius(PlanetSeed(1), 0, 100);
+    }
+
+    #[test]
+    #[should_panic(expected = "planet surface max radius must be >= min radius")]
+    fn derive_planet_surface_radius_panics_when_min_exceeds_max() {
+        derive_planet_surface_radius(PlanetSeed(1), 5000, 500);
+    }
+
+    // ── WorldProfile planet surface fields ────────────────────────────────
+
+    #[test]
+    fn world_profile_includes_planet_surface_fields() {
+        let config = WorldGenerationConfig {
+            planet_seed: 42,
+            chunk_size_world_units: 45.0,
+            active_chunk_radius: 1,
+            building_cell_size: 1.0,
+            planet_surface_min_radius: 500,
+            planet_surface_max_radius: 5000,
+        };
+        let profile = WorldProfile::from_config(&config);
+
+        assert!(
+            (500..=5000).contains(&profile.planet_surface_radius),
+            "radius {} out of configured range",
+            profile.planet_surface_radius
+        );
+        assert_eq!(
+            profile.planet_surface_diameter,
+            profile.planet_surface_radius * 2
+        );
+    }
+
+    // ── active_chunk_neighborhood (raw coords for positioning) ──────────
+
+    #[test]
+    fn neighborhood_returns_raw_unwrapped_coords() {
+        // Center at (0, 0) with radius 1. The neighborhood should include
+        // negative coordinates — no wrapping — so that chunk_origin_xz
+        // produces world-space positions near the player.
+        let center = ChunkCoord::new(0, 0);
+        let chunks = active_chunk_neighborhood(center, 1);
+
+        assert_eq!(chunks.len(), 9);
+        // Should contain raw (-1, -1), not wrapped to (diameter-1, diameter-1)
+        assert!(
+            chunks.contains(&ChunkCoord::new(-1, -1)),
+            "expected raw (-1,-1), got: {chunks:?}"
+        );
+        assert!(
+            chunks.contains(&ChunkCoord::new(-1, 0)),
+            "expected raw (-1,0), got: {chunks:?}"
+        );
+        assert!(
+            chunks.contains(&ChunkCoord::new(0, -1)),
+            "expected raw (0,-1), got: {chunks:?}"
+        );
+        assert!(chunks.contains(&ChunkCoord::new(0, 0)));
+    }
+
+    // ── Torus wrapping in generation keys ─────────────────────────────────
+
+    #[test]
+    fn generation_key_wraps_raw_coords_to_canonical() {
+        // derive_chunk_generation_key should produce identical keys for raw
+        // coordinates that are equivalent under torus wrapping. This is what
+        // makes the torus seamless — chunk (-1, 0) on a diameter-100 planet
+        // generates the same content as chunk (99, 0).
+        let config = WorldGenerationConfig {
+            planet_seed: 42,
+            chunk_size_world_units: 45.0,
+            active_chunk_radius: 1,
+            building_cell_size: 1.0,
+            planet_surface_min_radius: 50,
+            planet_surface_max_radius: 50,
+        };
+        let profile = WorldProfile::from_config(&config);
+        let diameter = profile.planet_surface_diameter; // 100
+
+        let raw_negative = ChunkCoord::new(-1, -1);
+        let raw_positive = ChunkCoord::new(diameter - 1, diameter - 1);
+
+        let key_a = derive_chunk_generation_key(&profile, raw_negative);
+        let key_b = derive_chunk_generation_key(&profile, raw_positive);
+        assert_eq!(key_a, key_b);
+    }
+
+    #[test]
+    fn generation_key_wraps_overflow_coords() {
+        // A coordinate beyond the diameter should produce the same key as
+        // the equivalent in-range coordinate.
+        let config = WorldGenerationConfig {
+            planet_seed: 42,
+            chunk_size_world_units: 45.0,
+            active_chunk_radius: 1,
+            building_cell_size: 1.0,
+            planet_surface_min_radius: 50,
+            planet_surface_max_radius: 50,
+        };
+        let profile = WorldProfile::from_config(&config);
+        let diameter = profile.planet_surface_diameter; // 100
+
+        let canonical = ChunkCoord::new(5, 10);
+        let overflow = ChunkCoord::new(5 + diameter, 10 + diameter);
+
+        let key_a = derive_chunk_generation_key(&profile, canonical);
+        let key_b = derive_chunk_generation_key(&profile, overflow);
+        assert_eq!(key_a, key_b);
     }
 }

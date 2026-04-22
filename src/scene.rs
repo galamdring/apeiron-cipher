@@ -705,12 +705,16 @@ fn setup_scene(
         Transform::from_xyz(0.0, wall_y, north_wall_center_z(hz, t)),
     ));
 
-    // Keep the first authored exterior intentionally simple, but make it large
-    // enough that chunk-based surface deposit generation has room to feel
-    // present. A tiny patch technically "works" yet makes the outside feel
-    // empty, which gives the wrong read on Story 5.2's generation density.
-    let exterior_ground_size_x = hx * 10.0;
-    let exterior_ground_size_z = hz * 14.0;
+    // Story 5a.1: the exterior ground must cover the full active chunk
+    // neighborhood (currently 3×3 chunks at 45 world-units each = 135×135).
+    // We size it generously so players never see the edge. The ground is
+    // centered on the Z-axis just south of the room so the player walks
+    // straight into the exterior from the doorway.
+    //
+    // Previous sizing (hx*10 × hz*14 ≈ 40×56) only covered about one chunk,
+    // which meant surface mineral deposits couldn't spawn in neighbor chunks.
+    let exterior_ground_size_x = 200.0;
+    let exterior_ground_size_z = 200.0;
     let exterior_ground_center_z = -hz - exterior_ground_size_z * 0.5;
     let exterior_surface_y = -0.01;
     let exterior_ground_mat = materials.add(StandardMaterial {

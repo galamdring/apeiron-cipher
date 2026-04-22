@@ -839,6 +839,8 @@ fn append_thermal_prop(lines: &mut Vec<String>, mat: &GameMaterial, tracker: &Co
 mod tests {
     use super::*;
     use crate::materials::MaterialProperty;
+    use crate::scene::SceneConfig;
+    use bevy::app::Update;
 
     #[test]
     fn describe_value_covers_full_range() {
@@ -986,6 +988,8 @@ mod tests {
         let mut app = App::new();
         app.add_message::<PickupIntent>()
             .add_message::<PlaceIntent>()
+            .add_message::<StashHeldForPickup>()
+            .add_message::<ObserveWeight>()
             .insert_resource(InteractionTarget::default())
             .insert_resource(SlotTarget::default())
             .insert_resource(SceneConfig::default())
@@ -995,6 +999,15 @@ mod tests {
             .world_mut()
             .spawn((PlayerCamera, GlobalTransform::default()))
             .id();
+
+        // process_pickup queries for a Player entity with CarryState.
+        // Without this, the pickup silently no-ops because the query returns Err.
+        app.world_mut().spawn((
+            Player,
+            CarryState::new(100.0, false),
+            Transform::default(),
+            GlobalTransform::default(),
+        ));
 
         let slot_pos = Vec3::ZERO;
         let slot_entity = app

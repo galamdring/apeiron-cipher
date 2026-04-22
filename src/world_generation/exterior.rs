@@ -519,19 +519,23 @@ fn sync_active_exterior_chunks(
         }
     }
 
-    // Build the surface provider from the current exterior patch.
+    // Build the surface provider for chunk generation.
     //
-    // Story 5.3: the generation functions no longer receive ExteriorGroundPatch
-    // directly. They receive a &dyn SurfaceProvider so they can be tested
-    // against synthetic surfaces without any Bevy dependency. The ECS system is
-    // the only place that knows about ExteriorGroundPatch — it constructs the
-    // appropriate SurfaceProvider and hands it down.
+    // Story 5.3: the generation functions receive a &dyn SurfaceProvider so
+    // they can be tested against synthetic surfaces without any Bevy dependency.
+    //
+    // Story 5a.1: the planet surface is conceptually unbounded — every chunk on
+    // the torus has valid ground. We use effectively-infinite bounds so that
+    // `FlatSurface::query_surface` never rejects a candidate for being "out of
+    // bounds". The *visual* ground mesh is sized separately in scene.rs to
+    // cover the active neighborhood; this surface provider is purely about
+    // generation validity.
     let surface = FlatSurface {
         surface_y: exterior_patch.surface_y,
-        min_x: exterior_patch.bounds_xz.min_x,
-        max_x: exterior_patch.bounds_xz.max_x,
-        min_z: exterior_patch.bounds_xz.min_z,
-        max_z: exterior_patch.bounds_xz.max_z,
+        min_x: f32::MIN,
+        max_x: f32::MAX,
+        min_z: f32::MIN,
+        max_z: f32::MAX,
     };
 
     for &chunk in &active_chunks.chunks {
@@ -1515,6 +1519,8 @@ mod tests {
             chunk_size_world_units: 45.0,
             active_chunk_radius: 1,
             building_cell_size: 1.0,
+            planet_surface_min_radius: 500,
+            planet_surface_max_radius: 5000,
         })
     }
 
