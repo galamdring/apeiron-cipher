@@ -2249,4 +2249,160 @@ mod tests {
         assert_eq!(result.ground_color, [0.26, 0.3, 0.22]);
         assert_eq!(result.density_modifier, 1.0);
     }
+
+    // ── PlanetSurface multi-octave noise tests ──────────────────────────
+
+    /// Helper: build a `PlanetSurface` with known parameters for testing.
+    fn test_planet_surface() -> PlanetSurface {
+        PlanetSurface {
+            elevation_seed: 0xDEAD_BEEF,
+            base_y: 0.0,
+            amplitude: 10.0,
+            frequency: 0.005,
+            octaves: 4,
+            detail_weight: 0.0,
+            planet_surface_diameter: 100,
+            chunk_size_world_units: 45.0,
+        }
+    }
+
+    #[test]
+    fn planet_surface_elevation_is_deterministic() {
+        let surface = test_planet_surface();
+        let a = surface.sample_elevation(123.4, 567.8);
+        let b = surface.sample_elevation(123.4, 567.8);
+        assert_eq!(a, b, "same inputs must produce identical elevation");
+    }
+
+    #[test]
+    fn planet_surface_different_seeds_produce_different_elevation() {
+        let mut s1 = test_planet_surface();
+        let mut s2 = test_planet_surface();
+        s2.elevation_seed = 0xCAFE_BABE;
+
+        let e1 = s1.sample_elevation(50.0, 50.0);
+        let e2 = s2.sample_elevation(50.0, 50.0);
+        assert_ne!(e1, e2, "different seeds should produce different terrain");
+    }
+
+    #[test]
+    fn planet_surface_elevation_within_amplitude() {
+        let surface = test_planet_surface();
+        // Sample a grid of points and verify all elevations stay within bounds.
+        for ix in 0..50 {
+            for iz in 0..50 {
+                let x = ix as f32 * 17.3;
+                let z = iz as f32 * 13.7;
+                let h = surface.sample_elevation(x, z);
+                assert!(
+                    h >= surface.base_y - surface.amplitude
+                        && h <= surface.base_y + surface.amplitude,
+                    "elevation {h} out of range [{}, {}] at ({x}, {z})",
+                    surface.base_y - surface.amplitude,
+                    surface.base_y + surface.amplitude,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn planet_surface_torus_wrapping_continuous() {
+        let surface = test_planet_surface();
+        let period = surface.planet_surface_diameter as f32 * surface.chunk_size_world_units;
+
+        // Elevation at (x, z) must equal elevation at (x + period, z).
+        for i in 0..20 {
+            let x = i as f32 * 37.1;
+            let z = i as f32 * 23.9;
+            let result_a = surface.query_surface(x, z);
+            let result_b = surface.query_surface(x + period, z);
+            assert!(
+                (result_a.position_y - result_b.position_y).abs() < 1e-6,
+                "torus wrap mismatch at x={x}: {} vs {}",
+                result_a.position_y,
+                result_b.position_y,
+            );
+        }
+    }
+
+    #[test]
+    fn planet_surface_flat_region_normal_points_up() {
+        // With zero amplitude the surface is perfectly flat, so the normal
+        // should be straight up.
+        let surface = PlanetSurface {
+            amplitude: 0.0,
+            ..test_planet_surface()
+        };
+        let result = surface.query_surface(100.0, 200.0);
+        let [nx, ny, nz] = result.normal;
+        assert!(
+            (nx.abs() < 1e-6) && ((ny - 1.0).abs() < 1e-6) && (nz.abs() < 1e-6),
+            "flat surface normal should be (0,1,0), got ({nx}, {ny}, {nz})"
+        );
+    }
+
+    #[test]
+    fn planet_surface_steep_region_normal_deviates_from_up() {
+        // With high amplitude and high frequency, some normals must deviate
+        // noticeably from straight up.
+        let surface = PlanetSurface {
+            amplitude: 50.0,
+            frequency: 0.1,
+            octaves: 1,
+            ..test_planet_surface()
+        };
+        let mut found_steep = false;
+        for ix in 0..100 {
+            let x = ix as f32 * 3.7;
+            let result = surface.query_surface(x, 42.0);
+            if result.normal[1] < 0.99 {
+                found_steep = true;
+                break;
+            }
+        }
+        assert!(
+            found_steep,
+            "high-amplitude terrain should have non-vertical normals"
+        );
+    }
+
+    #[test]
+    fn planet_surface_query_surface_always_valid() {
+        let surface = test_planet_surface();
+        for i in 0..50 {
+            let x = (i as f32 - 25.0) * 100.0;
+            let z = (i as f32 - 10.0) * 77.0;
+            assert!(
+                surface.query_surface(x, z).valid,
+                "PlanetSurface should always return valid=true"
+            );
+        }
+    }
+
+    #[test]
+    fn planet_surface_multiple_octaves_differ_from_single() {
+        let single = PlanetSurface {
+            octaves: 1,
+            ..test_planet_surface()
+        };
+        let multi = PlanetSurface {
+            octaves: 4,
+            ..test_planet_surface()
+        };
+        // At least some samples should differ when adding more octaves.
+        let mut any_different = false;
+        for i in 0..50 {
+            let x = i as f32 * 11.1;
+            let e1 = single.sample_elevation(x, 0.0);
+            let e4 = multi.sample_elevation(x, 0.0);
+            if (e1 - e4).abs() > 1e-6 {
+                any_different = true;
+                break;
+            }
+        }
+        assert!(
+            any_different,
+            "multi-octave noise should differ from single octave"
+        );
+    }
 }
