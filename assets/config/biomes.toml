@@ -1,0 +1,74 @@
+# Biome definitions for planet-scale world generation (Story 5a.2).
+#
+# Each biome occupies a region of temperature × moisture space. The game
+# samples two coherent noise fields at each chunk's canonical center to
+# produce a (temperature, moisture) pair in [0, 1]², then finds the first
+# biome whose range contains that pair.
+#
+# Ranges are allowed to overlap — the first matching biome in file order wins.
+# Any (temperature, moisture) pair that falls outside all defined ranges
+# resolves to the `fallback_biome_key`.
+
+# ── Global noise parameters ──────────────────────────────────────────────
+
+# How many chunks fit in one period of the biome noise field. Larger values
+# make biome regions bigger (fewer transitions per planet circumference).
+noise_scale_chunks = 12.0
+
+# Sub-channel constants mixed with `biome_climate_seed` to derive independent
+# temperature and moisture noise. These are arbitrary non-zero values that
+# ensure the two fields are uncorrelated.
+temperature_noise_channel = 0xB10E_0001_0000_0001
+moisture_noise_channel    = 0xB10E_0001_0000_0002
+
+# Key of the biome used when a chunk's (temperature, moisture) pair does not
+# match any defined biome range.
+fallback_biome_key = "mineral_steppe"
+
+# ── Biome definitions ────────────────────────────────────────────────────
+
+[[biomes]]
+key = "scorched_flats"
+temperature_min = 0.6
+temperature_max = 1.0
+moisture_min = 0.0
+moisture_max = 0.4
+# Warm ochre — baked, iron-rich desert feel.
+ground_color = [0.55, 0.38, 0.22]
+# Slightly more deposits than baseline (hot erosion exposes veins).
+density_modifier = 1.15
+
+[biomes.deposit_weight_modifiers]
+ferrite  = 3.0
+silite   = 0.8
+prismate = 0.2
+
+[[biomes]]
+key = "mineral_steppe"
+temperature_min = 0.3
+temperature_max = 0.7
+moisture_min = 0.3
+moisture_max = 0.7
+# Olive green — the "default" exterior the player already knows.
+ground_color = [0.26, 0.3, 0.22]
+# Baseline density — no modifier needed (1.0 is identity).
+density_modifier = 1.0
+
+[biomes.deposit_weight_modifiers]
+# All weights at 1.0 (identity) — the steppe uses global catalog weights.
+
+[[biomes]]
+key = "frost_shelf"
+temperature_min = 0.0
+temperature_max = 0.4
+moisture_min = 0.5
+moisture_max = 1.0
+# Blue-grey — cold, crystalline, faintly luminous ice shelf.
+ground_color = [0.42, 0.48, 0.56]
+# Fewer deposits — ice cover reduces surface exposure.
+density_modifier = 0.7
+
+[biomes.deposit_weight_modifiers]
+ferrite  = 0.2
+silite   = 1.0
+prismate = 3.0

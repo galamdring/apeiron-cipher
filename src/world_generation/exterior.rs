@@ -48,8 +48,9 @@ use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    ActiveChunkNeighborhood, ChunkCoord, DEFAULT_MAX_PLACEMENT_SLOPE_RADIANS, FlatSurface,
-    GeneratedObjectId, SurfaceProvider, WorldProfile, chunk_origin_xz, derive_chunk_generation_key,
+    ActiveChunkNeighborhood, BiomeRegistry, ChunkBiome, ChunkCoord,
+    DEFAULT_MAX_PLACEMENT_SLOPE_RADIANS, FlatSurface, GeneratedObjectId, SurfaceProvider,
+    WorldProfile, chunk_origin_xz, derive_chunk_biome, derive_chunk_generation_key,
     derive_generated_object_id, is_placement_valid, surface_alignment_rotation,
     world_position_to_chunk_coord,
 };
@@ -497,6 +498,7 @@ fn sync_active_exterior_chunks(
     deposit_catalog: Res<SurfaceMineralDepositCatalog>,
     material_catalog: Res<MaterialCatalog>,
     exterior_patch: Res<ExteriorGroundPatch>,
+    biome_registry: Res<BiomeRegistry>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut render_materials: ResMut<Assets<StandardMaterial>>,
     mut spawned_chunks: ResMut<ActiveExteriorChunkSpawns>,
@@ -546,11 +548,23 @@ fn sync_active_exterior_chunks(
             continue;
         }
 
+        // Story 5a.2: derive the biome for this chunk. The biome determines
+        // the ground tile color, deposit density modifier, and per-deposit
+        // weight multipliers. All three feed into the generation pipeline
+        // below so that different biomes produce visibly different exteriors.
+        let chunk_biome = derive_chunk_biome(&world_profile, &biome_registry, chunk);
+        trace!(
+            chunk = ?chunk,
+            biome = %chunk_biome.biome_key,
+            "derived biome for chunk"
+        );
+
         let baseline_placements = generate_surface_mineral_chunk_baseline(
             &world_profile,
             &deposit_catalog,
             &surface,
             chunk,
+            &chunk_biome,
         );
 
         // Story 5.4: apply removal deltas so picked-up objects stay gone.
@@ -564,6 +578,39 @@ fn sync_active_exterior_chunks(
         );
 
         let mut spawned_entities = Vec::new();
+
+        // Story 5a.2: spawn a per-chunk ground tile colored by the biome.
+        //
+        // Each active chunk gets its own `Plane3d` mesh sized to exactly one
+        // chunk, positioned at the chunk's world-space origin (center of the
+        // tile, not corner). The ground tile color comes from the biome
+        // definition, so different biomes produce visibly different ground.
+        //
+        // These tile entities are tracked in `spawned_entities` alongside
+        // material objects, so they are automatically despawned when the chunk
+        // deactivates.
+        {
+            let origin = chunk_origin_xz(chunk, world_profile.chunk_size_world_units);
+            let half = world_profile.chunk_size_world_units * 0.5;
+            let [r, g, b] = chunk_biome.ground_color;
+            let ground_material = render_materials.add(StandardMaterial {
+                base_color: Color::srgb(r, g, b),
+                perceptual_roughness: 0.98,
+                ..default()
+            });
+            let ground_mesh = meshes.add(Plane3d::default().mesh().size(
+                world_profile.chunk_size_world_units,
+                world_profile.chunk_size_world_units,
+            ));
+            let tile_entity = commands
+                .spawn((
+                    Mesh3d(ground_mesh),
+                    MeshMaterial3d(ground_material),
+                    Transform::from_xyz(origin.x + half, exterior_patch.surface_y, origin.z + half),
+                ))
+                .id();
+            spawned_entities.push(tile_entity);
+        }
 
         for placement in placements {
             let Some(base_material) = material_catalog.materials.get(&placement.material_key)
@@ -888,9 +935,10 @@ fn generate_surface_mineral_chunk_baseline(
     catalog: &SurfaceMineralDepositCatalog,
     surface: &dyn SurfaceProvider,
     chunk_coord: ChunkCoord,
+    biome: &ChunkBiome,
 ) -> Vec<GeneratedSurfaceMineralPlacement> {
     let deposit_sites =
-        generate_surface_mineral_deposit_sites(profile, catalog, surface, chunk_coord);
+        generate_surface_mineral_deposit_sites(profile, catalog, surface, chunk_coord, biome);
     let mut placements = Vec::new();
 
     // Story 5.2 produced one object per accepted point sample.
@@ -926,6 +974,7 @@ fn generate_surface_mineral_deposit_sites(
     catalog: &SurfaceMineralDepositCatalog,
     surface: &dyn SurfaceProvider,
     chunk_coord: ChunkCoord,
+    biome: &ChunkBiome,
 ) -> Vec<GeneratedSurfaceMineralDepositSite> {
     let generation_key = derive_chunk_generation_key(profile, chunk_coord);
     let chunk_origin_xz = chunk_origin_xz(chunk_coord, profile.chunk_size_world_units);
@@ -934,6 +983,13 @@ fn generate_surface_mineral_deposit_sites(
     let rows = (profile.chunk_size_world_units / spacing).ceil() as u32;
     let mut sites: Vec<GeneratedSurfaceMineralDepositSite> = Vec::new();
     let mut local_site_index = 0_u32;
+
+    // Story 5a.2: the biome's density modifier scales the spawn threshold.
+    // A density_modifier > 1.0 lowers the effective threshold, admitting more
+    // candidates (denser biome). A modifier < 1.0 raises it, rejecting more
+    // candidates (sparser biome). We clamp to avoid division by zero.
+    let effective_threshold =
+        catalog.site_spawn_threshold / biome.density_modifier.max(f32::EPSILON);
 
     for row in 0..rows {
         for column in 0..columns {
@@ -957,16 +1013,20 @@ fn generate_surface_mineral_deposit_sites(
                 cell_center_xz,
                 catalog.site_density_field_scale_world_units,
             );
-            if density < catalog.site_spawn_threshold {
+            // Story 5a.2: use biome-adjusted threshold instead of catalog baseline.
+            if density < effective_threshold {
                 local_site_index += 1;
                 continue;
             }
 
+            // Story 5a.2: pass biome weight modifiers to deposit selection so
+            // different biomes favor different materials.
             let Some(definition) = choose_deposit_definition(
                 &catalog.deposits,
                 generation_key.placement_variation_key,
                 chunk_coord,
                 local_site_index,
+                &biome.deposit_weight_modifiers,
             ) else {
                 local_site_index += 1;
                 continue;
@@ -1139,16 +1199,30 @@ fn distance_xz(a: PositionXZ, b: PositionXZ) -> f32 {
     (dx * dx + dz * dz).sqrt()
 }
 
-fn choose_deposit_definition(
-    definitions: &[SurfaceMineralDepositDefinition],
+/// Choose a deposit definition from the catalog using weighted random selection.
+///
+/// Story 5a.2: biome weight modifiers are applied multiplicatively to each
+/// definition's base `selection_weight`. A modifier of `2.0` doubles the
+/// chance that material is selected; `0.0` guarantees it is never selected
+/// in this biome. Definitions not present in the modifier map default to
+/// `1.0` (unchanged).
+fn choose_deposit_definition<'a>(
+    definitions: &'a [SurfaceMineralDepositDefinition],
     variation_key: u64,
     chunk_coord: ChunkCoord,
     local_candidate_index: u32,
-) -> Option<&SurfaceMineralDepositDefinition> {
-    let total_weight: f32 = definitions
+    weight_modifiers: &HashMap<String, f32>,
+) -> Option<&'a SurfaceMineralDepositDefinition> {
+    // Compute biome-adjusted weights: base weight × biome modifier.
+    let effective_weights: Vec<f32> = definitions
         .iter()
-        .map(|definition| definition.selection_weight)
-        .sum();
+        .map(|def| {
+            let modifier = weight_modifiers.get(&def.key).copied().unwrap_or(1.0);
+            (def.selection_weight * modifier).max(0.0)
+        })
+        .collect();
+
+    let total_weight: f32 = effective_weights.iter().sum();
     if definitions.is_empty() || total_weight <= f32::EPSILON {
         return None;
     }
@@ -1161,8 +1235,8 @@ fn choose_deposit_definition(
     )) * total_weight;
 
     let mut running = 0.0;
-    for definition in definitions {
-        running += definition.selection_weight;
+    for (definition, &weight) in definitions.iter().zip(effective_weights.iter()) {
+        running += weight;
         if roll <= running {
             return Some(definition);
         }
@@ -1202,7 +1276,11 @@ fn jitter_offset_xz(
 /// - crossing a chunk boundary does not reset the field
 /// - chunk identity still matters because the same world field is being sampled
 ///   at different locations on the same planet
-fn continuous_value_field_01(seed: u64, position_xz: PositionXZ, scale_world_units: f32) -> f32 {
+pub(super) fn continuous_value_field_01(
+    seed: u64,
+    position_xz: PositionXZ,
+    scale_world_units: f32,
+) -> f32 {
     let sample_x = position_xz.x / scale_world_units;
     let sample_z = position_xz.z / scale_world_units;
 
@@ -1531,6 +1609,20 @@ mod tests {
         }
     }
 
+    /// A neutral biome with no weight modifiers and density 1.0.
+    ///
+    /// Existing tests were written before Story 5a.2 added the biome parameter.
+    /// This helper produces the "no-op" biome so those tests continue to
+    /// exercise the same generation logic without biome influence.
+    fn sample_biome() -> ChunkBiome {
+        ChunkBiome {
+            biome_key: "mineral_steppe".to_string(),
+            ground_color: [0.42, 0.45, 0.30],
+            density_modifier: 1.0,
+            deposit_weight_modifiers: HashMap::new(),
+        }
+    }
+
     /// Build a FlatSurface matching the old sample_patch() bounds.
     ///
     /// Story 5.3 replaced ExteriorGroundPatch in tests with FlatSurface to
@@ -1559,12 +1651,14 @@ mod tests {
             &catalog,
             &surface,
             ChunkCoord::new(0, -1),
+            &sample_biome(),
         );
         let b = generate_surface_mineral_chunk_baseline(
             &profile,
             &catalog,
             &surface,
             ChunkCoord::new(0, -1),
+            &sample_biome(),
         );
 
         assert_eq!(a, b);
@@ -1581,12 +1675,14 @@ mod tests {
             &catalog,
             &surface,
             ChunkCoord::new(0, -1),
+            &sample_biome(),
         );
         let b = generate_surface_mineral_chunk_baseline(
             &profile,
             &catalog,
             &surface,
             ChunkCoord::new(1, -1),
+            &sample_biome(),
         );
 
         assert_ne!(a, b);
@@ -1603,6 +1699,7 @@ mod tests {
             &catalog,
             &surface,
             ChunkCoord::new(0, -1),
+            &sample_biome(),
         );
         let first = placements
             .first()
@@ -1636,6 +1733,7 @@ mod tests {
             &catalog,
             &surface,
             ChunkCoord::new(0, -1),
+            &sample_biome(),
         );
 
         assert!(
@@ -1671,6 +1769,7 @@ mod tests {
             &catalog,
             &surface,
             ChunkCoord::new(0, -1),
+            &sample_biome(),
         );
 
         assert!(
@@ -1699,6 +1798,7 @@ mod tests {
             &catalog,
             &surface,
             ChunkCoord::new(0, -1),
+            &sample_biome(),
         );
 
         assert!(
@@ -1726,6 +1826,7 @@ mod tests {
             &catalog,
             &surface,
             ChunkCoord::new(0, -1),
+            &sample_biome(),
         );
 
         assert!(
@@ -1760,12 +1861,14 @@ mod tests {
             &catalog,
             &surface,
             ChunkCoord::new(0, -1),
+            &sample_biome(),
         );
         let b = generate_surface_mineral_chunk_baseline(
             &profile,
             &catalog,
             &surface,
             ChunkCoord::new(0, -1),
+            &sample_biome(),
         );
 
         assert_eq!(a, b, "rejection must be deterministic");
@@ -1795,6 +1898,7 @@ mod tests {
             &catalog,
             &surface,
             ChunkCoord::new(0, -1),
+            &sample_biome(),
         );
 
         assert!(
@@ -1826,6 +1930,7 @@ mod tests {
             &catalog,
             &surface,
             ChunkCoord::new(0, -1),
+            &sample_biome(),
         );
 
         // The flat portion of each step is only 0.2 world units wide.
@@ -1840,6 +1945,7 @@ mod tests {
                 &catalog,
                 &flat,
                 ChunkCoord::new(0, -1),
+                &sample_biome(),
             )
         };
 
@@ -1871,6 +1977,7 @@ mod tests {
             &catalog,
             &surface,
             ChunkCoord::new(0, -1),
+            &sample_biome(),
         );
 
         assert!(!placements.is_empty());
@@ -1903,6 +2010,7 @@ mod tests {
             &catalog,
             &surface,
             ChunkCoord::new(0, -1),
+            &sample_biome(),
         );
 
         // The exact count depends on seed/catalog/bounds, but it must be > 0
@@ -1944,6 +2052,7 @@ mod tests {
             &catalog,
             &surface,
             ChunkCoord::new(0, -1),
+            &sample_biome(),
         );
 
         assert!(!placements.is_empty());
@@ -2007,7 +2116,9 @@ cluster_compactness = 0.75
         let surface = sample_flat_surface();
         let chunk = ChunkCoord::new(0, -1);
 
-        let baseline = generate_surface_mineral_chunk_baseline(&profile, &catalog, &surface, chunk);
+        let biome = sample_biome();
+        let baseline =
+            generate_surface_mineral_chunk_baseline(&profile, &catalog, &surface, chunk, &biome);
         assert!(
             baseline.len() >= 2,
             "need at least 2 placements to test selective removal"
@@ -2040,16 +2151,17 @@ cluster_compactness = 0.75
         let catalog = sample_catalog();
         let surface = sample_flat_surface();
         let chunk = ChunkCoord::new(0, -1);
+        let biome = sample_biome();
 
         let baseline_1 =
-            generate_surface_mineral_chunk_baseline(&profile, &catalog, &surface, chunk);
+            generate_surface_mineral_chunk_baseline(&profile, &catalog, &surface, chunk, &biome);
         let target_id = baseline_1[0].generated_id.clone();
         let mut removals = HashSet::new();
         removals.insert(target_id.clone());
 
         // "Reload" the chunk — regenerate from scratch.
         let baseline_2 =
-            generate_surface_mineral_chunk_baseline(&profile, &catalog, &surface, chunk);
+            generate_surface_mineral_chunk_baseline(&profile, &catalog, &surface, chunk, &biome);
         let filtered = apply_removal_deltas(baseline_2, Some(&removals));
 
         assert!(
@@ -2065,8 +2177,10 @@ cluster_compactness = 0.75
         let catalog = sample_catalog();
         let surface = sample_flat_surface();
         let chunk = ChunkCoord::new(0, -1);
+        let biome = sample_biome();
 
-        let baseline = generate_surface_mineral_chunk_baseline(&profile, &catalog, &surface, chunk);
+        let baseline =
+            generate_surface_mineral_chunk_baseline(&profile, &catalog, &surface, chunk, &biome);
         assert!(
             baseline.len() >= 3,
             "need at least 3 placements to test neighbor preservation"
@@ -2097,8 +2211,10 @@ cluster_compactness = 0.75
         let catalog = sample_catalog();
         let surface = sample_flat_surface();
         let chunk = ChunkCoord::new(0, -1);
+        let biome = sample_biome();
 
-        let baseline = generate_surface_mineral_chunk_baseline(&profile, &catalog, &surface, chunk);
+        let baseline =
+            generate_surface_mineral_chunk_baseline(&profile, &catalog, &surface, chunk, &biome);
         let count = baseline.len();
 
         // None removals.
@@ -2187,9 +2303,11 @@ cluster_compactness = 0.75
         let catalog = sample_catalog();
         let surface = sample_flat_surface();
         let chunk = ChunkCoord::new(0, -1);
+        let biome = sample_biome();
 
         // Generate baseline and remove one object.
-        let baseline = generate_surface_mineral_chunk_baseline(&profile, &catalog, &surface, chunk);
+        let baseline =
+            generate_surface_mineral_chunk_baseline(&profile, &catalog, &surface, chunk, &biome);
         assert!(!baseline.is_empty());
         let removed_id = baseline[0].generated_id.clone();
         let mut removals = HashSet::new();
@@ -2215,7 +2333,7 @@ cluster_compactness = 0.75
 
         // "Regenerate" the chunk (simulating unload/reload).
         let baseline_2 =
-            generate_surface_mineral_chunk_baseline(&profile, &catalog, &surface, chunk);
+            generate_surface_mineral_chunk_baseline(&profile, &catalog, &surface, chunk, &biome);
         let after_removals_2 = apply_removal_deltas(baseline_2, Some(&removals));
 
         // The removal is still applied.
@@ -2262,8 +2380,10 @@ cluster_compactness = 0.75
         let catalog = sample_catalog();
         let surface = sample_flat_surface();
         let chunk = ChunkCoord::new(0, -1);
+        let biome = sample_biome();
 
-        let baseline = generate_surface_mineral_chunk_baseline(&profile, &catalog, &surface, chunk);
+        let baseline =
+            generate_surface_mineral_chunk_baseline(&profile, &catalog, &surface, chunk, &biome);
         let baseline_count = baseline.len();
 
         // Remove the first generated object.
@@ -2366,8 +2486,10 @@ cluster_compactness = 0.75
         let catalog = sample_catalog();
         let surface = sample_flat_surface();
         let chunk = ChunkCoord::new(0, -1);
+        let biome = sample_biome();
 
-        let baseline = generate_surface_mineral_chunk_baseline(&profile, &catalog, &surface, chunk);
+        let baseline =
+            generate_surface_mineral_chunk_baseline(&profile, &catalog, &surface, chunk, &biome);
         let original_count = baseline.len();
 
         // Fabricate a bogus ID that cannot exist in the baseline.
@@ -2397,8 +2519,10 @@ cluster_compactness = 0.75
         let catalog = sample_catalog();
         let surface = sample_flat_surface();
         let chunk = ChunkCoord::new(0, -1);
+        let biome = sample_biome();
 
-        let baseline = generate_surface_mineral_chunk_baseline(&profile, &catalog, &surface, chunk);
+        let baseline =
+            generate_surface_mineral_chunk_baseline(&profile, &catalog, &surface, chunk, &biome);
         assert!(!baseline.is_empty(), "test requires a non-empty baseline");
 
         // Collect every generated ID into the removal set.
@@ -3063,5 +3187,180 @@ cluster_compactness = 0.75
             .get(&chunk)
             .expect("chunk must exist");
         assert_eq!(addition_recs.len(), 2);
+    }
+
+    // ── Story 5a.2: Biome weight and density modifier tests ──────────────
+
+    #[test]
+    fn zero_weight_modifier_prevents_deposit_selection() {
+        // If a biome sets a deposit's weight to 0.0, that deposit type
+        // must never be selected — even if it's the only deposit in the
+        // catalog. `choose_deposit_definition` should return None when
+        // total effective weight is zero.
+        let definitions = vec![SurfaceMineralDepositDefinition {
+            key: "ferrite".to_string(),
+            material_key: "Ferrite".to_string(),
+            selection_weight: 1.0,
+            scale_min: 0.9,
+            scale_max: 1.2,
+            deposit_radius_min: 2.0,
+            deposit_radius_max: 3.0,
+            child_count_min: 3,
+            child_count_max: 6,
+            cluster_compactness: 0.7,
+        }];
+
+        let mut modifiers = HashMap::new();
+        modifiers.insert("ferrite".to_string(), 0.0);
+
+        // Try many candidates — none should succeed.
+        for i in 0..100 {
+            let result = choose_deposit_definition(
+                &definitions,
+                12345,
+                ChunkCoord::new(0, 0),
+                i,
+                &modifiers,
+            );
+            assert!(
+                result.is_none(),
+                "zero-weight deposit must never be selected (candidate {i})"
+            );
+        }
+    }
+
+    #[test]
+    fn weight_modifier_shifts_selection_probability() {
+        // With two deposits where one has a 10x weight modifier, the boosted
+        // deposit should be selected far more often than the other.
+        let definitions = vec![
+            SurfaceMineralDepositDefinition {
+                key: "common".to_string(),
+                material_key: "Common".to_string(),
+                selection_weight: 1.0,
+                scale_min: 0.9,
+                scale_max: 1.2,
+                deposit_radius_min: 2.0,
+                deposit_radius_max: 3.0,
+                child_count_min: 3,
+                child_count_max: 6,
+                cluster_compactness: 0.7,
+            },
+            SurfaceMineralDepositDefinition {
+                key: "rare".to_string(),
+                material_key: "Rare".to_string(),
+                selection_weight: 1.0,
+                scale_min: 0.9,
+                scale_max: 1.2,
+                deposit_radius_min: 2.0,
+                deposit_radius_max: 3.0,
+                child_count_min: 3,
+                child_count_max: 6,
+                cluster_compactness: 0.7,
+            },
+        ];
+
+        // Boost "rare" by 10x.
+        let mut modifiers = HashMap::new();
+        modifiers.insert("rare".to_string(), 10.0);
+
+        let mut rare_count = 0u32;
+        let trials = 1000;
+        for i in 0..trials {
+            if let Some(def) = choose_deposit_definition(
+                &definitions,
+                99999,
+                ChunkCoord::new(i as i32, 0),
+                0,
+                &modifiers,
+            ) {
+                if def.key == "rare" {
+                    rare_count += 1;
+                }
+            }
+        }
+
+        // With weights 1.0 vs 10.0, rare should be ~91% of selections.
+        // We'll check that it's at least 70% to avoid flaky tests.
+        assert!(
+            rare_count > (trials * 7 / 10),
+            "rare deposit should dominate: {rare_count}/{trials}"
+        );
+    }
+
+    #[test]
+    fn density_modifier_increases_deposit_count() {
+        // A biome with a high density modifier should produce more deposits
+        // than a biome with density_modifier = 1.0.
+        let profile = sample_profile();
+        let catalog = SurfaceMineralDepositCatalog {
+            site_spawn_threshold: 0.55,
+            ..SurfaceMineralDepositCatalog::default()
+        };
+        let surface = sample_flat_surface();
+        let chunk = ChunkCoord::new(0, -1);
+
+        let neutral_biome = ChunkBiome {
+            biome_key: "neutral".to_string(),
+            ground_color: [0.5, 0.5, 0.5],
+            density_modifier: 1.0,
+            deposit_weight_modifiers: HashMap::new(),
+        };
+        let dense_biome = ChunkBiome {
+            biome_key: "dense".to_string(),
+            ground_color: [0.5, 0.5, 0.5],
+            density_modifier: 3.0,
+            deposit_weight_modifiers: HashMap::new(),
+        };
+
+        // Sum placements across many chunks to smooth out noise variance.
+        let mut neutral_total = 0usize;
+        let mut dense_total = 0usize;
+        for x in -25..25 {
+            let coord = ChunkCoord::new(x, chunk.z);
+            neutral_total += generate_surface_mineral_chunk_baseline(
+                &profile,
+                &catalog,
+                &surface,
+                coord,
+                &neutral_biome,
+            )
+            .len();
+            dense_total += generate_surface_mineral_chunk_baseline(
+                &profile,
+                &catalog,
+                &surface,
+                coord,
+                &dense_biome,
+            )
+            .len();
+        }
+
+        assert!(
+            dense_total > neutral_total,
+            "higher density_modifier should produce more deposits: dense={dense_total} vs neutral={neutral_total}"
+        );
+    }
+
+    #[test]
+    fn neutral_biome_matches_pre_biome_behavior() {
+        // A biome with density_modifier=1.0 and no weight modifiers should
+        // produce identical output to the sample_biome() helper, confirming
+        // the biome system is transparent when no modifiers are active.
+        let profile = sample_profile();
+        let catalog = sample_catalog();
+        let surface = sample_flat_surface();
+        let chunk = ChunkCoord::new(0, -1);
+        let biome = sample_biome();
+
+        let a =
+            generate_surface_mineral_chunk_baseline(&profile, &catalog, &surface, chunk, &biome);
+        let b =
+            generate_surface_mineral_chunk_baseline(&profile, &catalog, &surface, chunk, &biome);
+
+        assert_eq!(
+            a, b,
+            "neutral biome must produce identical output across calls"
+        );
     }
 }

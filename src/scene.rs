@@ -717,11 +717,10 @@ fn setup_scene(
     let exterior_ground_size_z = 200.0;
     let exterior_ground_center_z = -hz - exterior_ground_size_z * 0.5;
     let exterior_surface_y = -0.01;
-    let exterior_ground_mat = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.26, 0.3, 0.22),
-        perceptual_roughness: 0.98,
-        ..default()
-    });
+    // Story 5a.2: the monolithic green ground plane is replaced by per-chunk
+    // biome-colored tiles spawned in `sync_active_exterior_chunks`. We still
+    // need the ExteriorGroundPatch resource for room-vs-exterior discrimination
+    // in `claim_exterior_drops`.
     commands.insert_resource(ExteriorGroundPatch {
         bounds_xz: RectXZ {
             min_x: -exterior_ground_size_x * 0.5,
@@ -731,17 +730,6 @@ fn setup_scene(
         },
         surface_y: exterior_surface_y,
     });
-    commands.spawn((
-        Mesh3d(
-            meshes.add(
-                Plane3d::default()
-                    .mesh()
-                    .size(exterior_ground_size_x, exterior_ground_size_z),
-            ),
-        ),
-        MeshMaterial3d(exterior_ground_mat),
-        Transform::from_xyz(0.0, exterior_surface_y, exterior_ground_center_z),
-    ));
 
     // Workbench — lighter, lower roughness than walls (future fabricator site).
     let wb_half_y = fur.workbench_height * 0.5;
