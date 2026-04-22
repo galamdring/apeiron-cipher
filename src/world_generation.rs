@@ -374,6 +374,147 @@ impl SurfaceProvider for TiltedSurface {
     }
 }
 
+/// Noise-based terrain surface for runtime use.
+///
+/// `PlanetSurface` samples a multi-octave value noise field (reusing
+/// `continuous_value_field_01` at different scales) to produce elevation and
+/// surface normals across the planet. It handles torus wrapping at world-
+/// coordinate level so that terrain is continuous across the wrap seam.
+///
+/// This struct is the runtime replacement for `FlatSurface` in the exterior
+/// chunk pipeline. `FlatSurface`, `SteppedSurface`, and `TiltedSurface` remain
+/// available for tests.
+#[derive(Clone, Debug)]
+pub struct PlanetSurface {
+    /// Per-planet elevation seed (from `WorldProfile::elevation_seed`).
+    pub elevation_seed: u64,
+    /// Sea-level reference height (world units).
+    pub base_y: f32,
+    /// Maximum height deviation from `base_y` (world units).
+    pub amplitude: f32,
+    /// Base noise frequency (world units). Lower = broader features.
+    pub frequency: f32,
+    /// Number of fractal noise octaves layered additively.
+    pub octaves: u32,
+    /// Blend weight for chunk-level detail noise (0.0 = disabled).
+    pub detail_weight: f32,
+    /// Planet surface diameter in chunks (for torus wrapping).
+    pub planet_surface_diameter: i32,
+    /// Chunk edge length in world units (for torus wrapping).
+    pub chunk_size_world_units: f32,
+}
+
+impl PlanetSurface {
+    /// Construct a `PlanetSurface` from a derived `WorldProfile` and the raw
+    /// config that carries tuning parameters.
+    ///
+    /// This is the single blessed constructor — every runtime use should go
+    /// through here so elevation parameters are consistent.
+    pub fn new_from_profile(profile: &WorldProfile, config: &WorldGenerationConfig) -> Self {
+        Self {
+            elevation_seed: profile.elevation_seed,
+            base_y: config.elevation_base_y,
+            amplitude: config.elevation_amplitude,
+            frequency: config.elevation_frequency,
+            octaves: config.elevation_octaves,
+            detail_weight: config.elevation_detail_weight,
+            planet_surface_diameter: profile.planet_surface_diameter,
+            chunk_size_world_units: profile.chunk_size_world_units,
+        }
+    }
+
+    /// Wrap a world-space coordinate to the canonical torus range.
+    ///
+    /// The planet surface spans `[0, diameter * chunk_size)` on both axes.
+    /// Positions outside that range are wrapped using Euclidean modulo so the
+    /// noise field is continuous across the seam.
+    fn wrap_world_coord(&self, v: f32) -> f32 {
+        let period = self.planet_surface_diameter as f32 * self.chunk_size_world_units;
+        ((v % period) + period) % period
+    }
+
+    /// Sample multi-octave elevation at a canonical (already torus-wrapped) XZ.
+    ///
+    /// Each octave doubles the frequency and halves the amplitude (standard fBm
+    /// with lacunarity 2, persistence 0.5). The base `continuous_value_field_01`
+    /// returns values in `[0, 1]`, so we center each sample around 0.5 to get
+    /// positive and negative deviations from `base_y`.
+    fn sample_elevation(&self, x: f32, z: f32) -> f32 {
+        let mut total = 0.0_f32;
+        let mut amp = 1.0_f32;
+        let mut freq = self.frequency;
+        let mut weight_sum = 0.0_f32;
+
+        for octave in 0..self.octaves {
+            // Each octave uses a slightly different seed so the layers are
+            // independent. We mix the elevation seed with the octave index.
+            let octave_seed = mix_seed(self.elevation_seed, octave as u64);
+            let scale = 1.0 / freq; // continuous_value_field_01 divides by scale
+            let sample =
+                exterior::continuous_value_field_01(octave_seed, PositionXZ::new(x, z), scale);
+            // Center around 0: value noise returns [0,1], shift to [-0.5, 0.5].
+            total += (sample - 0.5) * amp;
+            weight_sum += amp;
+            amp *= 0.5;
+            freq *= 2.0;
+        }
+
+        // Normalize so the sum of weights = 1, then scale by amplitude.
+        if weight_sum > 0.0 {
+            total /= weight_sum;
+        }
+        self.base_y + total * self.amplitude
+    }
+
+    /// Compute the surface normal from the heightmap gradient using finite
+    /// differences.
+    ///
+    /// We sample elevation at four points around (x, z) offset by `epsilon`,
+    /// then compute the cross product of the two tangent vectors to get the
+    /// surface normal. The epsilon is small enough for accuracy but large
+    /// enough to avoid floating-point noise.
+    fn compute_normal(&self, x: f32, z: f32) -> [f32; 3] {
+        let eps = 0.1_f32;
+
+        let hx_pos = self.sample_elevation(self.wrap_world_coord(x + eps), z);
+        let hx_neg = self.sample_elevation(self.wrap_world_coord(x - eps), z);
+        let hz_pos = self.sample_elevation(x, self.wrap_world_coord(z + eps));
+        let hz_neg = self.sample_elevation(x, self.wrap_world_coord(z - eps));
+
+        // Finite-difference partial derivatives:
+        let dh_dx = (hx_pos - hx_neg) / (2.0 * eps);
+        let dh_dz = (hz_pos - hz_neg) / (2.0 * eps);
+
+        // The surface is parameterized as P(x,z) = (x, h(x,z), z).
+        // tangent_x = (1, dh_dx, 0), tangent_z = (0, dh_dz, 1).
+        // normal = cross(tangent_z, tangent_x) for upward-pointing Y:
+        //        = (-dh_dx, 1, -dh_dz)
+        let nx = -dh_dx;
+        let ny = 1.0_f32;
+        let nz = -dh_dz;
+        let len = (nx * nx + ny * ny + nz * nz).sqrt();
+        if len < 1e-10 {
+            return [0.0, 1.0, 0.0];
+        }
+        let inv = 1.0 / len;
+        [nx * inv, ny * inv, nz * inv]
+    }
+}
+
+impl SurfaceProvider for PlanetSurface {
+    fn query_surface(&self, x: f32, z: f32) -> SurfaceQueryResult {
+        let wx = self.wrap_world_coord(x);
+        let wz = self.wrap_world_coord(z);
+        let position_y = self.sample_elevation(wx, wz);
+        let normal = self.compute_normal(wx, wz);
+        SurfaceQueryResult {
+            position_y,
+            normal,
+            valid: true,
+        }
+    }
+}
+
 const CONFIG_PATH: &str = "assets/config/world_generation.toml";
 const PLACEMENT_DENSITY_CHANNEL: u64 = 0xD3E5_17A1_0000_0001;
 const PLACEMENT_VARIATION_CHANNEL: u64 = 0xD3E5_17A1_0000_0002;
