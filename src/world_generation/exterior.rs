@@ -3363,4 +3363,186 @@ cluster_compactness = 0.75
             "neutral biome must produce identical output across calls"
         );
     }
+
+    // ── Error / failure state tests ─────────────────────────────────────
+
+    #[test]
+    fn density_modifier_zero_does_not_panic() {
+        // density_modifier = 0.0 would cause division by zero without the
+        // `.max(f32::EPSILON)` guard. Verify it neither panics nor produces
+        // an absurd number of deposits.
+        let profile = sample_profile();
+        let catalog = SurfaceMineralDepositCatalog {
+            site_spawn_threshold: 0.55,
+            ..SurfaceMineralDepositCatalog::default()
+        };
+        let surface = sample_flat_surface();
+        let biome = ChunkBiome {
+            biome_key: "zero_density".to_string(),
+            ground_color: [0.5, 0.5, 0.5],
+            density_modifier: 0.0,
+            deposit_weight_modifiers: HashMap::new(),
+        };
+
+        // Must not panic. With effective_threshold = threshold / EPSILON ≈ huge,
+        // almost no candidates should pass, so very few (possibly zero) deposits.
+        let sites = generate_surface_mineral_chunk_baseline(
+            &profile,
+            &catalog,
+            &surface,
+            ChunkCoord::new(0, 0),
+            &biome,
+        );
+        // Just assert we didn't panic and got a reasonable result.
+        assert!(
+            sites.len() < 1000,
+            "zero density should not produce excessive deposits"
+        );
+    }
+
+    #[test]
+    fn negative_weight_modifier_treated_as_zero() {
+        // A negative biome weight modifier should be clamped to 0.0 by
+        // `choose_deposit_definition`, meaning that material is never selected.
+        let definitions = vec![
+            SurfaceMineralDepositDefinition {
+                key: "only_option".to_string(),
+                material_key: "mat_a".to_string(),
+                selection_weight: 1.0,
+                scale_min: 0.5,
+                scale_max: 1.0,
+                deposit_radius_min: 1.0,
+                deposit_radius_max: 2.0,
+                child_count_min: 1,
+                child_count_max: 3,
+                cluster_compactness: 0.5,
+            },
+            SurfaceMineralDepositDefinition {
+                key: "forbidden".to_string(),
+                material_key: "mat_b".to_string(),
+                selection_weight: 1.0,
+                scale_min: 0.5,
+                scale_max: 1.0,
+                deposit_radius_min: 1.0,
+                deposit_radius_max: 2.0,
+                child_count_min: 1,
+                child_count_max: 3,
+                cluster_compactness: 0.5,
+            },
+        ];
+
+        let mut modifiers = HashMap::new();
+        modifiers.insert("forbidden".to_string(), -5.0);
+
+        let mut forbidden_count = 0;
+        let trials = 200;
+        for i in 0..trials {
+            if let Some(picked) = choose_deposit_definition(
+                &definitions,
+                0xDEAD_BEEF,
+                ChunkCoord::new(i, 0),
+                0,
+                &modifiers,
+            ) {
+                if picked.key == "forbidden" {
+                    forbidden_count += 1;
+                }
+            }
+        }
+
+        assert_eq!(
+            forbidden_count, 0,
+            "negative modifier should prevent selection entirely"
+        );
+    }
+
+    #[test]
+    fn empty_definitions_returns_none() {
+        // `choose_deposit_definition` with an empty slice must return None.
+        let modifiers = HashMap::new();
+        let result = choose_deposit_definition(&[], 0xABCD, ChunkCoord::new(0, 0), 0, &modifiers);
+        assert!(result.is_none(), "empty definitions must return None");
+    }
+
+    #[test]
+    fn all_weights_zeroed_by_modifiers_returns_none() {
+        // When biome modifiers zero out every deposit weight, selection
+        // must return None (not panic or select arbitrarily).
+        let definitions = vec![
+            SurfaceMineralDepositDefinition {
+                key: "a".to_string(),
+                material_key: "mat_a".to_string(),
+                selection_weight: 1.0,
+                scale_min: 0.5,
+                scale_max: 1.0,
+                deposit_radius_min: 1.0,
+                deposit_radius_max: 2.0,
+                child_count_min: 1,
+                child_count_max: 3,
+                cluster_compactness: 0.5,
+            },
+            SurfaceMineralDepositDefinition {
+                key: "b".to_string(),
+                material_key: "mat_b".to_string(),
+                selection_weight: 2.0,
+                scale_min: 0.5,
+                scale_max: 1.0,
+                deposit_radius_min: 1.0,
+                deposit_radius_max: 2.0,
+                child_count_min: 1,
+                child_count_max: 3,
+                cluster_compactness: 0.5,
+            },
+        ];
+
+        let mut modifiers = HashMap::new();
+        modifiers.insert("a".to_string(), 0.0);
+        modifiers.insert("b".to_string(), 0.0);
+
+        for i in 0..50 {
+            let result = choose_deposit_definition(
+                &definitions,
+                0x1234,
+                ChunkCoord::new(i, 0),
+                0,
+                &modifiers,
+            );
+            assert!(
+                result.is_none(),
+                "all-zero weights must return None, iteration {i}"
+            );
+        }
+    }
+
+    #[test]
+    fn all_deposits_zeroed_in_generation_produces_no_placements() {
+        // A full generation run where every deposit has 0.0 weight modifier
+        // should produce baselines with no assigned definition, and thus
+        // zero final deposit sites (not panic).
+        let profile = sample_profile();
+        let catalog = sample_catalog();
+        let surface = sample_flat_surface();
+
+        let mut modifiers = HashMap::new();
+        for def in &catalog.deposits {
+            modifiers.insert(def.key.clone(), 0.0);
+        }
+
+        let biome = ChunkBiome {
+            biome_key: "dead_zone".to_string(),
+            ground_color: [0.1, 0.1, 0.1],
+            density_modifier: 1.0,
+            deposit_weight_modifiers: modifiers,
+        };
+
+        let chunk = ChunkCoord::new(0, 0);
+        let sites =
+            generate_surface_mineral_deposit_sites(&profile, &catalog, &surface, chunk, &biome);
+
+        assert!(
+            sites.is_empty(),
+            "zeroed-out weights should produce no deposit sites, got {}",
+            sites.len()
+        );
+    }
 }

@@ -1953,4 +1953,65 @@ mod tests {
         assert_eq!(a.biome_key, b.biome_key);
         assert_eq!(a.ground_color, b.ground_color);
     }
+
+    // ── Error / failure state tests ─────────────────────────────────────
+
+    #[test]
+    fn empty_registry_returns_hardcoded_neutral_default() {
+        // With zero biome definitions and a fallback key that can't match,
+        // `derive_chunk_biome` must return a hardcoded neutral default
+        // rather than panicking.
+        let config = sample_config();
+        let profile = WorldProfile::from_config(&config);
+        let registry = BiomeRegistry {
+            biomes: vec![],
+            fallback_biome_key: "nonexistent".to_string(),
+            noise_scale_chunks: 10.0,
+            temperature_noise_channel: 0xB10E_0001_0000_0001,
+            moisture_noise_channel: 0xB10E_0001_0000_0002,
+        };
+
+        let result = derive_chunk_biome(&profile, &registry, ChunkCoord::new(0, 0));
+
+        // Should get the hardcoded neutral default values.
+        assert_eq!(result.biome_key, "nonexistent");
+        assert_eq!(result.ground_color, [0.26, 0.3, 0.22]);
+        assert_eq!(result.density_modifier, 1.0);
+        assert!(result.deposit_weight_modifiers.is_empty());
+    }
+
+    #[test]
+    fn fallback_key_missing_from_registry_returns_hardcoded_default() {
+        // Registry has biomes but none match AND the fallback key doesn't
+        // exist in the registry. This exercises the third fallback path
+        // (lines ~1206-1214).
+        let config = sample_config();
+        let profile = WorldProfile::from_config(&config);
+
+        // Define biomes that cover an impossibly narrow range so nothing
+        // will match any real noise sample.
+        let registry = BiomeRegistry {
+            biomes: vec![BiomeDefinition {
+                key: "impossible".to_string(),
+                temperature_min: -999.0,
+                temperature_max: -998.0,
+                moisture_min: -999.0,
+                moisture_max: -998.0,
+                ground_color: [1.0, 0.0, 0.0],
+                density_modifier: 5.0,
+                deposit_weight_modifiers: HashMap::new(),
+            }],
+            fallback_biome_key: "does_not_exist".to_string(),
+            noise_scale_chunks: 10.0,
+            temperature_noise_channel: 0xB10E_0001_0000_0001,
+            moisture_noise_channel: 0xB10E_0001_0000_0002,
+        };
+
+        let result = derive_chunk_biome(&profile, &registry, ChunkCoord::new(5, 5));
+
+        // Must get the hardcoded neutral, not panic.
+        assert_eq!(result.biome_key, "does_not_exist");
+        assert_eq!(result.ground_color, [0.26, 0.3, 0.22]);
+        assert_eq!(result.density_modifier, 1.0);
+    }
 }
