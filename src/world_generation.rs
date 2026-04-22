@@ -2587,4 +2587,20 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn heightmap_mesh_vertex_count_matches_expected() {
+        let surface = test_planet_surface();
+        let chunk = ChunkCoord::new(0, 0);
+
+        for subdivisions in [1, 2, 4, 8, 16] {
+            let mesh = generate_chunk_heightmap_mesh(&surface, chunk, subdivisions);
+            let expected = ((subdivisions + 1) * (subdivisions + 1)) as usize;
+            let actual = mesh.count_vertices();
+            assert_eq!(
+                actual, expected,
+                "subdivisions={subdivisions}: expected {expected} vertices, got {actual}"
+            );
+        }
+    }
 }
