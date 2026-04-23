@@ -1,6 +1,5 @@
 import React, { useState } from "react";
 import { useIssueStore, TYPES } from "../store/issues";
-import { useAuthStore } from "../store/auth";
 import { createIssue } from "../api/github";
 
 const s = {
@@ -53,7 +52,6 @@ export default function NewIssueForm() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
   const addIssueToStore = useIssueStore((st) => st.addIssueToStore);
-  const { token } = useAuthStore();
 
   async function handleSubmit(e) {
     e.preventDefault();
@@ -71,7 +69,6 @@ export default function NewIssueForm() {
         owner,
         repoName,
         { title: title.trim(), labels: [type] },
-        token
       );
       addIssueToStore(issue);
       setTitle("");

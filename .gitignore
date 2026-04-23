@@ -26,3 +26,4 @@ kanban/dist/
 
 # Aider scratch files
 .aider*
+node_modules/

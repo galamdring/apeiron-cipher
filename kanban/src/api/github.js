@@ -1,25 +1,29 @@
 import axios from "axios";
 import { useAuthStore } from "../store/auth";
 
-// GitHub returns 401 for expired / revoked tokens and 403 for "Bad credentials"
-// or insufficient scope. Both mean the session is unusable.
-function isCredentialError(status) {
-  return status === 401 || status === 403;
+// All GitHub API calls are proxied through the orchestrator, which attaches
+// the access token from the httpOnly session cookie. The browser sends the
+// cookie automatically — no token in JS.
+
+let _proxyBase = "";
+
+export function setProxyBase(url) {
+  _proxyBase = url.replace(/\/+$/, "");
 }
 
-function client(token) {
+function client() {
   const instance = axios.create({
-    baseURL: "https://api.github.com",
+    baseURL: _proxyBase + "/api/github",
     headers: {
-      Authorization: token ? `Bearer ${token}` : undefined,
       Accept: "application/vnd.github+json",
     },
+    withCredentials: true, // send the httpOnly session cookie
   });
 
   instance.interceptors.response.use(
     (response) => response,
     (error) => {
-      if (error.response && isCredentialError(error.response.status)) {
+      if (error.response && (error.response.status === 401 || error.response.status === 403)) {
         useAuthStore.getState().signOut();
       }
       return Promise.reject(error);
@@ -29,8 +33,8 @@ function client(token) {
   return instance;
 }
 
-export async function fetchAllIssues(owner, repo, token) {
-  const gh = client(token);
+export async function fetchAllIssues(owner, repo) {
+  const gh = client();
   let page = 1;
   const all = [];
   while (true) {
@@ -45,24 +49,24 @@ export async function fetchAllIssues(owner, repo, token) {
   return all;
 }
 
-export async function setIssueState(owner, repo, number, state, token) {
-  const gh = client(token);
+export async function setIssueState(owner, repo, number, state) {
+  const gh = client();
   const { data } = await gh.patch(`/repos/${owner}/${repo}/issues/${number}`, {
     state,
   });
   return data;
 }
 
-export async function setIssueLabels(owner, repo, number, labels, token) {
-  const gh = client(token);
+export async function setIssueLabels(owner, repo, number, labels) {
+  const gh = client();
   const { data } = await gh.patch(`/repos/${owner}/${repo}/issues/${number}`, {
     labels,
   });
   return data;
 }
 
-export async function createComment(owner, repo, number, body, token) {
-  const gh = client(token);
+export async function createComment(owner, repo, number, body) {
+  const gh = client();
   const { data } = await gh.post(
     `/repos/${owner}/${repo}/issues/${number}/comments`,
     { body }
@@ -70,22 +74,22 @@ export async function createComment(owner, repo, number, body, token) {
   return data;
 }
 
-export async function fetchComments(owner, repo, number, token) {
-  const gh = client(token);
+export async function fetchComments(owner, repo, number) {
+  const gh = client();
   const { data } = await gh.get(
     `/repos/${owner}/${repo}/issues/${number}/comments`
   );
   return data;
 }
 
-export async function createIssue(owner, repo, payload, token) {
-  const gh = client(token);
+export async function createIssue(owner, repo, payload) {
+  const gh = client();
   const { data } = await gh.post(`/repos/${owner}/${repo}/issues`, payload);
   return data;
 }
 
-export async function updateIssue(owner, repo, number, payload, token) {
-  const gh = client(token);
+export async function updateIssue(owner, repo, number, payload) {
+  const gh = client();
   const { data } = await gh.patch(
     `/repos/${owner}/${repo}/issues/${number}`,
     payload
@@ -93,8 +97,8 @@ export async function updateIssue(owner, repo, number, payload, token) {
   return data;
 }
 
-export async function fetchUserRepos(token) {
-  const gh = client(token);
+export async function fetchUserRepos() {
+  const gh = client();
   let page = 1;
   const all = [];
   while (true) {

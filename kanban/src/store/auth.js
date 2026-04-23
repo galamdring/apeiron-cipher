@@ -1,11 +1,11 @@
 import { create } from "zustand";
 
-const TOKEN_KEY = "gh_kanban_token";
 const USER_KEY = "gh_kanban_user";
 const REPO_KEY = "gh_kanban_repo";
 
 export const useAuthStore = create((set) => ({
-  token: localStorage.getItem(TOKEN_KEY) || null,
+  // With httpOnly cookies the token never touches JS. Auth state is just
+  // "do we have a user profile from /api/me".
   user: (() => {
     try {
       const raw = localStorage.getItem(USER_KEY);
@@ -15,25 +15,22 @@ export const useAuthStore = create((set) => ({
     }
   })(),
 
-  setAuth(token, user) {
-    localStorage.setItem(TOKEN_KEY, token);
+  setUser(user) {
     localStorage.setItem(USER_KEY, JSON.stringify(user));
-    set({ token, user });
+    set({ user });
   },
 
   clearAuth() {
-    localStorage.removeItem(TOKEN_KEY);
     localStorage.removeItem(USER_KEY);
-    set({ token: null, user: null });
+    set({ user: null });
   },
 
-  // Full sign-out: clears credentials AND the saved repo selection so the
+  // Full sign-out: clears profile AND the saved repo selection so the
   // next session starts clean. Also used by the API interceptor when the
-  // token comes back as invalid / expired.
+  // session comes back as invalid / expired.
   signOut() {
-    localStorage.removeItem(TOKEN_KEY);
     localStorage.removeItem(USER_KEY);
     localStorage.removeItem(REPO_KEY);
-    set({ token: null, user: null });
+    set({ user: null });
   },
 }));

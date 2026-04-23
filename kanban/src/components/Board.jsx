@@ -24,7 +24,7 @@ const s = {
   },
 };
 
-export default function Board({ repo, token }) {
+export default function Board({ repo }) {
   const { filteredIssues, moveIssue, updateIssueInStore, hiddenColumns } = useIssueStore();
   const [activeIssue, setActiveIssue] = useState(null);
   const sensors = useSensors(
@@ -84,10 +84,9 @@ export default function Board({ repo, token }) {
           owner,
           repoName,
           issueNumber,
-          newState,
-          token
+          newState
         );
-        await setIssueLabels(owner, repoName, issueNumber, labels, token);
+        await setIssueLabels(owner, repoName, issueNumber, labels);
         updateIssueInStore({
           ...updated,
           labels: labels.map((n) => ({ name: n })),
