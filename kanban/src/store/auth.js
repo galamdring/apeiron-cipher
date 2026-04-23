@@ -15,9 +15,13 @@ export const useAuthStore = create((set) => ({
     }
   })(),
 
+  // Set to true when a 401 interceptor forces sign-out, so the login
+  // screen can display "Session expired — please sign in again."
+  sessionExpired: false,
+
   setUser(user) {
     localStorage.setItem(USER_KEY, JSON.stringify(user));
-    set({ user });
+    set({ user, sessionExpired: false });
   },
 
   clearAuth() {
@@ -28,9 +32,9 @@ export const useAuthStore = create((set) => ({
   // Full sign-out: clears profile AND the saved repo selection so the
   // next session starts clean. Also used by the API interceptor when the
   // session comes back as invalid / expired.
-  signOut() {
+  signOut({ expired = false } = {}) {
     localStorage.removeItem(USER_KEY);
     localStorage.removeItem(REPO_KEY);
-    set({ user: null });
+    set({ user: null, sessionExpired: expired });
   },
 }));

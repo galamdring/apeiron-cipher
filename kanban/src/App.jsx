@@ -32,7 +32,7 @@ const styles = {
 };
 
 export default function App({ config }) {
-  const { user, setUser } = useAuthStore();
+  const { user, setUser, sessionExpired } = useAuthStore();
   const selectedIssue = useIssueStore((s) => s.selectedIssue);
   const [bootstrapping, setBootstrapping] = useState(true);
   const [hashError, setHashError] = useState(null);
@@ -74,7 +74,8 @@ export default function App({ config }) {
   }
 
   if (!user) {
-    return <LoginScreen error={hashError} config={config} />;
+    const displayError = hashError || (sessionExpired ? "Session expired — please sign in again." : null);
+    return <LoginScreen error={displayError} config={config} />;
   }
 
   function handleRepoChange(newRepo) {
