@@ -1941,6 +1941,52 @@ mod tests {
         );
     }
 
+    #[test]
+    fn planet_surface_deposit_y_matches_surface_query() {
+        // Round-trip test: every deposit placement's surface_y must exactly
+        // match what query_surface returns at that (x, z). This catches
+        // floating or buried deposits — i.e. placements whose y-position
+        // was computed from a different point than their final xz.
+        let profile = sample_profile();
+        let catalog = sample_catalog();
+        let surface = PlanetSurface {
+            elevation_seed: 0xDEAD_BEEF,
+            base_y: 5.0,
+            amplitude: 2.0,
+            frequency: 0.05,
+            octaves: 2,
+            detail_weight: 0.3,
+            detail_seed: 0xCAFE_0001,
+            detail_frequency: 0.2,
+            detail_octaves: 1,
+            planet_surface_diameter: profile.planet_surface_diameter,
+            chunk_size_world_units: profile.chunk_size_world_units,
+        };
+
+        let placements = generate_surface_mineral_chunk_baseline(
+            &profile,
+            &catalog,
+            &surface,
+            ChunkCoord::new(0, -1),
+            &sample_biome(),
+        );
+
+        assert!(
+            !placements.is_empty(),
+            "need at least one placement to verify y-position"
+        );
+
+        for p in &placements {
+            let expected = surface.query_surface(p.position_xz.x, p.position_xz.z);
+            assert_eq!(
+                p.surface_y, expected.position_y,
+                "deposit at ({}, {}) has surface_y {} but query_surface returns {} — \
+                 deposit would be floating or buried",
+                p.position_xz.x, p.position_xz.z, p.surface_y, expected.position_y
+            );
+        }
+    }
+
     // ── AC3: Placement logic testable without rendering terrain ───────────
 
     #[test]
