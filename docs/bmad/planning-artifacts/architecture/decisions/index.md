@@ -4,7 +4,7 @@
 
 - [Core Architectural Decisions](#table-of-contents)
   - [Decision Priority Analysis](./decision-priority-analysis.md)
-  - [Data Architecture](./data-architecture.md)
+  - [Data Architecture](./decisions/data-architecture.md)
   - [System Scheduling & Ordering](./system-scheduling-ordering.md)
   - [Error Handling & Observability Architecture](./error-handling-observability-architecture.md)
   - [Authority Boundary Pattern](./authority-boundary-pattern.md)

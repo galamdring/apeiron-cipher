@@ -66,6 +66,7 @@ impl Plugin for ExteriorGenerationPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<SurfaceMineralDepositCatalog>()
             .init_resource::<ActiveExteriorChunkSpawns>()
+            .init_resource::<ChunkRemovalDeltas>()
             .add_systems(PreStartup, load_surface_mineral_deposit_catalog)
             .add_systems(
                 Update,
@@ -287,6 +288,48 @@ struct ActiveExteriorChunkSpawns {
     pub spawned_entities_by_chunk: HashMap<ChunkCoord, Vec<Entity>>,
 }
 
+/// Tracks which generated baseline objects have been removed from each chunk.
+///
+/// ## Baseline vs Delta: the core persistence model
+///
+/// Every chunk has a *baseline*: the deterministic set of objects produced by
+/// `generate_surface_mineral_chunk_baseline()` for a given world seed. The
+/// baseline is always reproducible from the seed alone — it is never mutated.
+///
+/// A *delta* is the set of player-caused modifications layered on top of the
+/// baseline. For Story 5.4, the only delta type is *removal*: the player picked
+/// up a generated object, so it should not reappear when the chunk reloads.
+///
+/// The pipeline is: **generate baseline → apply removal deltas → spawn survivors**.
+///
+/// ## Why filter after generation instead of changing the seed?
+///
+/// The baseline generation is deterministic and depends only on the world seed
+/// and chunk coordinate. If we tried to bake removals into the seed, every
+/// removal would cascade into a completely different baseline for the entire
+/// chunk. Instead, we generate the full baseline and then subtract removals.
+/// This keeps the baseline stable and makes deltas composable.
+///
+/// ## Why not use runtime Entity IDs?
+///
+/// Entity IDs are ephemeral — they change every time the chunk is spawned.
+/// [`GeneratedObjectId`] is deterministic: it encodes the generator version,
+/// chunk coordinate, and candidate index, so the same logical object gets the
+/// same ID across chunk load/unload cycles.
+///
+/// ## Serialization readiness
+///
+/// This resource derives `Serialize` and `Deserialize` so it can be written to
+/// a save file in a future story. Story 5.4 only keeps the data in memory;
+/// save/load is deferred to later persistence work.
+#[derive(Resource, Default, Debug, Clone, Serialize, Deserialize)]
+struct ChunkRemovalDeltas {
+    /// For each chunk, the set of `GeneratedObjectId`s that the player has
+    /// removed (e.g. by picking up). These IDs are filtered out of the baseline
+    /// during chunk spawning so the objects stay gone.
+    pub removed_by_chunk: HashMap<ChunkCoord, HashSet<GeneratedObjectId>>,
+}
+
 fn load_surface_mineral_deposit_catalog(mut commands: Commands) {
     let catalog = if Path::new(DEPOSIT_CONFIG_PATH).exists() {
         match fs::read_to_string(DEPOSIT_CONFIG_PATH) {
@@ -324,6 +367,7 @@ fn sync_active_exterior_chunks(
     mut meshes: ResMut<Assets<Mesh>>,
     mut render_materials: ResMut<Assets<StandardMaterial>>,
     mut spawned_chunks: ResMut<ActiveExteriorChunkSpawns>,
+    removal_deltas: Res<ChunkRemovalDeltas>,
 ) {
     let active_chunk_set: HashSet<ChunkCoord> = active_chunks.chunks.iter().copied().collect();
     let inactive_chunks: Vec<ChunkCoord> = spawned_chunks
@@ -364,11 +408,21 @@ fn sync_active_exterior_chunks(
             continue;
         }
 
-        let placements = generate_surface_mineral_chunk_baseline(
+        let baseline_placements = generate_surface_mineral_chunk_baseline(
             &world_profile,
             &deposit_catalog,
             &surface,
             chunk,
+        );
+
+        // Story 5.4: apply removal deltas so picked-up objects stay gone.
+        //
+        // The baseline is the full deterministic set. We subtract any IDs the
+        // player has removed. This is the core of the persistence-delta model:
+        // the baseline never changes, and the delta is a subtractive overlay.
+        let placements = apply_removal_deltas(
+            baseline_placements,
+            removal_deltas.removed_by_chunk.get(&chunk),
         );
 
         let mut spawned_entities = Vec::new();
@@ -440,9 +494,29 @@ fn sync_active_exterior_chunks(
 fn release_collected_generated_objects(
     mut commands: Commands,
     mut spawned_chunks: ResMut<ActiveExteriorChunkSpawns>,
-    collected_query: Query<(Entity, &GeneratedExteriorObject), Or<(With<HeldItem>, With<InCarry>)>>,
+    mut removal_deltas: ResMut<ChunkRemovalDeltas>,
+    collected_query: Query<
+        (Entity, &GeneratedExteriorObject, &GeneratedObjectId),
+        Or<(With<HeldItem>, With<InCarry>)>,
+    >,
 ) {
-    for (entity, generated) in collected_query.iter() {
+    for (entity, generated, object_id) in collected_query.iter() {
+        // Story 5.4: record the removal *before* stripping the identity
+        // components. This is the moment where a baseline object transitions
+        // from "generated chunk content" to "player-owned item". We persist the
+        // GeneratedObjectId in the chunk's removal delta so the object will not
+        // reappear when the chunk is regenerated.
+        //
+        // The removal delta is keyed by the object's home_chunk — the chunk
+        // that originally spawned it. Even if the player walks away and the
+        // chunk unloads, the delta stays in memory (and eventually on disk in
+        // a future save-file story).
+        removal_deltas
+            .removed_by_chunk
+            .entry(generated.home_chunk)
+            .or_default()
+            .insert(object_id.clone());
+
         if let Some(chunk_entities) = spawned_chunks
             .spawned_entities_by_chunk
             .get_mut(&generated.home_chunk)
@@ -456,6 +530,35 @@ fn release_collected_generated_objects(
             .remove::<DepositSiteMember>()
             .remove::<SurfaceMineralDeposit>()
             .remove::<GeneratedObjectId>();
+    }
+}
+
+/// Filter baseline placements through removal deltas, producing the final
+/// spawn list.
+///
+/// This is a pure function (no ECS, no side effects) so it can be unit-tested
+/// in isolation. The pipeline is:
+///
+/// ```text
+/// generate_surface_mineral_chunk_baseline()  →  full deterministic baseline
+///                  ↓
+/// apply_removal_deltas()                     →  baseline minus picked-up objects
+///                  ↓
+/// spawn loop in sync_active_exterior_chunks  →  live Bevy entities
+/// ```
+///
+/// If `removals` is `None` or empty, the baseline passes through unchanged —
+/// no allocation or filtering overhead beyond the emptiness check.
+fn apply_removal_deltas(
+    baseline: Vec<GeneratedSurfaceMineralPlacement>,
+    removals: Option<&HashSet<GeneratedObjectId>>,
+) -> Vec<GeneratedSurfaceMineralPlacement> {
+    match removals {
+        Some(removed) if !removed.is_empty() => baseline
+            .into_iter()
+            .filter(|placement| !removed.contains(&placement.generated_id))
+            .collect(),
+        _ => baseline,
     }
 }
 
@@ -1363,5 +1466,155 @@ cluster_compactness = 0.75
 
         assert_eq!(catalog.deposits.len(), 1);
         assert_eq!(catalog.deposits[0].material_key, "Ferrite");
+    }
+
+    // ── Story 5.4: Removal delta tests ───────────────────────────────────
+
+    #[test]
+    fn removal_delta_filters_out_targeted_object() {
+        // Generate a baseline, pick one ID, and verify it disappears after
+        // applying the removal delta while all others survive.
+        let profile = sample_profile();
+        let catalog = sample_catalog();
+        let surface = sample_flat_surface();
+        let chunk = ChunkCoord::new(0, -1);
+
+        let baseline = generate_surface_mineral_chunk_baseline(&profile, &catalog, &surface, chunk);
+        assert!(
+            baseline.len() >= 2,
+            "need at least 2 placements to test selective removal"
+        );
+
+        let target_id = baseline[0].generated_id.clone();
+        let mut removals = HashSet::new();
+        removals.insert(target_id.clone());
+
+        let filtered = apply_removal_deltas(baseline.clone(), Some(&removals));
+
+        // The targeted object must be gone.
+        assert!(
+            !filtered.iter().any(|p| p.generated_id == target_id),
+            "removed object should not appear in filtered output"
+        );
+        // All other objects must survive.
+        assert_eq!(
+            filtered.len(),
+            baseline.len() - 1,
+            "exactly one object should be removed"
+        );
+    }
+
+    #[test]
+    fn removal_delta_is_stable_across_regenerations() {
+        // Simulate chunk unload → reload: regenerate baseline and re-apply the
+        // same delta. The removed object must still be absent.
+        let profile = sample_profile();
+        let catalog = sample_catalog();
+        let surface = sample_flat_surface();
+        let chunk = ChunkCoord::new(0, -1);
+
+        let baseline_1 =
+            generate_surface_mineral_chunk_baseline(&profile, &catalog, &surface, chunk);
+        let target_id = baseline_1[0].generated_id.clone();
+        let mut removals = HashSet::new();
+        removals.insert(target_id.clone());
+
+        // "Reload" the chunk — regenerate from scratch.
+        let baseline_2 =
+            generate_surface_mineral_chunk_baseline(&profile, &catalog, &surface, chunk);
+        let filtered = apply_removal_deltas(baseline_2, Some(&removals));
+
+        assert!(
+            !filtered.iter().any(|p| p.generated_id == target_id),
+            "removed object must stay gone after chunk regeneration"
+        );
+    }
+
+    #[test]
+    fn removal_delta_only_affects_targeted_id() {
+        // Neighbors of the removed object must be completely unaffected.
+        let profile = sample_profile();
+        let catalog = sample_catalog();
+        let surface = sample_flat_surface();
+        let chunk = ChunkCoord::new(0, -1);
+
+        let baseline = generate_surface_mineral_chunk_baseline(&profile, &catalog, &surface, chunk);
+        assert!(
+            baseline.len() >= 3,
+            "need at least 3 placements to test neighbor preservation"
+        );
+
+        let target_id = baseline[1].generated_id.clone();
+        let neighbor_ids: Vec<GeneratedObjectId> = baseline
+            .iter()
+            .filter(|p| p.generated_id != target_id)
+            .map(|p| p.generated_id.clone())
+            .collect();
+
+        let mut removals = HashSet::new();
+        removals.insert(target_id);
+        let filtered = apply_removal_deltas(baseline, Some(&removals));
+
+        let filtered_ids: Vec<GeneratedObjectId> =
+            filtered.iter().map(|p| p.generated_id.clone()).collect();
+        assert_eq!(
+            filtered_ids, neighbor_ids,
+            "non-removed objects must be preserved in order"
+        );
+    }
+
+    #[test]
+    fn empty_removal_delta_passes_baseline_through() {
+        let profile = sample_profile();
+        let catalog = sample_catalog();
+        let surface = sample_flat_surface();
+        let chunk = ChunkCoord::new(0, -1);
+
+        let baseline = generate_surface_mineral_chunk_baseline(&profile, &catalog, &surface, chunk);
+        let count = baseline.len();
+
+        // None removals.
+        let filtered_none = apply_removal_deltas(baseline.clone(), None);
+        assert_eq!(filtered_none.len(), count);
+
+        // Empty set.
+        let empty: HashSet<GeneratedObjectId> = HashSet::new();
+        let filtered_empty = apply_removal_deltas(baseline, Some(&empty));
+        assert_eq!(filtered_empty.len(), count);
+    }
+
+    #[test]
+    fn chunk_removal_deltas_components_are_serializable() {
+        // Verify that the key and value types in ChunkRemovalDeltas round-trip
+        // through serde_json. The full HashMap<ChunkCoord, HashSet<...>> uses a
+        // composite key that serde_json can't directly serialize as a JSON
+        // object (JSON requires string keys), so we verify the pieces
+        // individually. A future save-file format (e.g. bincode, MessagePack)
+        // will handle composite keys natively.
+        let chunk = ChunkCoord::new(3, -7);
+        let profile = sample_profile();
+        let id = super::super::derive_generated_object_id(&profile, chunk, "test_mineral", 42, 1);
+
+        // ChunkCoord round-trips.
+        let chunk_json = serde_json::to_string(&chunk).expect("ChunkCoord should serialize");
+        let chunk_rt: ChunkCoord =
+            serde_json::from_str(&chunk_json).expect("ChunkCoord should deserialize");
+        assert_eq!(chunk_rt, chunk);
+
+        // GeneratedObjectId round-trips.
+        let id_json = serde_json::to_string(&id).expect("GeneratedObjectId should serialize");
+        let id_rt: GeneratedObjectId =
+            serde_json::from_str(&id_json).expect("GeneratedObjectId should deserialize");
+        assert_eq!(id_rt, id);
+
+        // A Vec<(ChunkCoord, Vec<GeneratedObjectId>)> representation round-trips,
+        // proving the delta data can be persisted in any serde-compatible format.
+        let entries: Vec<(ChunkCoord, Vec<GeneratedObjectId>)> = vec![(chunk, vec![id.clone()])];
+        let entries_json = serde_json::to_string(&entries).expect("delta entries should serialize");
+        let entries_rt: Vec<(ChunkCoord, Vec<GeneratedObjectId>)> =
+            serde_json::from_str(&entries_json).expect("delta entries should deserialize");
+        assert_eq!(entries_rt.len(), 1);
+        assert_eq!(entries_rt[0].0, chunk);
+        assert_eq!(entries_rt[0].1[0], id);
     }
 }
