@@ -24,8 +24,7 @@ use serde::{Deserialize, Serialize};
 use crate::input::InputAction;
 use crate::interaction::{HOLD_OFFSET, HeldItem};
 use crate::journal::RecordWeightObservation;
-use crate::materials::GameMaterial;
-use crate::materials::MaterialObject;
+use crate::materials::{GameMaterial, MaterialObject};
 use crate::observation::{ConfidenceLevel, ConfidenceTracker};
 use crate::player::{Player, PlayerCamera, cursor_is_captured};
 use leafwing_input_manager::prelude::*;
@@ -76,9 +75,11 @@ struct StashIntent;
 #[derive(Message)]
 struct CycleCarryIntent;
 
-/// Story 4.2 will emit this when the player wants to drop an item out of carry.
-#[derive(Message)]
-pub(crate) struct DropCarryIntent;
+// TODO: Incomplete refactor — DropCarryIntent and its handler were partially
+// decoupled from interaction.rs but never wired up. Commented out to fix
+// dead-code lint. Restore when the drop-from-carry flow is completed.
+// #[derive(Message)]
+// pub(crate) struct DropCarryIntent;
 
 /// Emitted when a carry action fails so downstream systems can provide diegetic
 /// feedback (visual strain, item bounce-back, audio cue, etc.).
@@ -1398,45 +1399,24 @@ fn process_cycle_carry_intent(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn process_drop_carry_intent(
-    mut commands: Commands,
-    mut reader: MessageReader<DropCarryIntent>,
-    mut weight_writer: MessageWriter<CarryWeightChanged>,
-    mut reject_writer: MessageWriter<CarryActionRejected>,
-    config: Res<CarryConfig>,
-    scene: Res<SceneConfig>,
-    mut player_query: Query<(&GlobalTransform, &mut CarryState), With<Player>>,
-    carried_material_query: Query<&GameMaterial, With<InCarry>>,
-) {
-    for _intent in reader.read() {
-        let Ok((player_gtf, mut carry_state)) = player_query.single_mut() else {
-            continue;
-        };
-
-        let Some(next_entity) = carry_state.next_carried_entity(config.cycle_order) else {
-            reject_writer.write(CarryActionRejected {
-                reason: CarryRejectionReason::CarryEmpty,
-            });
-            continue;
-        };
-        let Ok(next_material) = carried_material_query.get(next_entity) else {
-            // Entity was despawned — evict it so carry doesn't soft-lock.
-            carry_state.evict_stale_entity(next_entity);
-            reject_writer.write(CarryActionRejected {
-                reason: CarryRejectionReason::StaleEntity,
-            });
-            continue;
-        };
-
-        let Some(_removed) = carry_state.remove_material(next_entity, next_material) else {
-            continue;
-        };
-        let drop_position = floor_drop_position(player_gtf, &scene, next_material);
-        move_entity_from_carry_to_floor(&mut commands, next_entity, drop_position);
-        emit_carry_weight_changed(&mut weight_writer, &carry_state);
-    }
-}
+// TODO: Incomplete refactor — `process_drop_carry_intent` was partially
+// decoupled from interaction.rs but `floor_drop_position` and
+// `move_entity_from_carry_to_floor` were never ported. Commented out to fix
+// dead-code lint. Restore when the drop-from-carry flow is completed.
+//
+// #[allow(clippy::too_many_arguments)]
+// fn process_drop_carry_intent(
+//     mut commands: Commands,
+//     mut reader: MessageReader<DropCarryIntent>,
+//     mut weight_writer: MessageWriter<CarryWeightChanged>,
+//     mut reject_writer: MessageWriter<CarryActionRejected>,
+//     config: Res<CarryConfig>,
+//     scene: Res<SceneConfig>,
+//     mut player_query: Query<(&GlobalTransform, &mut CarryState), With<Player>>,
+//     carried_material_query: Query<&GameMaterial, With<InCarry>>,
+// ) {
+//     ...
+// }
 
 #[cfg(test)]
 mod tests {

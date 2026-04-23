@@ -183,7 +183,7 @@ fn tick_processing(
     time: Res<Time>,
     cfg: Res<FabricatorSceneConfig>,
     rules: Res<CombinationRules>,
-    mut journal_writer: MessageWriter<RecordFabrication>,
+    _journal_writer: MessageWriter<RecordFabrication>,
     mut state: ResMut<FabricatorState>,
     mut slots: Query<&mut InputSlot>,
     material_query: Query<&GameMaterial, With<MaterialObject>>,
