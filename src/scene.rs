@@ -106,6 +106,19 @@ impl RoomShellCollision {
     }
 }
 
+/// The currently authored flat exterior patch outside the doorway.
+///
+/// Epic 5's first generation stories are intentionally scoped to the exterior
+/// patch that already exists in the scene. This resource makes that patch
+/// explicit so generation code can ask "is this candidate on the current
+/// playable exterior surface?" instead of hardcoding scene dimensions a second
+/// time in a different module.
+#[derive(Resource, Clone, Debug)]
+pub(crate) struct ExteriorGroundPatch {
+    pub bounds_xz: RectXZ,
+    pub surface_y: f32,
+}
+
 // ── Config (TOML ↔ Rust) ─────────────────────────────────────────────────
 
 const CONFIG_PATH: &str = "assets/config/scene.toml";
@@ -684,13 +697,27 @@ fn setup_scene(
         Transform::from_xyz(0.0, wall_y, north_wall_center_z(hz, t)),
     ));
 
-    let exterior_ground_size_x = hx * 6.0;
-    let exterior_ground_size_z = hz * 8.0;
+    // Keep the first authored exterior intentionally simple, but make it large
+    // enough that chunk-based surface deposit generation has room to feel
+    // present. A tiny patch technically "works" yet makes the outside feel
+    // empty, which gives the wrong read on Story 5.2's generation density.
+    let exterior_ground_size_x = hx * 10.0;
+    let exterior_ground_size_z = hz * 14.0;
     let exterior_ground_center_z = -hz - exterior_ground_size_z * 0.5;
+    let exterior_surface_y = -0.01;
     let exterior_ground_mat = materials.add(StandardMaterial {
         base_color: Color::srgb(0.26, 0.3, 0.22),
         perceptual_roughness: 0.98,
         ..default()
+    });
+    commands.insert_resource(ExteriorGroundPatch {
+        bounds_xz: RectXZ {
+            min_x: -exterior_ground_size_x * 0.5,
+            max_x: exterior_ground_size_x * 0.5,
+            min_z: exterior_ground_center_z - exterior_ground_size_z * 0.5,
+            max_z: exterior_ground_center_z + exterior_ground_size_z * 0.5,
+        },
+        surface_y: exterior_surface_y,
     });
     commands.spawn((
         Mesh3d(
@@ -701,7 +728,7 @@ fn setup_scene(
             ),
         ),
         MeshMaterial3d(exterior_ground_mat),
-        Transform::from_xyz(0.0, -0.01, exterior_ground_center_z),
+        Transform::from_xyz(0.0, exterior_surface_y, exterior_ground_center_z),
     ));
 
     // Workbench — lighter, lower roughness than walls (future fabricator site).

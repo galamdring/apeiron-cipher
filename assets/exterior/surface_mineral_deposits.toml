@@ -1,0 +1,42 @@
+# Story 5.2 exterior object definitions.
+#
+# This file defines the first generated exterior object family: surface mineral
+# deposits. The object type is explicit in both the file name and the entry
+# structure so later stories do not have to reverse-engineer what "the first
+# exterior thing" was meant to be.
+
+# Distance between deterministic candidate cells inside each chunk.
+candidate_spacing_world_units = 6.0
+
+# World-space scale for the continuous density field.
+#
+# Larger values make neighboring areas feel more similar. Smaller values make
+# the field change more quickly across the world.
+density_field_scale_world_units = 18.0
+
+# Minimum field value required for a candidate cell to become a visible deposit.
+spawn_threshold = 0.62
+
+# Fraction of candidate spacing the deposit may jitter away from the cell center.
+jitter_fraction = 0.34
+
+[[deposits]]
+key = "ferrite_surface_deposit"
+material_key = "Ferrite"
+selection_weight = 1.0
+scale_min = 0.9
+scale_max = 1.2
+
+[[deposits]]
+key = "silite_surface_deposit"
+material_key = "Silite"
+selection_weight = 0.8
+scale_min = 0.85
+scale_max = 1.15
+
+[[deposits]]
+key = "prismate_surface_deposit"
+material_key = "Prismate"
+selection_weight = 0.45
+scale_min = 0.8
+scale_max = 1.05

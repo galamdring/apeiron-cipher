@@ -10,6 +10,7 @@ use bevy::prelude::*;
 mod carry;
 mod carry_feedback;
 mod combination;
+mod exterior_generation;
 mod fabricator;
 mod heat;
 mod input;
@@ -47,6 +48,8 @@ fn main() {
         .add_plugins(input::InputPlugin)
         // Materials: data-driven material definitions with observable/hidden properties.
         .add_plugins(materials::MaterialPlugin)
+        // Exterior generation: deterministic baseline surface mineral deposits per active chunk.
+        .add_plugins(exterior_generation::ExteriorGenerationPlugin)
         // Interaction: raycast, pickup/place, crosshair UI.
         .add_plugins(interaction::InteractionPlugin)
         // Heat: burner on workbench, thermal exposure → property revelation.

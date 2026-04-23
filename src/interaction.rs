@@ -148,9 +148,11 @@ fn update_interaction_target(
     mut target: ResMut<InteractionTarget>,
     camera_query: Query<(&Camera, &GlobalTransform), With<PlayerCamera>>,
     mut ray_cast: MeshRayCast,
-    material_query: Query<(), With<MaterialObject>>,
+    material_query: Query<&GameMaterial, With<MaterialObject>>,
     held_query: Query<(), With<HeldItem>>,
+    mut encounter_writer: MessageWriter<RecordEncounter>,
 ) {
+    let previous_target = target.entity;
     target.entity = None;
 
     let Ok((camera, cam_gtf)) = camera_query.single() else {
@@ -177,6 +179,15 @@ fn update_interaction_target(
         && hit.distance <= INTERACTION_RANGE
     {
         target.entity = Some(entity);
+    }
+
+    if target.entity != previous_target
+        && let Some(entity) = target.entity
+        && let Ok(material) = material_query.get(entity)
+    {
+        encounter_writer.write(RecordEncounter {
+            material: material.clone(),
+        });
     }
 }
 
@@ -307,6 +318,7 @@ fn process_pickup(
     mut journal_writer: MessageWriter<RecordWeightObservation>,
     mut player_query: Query<(&mut CarryState, &CarryStrength), With<Player>>,
     held_query: Query<(Entity, &GameMaterial), With<HeldItem>>,
+    material_query: Query<&GameMaterial, With<MaterialObject>>,
     camera_query: Query<Entity, With<PlayerCamera>>,
 ) {
     for _intent in reader.read() {
@@ -334,6 +346,18 @@ fn process_pickup(
                 &mut journal_writer,
             );
         }
+
+        let Ok(target_material) = material_query.get(target_entity) else {
+            continue;
+        };
+
+        record_weight_observation(
+            target_material,
+            carry_strength.current,
+            &config,
+            &mut tracker,
+            &mut journal_writer,
+        );
 
         commands
             .entity(target_entity)
@@ -658,7 +682,6 @@ fn process_examine(
     target: Res<InteractionTarget>,
     held_query: Query<&GameMaterial, With<HeldItem>>,
     material_query: Query<&GameMaterial, With<MaterialObject>>,
-    mut encounter_writer: MessageWriter<RecordEncounter>,
 ) {
     for _intent in reader.read() {
         let held_material = held_query.iter().next();
@@ -666,11 +689,8 @@ fn process_examine(
             .entity
             .and_then(|entity| material_query.get(entity).ok());
 
-        if let Some(mat) = held_material.or(targeted_material) {
+        if held_material.or(targeted_material).is_some() {
             state.visible = !state.visible;
-            encounter_writer.write(RecordEncounter {
-                material: mat.clone(),
-            });
         } else {
             state.visible = false;
         }

@@ -85,6 +85,7 @@ pub(crate) struct RecordWeightObservation {
 
 #[derive(Component, Default)]
 pub(crate) struct Journal {
+    fabrication_log: Vec<String>,
     entries: BTreeMap<u64, JournalEntry>,
 }
 
@@ -216,6 +217,14 @@ fn apply_fabrication_records(
     };
 
     for event in reader.read() {
+        let history = format!(
+            "Combined {} + {} -> {}",
+            event.input_a, event.input_b, event.output_material.name
+        );
+        if !journal.fabrication_log.contains(&history) {
+            journal.fabrication_log.push(history.clone());
+        }
+
         let entry = journal.ensure_entry(event.output_material.seed, &event.output_material.name);
         if entry.surface_observations.is_empty() {
             entry.surface_observations = vec![
@@ -226,10 +235,6 @@ fn apply_fabrication_records(
                 ),
             ];
         }
-        let history = format!(
-            "Combined {} + {} -> {}",
-            event.input_a, event.input_b, event.output_material.name
-        );
         if !entry.fabrication_history.contains(&history) {
             entry.fabrication_history.push(history);
         }
@@ -302,6 +307,15 @@ fn build_journal_text(journal: &Journal) -> String {
     }
 
     let mut out = vec!["Journal".to_string()];
+
+    if !journal.fabrication_log.is_empty() {
+        out.push(String::new());
+        out.push("Recent Fabrication".to_string());
+        for history in &journal.fabrication_log {
+            out.push(history.clone());
+        }
+    }
+
     let mut entries: Vec<&JournalEntry> = journal.entries.values().collect();
     entries.sort_by(|a, b| a.name.cmp(&b.name));
 
@@ -391,6 +405,9 @@ mod tests {
     #[test]
     fn journal_includes_fabrication_history() {
         let mut journal = Journal::default();
+        journal
+            .fabrication_log
+            .push("Combined Ferrite + Silite -> Neoite".into());
         let entry = journal.ensure_entry(2, "Neoite");
         entry
             .fabrication_history
@@ -398,6 +415,7 @@ mod tests {
 
         let text = build_journal_text(&journal);
         assert!(text.contains("Combined Ferrite + Silite -> Neoite"));
+        assert!(text.contains("Recent Fabrication"));
     }
 
     #[test]
