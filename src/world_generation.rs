@@ -618,7 +618,7 @@ fn update_active_chunk_neighborhood(
 ///
 /// That last case is why floor matters. Truncation would incorrectly map
 /// slightly-negative positions back to chunk `0`.
-fn world_position_to_chunk_coord(
+pub fn world_position_to_chunk_coord(
     position_xz: PositionXZ,
     chunk_size_world_units: f32,
 ) -> ChunkCoord {
