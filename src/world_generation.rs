@@ -31,6 +31,7 @@
 
 pub mod exterior;
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
@@ -383,6 +384,12 @@ const OBJECT_IDENTITY_CHANNEL: u64 = 0xD3E5_17A1_0000_0003;
 /// planet is. It is derived deterministically from the planet seed so that
 /// each planet has a consistent, reproducible size.
 const PLANET_SURFACE_RADIUS_CHANNEL: u64 = 0xD3E5_17A1_0000_0004;
+/// Channel constant for deriving the biome climate seed from the planet seed.
+///
+/// The biome climate seed is mixed with sub-channel constants (temperature and
+/// moisture) to produce two independent coherent noise fields that together
+/// determine the biome at each chunk position.
+const BIOME_CLIMATE_CHANNEL: u64 = 0xD3E5_17A1_0000_0005;
 
 pub struct WorldGenerationPlugin;
 
@@ -391,7 +398,11 @@ impl Plugin for WorldGenerationPlugin {
         app.init_resource::<WorldGenerationConfig>()
             .init_resource::<WorldProfile>()
             .init_resource::<ActiveChunkNeighborhood>()
-            .add_systems(PreStartup, load_world_generation_config)
+            .init_resource::<BiomeRegistry>()
+            .add_systems(
+                PreStartup,
+                (load_world_generation_config, load_biome_registry),
+            )
             .add_systems(Update, update_active_chunk_neighborhood);
     }
 }
@@ -555,6 +566,13 @@ pub struct WorldProfile {
     pub placement_density_seed: u64,
     pub placement_variation_seed: u64,
     pub object_identity_seed: u64,
+    /// Per-planet biome climate seed, derived from the planet seed.
+    ///
+    /// This seed is mixed with temperature and moisture sub-channel constants
+    /// (defined in `BiomeRegistry`) to produce two independent coherent noise
+    /// fields. Each chunk samples both fields at its canonical center to
+    /// determine its biome.
+    pub biome_climate_seed: u64,
     /// The planet surface radius in chunks, derived from the planet seed.
     ///
     /// The full surface is a square grid of `planet_surface_diameter × diameter`
@@ -600,6 +618,7 @@ impl WorldProfile {
             placement_density_seed: mix_seed(planet_seed.0, PLACEMENT_DENSITY_CHANNEL),
             placement_variation_seed: mix_seed(planet_seed.0, PLACEMENT_VARIATION_CHANNEL),
             object_identity_seed: mix_seed(planet_seed.0, OBJECT_IDENTITY_CHANNEL),
+            biome_climate_seed: mix_seed(planet_seed.0, BIOME_CLIMATE_CHANNEL),
             planet_surface_radius,
             planet_surface_diameter,
         }
@@ -917,6 +936,313 @@ pub fn derive_generated_object_id(
         local_candidate_index,
         generator_version,
     }
+}
+
+// ── Biome Region Derivation (Story 5a.2) ─────────────────────────────────
+
+const BIOME_CONFIG_PATH: &str = "assets/config/biomes.toml";
+
+/// Registry of all biome definitions, loaded from `assets/config/biomes.toml`.
+///
+/// The registry defines the temperature × moisture grid that maps each chunk
+/// to a biome. It is loaded once at startup and never mutated. Generation
+/// systems access it via `Res<BiomeRegistry>`.
+///
+/// ## Noise Parameters
+///
+/// The two noise fields (temperature and moisture) are each sampled at the
+/// chunk's canonical center in **chunk space** (not world space). The
+/// `noise_scale_chunks` parameter controls how many chunks fit in one noise
+/// period — larger values make biome regions bigger.
+///
+/// Each noise field uses its own sub-channel constant mixed with the
+/// `biome_climate_seed` from `WorldProfile`, ensuring the two fields are
+/// uncorrelated (no diagonal striping artifact).
+#[derive(Clone, Debug, Resource, Serialize, Deserialize)]
+pub struct BiomeRegistry {
+    /// How many chunks fit in one period of the biome noise field.
+    ///
+    /// Controls biome region size: larger values → bigger regions, fewer
+    /// transitions per planet circumference. A value of 12 means roughly
+    /// 12 chunks between biome transitions.
+    #[serde(default = "default_biome_noise_scale_chunks")]
+    pub noise_scale_chunks: f32,
+    /// Sub-channel mixed with `biome_climate_seed` for the temperature axis.
+    #[serde(default = "default_temperature_noise_channel")]
+    pub temperature_noise_channel: u64,
+    /// Sub-channel mixed with `biome_climate_seed` for the moisture axis.
+    #[serde(default = "default_moisture_noise_channel")]
+    pub moisture_noise_channel: u64,
+    /// Key of the biome used when a chunk's (temperature, moisture) pair does
+    /// not fall within any defined biome's range.
+    #[serde(default = "default_fallback_biome_key")]
+    pub fallback_biome_key: String,
+    /// Ordered list of biome definitions. The first matching biome wins when
+    /// ranges overlap.
+    #[serde(default)]
+    pub biomes: Vec<BiomeDefinition>,
+}
+
+fn default_biome_noise_scale_chunks() -> f32 {
+    12.0
+}
+fn default_temperature_noise_channel() -> u64 {
+    0xB10E_0001_0000_0001
+}
+fn default_moisture_noise_channel() -> u64 {
+    0xB10E_0001_0000_0002
+}
+fn default_fallback_biome_key() -> String {
+    "mineral_steppe".to_string()
+}
+
+impl Default for BiomeRegistry {
+    fn default() -> Self {
+        Self {
+            noise_scale_chunks: default_biome_noise_scale_chunks(),
+            temperature_noise_channel: default_temperature_noise_channel(),
+            moisture_noise_channel: default_moisture_noise_channel(),
+            fallback_biome_key: default_fallback_biome_key(),
+            biomes: default_biome_definitions(),
+        }
+    }
+}
+
+/// One biome definition describing a region of temperature × moisture space.
+///
+/// Each biome occupies a rectangular region on the two climate axes. A chunk
+/// belongs to the first biome (in definition order) whose temperature and
+/// moisture ranges contain the chunk's sampled values.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BiomeDefinition {
+    /// Unique key identifying this biome (e.g., `"scorched_flats"`).
+    pub key: String,
+    /// Minimum temperature value (0.0–1.0) for this biome's range.
+    pub temperature_min: f32,
+    /// Maximum temperature value (0.0–1.0) for this biome's range.
+    pub temperature_max: f32,
+    /// Minimum moisture value (0.0–1.0) for this biome's range.
+    pub moisture_min: f32,
+    /// Maximum moisture value (0.0–1.0) for this biome's range.
+    pub moisture_max: f32,
+    /// RGB ground color for per-chunk ground tiles in this biome.
+    ///
+    /// Components are in linear sRGB space (0.0–1.0 per channel).
+    pub ground_color: [f32; 3],
+    /// Multiplier applied to the deposit spawn threshold.
+    ///
+    /// Values > 1.0 increase deposit density (more deposits spawn).
+    /// Values < 1.0 decrease it. The modifier scales the effective
+    /// spawn threshold: `effective = base_threshold / density_modifier`,
+    /// so a higher modifier lowers the threshold, admitting more candidates.
+    #[serde(default = "one_f32")]
+    pub density_modifier: f32,
+    /// Per-deposit-key weight multipliers.
+    ///
+    /// Each key matches a `SurfaceMineralDepositDefinition::key`. The value
+    /// is multiplied with that deposit's `selection_weight` when choosing
+    /// which deposit type to place. Missing keys default to 1.0 (no change).
+    #[serde(default)]
+    pub deposit_weight_modifiers: HashMap<String, f32>,
+}
+
+fn one_f32() -> f32 {
+    1.0
+}
+
+/// Hardcoded default biome definitions used when `biomes.toml` is missing.
+///
+/// These match the three biomes defined in the TOML file shipped with the
+/// game. The defaults exist so the game runs correctly even without asset
+/// files (important for integration tests and CI).
+fn default_biome_definitions() -> Vec<BiomeDefinition> {
+    vec![
+        BiomeDefinition {
+            key: "scorched_flats".to_string(),
+            temperature_min: 0.6,
+            temperature_max: 1.0,
+            moisture_min: 0.0,
+            moisture_max: 0.4,
+            ground_color: [0.55, 0.38, 0.22],
+            density_modifier: 1.15,
+            deposit_weight_modifiers: HashMap::from([
+                ("ferrite".to_string(), 3.0),
+                ("silite".to_string(), 0.8),
+                ("prismate".to_string(), 0.2),
+            ]),
+        },
+        BiomeDefinition {
+            key: "mineral_steppe".to_string(),
+            temperature_min: 0.3,
+            temperature_max: 0.7,
+            moisture_min: 0.3,
+            moisture_max: 0.7,
+            ground_color: [0.26, 0.3, 0.22],
+            density_modifier: 1.0,
+            deposit_weight_modifiers: HashMap::new(),
+        },
+        BiomeDefinition {
+            key: "frost_shelf".to_string(),
+            temperature_min: 0.0,
+            temperature_max: 0.4,
+            moisture_min: 0.5,
+            moisture_max: 1.0,
+            ground_color: [0.42, 0.48, 0.56],
+            density_modifier: 0.7,
+            deposit_weight_modifiers: HashMap::from([
+                ("ferrite".to_string(), 0.2),
+                ("silite".to_string(), 1.0),
+                ("prismate".to_string(), 3.0),
+            ]),
+        },
+    ]
+}
+
+/// Result of biome derivation for a single chunk.
+///
+/// Contains the biome key and all generation-relevant parameters that systems
+/// need to modulate chunk content based on biome. This is a value type — it
+/// is computed on demand from `derive_chunk_biome()` and not stored as a
+/// Component or Resource.
+#[derive(Clone, Debug)]
+pub struct ChunkBiome {
+    /// The biome key (e.g., `"scorched_flats"`).
+    pub biome_key: String,
+    /// RGB ground color for this chunk's ground tile.
+    pub ground_color: [f32; 3],
+    /// Density modifier applied to the deposit spawn threshold.
+    pub density_modifier: f32,
+    /// Per-deposit-key weight multipliers for material selection.
+    pub deposit_weight_modifiers: HashMap<String, f32>,
+}
+
+/// Derive the biome for a chunk based on its canonical position on the planet.
+///
+/// We sample two coherent noise fields — temperature and moisture — at the
+/// chunk's canonical (wrapped) center coordinate in **chunk space**. The noise
+/// fields use the same bilinear-interpolated value noise as the deposit
+/// density field (`continuous_value_field_01`), but operate in chunk-space
+/// rather than world-space so that biome regions scale independently of chunk
+/// size.
+///
+/// The canonical coordinate ensures torus-wrapped chunks produce the same
+/// biome regardless of the player's raw position. We sample at the chunk
+/// center (coord + 0.5) rather than the corner to avoid edge artifacts where
+/// four chunks meet.
+///
+/// ## Fallback behavior
+///
+/// If no biome range matches the sampled (temperature, moisture) pair, we
+/// fall back to the biome identified by `registry.fallback_biome_key`. If
+/// that key also doesn't exist in the registry, we return a default neutral
+/// biome (olive green, no modifiers).
+pub fn derive_chunk_biome(
+    profile: &WorldProfile,
+    registry: &BiomeRegistry,
+    chunk_coord: ChunkCoord,
+) -> ChunkBiome {
+    // Wrap to canonical torus coordinate so equivalent positions on the
+    // planet surface always resolve to the same biome.
+    let canonical = wrap_chunk_coord(chunk_coord, profile.planet_surface_diameter);
+
+    // Sample temperature and moisture noise at the chunk center in chunk
+    // space. Using (coord + 0.5) places the sample at the center of the
+    // chunk cell rather than on the corner lattice, which avoids boundary
+    // artifacts where four chunks with different biomes might all share a
+    // corner sample.
+    let chunk_center = PositionXZ::new(canonical.x as f32 + 0.5, canonical.z as f32 + 0.5);
+
+    let temperature_seed = mix_seed(
+        profile.biome_climate_seed,
+        registry.temperature_noise_channel,
+    );
+    let moisture_seed = mix_seed(profile.biome_climate_seed, registry.moisture_noise_channel);
+
+    let temperature = exterior::continuous_value_field_01(
+        temperature_seed,
+        chunk_center,
+        registry.noise_scale_chunks,
+    );
+    let moisture = exterior::continuous_value_field_01(
+        moisture_seed,
+        chunk_center,
+        registry.noise_scale_chunks,
+    );
+
+    // Find the first biome whose range contains the sampled values.
+    // Order matters — overlapping ranges resolve to the first match.
+    for biome_def in &registry.biomes {
+        if temperature >= biome_def.temperature_min
+            && temperature <= biome_def.temperature_max
+            && moisture >= biome_def.moisture_min
+            && moisture <= biome_def.moisture_max
+        {
+            return ChunkBiome {
+                biome_key: biome_def.key.clone(),
+                ground_color: biome_def.ground_color,
+                density_modifier: biome_def.density_modifier,
+                deposit_weight_modifiers: biome_def.deposit_weight_modifiers.clone(),
+            };
+        }
+    }
+
+    // No range matched — use the fallback biome.
+    if let Some(fallback) = registry
+        .biomes
+        .iter()
+        .find(|b| b.key == registry.fallback_biome_key)
+    {
+        return ChunkBiome {
+            biome_key: fallback.key.clone(),
+            ground_color: fallback.ground_color,
+            density_modifier: fallback.density_modifier,
+            deposit_weight_modifiers: fallback.deposit_weight_modifiers.clone(),
+        };
+    }
+
+    // Even the fallback key is missing — return a hardcoded neutral default.
+    // This should never happen with a well-formed biomes.toml, but we must
+    // not panic in generation code.
+    warn!(
+        "Biome fallback key '{}' not found in registry; using hardcoded neutral default",
+        registry.fallback_biome_key
+    );
+    ChunkBiome {
+        biome_key: registry.fallback_biome_key.clone(),
+        ground_color: [0.26, 0.3, 0.22],
+        density_modifier: 1.0,
+        deposit_weight_modifiers: HashMap::new(),
+    }
+}
+
+/// Load the biome registry from TOML, falling back to hardcoded defaults.
+fn load_biome_registry(mut commands: Commands) {
+    let registry = if Path::new(BIOME_CONFIG_PATH).exists() {
+        match fs::read_to_string(BIOME_CONFIG_PATH) {
+            Ok(contents) => match toml::from_str::<BiomeRegistry>(&contents) {
+                Ok(registry) => {
+                    info!(
+                        "Loaded biome registry from {BIOME_CONFIG_PATH} ({} biomes)",
+                        registry.biomes.len()
+                    );
+                    registry
+                }
+                Err(error) => {
+                    warn!("Could not parse {BIOME_CONFIG_PATH}, using defaults: {error}");
+                    BiomeRegistry::default()
+                }
+            },
+            Err(error) => {
+                warn!("Could not read {BIOME_CONFIG_PATH}, using defaults: {error}");
+                BiomeRegistry::default()
+            }
+        }
+    } else {
+        warn!("{BIOME_CONFIG_PATH} not found, using defaults");
+        BiomeRegistry::default()
+    };
+
+    commands.insert_resource(registry);
 }
 
 #[cfg(test)]
@@ -1451,5 +1777,241 @@ mod tests {
         let key_a = derive_chunk_generation_key(&profile, canonical);
         let key_b = derive_chunk_generation_key(&profile, overflow);
         assert_eq!(key_a, key_b);
+    }
+
+    // ── Story 5a.2: Biome derivation ─────────────────────────────────────
+
+    fn sample_config() -> WorldGenerationConfig {
+        WorldGenerationConfig {
+            planet_seed: 2026,
+            chunk_size_world_units: 45.0,
+            active_chunk_radius: 1,
+            building_cell_size: 1.0,
+            planet_surface_min_radius: 500,
+            planet_surface_max_radius: 5000,
+        }
+    }
+
+    #[test]
+    fn biome_derivation_is_deterministic() {
+        // Same seed + coord must always produce the same biome.
+        let profile = WorldProfile::from_config(&sample_config());
+        let registry = BiomeRegistry::default();
+        let coord = ChunkCoord::new(7, 13);
+
+        let a = derive_chunk_biome(&profile, &registry, coord);
+        let b = derive_chunk_biome(&profile, &registry, coord);
+
+        assert_eq!(a.biome_key, b.biome_key);
+        assert_eq!(a.ground_color, b.ground_color);
+        assert_eq!(a.density_modifier, b.density_modifier);
+    }
+
+    #[test]
+    fn all_three_biomes_reachable() {
+        // Scan a large set of coords and verify all three biome keys appear.
+        // The noise field is coherent, so with enough samples we should hit
+        // all defined ranges.
+        let profile = WorldProfile::from_config(&sample_config());
+        let registry = BiomeRegistry::default();
+
+        let mut found: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for x in -50..50 {
+            for z in -50..50 {
+                let biome = derive_chunk_biome(&profile, &registry, ChunkCoord::new(x, z));
+                found.insert(biome.biome_key.clone());
+                if found.len() == 3 {
+                    break;
+                }
+            }
+            if found.len() == 3 {
+                break;
+            }
+        }
+
+        assert!(
+            found.contains("scorched_flats"),
+            "scorched_flats not found in 100×100 scan, found: {found:?}"
+        );
+        assert!(
+            found.contains("mineral_steppe"),
+            "mineral_steppe not found in 100×100 scan, found: {found:?}"
+        );
+        assert!(
+            found.contains("frost_shelf"),
+            "frost_shelf not found in 100×100 scan, found: {found:?}"
+        );
+    }
+
+    #[test]
+    fn fallback_biome_used_when_no_range_matches() {
+        // Create a registry with a single biome that only covers a tiny corner,
+        // then sample a coord that lands outside it.
+        let profile = WorldProfile::from_config(&sample_config());
+        let registry = BiomeRegistry {
+            noise_scale_chunks: 12.0,
+            temperature_noise_channel: 0xB10E_0001_0000_0001,
+            moisture_noise_channel: 0xB10E_0001_0000_0002,
+            fallback_biome_key: "fallback_test".to_string(),
+            biomes: vec![
+                // Impossibly narrow range — almost nothing will match.
+                BiomeDefinition {
+                    key: "narrow".to_string(),
+                    temperature_min: 0.999,
+                    temperature_max: 1.0,
+                    moisture_min: 0.999,
+                    moisture_max: 1.0,
+                    ground_color: [1.0, 0.0, 0.0],
+                    density_modifier: 1.0,
+                    deposit_weight_modifiers: HashMap::new(),
+                },
+                // Fallback biome.
+                BiomeDefinition {
+                    key: "fallback_test".to_string(),
+                    temperature_min: 0.0,
+                    temperature_max: 0.0,
+                    moisture_min: 0.0,
+                    moisture_max: 0.0,
+                    ground_color: [0.5, 0.5, 0.5],
+                    density_modifier: 0.5,
+                    deposit_weight_modifiers: HashMap::new(),
+                },
+            ],
+        };
+
+        // Scan coords until we find one that falls back (most will).
+        let mut found_fallback = false;
+        for x in 0..20 {
+            let biome = derive_chunk_biome(&profile, &registry, ChunkCoord::new(x, 0));
+            if biome.biome_key == "fallback_test" {
+                found_fallback = true;
+                assert_eq!(
+                    biome.density_modifier, 0.5,
+                    "fallback biome must use its own density modifier"
+                );
+                break;
+            }
+        }
+        assert!(
+            found_fallback,
+            "expected at least one coord to trigger fallback biome"
+        );
+    }
+
+    #[test]
+    fn biome_climate_seed_is_distinct_from_other_seeds() {
+        // The biome climate seed must not collide with any other sub-seed
+        // in WorldProfile to avoid correlated noise fields.
+        let profile = WorldProfile::from_config(&sample_config());
+
+        assert_ne!(profile.biome_climate_seed, profile.placement_density_seed);
+        assert_ne!(profile.biome_climate_seed, profile.placement_variation_seed);
+        assert_ne!(profile.biome_climate_seed, profile.planet_seed.0);
+    }
+
+    #[test]
+    fn biome_registry_toml_round_trip() {
+        // Verify BiomeRegistry serializes to TOML and back without data loss.
+        let registry = BiomeRegistry::default();
+        let toml_str = toml::to_string(&registry).expect("BiomeRegistry should serialize to TOML");
+        let parsed: BiomeRegistry =
+            toml::from_str(&toml_str).expect("BiomeRegistry should parse from TOML");
+
+        assert_eq!(parsed.biomes.len(), registry.biomes.len());
+        assert_eq!(parsed.fallback_biome_key, registry.fallback_biome_key);
+        assert_eq!(parsed.noise_scale_chunks, registry.noise_scale_chunks);
+        for (a, b) in registry.biomes.iter().zip(parsed.biomes.iter()) {
+            assert_eq!(a.key, b.key);
+            assert_eq!(a.temperature_min, b.temperature_min);
+            assert_eq!(a.temperature_max, b.temperature_max);
+            assert_eq!(a.density_modifier, b.density_modifier);
+            assert_eq!(a.deposit_weight_modifiers, b.deposit_weight_modifiers);
+        }
+    }
+
+    #[test]
+    fn biome_derivation_wraps_torus_correctly() {
+        // Equivalent torus coordinates must produce the same biome.
+        let config = WorldGenerationConfig {
+            planet_seed: 42,
+            chunk_size_world_units: 45.0,
+            active_chunk_radius: 1,
+            building_cell_size: 1.0,
+            planet_surface_min_radius: 50,
+            planet_surface_max_radius: 50,
+        };
+        let profile = WorldProfile::from_config(&config);
+        let registry = BiomeRegistry::default();
+        let diameter = profile.planet_surface_diameter;
+
+        let raw = ChunkCoord::new(-3, 7);
+        let wrapped = ChunkCoord::new(-3 + diameter, 7);
+
+        let a = derive_chunk_biome(&profile, &registry, raw);
+        let b = derive_chunk_biome(&profile, &registry, wrapped);
+
+        assert_eq!(a.biome_key, b.biome_key);
+        assert_eq!(a.ground_color, b.ground_color);
+    }
+
+    // ── Error / failure state tests ─────────────────────────────────────
+
+    #[test]
+    fn empty_registry_returns_hardcoded_neutral_default() {
+        // With zero biome definitions and a fallback key that can't match,
+        // `derive_chunk_biome` must return a hardcoded neutral default
+        // rather than panicking.
+        let config = sample_config();
+        let profile = WorldProfile::from_config(&config);
+        let registry = BiomeRegistry {
+            biomes: vec![],
+            fallback_biome_key: "nonexistent".to_string(),
+            noise_scale_chunks: 10.0,
+            temperature_noise_channel: 0xB10E_0001_0000_0001,
+            moisture_noise_channel: 0xB10E_0001_0000_0002,
+        };
+
+        let result = derive_chunk_biome(&profile, &registry, ChunkCoord::new(0, 0));
+
+        // Should get the hardcoded neutral default values.
+        assert_eq!(result.biome_key, "nonexistent");
+        assert_eq!(result.ground_color, [0.26, 0.3, 0.22]);
+        assert_eq!(result.density_modifier, 1.0);
+        assert!(result.deposit_weight_modifiers.is_empty());
+    }
+
+    #[test]
+    fn fallback_key_missing_from_registry_returns_hardcoded_default() {
+        // Registry has biomes but none match AND the fallback key doesn't
+        // exist in the registry. This exercises the third fallback path
+        // (lines ~1206-1214).
+        let config = sample_config();
+        let profile = WorldProfile::from_config(&config);
+
+        // Define biomes that cover an impossibly narrow range so nothing
+        // will match any real noise sample.
+        let registry = BiomeRegistry {
+            biomes: vec![BiomeDefinition {
+                key: "impossible".to_string(),
+                temperature_min: -999.0,
+                temperature_max: -998.0,
+                moisture_min: -999.0,
+                moisture_max: -998.0,
+                ground_color: [1.0, 0.0, 0.0],
+                density_modifier: 5.0,
+                deposit_weight_modifiers: HashMap::new(),
+            }],
+            fallback_biome_key: "does_not_exist".to_string(),
+            noise_scale_chunks: 10.0,
+            temperature_noise_channel: 0xB10E_0001_0000_0001,
+            moisture_noise_channel: 0xB10E_0001_0000_0002,
+        };
+
+        let result = derive_chunk_biome(&profile, &registry, ChunkCoord::new(5, 5));
+
+        // Must get the hardcoded neutral, not panic.
+        assert_eq!(result.biome_key, "does_not_exist");
+        assert_eq!(result.ground_color, [0.26, 0.3, 0.22]);
+        assert_eq!(result.density_modifier, 1.0);
     }
 }
