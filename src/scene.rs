@@ -45,7 +45,7 @@ pub(crate) struct Shelf;
 ///
 /// Bevy uses Y as vertical, so any "flat" room-shell collision math happens on
 /// the X/Z plane instead of the X/Y plane familiar from CAD or 3D printing.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct PositionXZ {
     pub x: f32,
     pub z: f32,
