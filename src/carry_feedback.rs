@@ -29,7 +29,7 @@ use crate::carry::{CarryConfig, CarryCueConfig, CarryMovementState};
 use crate::input::InputAction;
 use crate::player::{Player, PlayerCamera, cursor_is_captured, spawn_player};
 
-pub(crate) struct CarryFeedbackPlugin;
+pub struct CarryFeedbackPlugin;
 
 impl Plugin for CarryFeedbackPlugin {
     fn build(&self, app: &mut App) {

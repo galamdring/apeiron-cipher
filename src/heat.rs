@@ -21,7 +21,7 @@ use crate::materials::{GameMaterial, MaterialObject, PropertyVisibility};
 use crate::observation::ConfidenceTracker;
 use crate::scene::{SceneConfig, Workbench};
 
-pub(crate) struct HeatPlugin;
+pub struct HeatPlugin;
 
 impl Plugin for HeatPlugin {
     fn build(&self, app: &mut App) {

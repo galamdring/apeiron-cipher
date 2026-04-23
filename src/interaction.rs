@@ -35,9 +35,9 @@ use crate::scene::Surface;
 use leafwing_input_manager::prelude::*;
 
 const INTERACTION_RANGE: f32 = 3.0;
-pub(crate) const HOLD_OFFSET: Vec3 = Vec3::new(0.2, -0.15, -0.5);
+pub const HOLD_OFFSET: Vec3 = Vec3::new(0.2, -0.15, -0.5);
 
-pub(crate) struct InteractionPlugin;
+pub struct InteractionPlugin;
 
 impl Plugin for InteractionPlugin {
     fn build(&self, app: &mut App) {
@@ -99,7 +99,7 @@ struct SlotTarget {
 
 /// Marks a material entity as currently held by the player.
 #[derive(Component)]
-pub(crate) struct HeldItem;
+pub struct HeldItem;
 
 /// Whether the examine overlay is currently visible.
 #[derive(Resource, Default)]

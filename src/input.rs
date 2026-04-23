@@ -26,7 +26,7 @@ use crate::player::Player;
 
 // ── Plugin ──────────────────────────────────────────────────────────────
 
-pub(crate) struct InputPlugin;
+pub struct InputPlugin;
 
 impl Plugin for InputPlugin {
     fn build(&self, app: &mut App) {
@@ -50,7 +50,7 @@ impl Plugin for InputPlugin {
 /// keys are still individually configurable via the TOML config. This deviation
 /// is documented on issue #6.
 #[derive(Actionlike, PartialEq, Eq, Hash, Clone, Copy, Debug, Reflect)]
-pub(crate) enum InputAction {
+pub enum InputAction {
     /// WASD / left stick — produces a Vec2 direction.
     #[actionlike(DualAxis)]
     Move,

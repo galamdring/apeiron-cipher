@@ -16,7 +16,7 @@ use crate::materials::GameMaterial;
 use crate::observation::{ConfidenceLevel, describe_thermal_observation};
 use crate::player::{Player, cursor_is_captured, spawn_player};
 
-pub(crate) struct JournalPlugin;
+pub struct JournalPlugin;
 
 impl Plugin for JournalPlugin {
     fn build(&self, app: &mut App) {
@@ -55,19 +55,19 @@ impl Plugin for JournalPlugin {
 // ── Messages ────────────────────────────────────────────────────────────
 
 #[derive(Message, Clone)]
-pub(crate) struct RecordEncounter {
+pub struct RecordEncounter {
     pub material: GameMaterial,
 }
 
 #[derive(Message, Clone)]
-pub(crate) struct RecordFabrication {
+pub struct RecordFabrication {
     pub output_material: GameMaterial,
     pub input_a: String,
     pub input_b: String,
 }
 
 #[derive(Message, Clone)]
-pub(crate) struct RecordThermalObservation {
+pub struct RecordThermalObservation {
     pub seed: u64,
     pub name: String,
     pub thermal_resistance: f32,
@@ -75,7 +75,7 @@ pub(crate) struct RecordThermalObservation {
 }
 
 #[derive(Message, Clone)]
-pub(crate) struct RecordWeightObservation {
+pub struct RecordWeightObservation {
     pub seed: u64,
     pub name: String,
     pub description: String,

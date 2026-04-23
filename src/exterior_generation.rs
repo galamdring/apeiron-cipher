@@ -34,7 +34,7 @@ use crate::world_generation::{
 const DEPOSIT_CONFIG_PATH: &str = "assets/exterior/surface_mineral_deposits.toml";
 const SURFACE_MINERAL_DEPOSIT_GENERATOR_VERSION: u32 = 1;
 
-pub(crate) struct ExteriorGenerationPlugin;
+pub struct ExteriorGenerationPlugin;
 
 impl Plugin for ExteriorGenerationPlugin {
     fn build(&self, app: &mut App) {

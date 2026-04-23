@@ -20,7 +20,7 @@ use crate::materials::{
 };
 use crate::scene::{SceneConfig, Workbench};
 
-pub(crate) struct FabricatorPlugin;
+pub struct FabricatorPlugin;
 
 impl Plugin for FabricatorPlugin {
     fn build(&self, app: &mut App) {
@@ -41,7 +41,7 @@ impl Plugin for FabricatorPlugin {
 // ── Messages ────────────────────────────────────────────────────────────
 
 #[derive(Message)]
-pub(crate) struct ActivateIntent;
+pub struct ActivateIntent;
 
 // ── State ───────────────────────────────────────────────────────────────
 
@@ -59,7 +59,7 @@ enum FabricatorState {
 /// Marks a fabricator input receptacle. `index` distinguishes slot 0 from slot 1.
 /// `material` holds the entity of the material currently seated in this slot.
 #[derive(Component, Debug)]
-pub(crate) struct InputSlot {
+pub struct InputSlot {
     // Used in debug logging and future UI to identify which slot is which.
     #[allow(dead_code)]
     pub index: usize,
@@ -69,7 +69,7 @@ pub(crate) struct InputSlot {
 
 /// Marks the fabricator output receptacle where the combined material appears.
 #[derive(Component, Debug)]
-pub(crate) struct OutputSlot {
+pub struct OutputSlot {
     pub material: Option<Entity>,
     pub top_y: f32,
 }

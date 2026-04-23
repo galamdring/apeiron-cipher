@@ -29,7 +29,7 @@ const PLACEMENT_DENSITY_CHANNEL: u64 = 0xD3E5_17A1_0000_0001;
 const PLACEMENT_VARIATION_CHANNEL: u64 = 0xD3E5_17A1_0000_0002;
 const OBJECT_IDENTITY_CHANNEL: u64 = 0xD3E5_17A1_0000_0003;
 
-pub(crate) struct WorldGenerationPlugin;
+pub struct WorldGenerationPlugin;
 
 impl Plugin for WorldGenerationPlugin {
     fn build(&self, app: &mut App) {
@@ -48,7 +48,7 @@ impl Plugin for WorldGenerationPlugin {
 /// determinism obvious and testable. A config-backed seed means anyone can read
 /// the world seed, rerun the game, and get the same foundational world state.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub(crate) struct PlanetSeed(pub u64);
+pub struct PlanetSeed(pub u64);
 
 /// Signed chunk coordinate on the exterior X/Z ground plane.
 ///
@@ -58,13 +58,13 @@ pub(crate) struct PlanetSeed(pub u64);
 /// "infinite signed grid on X/Z" rather than "special-case only positive
 /// chunks near the room."
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub(crate) struct ChunkCoord {
+pub struct ChunkCoord {
     pub x: i32,
     pub z: i32,
 }
 
 impl ChunkCoord {
-    pub(crate) const fn new(x: i32, z: i32) -> Self {
+    pub const fn new(x: i32, z: i32) -> Self {
         Self { x, z }
     }
 }
@@ -77,7 +77,7 @@ impl ChunkCoord {
 /// - `active_chunk_radius`: how many chunks around the player's chunk are
 ///   considered logically active
 #[derive(Clone, Debug, Resource, PartialEq, Serialize, Deserialize)]
-pub(crate) struct WorldGenerationConfig {
+pub struct WorldGenerationConfig {
     #[serde(default = "default_planet_seed")]
     pub planet_seed: u64,
     #[serde(default = "default_chunk_size_world_units")]
@@ -126,7 +126,7 @@ fn default_active_chunk_radius() -> i32 {
 /// "which seed should I use for this purpose?" from the raw planet seed. We
 /// derive explicit sub-seeds up front and document what each one is for.
 #[derive(Clone, Debug, Resource, PartialEq, Serialize, Deserialize)]
-pub(crate) struct WorldProfile {
+pub struct WorldProfile {
     pub planet_seed: PlanetSeed,
     pub chunk_size_world_units: f32,
     pub active_chunk_radius: i32,
@@ -142,7 +142,7 @@ impl Default for WorldProfile {
 }
 
 impl WorldProfile {
-    pub(crate) fn from_config(config: &WorldGenerationConfig) -> Self {
+    pub fn from_config(config: &WorldGenerationConfig) -> Self {
         let planet_seed = PlanetSeed(config.planet_seed);
 
         Self {
@@ -163,7 +163,7 @@ impl WorldProfile {
 /// placement, object identity, and persistence all agree on what chunk they are
 /// talking about.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct ChunkGenerationKey {
+pub struct ChunkGenerationKey {
     pub chunk_coord: ChunkCoord,
     pub placement_density_key: u64,
     pub placement_variation_key: u64,
@@ -177,7 +177,7 @@ pub(crate) struct ChunkGenerationKey {
 /// saved removal record can literally say which planet, which chunk, which
 /// object kind, and which deterministic local candidate it refers to.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Component)]
-pub(crate) struct GeneratedObjectId {
+pub struct GeneratedObjectId {
     pub planet_seed: PlanetSeed,
     pub chunk_coord: ChunkCoord,
     pub object_kind_key: String,
@@ -192,7 +192,7 @@ pub(crate) struct GeneratedObjectId {
 /// loading/unloading stories to build on without having to rediscover the
 /// neighborhood math or re-derive it ad hoc in multiple systems.
 #[derive(Clone, Debug, Default, Resource, PartialEq)]
-pub(crate) struct ActiveChunkNeighborhood {
+pub struct ActiveChunkNeighborhood {
     pub center_chunk: Option<ChunkCoord>,
     pub center_chunk_origin_xz: Option<PositionXZ>,
     pub center_chunk_generation_key: Option<ChunkGenerationKey>,
@@ -287,7 +287,7 @@ fn world_position_to_chunk_coord(
 ///
 /// "Origin" here means the minimum X/minimum Z corner of the chunk on the
 /// ground plane, not the center of the chunk.
-pub(crate) fn chunk_origin_xz(chunk_coord: ChunkCoord, chunk_size_world_units: f32) -> PositionXZ {
+pub fn chunk_origin_xz(chunk_coord: ChunkCoord, chunk_size_world_units: f32) -> PositionXZ {
     PositionXZ::new(
         chunk_coord.x as f32 * chunk_size_world_units,
         chunk_coord.z as f32 * chunk_size_world_units,
@@ -322,7 +322,7 @@ fn active_chunk_neighborhood(center_chunk: ChunkCoord, radius: i32) -> Vec<Chunk
 /// - the same planet + same chunk always gets the same keys
 /// - different chunks on the same planet get different keys
 /// - later systems can tell which key is meant for which job
-pub(crate) fn derive_chunk_generation_key(
+pub fn derive_chunk_generation_key(
     profile: &WorldProfile,
     chunk_coord: ChunkCoord,
 ) -> ChunkGenerationKey {
@@ -363,7 +363,7 @@ fn mix_chunk_coord(planet_seed: PlanetSeed, chunk_coord: ChunkCoord) -> u64 {
     mix_seed(planet_seed.0, packed)
 }
 
-pub(crate) fn derive_generated_object_id(
+pub fn derive_generated_object_id(
     profile: &WorldProfile,
     chunk_coord: ChunkCoord,
     object_kind_key: impl Into<String>,

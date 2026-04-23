@@ -32,7 +32,7 @@ use leafwing_input_manager::prelude::*;
 
 const CONFIG_PATH: &str = "assets/config/carry.toml";
 
-pub(crate) struct CarryPlugin;
+pub struct CarryPlugin;
 
 impl Plugin for CarryPlugin {
     fn build(&self, app: &mut App) {
@@ -115,7 +115,7 @@ struct CarryWeightChanged {
 /// two separated lets later stories change the feedback model without rewriting
 /// how carry contents are tracked.
 #[derive(Clone, Debug, Resource, PartialEq)]
-pub(crate) struct CarryMovementState {
+pub struct CarryMovementState {
     pub speed_modifier: f32,
     pub stamina_drain_multiplier: f32,
     pub encumbrance_ratio: f32,
@@ -157,7 +157,7 @@ impl Default for CarryMovementState {
 /// Making that state explicit keeps later systems from accidentally treating a
 /// stashed item like a world object that can still be raycast, heated, or placed.
 #[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct InCarry;
+pub struct InCarry;
 
 // ── Runtime player state ─────────────────────────────────────────────────
 
@@ -172,12 +172,12 @@ pub(crate) struct InCarry;
 ///
 /// Starting with a struct now avoids rewriting every caller later.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct CarriedItem {
+pub struct CarriedItem {
     pub entity: Entity,
 }
 
 impl CarriedItem {
-    pub(crate) fn new(entity: Entity) -> Self {
+    pub fn new(entity: Entity) -> Self {
         Self { entity }
     }
 }
@@ -189,7 +189,7 @@ impl CarriedItem {
 /// current carry-device rule. Later stories may change that value over time as
 /// devices are equipped or strength accretes.
 #[derive(Component, Clone, Debug, PartialEq)]
-pub(crate) struct CarryState {
+pub struct CarryState {
     pub current_weight: f32,
     pub effective_capacity: f32,
     pub hard_limit_enabled: bool,
@@ -197,7 +197,7 @@ pub(crate) struct CarryState {
 }
 
 impl CarryState {
-    pub(crate) fn new(effective_capacity: f32, hard_limit_enabled: bool) -> Self {
+    pub fn new(effective_capacity: f32, hard_limit_enabled: bool) -> Self {
         Self {
             current_weight: 0.0,
             effective_capacity,
@@ -210,7 +210,7 @@ impl CarryState {
     ///
     /// Story 4.1 does not wire the stash interaction yet, but this method is the
     /// server-side accounting rule that later intent-processing systems will call.
-    pub(crate) fn add_material(&mut self, entity: Entity, material: &GameMaterial) {
+    pub fn add_material(&mut self, entity: Entity, material: &GameMaterial) {
         self.carried_items.push(CarriedItem::new(entity));
         self.current_weight += material.density.value;
     }
@@ -220,7 +220,7 @@ impl CarryState {
     /// We search by entity because runtime carry is presently keyed by the live
     /// world entity. A future persistence story may need a richer identity model,
     /// but runtime in-session carry can safely start here.
-    pub(crate) fn remove_material(
+    pub fn remove_material(
         &mut self,
         entity: Entity,
         material: &GameMaterial,
@@ -245,7 +245,7 @@ impl CarryState {
     /// item first." We return the entity without mutating here so higher-level
     /// systems can decide the order of multi-step operations like "stash current
     /// hand item, then retrieve an older carried item."
-    pub(crate) fn next_carried_entity(&self, cycle_order: CarryCycleOrder) -> Option<Entity> {
+    pub fn next_carried_entity(&self, cycle_order: CarryCycleOrder) -> Option<Entity> {
         match cycle_order {
             CarryCycleOrder::Fifo => self.carried_items.first().map(|item| item.entity),
             CarryCycleOrder::Lifo => self.carried_items.last().map(|item| item.entity),
@@ -291,7 +291,7 @@ impl CarryState {
 /// stories inventing one ad hoc. Growth rate is owned by [`CarryConfig`], not
 /// duplicated here, since it is a tuning constant rather than mutable player state.
 #[derive(Component, Clone, Copy, Debug, PartialEq)]
-pub(crate) struct CarryStrength {
+pub struct CarryStrength {
     pub current: f32,
 }
 
@@ -339,7 +339,7 @@ impl CarryDeviceState {
 /// runtime. That is deliberate: this story is the data-model foundation for the
 /// rest of the epic.
 #[derive(Clone, Debug, Serialize, Deserialize, Resource)]
-pub(crate) struct CarryConfig {
+pub struct CarryConfig {
     #[serde(default = "default_active_profile")]
     pub active_profile: String,
     #[serde(default = "default_starting_capacity")]
@@ -399,7 +399,7 @@ fn default_growth_rate() -> f32 {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-pub(crate) struct CarryGrowthCurveConfig {
+pub struct CarryGrowthCurveConfig {
     #[serde(default)]
     pub kind: CarryGrowthCurveKind,
     #[serde(default = "default_growth_curve_cap")]
@@ -421,7 +421,7 @@ fn default_growth_curve_cap() -> f32 {
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum CarryGrowthCurveKind {
+pub enum CarryGrowthCurveKind {
     #[default]
     Linear,
     Logarithmic,
@@ -429,7 +429,7 @@ pub(crate) enum CarryGrowthCurveKind {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-pub(crate) struct WeightDescriptionBand {
+pub struct WeightDescriptionBand {
     pub max_ratio: f32,
     pub text: String,
 }
@@ -469,7 +469,7 @@ fn default_weight_descriptions() -> Vec<WeightDescriptionBand> {
 /// `carry.toml`, because the goal is "weight feels physical through multiple
 /// channels" rather than "camera math and audio live in unrelated systems."
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-pub(crate) struct CarryCueConfig {
+pub struct CarryCueConfig {
     #[serde(default = "default_footstep_interval_seconds")]
     pub footstep_interval_seconds: f32,
     #[serde(default = "default_footstep_base_volume")]
@@ -622,14 +622,14 @@ fn default_footstep_sprint_cadence() -> f32 {
 /// How carry retrieval should behave once Story 4.2 starts cycling items.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum CarryCycleOrder {
+pub enum CarryCycleOrder {
     #[default]
     Fifo,
     Lifo,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) struct CarryProfilesConfig {
+pub struct CarryProfilesConfig {
     #[serde(default = "default_profile_config")]
     pub default: CarryProfileConfig,
     #[serde(default = "relaxed_profile_config")]
@@ -650,7 +650,7 @@ impl Default for CarryProfilesConfig {
 
 /// One difficulty/mode profile's carry consequences.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-pub(crate) struct CarryProfileConfig {
+pub struct CarryProfileConfig {
     #[serde(default)]
     pub speed_curve: CarryCurveConfig,
     #[serde(default = "default_stamina_cost_multiplier")]
@@ -742,7 +742,7 @@ fn default_stamina_regen_per_second() -> f32 {
 /// Story 4.3 will be the first real consumer. Story 4.1 just proves these
 /// values live in config and resolve deterministically into the active profile.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-pub(crate) struct CarryCurveConfig {
+pub struct CarryCurveConfig {
     #[serde(default)]
     pub kind: CarryCurveKind,
     #[serde(default = "default_min_multiplier")]
@@ -771,7 +771,7 @@ fn default_curve_exponent() -> f32 {
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum CarryCurveKind {
+pub enum CarryCurveKind {
     #[default]
     Linear,
     Exponential,
@@ -1100,7 +1100,7 @@ fn emit_cycle_carry_intent(
 /// - remove `MaterialObject` because it should no longer behave like a world prop
 /// - add `InCarry` to make the state explicit for later systems
 /// - hide the entity so it stops rendering
-pub(crate) fn can_stash_material(carry_state: &CarryState, material: &GameMaterial) -> bool {
+pub fn can_stash_material(carry_state: &CarryState, material: &GameMaterial) -> bool {
     if !carry_state.hard_limit_enabled {
         return true;
     }
@@ -1109,7 +1109,7 @@ pub(crate) fn can_stash_material(carry_state: &CarryState, material: &GameMateri
         <= (carry_state.effective_capacity + f32::EPSILON)
 }
 
-pub(crate) fn stash_entity_into_carry(
+pub fn stash_entity_into_carry(
     commands: &mut Commands,
     carry_state: &mut CarryState,
     entity: Entity,
@@ -1125,7 +1125,7 @@ pub(crate) fn stash_entity_into_carry(
         .insert(Visibility::Hidden);
 }
 
-pub(crate) fn record_weight_observation(
+pub fn record_weight_observation(
     material: &GameMaterial,
     carry_strength: f32,
     config: &CarryConfig,

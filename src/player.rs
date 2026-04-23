@@ -41,7 +41,7 @@ struct StaminaState {
     pub max: f32,
 }
 
-pub(crate) fn cursor_is_captured(grab_mode: CursorGrabMode) -> bool {
+pub fn cursor_is_captured(grab_mode: CursorGrabMode) -> bool {
     grab_mode != CursorGrabMode::None
 }
 
@@ -49,7 +49,7 @@ fn enforce_eye_height(translation: &mut Vec3, eye_height: f32) {
     translation.y = eye_height;
 }
 
-pub(crate) struct PlayerPlugin;
+pub struct PlayerPlugin;
 
 impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
@@ -66,18 +66,18 @@ impl Plugin for PlayerPlugin {
 
 /// Marker component for the player's root entity (the "body").
 #[derive(Component)]
-pub(crate) struct Player;
+pub struct Player;
 
 /// Marker component for the player's camera (the "eyes").
 #[derive(Component)]
-pub(crate) struct PlayerCamera;
+pub struct PlayerCamera;
 
 /// Accumulated pitch angle stored alongside the camera so clamping is precise
 /// without needing to extract Euler angles from a quaternion each frame.
 #[derive(Component, Default)]
 struct CameraPitch(f32);
 
-pub(crate) fn spawn_player(
+pub fn spawn_player(
     mut commands: Commands,
     scene: Res<SceneConfig>,
     carry_movement: Res<CarryMovementState>,
