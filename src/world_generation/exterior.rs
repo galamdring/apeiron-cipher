@@ -49,8 +49,8 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     ActiveChunkNeighborhood, BiomeRegistry, ChunkBiome, ChunkCoord,
-    DEFAULT_MAX_PLACEMENT_SLOPE_RADIANS, FlatSurface, GeneratedObjectId, PlanetSurface,
-    SurfaceProvider, WorldGenerationConfig, WorldProfile, chunk_origin_xz, derive_chunk_biome,
+    DEFAULT_MAX_PLACEMENT_SLOPE_RADIANS, GeneratedObjectId, PlanetSurface, SurfaceProvider,
+    WorldGenerationConfig, WorldProfile, chunk_origin_xz, derive_chunk_biome,
     derive_chunk_generation_key, derive_generated_object_id, generate_chunk_heightmap_mesh,
     is_placement_valid, surface_alignment_rotation, world_position_to_chunk_coord,
 };
@@ -498,7 +498,7 @@ fn sync_active_exterior_chunks(
     world_gen_config: Res<WorldGenerationConfig>,
     deposit_catalog: Res<SurfaceMineralDepositCatalog>,
     material_catalog: Res<MaterialCatalog>,
-    exterior_patch: Res<ExteriorGroundPatch>,
+    _exterior_patch: Res<ExteriorGroundPatch>,
     biome_registry: Res<BiomeRegistry>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut render_materials: ResMut<Assets<StandardMaterial>>,

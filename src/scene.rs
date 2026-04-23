@@ -116,6 +116,7 @@ impl RoomShellCollision {
 #[derive(Resource, Clone, Debug)]
 pub struct ExteriorGroundPatch {
     pub bounds_xz: RectXZ,
+    #[expect(dead_code)]
     pub surface_y: f32,
 }
 

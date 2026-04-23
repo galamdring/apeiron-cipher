@@ -140,6 +140,7 @@ pub trait SurfaceProvider {
 /// When the game eventually adds non-flat terrain, this struct is not deleted —
 /// it remains a valid (if boring) implementation. A new provider takes over for
 /// terrain chunks that have actual elevation data.
+#[cfg(test)]
 #[derive(Clone, Debug)]
 pub struct FlatSurface {
     /// The constant world-space Y height of the flat surface.
@@ -154,6 +155,7 @@ pub struct FlatSurface {
     pub max_z: f32,
 }
 
+#[cfg(test)]
 impl SurfaceProvider for FlatSurface {
     fn query_surface(&self, x: f32, z: f32) -> SurfaceQueryResult {
         // A flat horizontal surface always has normal straight up and a
@@ -2477,7 +2479,7 @@ mod tests {
 
     #[test]
     fn planet_surface_different_seeds_produce_different_elevation() {
-        let mut s1 = test_planet_surface();
+        let s1 = test_planet_surface();
         let mut s2 = test_planet_surface();
         s2.elevation_seed = 0xCAFE_BABE;
 
