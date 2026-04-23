@@ -3768,4 +3768,138 @@ cluster_compactness = 0.75
             }
         }
     }
+
+    // ── Story 5a.3 Phase 7: Full world generation smoke test ─────────────
+
+    /// Smoke test: generate many chunks across a variety of coordinates
+    /// (including negative coords, large offsets, torus wrap boundaries, and
+    /// the origin) using the full PlanetSurface pipeline. The test succeeds
+    /// if nothing panics.
+    ///
+    /// This exercises the complete runtime path: config → profile → surface →
+    /// heightmap mesh + deposit baseline for each chunk. It is intentionally
+    /// broad — covering dozens of chunks — to flush out any edge-case panics
+    /// in noise sampling, torus wrapping, mesh generation, or deposit
+    /// placement that narrower unit tests might miss.
+    #[test]
+    fn smoke_test_generate_multiple_chunks_no_panics() {
+        let config = WorldGenerationConfig {
+            planet_seed: 99_887_766,
+            chunk_size_world_units: 45.0,
+            active_chunk_radius: 2,
+            building_cell_size: 1.0,
+            planet_surface_min_radius: 500,
+            planet_surface_max_radius: 5000,
+            ..Default::default()
+        };
+        let profile = WorldProfile::from_config(&config);
+        let surface = PlanetSurface::new_from_profile(&profile, &config);
+        let catalog = sample_catalog();
+        let biome = sample_biome();
+        let subdivisions = config.elevation_subdivisions;
+
+        // Diameter in chunks — used to pick coordinates at the torus boundary.
+        let diameter = profile.planet_surface_diameter;
+
+        // A diverse set of chunk coordinates covering:
+        // - Origin
+        // - Positive and negative quadrants
+        // - Torus wrap edges (diameter-1, diameter, diameter+1)
+        // - Large negative offsets (wrapping in the other direction)
+        // - Interior coordinates at various scales
+        let chunks: Vec<ChunkCoord> = vec![
+            ChunkCoord::new(0, 0),
+            ChunkCoord::new(1, 1),
+            ChunkCoord::new(-1, -1),
+            ChunkCoord::new(10, -10),
+            ChunkCoord::new(-50, 50),
+            ChunkCoord::new(100, 200),
+            ChunkCoord::new(-100, -200),
+            // Torus boundary region
+            ChunkCoord::new(diameter - 1, diameter - 1),
+            ChunkCoord::new(diameter, diameter),
+            ChunkCoord::new(diameter + 1, 0),
+            ChunkCoord::new(0, diameter + 1),
+            // Negative wrap
+            ChunkCoord::new(-diameter, -diameter),
+            ChunkCoord::new(-diameter - 1, -diameter - 1),
+            // Mid-range
+            ChunkCoord::new(diameter / 2, diameter / 2),
+            ChunkCoord::new(diameter / 3, -diameter / 4),
+        ];
+
+        for chunk in &chunks {
+            // Heightmap mesh generation — must not panic.
+            let mesh = generate_chunk_heightmap_mesh(&surface, *chunk, subdivisions);
+
+            // Sanity: mesh has the expected vertex count.
+            let expected_verts = ((subdivisions + 1) * (subdivisions + 1)) as usize;
+            let positions = mesh
+                .attribute(Mesh::ATTRIBUTE_POSITION)
+                .expect("mesh must have positions")
+                .as_float3()
+                .expect("positions must be Float32x3");
+            assert_eq!(
+                positions.len(),
+                expected_verts,
+                "wrong vertex count for chunk {chunk:?}"
+            );
+
+            // Normals present and same count.
+            let normals = mesh
+                .attribute(Mesh::ATTRIBUTE_NORMAL)
+                .expect("mesh must have normals")
+                .as_float3()
+                .expect("normals must be Float32x3");
+            assert_eq!(normals.len(), expected_verts);
+
+            // UVs present.
+            assert!(
+                mesh.attribute(Mesh::ATTRIBUTE_UV_0).is_some(),
+                "mesh must have UVs for chunk {chunk:?}"
+            );
+
+            // Deposit baseline — must not panic.
+            let deposits = generate_surface_mineral_chunk_baseline(
+                &profile, &catalog, &surface, *chunk, &biome,
+            );
+
+            // We don't assert a specific count (seed-dependent), but the
+            // deposits should be finite and not contain NaN positions.
+            for placement in &deposits {
+                assert!(
+                    placement.position_xz.x.is_finite(),
+                    "NaN/Inf x in deposit at chunk {chunk:?}"
+                );
+                assert!(
+                    placement.position_xz.z.is_finite(),
+                    "NaN/Inf z in deposit at chunk {chunk:?}"
+                );
+                assert!(
+                    placement.surface_y.is_finite(),
+                    "NaN/Inf surface_y in deposit at chunk {chunk:?}"
+                );
+            }
+        }
+
+        // Also exercise query_surface directly at a few extreme world positions
+        // to ensure no panics from torus wrapping with large/negative floats.
+        let extreme_points = [
+            (0.0_f32, 0.0_f32),
+            (-1e6, 1e6),
+            (1e6, -1e6),
+            (f32::MIN / 2.0, f32::MAX / 2.0),
+        ];
+        for (x, z) in extreme_points {
+            let result = surface.query_surface(x, z);
+            assert!(
+                result.position_y.is_finite(),
+                "non-finite elevation at ({x}, {z})"
+            );
+            assert!(
+                result.normal[1].is_finite(),
+                "non-finite normal at ({x}, {z})"
+            );
+        }
+    }
 }
