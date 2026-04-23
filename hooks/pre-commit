@@ -3,13 +3,36 @@ set -e
 
 echo "Running pre-commit checks..."
 
-echo "  cargo fmt --check"
-cargo fmt --check
+# Determine which files are staged
+STAGED=$(git diff --cached --name-only --diff-filter=ACMR)
 
-echo "  cargo clippy -- -D warnings"
-cargo clippy -- -D warnings
+# --- Rust / Game code ---
+if echo "$STAGED" | grep -qE '\.rs$'; then
+  echo "  Rust files staged — running cargo checks."
+  echo "  cargo fmt --check"
+  cargo fmt --check
+  echo "  cargo clippy -- -D warnings"
+  cargo clippy -- -D warnings
+  echo "  cargo test"
+  cargo test
+else
+  echo "  No Rust files staged — skipping cargo checks."
+fi
 
-echo "  cargo test"
-cargo test
+# --- Kanban frontend ---
+if echo "$STAGED" | grep -q '^kanban/'; then
+  echo "  Kanban files staged — running kb-check."
+  (cd kanban && npm run lint && npm test && npm run build)
+else
+  echo "  No kanban files staged — skipping kb-check."
+fi
+
+# --- Orchestrator (Go backend) ---
+if echo "$STAGED" | grep -q '^infra/orchestrator/'; then
+  echo "  Orchestrator files staged — running o-check."
+  (cd infra/orchestrator && go vet ./... && go test ./...)
+else
+  echo "  No orchestrator files staged — skipping o-check."
+fi
 
 echo "All checks passed."

@@ -17,3 +17,12 @@ infra/orchestrator/smoke-*.log
 infra/orchestrator/smoke-*.exit
 
 coverage*.out
+
+# Frontend dependencies
+node_modules/
+
+# Frontend build output
+kanban/dist/
+
+# Aider scratch files
+.aider*
