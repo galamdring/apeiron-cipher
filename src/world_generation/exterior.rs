@@ -1868,6 +1868,79 @@ mod tests {
         assert_eq!(a, b, "rejection must be deterministic");
     }
 
+    // ── Story 5a.3: PlanetSurface steep terrain rejects placements ───────
+
+    #[test]
+    fn planet_surface_steep_terrain_rejects_placements() {
+        let profile = sample_profile();
+        let catalog = sample_catalog();
+        // High amplitude + high frequency = extremely steep slopes everywhere.
+        // Amplitude 500 with frequency 0.5 means the terrain rises/falls 500
+        // units over ~2 world-unit wavelengths, producing near-vertical slopes
+        // that far exceed the 40° placement limit.
+        let surface = PlanetSurface {
+            elevation_seed: 0xDEAD_BEEF,
+            base_y: 0.0,
+            amplitude: 500.0,
+            frequency: 0.5,
+            octaves: 1,
+            detail_weight: 0.0,
+            detail_seed: 0xCAFE_0001,
+            detail_frequency: 1.0,
+            detail_octaves: 1,
+            planet_surface_diameter: profile.planet_surface_diameter,
+            chunk_size_world_units: profile.chunk_size_world_units,
+        };
+
+        let placements = generate_surface_mineral_chunk_baseline(
+            &profile,
+            &catalog,
+            &surface,
+            ChunkCoord::new(0, -1),
+            &sample_biome(),
+        );
+
+        assert!(
+            placements.is_empty(),
+            "steep PlanetSurface terrain should reject all deposit placements ({} survived)",
+            placements.len()
+        );
+    }
+
+    #[test]
+    fn planet_surface_gentle_terrain_accepts_placements() {
+        let profile = sample_profile();
+        let catalog = sample_catalog();
+        // Very low amplitude + low frequency = nearly flat terrain.
+        // Amplitude 0.01 ensures slopes are essentially zero — well under 40°.
+        let surface = PlanetSurface {
+            elevation_seed: 0xDEAD_BEEF,
+            base_y: 0.0,
+            amplitude: 0.01,
+            frequency: 0.001,
+            octaves: 1,
+            detail_weight: 0.0,
+            detail_seed: 0xCAFE_0001,
+            detail_frequency: 1.0,
+            detail_octaves: 1,
+            planet_surface_diameter: profile.planet_surface_diameter,
+            chunk_size_world_units: profile.chunk_size_world_units,
+        };
+
+        let placements = generate_surface_mineral_chunk_baseline(
+            &profile,
+            &catalog,
+            &surface,
+            ChunkCoord::new(0, -1),
+            &sample_biome(),
+        );
+
+        assert!(
+            !placements.is_empty(),
+            "gentle PlanetSurface terrain should accept deposit placements"
+        );
+    }
+
     // ── AC3: Placement logic testable without rendering terrain ───────────
 
     #[test]
