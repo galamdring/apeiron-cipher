@@ -1,0 +1,3 @@
+# Cross-Cutting Concern: Server-Authoritative Boundary
+
+Client-server separation must be explicit from Ring 1. Clients emit intents; the server validates and processes state transitions. In single-player, the server runs in-process but behind the same boundary interface. **Critical tension:** deterministic generation creates a decision point per system — does the client generate locally from the seed (fast, duplicates generation logic) or request generated state from the server (authoritative, latency-bound)? This tension must be resolved explicitly for each major system rather than with a single blanket policy.

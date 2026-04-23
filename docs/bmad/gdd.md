@@ -1,5 +1,5 @@
 ---
-stepsCompleted: [1, 2, 3, 4, 5, 6, 7]
+stepsCompleted: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
 inputDocuments:
   - 'docs/bmad/game-brief.md'
   - 'docs/bmad/brainstorming/brainstorming-session-2026-03-13-1600.md'
@@ -9,7 +9,7 @@ documentCounts:
   brainstorming: 1
   projectDocs: 0
 workflowType: 'gdd'
-lastStep: 7
+lastStep: 14
 project_name: 'apeiron-cipher'
 user_name: 'NullOperator'
 date: '2026-03-14'
@@ -492,27 +492,217 @@ Combat and arena management could become a full career choice — building arena
 
 ### Player Progression
 
-{{player_progression}}
+#### The Accretion Model as Progression
+
+Apeiron Cipher has one progression system: **accretion**. Collection, social standing, content access, and narrative advancement are not separate tracks -- they are facets of the same continuous knowledge accumulation. Knowledge always carries forward; this is stated once and applies everywhere in this document.
+
+**Example -- the interceptor collector path:** A player drawn to fast, angular ships starts with an echo locator tool that pings nearby vessel signatures. They learn to read the pings, build better scanners from materials they've gathered, and eventually internalize the ability to feel harmonic signals without tools. Following those signals doesn't just find ships -- it leads to the shipbuilders' origin system, their culture, their engineering philosophy. The collection path became an exploration path became a cultural path. No track switched. Knowledge accreted.
+
+**Social progression** follows the same model. Learning a language word by word builds into cultural fluency. Cultural fluency builds into diplomatic leverage. Diplomatic leverage builds into trade access. Each layer is knowledge earned, never a tier unlocked.
+
+#### Pacing
+
+Pacing is entirely player-driven. The game offers knowledge opportunities naturally -- environmental affordances, NPC behaviors, material interactions -- but never dictates tempo. A player can spend forty hours in one system learning its geology, or skim across twenty systems in the same time. Both produce meaningful accretion.
+
+Depth and width are both valid. Going deep means more layers within a single domain. Going wide means more connections between domains. Neither is faster or slower -- they're different shapes of the same growth.
+
+#### Cold Start: The First Fifteen Minutes
+
+The first fifteen minutes are the one place where environmental design is front-loaded. The wrecked ship, the unreadable instrument panel, the broadcasting signal -- these are designed affordances that create traction without guidance. The environment is dense with interactable surfaces that reward curiosity: a panel that responds to touch, a material that glows when combined with another, an NPC whose body language communicates before their words do.
+
+This is not a tutorial. Nothing explains what the player should do. The affordances create a natural gradient of "this seems interactable" that bootstraps the mirror -- once the game has enough signal about what the player gravitates toward, the mirror takes over and the designed affordances fade into the simulation's natural density.
+
+The bootstrap is a gradient property of the mirror itself, not a separate phase. The mirror runs one continuous algorithm; the player's signal density is the only variable. Early play means low signal and high environmental lean. Late play means high signal and subtle lean. There is no switch, no state transition -- only a ratio that shifts as the player's behavior gives the mirror more to work with.
+
+**Design tension acknowledged:** "The game never guides" meets "the first minutes must create traction." Resolution: the cold start is environmental design (what's present in the space), not behavioral design (what the game tells you to do). The affordances are physical objects with discoverable properties, not breadcrumbs. After the mirror bootstraps, this front-loading stops.
+
+#### Respecialization
+
+When players shift focus, knowledge carries forward as perspective. The factory builder who starts trading arrives with a factory builder's understanding of supply chains, material costs, and production timing. The geologist who starts learning languages brings spatial thinking to grammar structures. Respecialization is growth, not reset.
+
+The game meets players where they move. Shifting attention triggers the mirror to deepen the new direction while maintaining what was built. No system resets. No starting over. The player's history is their advantage in whatever they do next.
+
+#### Reflection Surfaces: How the World Shows You Your Own Growth
+
+The game provides surfaces where past and present contrast, making growth visible without quantifying it:
+
+- **Discovery journal** -- records only personally observed facts. Flipping back reveals how much the player's understanding has deepened since early entries.
+- **NPC memory** -- characters reference shared history. "You've learned a lot since you first stumbled into my shop speaking broken Keth" is a mirror, not a tutorial.
+- **Maintenance logs** -- factories, ships, and bases accumulate history. The repair log on a ship tells a story of increasingly sophisticated engineering decisions.
+- **Revisiting known spaces** -- returning to early areas with deeper knowledge reveals layers that were always there but invisible. The rock formation was always geologically interesting; now you can read it.
+- **NPC behavior shifts** -- merchants offer different goods, experts engage at a different level, alien cultures open doors that were previously invisible. The world reflects what the player has become.
+- **Structural evidence** -- the player's constructions, factories, and trade networks are physical proof of accumulated understanding.
+
+Legibility always has a horizon. Deeper knowledge reveals further unknowns -- not because the game is teasing more content, but because infinite depth means every answer exposes questions that weren't previously visible. This is an emergent property of the systems, not a designed breadcrumb trail.
+
+**Economic consequences connected to the Legend Machine:** Market manipulation, trade monopolies, and economic disruption generate stories that propagate through the Legend Machine. A player who corners a local market doesn't just see price changes -- they encounter NPCs discussing the shortage, traders adjusting routes, and cultural attitudes shifting. The economy is a reflection surface too.
+
+**Knowledge economy as felt progress:** Players who develop deep expertise can monetize it -- translation services, cultural consulting, process documents, teaching storefronts at trading posts. Seeing other players seek out your knowledge is progression made tangible through social proof.
+
+#### The Legend Machine as Progression Mirror
+
+The Legend Machine doesn't just track reputation -- it reflects the player's journey back to them through the world's response. A player known for geological expertise gets approached by mining consortiums. A player known for diplomatic skill gets invited to mediations. The universe's response to the player IS the progression feedback.
+
+#### Multiplayer Knowledge Asymmetry
+
+A veteran player's accumulated knowledge isn't just a personal advantage -- it becomes an opportunity for newcomers. Teaching storefronts, player experts selling domain knowledge, and cultural consulting create a natural mentorship economy. The veteran's depth becomes the newcomer's on-ramp, and the transaction benefits both: the veteran earns from their expertise, the newcomer accelerates without the game hand-holding them.
 
 ### Difficulty Curve
 
-{{difficulty_curve}}
+#### Depth, Not Distance
+
+Difficulty in Apeiron Cipher increases with depth, not with time played or distance traveled. Every domain -- engineering, culture, materials, economy, language -- has its own depth curve. Surface-level engagement in any domain is approachable. Deeper engagement reveals more complex interactions, rarer edge cases, and subtler distinctions.
+
+The strangeness gradient reflects this: systems near the player's origin are more familiar, more structurally similar to the player's configured starting knowledge. Distance from origin correlates with alienness -- languages diverge further from the player's native structure, cultures become less recognizable, material properties become more exotic. But this is spatial depth, not difficulty gating. A player can engage at any depth in any location.
+
+#### No Spikes, Continuous Deepening
+
+There are no difficulty spikes. No boss fights gate progress. No skill checks block advancement. The difficulty curve is continuous -- each layer of understanding prepares the player for the next layer. A player who understands basic metallurgy is equipped to notice that a new alloy behaves unexpectedly. A player who speaks basic Keth is equipped to notice when a dialect shifts.
+
+The curve deepens, never jumps.
+
+#### Exit Hatches
+
+When a player is stuck -- genuinely unable to progress in a domain they care about -- the game provides exit hatches that assist without guiding:
+
+- **Libraries** -- in-game institutions where knowledge is researched. Libraries suggest areas of study based on what the player has been doing, never solutions. Time spent researching buffs subsequent hands-on practice. Some cultures share knowledge freely; others gate it behind relationship or payment. Library access policies are themselves cultural content.
+- **Player experts** -- other players who sell domain knowledge through teaching storefronts. A player stuck on Vath diplomacy can pay a player who's deep in Vath culture for a crash course. The expert teaches, doesn't do it for them.
+- **NPC apprenticeships** -- guided mentorship where an NPC demonstrates techniques in their domain. The NPC shows, the player practices. Imperfect early, reliable over time. Apprenticeship is a relationship, not a tutorial -- the NPC has personality, expectations, and a teaching style that reflects their culture.
+
+All exit hatches assist. None guide. The player still has to do the work.
+
+#### The Depth Test: Hour 5 / Hour 50 / Hour 500
+
+Every system is measured against the depth test: does engagement at hour 5, hour 50, and hour 500 each feel meaningfully different and equally rich?
+
+**Worked example -- Material Science:**
+- **Hour 5:** Player combines copper and tin in a fabricator, discovers bronze. Observes it's harder than either component. Notes it in the discovery journal. Builds a better hull plate.
+- **Hour 50:** Player understands thermal coefficients, knows which alloys resist corrosion in specific atmospheres, has discovered a rare composite that conducts energy in unexpected ways. Begins theorizing about combinations they haven't tried. Reads alien technical texts to accelerate research on radiation-resistant composites.
+- **Hour 500:** Player is reverse-engineering alien alloys from salvaged artifacts, cross-referencing material properties across three racial engineering traditions, publishing process documents that other players buy, and has discovered emergent properties that exist only at specific temperature-pressure combinations found on a single moon they've mapped extensively.
+
+If any system fails this test -- if hour 500 feels like hour 50 with bigger numbers -- the system needs redesign. Minimum viable depth is a development milestone, not an aspiration.
 
 ### Economy and Resources
 
-{{economy_resources}}
+#### Local Markets, Local Currency
+
+Every economy is local. Markets are tied to geography, culture, and the races that inhabit them. Currency is local -- different races use different value systems based on their cultural priorities. Converting between currencies requires cultural understanding or a border node trader who bridges the gap.
+
+Prices are relationships. A stranger pays maximum. A trusted partner who speaks the language, understands the cultural norms, and has a reputation in the community gets insider rates. Economic knowledge is cultural knowledge.
+
+#### Player Market Influence
+
+Players can meaningfully influence local economies:
+
+- **Corner a local market** -- buy up all supply of a critical material, set your own prices
+- **Crash an economy** -- flood a market with cheap goods, disrupting local producers
+- **Create artificial scarcity** -- control supply chains through automation and logistics
+- **Build trade empires** -- connect multiple local markets through border node traders, arbitraging price differences
+
+The economy is alive and consequential, not balanced. Player actions have real effects that ripple through local systems and propagate through connected markets.
+
+#### Economic Resilience
+
+The economy self-regulates through locality. A player can corner a local market, but similar materials exist elsewhere with their own local markets, their own currencies, their own cultural contexts. Total economic domination requires mastering not just trade but language, culture, and geography across multiple systems. The ceiling is soft and always receding. Market manipulation generates stories through the Legend Machine -- NPCs discuss shortages, traders adjust routes, cultural attitudes shift. Economic disruption is content for everyone it touches.
+
+**Subsistence guarantee:** Foraging is always available in any habitable environment. A player in economic crisis can always feed themselves. Additional supplementary mechanisms -- odd jobs, salvage, basic trade -- ensure that economic failure is a setback that creates interesting gameplay, never a dead end that stops play. Players affected by another player's market manipulation experience economic disruption as content -- scarcity creates opportunities for resourceful players.
+
+### Death
+
+**Lore:** The player returns. The mechanism is unexplained and remains unexplained. This is a deliberate narrative gap -- the universe has properties the player doesn't understand, and death-return is one of them.
+
+**Mechanics:** Death shakes observation confidence -- the player's ability to trust their own perceptual judgment wavers temporarily. This isn't knowledge loss. The player still knows everything they knew. But their confidence in reading environmental cues, interpreting signals, and trusting their instincts is diminished for a period.
+
+Recovery is domain-weighted. Re-engaging with the specific system that killed you -- the material that exploded, the environment that proved hostile, the navigation error that led to a collision -- recovers confidence quickly. The player jumps back in, and the system echoes that: confidence wasn't truly shaken, so it restores fast. Pivoting away to a different domain signals genuine uncertainty -- the player is avoiding what got them, and the system reflects that too. Confidence lingers in the background, recovering slowly, until the player returns to the relevant context. The game reads the player's response to death and mirrors it back.
+
+**What this produces:** Self-directed reflection. The player asks "what did I miss?" -- not because the game prompts them, but because their diminished confidence makes them look more carefully. The death created a perceptual gap that the player fills by paying closer attention. The knowledge was always available; death redirected attention to what was previously unnoticed.
+
+**What this prevents:** Death as a hint mechanism. Because confidence loss is perceptual rather than informational, dying repeatedly in the same way doesn't reveal new information. The game doesn't reward death with clues. The player has to actually observe differently, not just die and retry.
+
+**Design tension:** Death must feel consequential without feeling punishing. The confidence mechanic creates a subjective experience of setback -- the world feels slightly less readable -- without removing any objective capability. The player is never weaker after death, just temporarily less sure.
+
+**Open parameters for implementation:**
+- Duration of confidence reduction
+- Magnitude of perceptual dampening
+- Whether confidence loss is uniform or weighted by domain relevance (weighted by domain relevance, per party discussion)
+- Recovery curve shape (player engagement echoed: re-engaging the relevant domain signals confidence, system reflects fast recovery; avoiding it signals genuine uncertainty, system reflects slow recovery)
+- Visual/audio representation of reduced confidence
 
 ---
 
 ## Level Design Framework
 
-### Level Types
+### Structure Type
 
-{{level_types}}
+Procedurally generated open universe -- no levels, stages, gates, or unlock sequences. "Level design" in this context means environmental design: the principles governing how spaces are generated, what makes them coherent, and how they reveal depth through the player's growing knowledge.
 
-### Level Progression
+### Environment Types
 
-{{level_progression}}
+Ten environment types across three categories. Every type is subject to the depth test (hour 5/50/500) -- if engagement at any timescale feels exhausted, the environment type needs redesign.
+
+#### Planetary
+
+**Surface** -- terrain, biomes, settlements, flora, fauna, weather. The primary on-foot experience. Surface environments are generated from geological, climatic, and cultural parameters that produce coherent landscapes. A desert settlement uses local materials, reflects the culture that built it, and shows evidence of the climate it endures.
+
+**Underground** -- caves, tunnel systems, geological layers. A completely different experience from surface exploration. Underground environments have their own depth curve: shallow caves are accessible and readable; deep systems require specialized equipment, geological knowledge, and material science understanding. Underground gets its own depth test commitment -- hour 500 underground should feel as rich as hour 5, independent of surface depth.
+
+**Bases** -- player-built structures with their own interior environments. Base interiors are defined by what the player has constructed. A base is a reflection of the player's engineering knowledge, material choices, and functional priorities. Base environments evolve as the player expands and modifies them.
+
+#### Constructed/Interior
+
+**Ship Interiors** -- walkable spaces inside larger ships. Crew habitation is functional, not decorative. Every interior space serves a purpose tied to the ship's operation. If a room exists, someone uses it. If nobody uses it, it doesn't exist. Ship interiors reflect the ship's role, the crew's culture, and the engineering tradition that built it.
+
+**Space Stations** -- inhabited structures with their own culture, economy, and population. Stations are not generic waypoints -- they are communities with history, demographics, economic function, and architectural character derived from their founding culture and subsequent development.
+
+**Special Structures** -- derelicts, ruins, anomalies, weird orbitals. Never generic. Every special structure is contextually tied to the planet, race, or culture it belongs to. A derelict tells a story through its construction materials, its engineering tradition, and its state of decay. Ruins reflect the civilization that built them and the forces that ended them. Anomalies are genuinely anomalous -- they don't fit the expected patterns, and that's the point.
+
+#### Space
+
+**Orbital** -- space around planets, moons, and stations. The immediate context of any celestial body. Orbital environments include traffic patterns, debris fields, resource concentrations, and the gravitational landscape that shapes navigation.
+
+**System** -- full star systems with unique composition. Each system has a stellar type, planetary arrangement, resource distribution, and inhabited zones that form a coherent whole. System-level patterns are readable -- a player who understands stellar physics can predict what a system contains before surveying it.
+
+**Inter-System** -- travel corridors and border zones. The spaces between systems, including throughway networks that connect civilization and the boundary regions where jurisdictions overlap, conflict, or create power vacuums.
+
+**The Void** -- deep frontier beyond established throughway networks. Mappable, dangerous, and genuinely unknown. Void space is where the strangeness gradient is steepest -- the furthest from the player's origin, the most alien, the most rewarding for those with the knowledge and equipment to survive it.
+
+### Anti-Pattern: No Copy-Paste Structures
+
+**Mechanism: Cultural templates with parametric variation.** Each civilization has an architectural grammar -- the template. Local parameters (materials available, terrain constraints, climate conditions, settlement age, economic function) produce variation within the grammar. Two Keth trading posts look recognizably Keth but are never identical -- one uses local stone because it's built on a mineral-rich plateau, the other uses imported composites because the local geology is unsuitable. The grammar is consistent; the expression is always local.
+
+This applies to all generated structures across all environment types. Natural environments use geological and ecological grammars with the same principle: coherent rules producing varied expression.
+
+### Content Progression
+
+Content in Apeiron Cipher follows a model of revelation plus activation, never generation-on-demand.
+
+**The world is deterministically derivable from its seed.** The universe is not pre-instantiated in memory, but is deterministically guaranteed to produce the same world from the same seed. Data materializes when relevant -- when the player arrives at a location or engages with a system, the generation algorithms produce the same result they would always produce for that seed and those parameters. Nothing is random at query time. Everything is derivable.
+
+**Knowledge makes the invisible visible.** Content was always there; the player's perception changed. A mineral formation that looked like a rock at hour 5 reveals its geological significance at hour 50 -- not because the game added information, but because the player can now read what was always present.
+
+**Engagement activates dormant systems.** NPC culture exists from generation, but layers surface through relationship. A civilization's internal politics, artistic traditions, and historical grievances are all derivable from the seed -- they become visible as the player's cultural knowledge and linguistic fluency deepen.
+
+**The mirror reveals, it does not create.** Nothing is fabricated for the player's benefit. The mirror principle identifies what's already present in the generated world that aligns with the player's demonstrated interests, and increases the player's opportunity to encounter it. The content was always there. The mirror adjusts attention, not reality.
+
+**Spaces are emergent narratives.** Coherent generation rules produce narrative as an inevitable byproduct, not through authorship. When geological rules, cultural rules, economic rules, and historical rules all apply consistently to the same location, the result tells a story -- not because a writer crafted it, but because consistent systems produce coherent outcomes. A mining settlement on a resource-rich moon with a dying vein tells its own story through its architecture (once prosperous, now deteriorating), its population (dwindling), its economy (desperate), and its geology (nearly exhausted). No narrative designer touched it. The systems converged.
+
+### Level Design Principles
+
+Seven principles govern all environment design:
+
+1. **Coherence over randomness.** Every generated space must feel like it belongs where it is. Materials match geology. Architecture matches culture. Flora matches climate. If anything feels arbitrary, the generation rules need refinement.
+
+2. **Contextual coherence over variety.** A desert planet should feel like a desert planet -- not like a sampler of biomes stitched together for variety. Variety comes from traveling to different places, not from any single place trying to contain everything.
+
+3. **Every space readable at multiple knowledge levels.** A novice sees a cave. An intermediate geologist sees sedimentary layers indicating ancient water. An expert sees the mineral composition that implies a specific formation process and predicts what lies deeper. The same space serves all knowledge levels simultaneously.
+
+4. **Every space is functional -- no decorative dead space.** A room without a function is a generation bug. If a space exists, something happens there -- someone lives there, something is stored there, a process occurs there. This applies to all generated interiors: ships, stations, bases, ruins. Exteriors have ecological function -- terrain serves geological, biological, or atmospheric purposes.
+
+5. **No tutorial spaces.** No environment is designed to teach. All environments are designed to be coherent simulations that reward observation. Learning happens because the player pays attention, not because the space was arranged for pedagogical purposes.
+
+6. **Scale reflects investment.** Large structures represent proportional effort -- from whoever built them. A massive alien megastructure implies the civilization that built it had the resources, knowledge, and motivation to invest at that scale. A player's large construction represents their accumulated material science, engineering knowledge, and economic capacity. Scale is earned, never arbitrary.
+
+7. **Coherence is testable.** Environmental coherence decomposes into verifiable constraint satisfaction: material consistency (structures use locally available or culturally imported materials), cultural consistency (architecture follows the builder's architectural grammar), geological consistency (terrain formations follow physical rules), and functional consistency (every space serves a purpose). These constraints are individually testable during development -- if a generated environment violates a constraint, the generation rules need correction.
 
 ---
 
@@ -520,11 +710,190 @@ Combat and arena management could become a full career choice — building arena
 
 ### Art Style
 
-{{art_style}}
+#### Visual Identity: Stylized Realism
+
+Apeiron Cipher targets the NMS zone -- stylized realism where atmosphere and color do the heavy lifting, not polygon density. The world should feel vast, alien, and beautiful without requiring cutting-edge hardware. "Runs on a 5-year-old laptop" is a visual constraint as much as a performance constraint -- and the constraint becomes identity. The game looks the way it does because it committed to accessibility, and that commitment produced a distinct aesthetic.
+
+#### Camera
+
+Switchable first-person and third-person. First-person for immersion, presence, and the embodied experience of being on an alien world. Third-person for spatial awareness, construction, and appreciating the structures the player has built. The player chooses. Neither mode is primary.
+
+#### Star-Driven Aesthetics
+
+Star color physically drives the visual palette of every system it illuminates. This is physics-derived, not art-directed:
+
+- **Red dwarf systems** -- warm, saturated. Landscapes bathed in deep reds and ambers. Vegetation (where it exists) has evolved for red-spectrum photosynthesis.
+- **Yellow/white main sequence** -- balanced, familiar. The closest to Earth-like lighting. The player's origin system lives here.
+- **Blue giant systems** -- cold, desaturated. Harsh, high-energy light that washes color out. Landscapes feel stark, exposed, restless.
+
+Star spectral type doesn't just tint the world -- it drives biome distribution. A red dwarf's habitable zone is tight, producing worlds that are tidally locked or narrowly temperate. A blue giant's radiation output shapes what can survive on its planets. The visual palette and the ecological palette emerge from the same physics.
+
+**Design constraint:** No manual color grading per system. The star's physical properties feed into a rendering pipeline that produces the palette deterministically. A contributor adding a new stellar type gets the visual palette for free from the physics.
+
+#### Knowledge-Driven Rendering
+
+The game literally renders differently based on the player's knowledge state. This is the visual expression of the Learning First pillar -- the world doesn't just contain more information for knowledgeable players, it *looks different* to them.
+
+A mineral formation renders as a generic rock to a player with no geological knowledge. The same formation renders with visible crystalline structure, color variation indicating composition, and subtle surface patterns to a player who has earned geological understanding. The rendering change is at the shader level -- not a UI overlay, not a tooltip, not a highlight. The world itself deepens visually as the player's knowledge deepens.
+
+This is a core architectural commitment. Every visual system needs a knowledge-aware rendering layer. This includes:
+
+- **Geological formations** -- mineral composition becomes visible through surface rendering
+- **Biological entities** -- anatomical detail deepens with biological knowledge
+- **Structural analysis** -- material stress, engineering quality, and construction tradition become visible in buildings and ships
+- **Linguistic elements** -- alien text shifts from undifferentiated glyphs to recognizable character groups as language knowledge accretes
+- **Cultural markers** -- architectural grammar, decorative patterns, and symbolic elements become readable
+
+**Tier 1 implementation (launch):** Discrete knowledge gates -- binary shifts in rendering when knowledge thresholds are crossed. A rock looks like a rock, then looks like a geological formation. Clear visual feedback for knowledge milestones.
+
+**Tier 2 implementation (post-launch):** Continuous rendering deepening that parallels the accretion model. No binary gates -- the world gradually resolves as knowledge accumulates, like eyes adjusting to darkness.
+
+#### The Alien Design Gradient
+
+Alien visual design follows the strangeness gradient -- distance from the player's origin correlates with visual alienness:
+
+- **Near home** -- bipedal or recognizably biological. Verbal communication. Body language readable through human analogy. The player can look at these beings and intuit something about them before understanding anything.
+- **Mid-range** -- divergent body plans. Non-verbal communication channels: antennae signaling, ritual dance, bio-luminescent patterns, whale-groaning clams. Visual design communicates that these beings think differently, not just look different. Communication requires learning entirely new sensory channels.
+- **Far frontier** -- abstract. Entities where the boundary between organism and environment blurs. Physics-adjacent beings that challenge the player's assumptions about what constitutes life. Visual design that resists easy categorization.
+
+The gradient is continuous, not stepped. A player traveling outward experiences a gradual departure from the familiar. The visual design of each race is a signal about how deep the player is into the strangeness gradient.
+
+#### The Void
+
+The void -- deep space outside established throughway networks -- has its own visual identity: near-total visual absence.
+
+- **Throughways** -- visible navigation markers, stable visual reference points. The "sidewalks" of void travel.
+- **Side paths** -- markers fading. Visual reference points become sparse. The player relies increasingly on instruments.
+- **Deep exploration** -- no visual guidance. The void is dark. Not cinematic dark with dramatic lighting -- actually dark. The ship's instruments are the only reference. The player's sense of space collapses to what their equipment can show them.
+- **Anomalies** -- variations in the void's "skin." Visual distortions that indicate something is different here. Not dramatic -- subtle wrongness that a player learns to recognize. Anomaly contact introduces visual artifacts: kaleidoscope effects, texture where there should be none, geometry that doesn't follow expected rules.
+
+The void's visual absence is functional. It produces the emotional experience of being genuinely far from anything known. When something appears in the void, it matters precisely because the void is empty.
+
+#### Visual References
+
+| Reference | What It Informs |
+|---|---|
+| **No Man's Sky** | World baseline -- stylized realism, vast landscapes, atmospheric color |
+| **Adrian Tchaikovsky's unspace** | The void -- visual absence, wrongness, the ship as the only reference |
+| **Tchaikovsky's alien species** | The strangeness gradient -- from recognizable to incomprehensible |
+| **EVE Online** | Player-built systems, fleet ambition, political scale (not visual style) |
 
 ### Audio and Music
 
-{{audio_music}}
+#### Audio Propagation as Physics System
+
+Sound in Apeiron Cipher is medium-dependent. This is a physics system, not an aesthetic choice:
+
+- **Atmospheric worlds** -- sound propagates normally through atmosphere. The richness of the soundscape depends on what's generating sound: wind, water, fauna, geological processes, settlements, weather.
+- **Airless worlds** -- suit-internal sounds only. The player hears their own breathing, servo movements, equipment operations. The planet contributes nothing. Silence is real.
+- **Contact vibration** -- the one channel that breaks through on airless worlds. Boots on rock transmit vibration through the suit. Hand on a cave wall transmits geological activity. A moon worm moving through the ground transmits through the terrain before the player ever sees it. Contact vibration is a learnable sensory system -- players who pay attention to what they feel through surfaces gain information that players who don't will miss.
+
+**The moon worm principle:** On an airless world, the first sign of a subterranean creature is vibration through the ground. The player who has learned to attend to contact vibration gets advance warning. The player who hasn't gets surprised. This isn't a gimmick -- it's the physics of sound propagation producing gameplay consequences. The same principle applies to geological events, structural stress, and approaching vehicles.
+
+#### The Void Soundscape
+
+The ship is the sound of the void. In the void, there is no external medium to carry sound. The ship becomes the instrument:
+
+| Engagement State | Audio Character |
+|---|---|
+| **Throughways** | Steady hum. Ship systems nominal. The sound of routine travel -- mechanical, predictable, almost meditative. |
+| **Side paths** | Hull stress. Creaks and groans as the ship handles turbulence outside established routes. The sound of the ship working harder. |
+| **Deep exploration** | The ship protests. Pressure groans. Something that sounds like footsteps on the hull (it isn't -- it's thermal expansion from void exposure). The ship's sounds become unpredictable, reflecting the unpredictability of the environment. |
+| **Anomaly contact** | Audio distortion. The ship's normal sounds warp, skip, layer. Frequencies that shouldn't exist in the hull's acoustic profile. The anomaly doesn't make sound -- it changes how the ship's sounds behave. |
+
+The void's audio design serves the Consequence pillar -- how deep the player goes into the void is directly reflected in how the ship sounds. The player learns to read ship audio as environmental data.
+
+#### Planetary Audio
+
+- **Habitable worlds** -- atmosphere change lands first. Before the player registers individual sounds, the acoustic character of the air changes. Then: animal sounds, wind, water, geological resonance, settlement noise. Each element arrives as the player's proximity and attention make it relevant.
+- **Barren worlds** -- suit-only audio. The planet is silent. Contact vibration is the only external channel. This produces a fundamentally different exploration experience -- quieter, more internal, more focused on what the player feels rather than what they hear.
+
+#### Star-Driven Soundscapes
+
+Star spectral type drives ambient audio across three axes -- frequency, density, and complexity:
+
+- **Red dwarf systems** -- warm frequencies, sparse sound density, meditative complexity. The ambient soundscape is slow, low, and spacious.
+- **Yellow/white main sequence** -- balanced across all axes. Familiar acoustic character.
+- **Blue giant systems** -- cold frequencies, dense sound, chaotic complexity. The ambient soundscape is restless, high-energy, and layered.
+
+This is physics-derived, paralleling the visual system. A contributor adding a new stellar type gets the ambient audio profile from the same physics that drive the visual palette.
+
+#### Knowledge-Shift Audio
+
+Audio deepens with the player's knowledge state, paralleling the knowledge-driven rendering system:
+
+**Tier 1 (launch):** Discrete audio layer unlocks. Binary knowledge gates that add audio channels when thresholds are crossed. A player who gains geological knowledge starts hearing geological resonance in cave systems that was previously inaudible. Clear, satisfying "the world just got richer" moments.
+
+**Tier 2 (post-launch):** Continuous audio deepening. No binary gates -- the soundscape gradually resolves as knowledge accumulates. Subtler distinctions become audible. The continuous model parallels the visual system's Tier 2 evolution.
+
+**Design constraint (Tier 1):** Discrete audio gates prevent sensory mismatch with the visual knowledge layer. If visual rendering shifts at a knowledge threshold, audio shifts at the same threshold. The player's senses stay synchronized.
+
+#### Alien Voices
+
+Procedurally generated per-race sound profiles. Alien voice is the sound of communication before the player understands the words:
+
+- **Near home** -- recognizable vocal patterns. Mouth-like sounds, tonal variation, rhythm that feels speech-like. The player can hear that this is language even before they understand it.
+- **Mid-range** -- non-vocal channels. Antenna clicks, bio-luminescent pulse timing, subsonic rumbles, rhythmic body percussion. Sound that clearly carries information but through unfamiliar channels.
+- **Far frontier** -- abstract and electromagnetic. Sound that may or may not be intentional communication. Frequencies that challenge the player's assumption about what communication sounds like.
+
+Voice profiles are consistent within a race and derive from the race's biological parameters. The sound IS the race's identity before the player learns anything else about them.
+
+#### Spacer Pirate Radio
+
+Player-generated music through a ByteBeat-style synthesis system. Players compose, broadcast, and their signals become landmarks in the void:
+
+- **Signal fires in the dark.** A broadcast creates a detectable signal in void space. Other players navigating the void can pick up broadcasts before they see anything. Music becomes navigation data.
+- **The black market frequency.** Spacer Pirate Radio is how players find the informal economy. Following broadcasts leads to player-run trading posts, unauthorized service providers, and the social fringe of the universe. The game never tells you this. You follow a signal because you hear music in the void, and you find a market.
+- **Player identity.** A player's broadcast style becomes recognizable. Regulars in a region of space develop sonic identities. "That's Null's signal -- good prices on rare alloys, two jumps spinward."
+
+This was a major discovery from Party Mode analysis. Spacer Pirate Radio ties directly to the Mirror pillar -- it reflects player creativity back into the world as functional content. It also serves Emergent Limits -- the broadcast system creates player-made infrastructure with no designer involvement.
+
+**Scope note:** Spacer Pirate Radio is referenced here for its experiential and aesthetic quality. Mechanical details -- synthesis interface, broadcast range, signal detection, black market integration -- are deferred to game mechanics and social systems documentation.
+
+#### Music Style
+
+Ambient and atmospheric in the NMS lineage. Music supports mood without directing attention. The soundtrack doesn't tell the player how to feel -- it creates acoustic space for the player's own emotional response to the world.
+
+Dynamic music responds to context -- exploration, tension, discovery, social interaction -- but the transitions are gradual and the music never leads. The player's experience drives the emotional arc; the music follows.
+
+#### Voice and Dialogue
+
+No voice acting. No narrator. No tutorial voice. All alien communication through procedural audio and the language learning system. Human NPCs (if any) communicate through text with personality expressed through word choice, syntax, and cultural idiom -- not vocal performance.
+
+This serves multiple constraints: performance budget, localization simplicity, and the design principle that the game never tells the player anything directly. A narrator would break the fourth wall. Voice acting would impose emotional interpretation. Procedural alien voices carry information without imposing meaning.
+
+#### Audio Performance Budget
+
+All audio systems must operate within the "5-year-old laptop" performance target. Audio propagation physics, knowledge-shift audio layers, procedural voice generation, and environmental soundscapes must all coexist within a constrained CPU/memory budget.
+
+Graceful degradation is required. On lower-end hardware, audio complexity reduces before audio cuts out. Fewer simultaneous layers, simpler propagation models, reduced procedural voice complexity. The experience degrades gracefully -- the world sounds simpler, never silent.
+
+#### Audio Accessibility
+
+Non-audio fallback channels are required for all gameplay-relevant audio:
+
+- **Contact vibration** -- visual overlay and/or haptic feedback alternative for players who can't perceive vibration through audio
+- **Void audio states** -- visual ship-stress indicators that parallel the audio degradation states
+- **Knowledge-shift audio** -- visual indicators accompany all audio layer unlocks
+- **Alien voice** -- text/subtitle systems with visual language indicators for all procedural speech
+- **Spacer Pirate Radio** -- visual signal representation for broadcast detection and navigation
+
+No gameplay-critical information should exist exclusively in the audio channel. Every audio system has a visual or haptic fallback.
+
+### Aesthetic Goals
+
+The art and audio direction ties directly to the six pillars:
+
+| Pillar | Visual Expression | Audio Expression |
+|---|---|---|
+| **Learning First** | Knowledge-driven rendering -- the world looks different as you learn | Knowledge-shift audio -- the world sounds different as you learn |
+| **The Mirror** | Star-driven physics produces visual identity without art direction | Spacer Pirate Radio reflects player creativity as functional world content |
+| **Consequence** | Void visual absence produces real navigational consequence | Void audio degradation is real feedback about environmental danger |
+| **Deeper** | Rendering layers deepen continuously with knowledge | Audio layers deepen continuously with knowledge |
+| **Systems** | Star color drives visual palette AND biome distribution from same physics | Star spectral type drives ambient audio from same physics as visuals |
+| **Emergent Limits** | Hardware constraints become visual identity ("5-year-old laptop" aesthetic) | Performance budget shapes audio complexity; graceful degradation is design |
+
+The aesthetic is not applied on top of the systems -- it emerges from them. Star physics produce color. Knowledge state produces rendering fidelity. Void physics produce visual absence. The art direction is the systems made visible. The audio direction is the systems made audible.
 
 ---
 
@@ -532,23 +901,192 @@ Combat and arena management could become a full career choice — building arena
 
 ### Performance Requirements
 
-{{performance_requirements}}
+**Design Philosophy: Graceful Deferral, Not Degradation**
+
+If the system can't deliver the experience yet, it waits until it can deliver it correctly. No clipping, no forcing, no half-rendering. The game defers presentation until it can present correctly, rather than degrading quality to meet a frame deadline.
+
+#### Frame Rate & Resolution Targets
+
+| Tier | Target Hardware | Frame Rate | Resolution |
+|---|---|---|---|
+| **High** | Desktop PC (dedicated GPU) | 60fps | Up to 4K |
+| **Medium** | Desktop PC (integrated GPU), laptops | 30-60fps | 1080p |
+| **Low (Stretch)** | Chromebook, mobile, web | 30fps target | 720p-1080p |
+
+#### Load Times & Generation Performance
+
+Generation is math (CPU-cheap). Textures are bytes (the real bottleneck). Context-aware texture packaging solves the bottleneck -- systems load texture tiers appropriate to hardware capability and current knowledge state. Knowledge-driven rendering naturally scales: early-game shaders are simpler, which means low-end hardware runs the early game better by design.
+
+Chunk size is a tuning knob -- smaller chunks on constrained hardware reduce per-frame generation cost at the expense of draw call count. This is a per-platform build-time configuration, not a runtime setting.
+
+#### Audio Deferral
+
+If audio can't load in time, the experience delays until the audio is loaded, then cues the associated visual changes. Audio and visual knowledge-shifts are always synchronized -- the game never shows a visual change without its audio counterpart being ready.
+
+#### Deferral Telemetry (Recommended)
+
+Measure actual deferral frequency per platform tier to validate that graceful deferral delivers real accessibility, not just theoretical promise. If deferral events exceed acceptable thresholds on a given tier, that's a signal to revisit performance budgets for that tier.
 
 ### Platform-Specific Details
 
-{{platform_details}}
+#### PC (Primary Platform)
+
+- **Distribution:** Direct download always available. Steam (~$10), itch.io, Epic as paid convenience options. **No paid-exclusive version ever exists** -- any version on a monetized platform must also be available free via direct download or web.
+- **Input:** Keyboard/mouse primary, controller support.
+- **Mod Support:** First-class. Full modding API available on all platforms.
+- **Cloud Saves:** Steam handles as paid convenience. Player-controlled save storage (Google Drive or similar) as option.
+
+#### Android (Stretch Goal)
+
+- Covers mobile phones and Chromebooks via Play Store.
+- Same modding API as PC.
+- Same monetization philosophy -- free, option to pay to support developer.
+
+#### Web/WASM (Stretch Goal)
+
+- Covers browser play and Chromebook access.
+- **Browser Targets:** Chromium primary, Firefox and Safari as goals.
+- **Modding:** Browser plays canonical build. Modded play via self-hosted instances -- run a web server (even a Raspberry Pi) that serves the WASM build plus mod assets as static files. The Pi is a static file server / "modded CDN"; the browser does all compute.
+- Web saves may carry subscription cost for infrastructure.
+
+#### Compile Target Strategy
+
+Bevy supports PC, Android, and WASM as compile targets. Platform differences are resolved at build time, not runtime. The open source community handles testing burden across platforms.
+
+#### Multiplayer Architecture
+
+**Peer Model: Server-to-Server.** Every player runs a server instance. Connections are server-to-server peer relationships, not client-to-server. No single privileged host.
+
+**Connection Priority Hierarchy:**
+
+1. **Local network first** -- Bonjour/mDNS discovery, direct LAN connection, zero internet required.
+2. **Internet direct** -- STUN-based NAT hole-punching, peer-to-peer, no relay (~90-95% of connections).
+3. **Future: TURN relay (deferred)** -- additive layer on the same ICE framework, introduced when community scale justifies the infrastructure cost. Clear explanation and workaround for the ~5-10% edge case until then.
+
+**Capability-Aware Leader Election:**
+
+- Peers advertise compute profiles (CPU, GPU, memory, storage speed).
+- Most capable peer assumes leadership -- handles bulk generation work, syncs completed state to lighter peers.
+- Leadership migrates dynamically: if leader drops, next most capable assumes; when a more capable peer reconnects, leadership reclaims automatically.
+- A phone peered with a gaming PC offloads generation work -- the network becomes a computational resource, not just a social one.
+- When alone, the lighter peer handles all work -- slower but correct, per graceful deferral philosophy.
+
+**Quality Standard:** If a player is present, they are present. No ghost states, no flickering. The NMS pattern of players randomly disappearing is the explicit anti-pattern.
+
+**Hosting:** No port forwarding required. Central orchestration handles matchmaking and signaling only -- no game traffic, no world state on central servers.
+
+#### Persistent World State & Ownership
+
+**Base Persistence:** Uploading makes bases, planets, and radio stations globally visible. Multiplayer participation is implicit distribution -- joining distributes content to all peers' caches. Offline player's creations persist in peers' caches. Nothing disappears.
+
+**Permission Model (Asynchronous):**
+
+| Level | Scope | Capability |
+|---|---|---|
+| **Visit** | Read-only | Explore, observe, interact non-destructively |
+| **Modify** | Additive | Add new elements; cannot alter or remove existing |
+| **Owner** | Admin | Full control, conflict resolution authority |
+
+Permissions are grantable regardless of online status, synced as world state.
+
+**Conflict Resolution -- Player-Driven, Git-Style:**
+
+When disconnected peers produce conflicting deltas, both versions render simultaneously highlighted in red. The owner resolves manually -- no auto-resolution, no last-write-wins, no silent overwrites.
+
+Conflict is not a separate complex system. It is a flag on an existing delta element. The seed produces canonical world state; player modifications are deltas on that seed. A conflict is a delta with a "conflicting" state that triggers a different render path. Single data element in the existing delta structure. Conflict resolution only applies to shared base modification with write permissions -- it does not apply to multiplayer as a whole.
 
 ### Asset Requirements
 
-{{asset_requirements}}
+#### Generation Philosophy
+
+Authored base meshes plus procedural variation. All original content -- no asset store purchases.
+
+#### Quality Tiers
+
+Three discrete quality tiers -- Low (mobile/Chromebook/web), Medium, High -- baked at build time per platform.
+
+#### Asset Categories
+
+| Category | Strategy |
+|---|---|
+| **3D Models** | Authored base meshes + procedural variation |
+| **Textures** | Three quality tiers, context-aware packaging per platform |
+| **Shaders** | Knowledge-gated -- unified system, knowledge state as input, lower knowledge = simpler output |
+| **Audio** | Primarily procedural -- authored audio limited to core SFX and foundational layers |
+| **UI** | Minimal -- ship instruments, glyphs, interaction surfaces. No HUD clutter |
+
+#### Mod Content
+
+Same monetization spirit as the base game -- free access always, payment optional to support creator. Mod assets follow the same pipeline and tier system as base game assets.
+
+### Technical Constraints
+
+- **Deterministic Generation:** All procedural generation must be deterministic from seeds. Same seed, same world, every time.
+- **No Central Game Infrastructure:** No game servers hold world state. Central infrastructure is limited to matchmaking/signaling.
+- **Knowledge-Driven Rendering is Architectural:** Every visual and audio system must accept knowledge state as an input parameter. This is not a post-processing layer -- it is a core architectural commitment that shapes every rendering pipeline decision.
+- **Open Source:** The codebase is open source. Platform testing burden is shared with the community.
+- **Licensing: Open Source with Monetization Parity.** The repository license must explicitly permit monetization (selling on Steam, Epic, itch.io, etc.) while requiring that any monetized distribution also make the same version available as a free direct download or web build. No paid-exclusive versions may exist. This applies to both the base game and mod content. The license selection must be validated against this requirement before first public release.
 
 ---
 
 ## Development Epics
 
-### Epic Structure
+### Epic Overview
 
-{{epics}}
+| Epic | Name | Scope | Dependencies | Est. Stories |
+|------|------|-------|--------------|-------------|
+| 4 | Inventory (MVP) | Carry multiple items, retrieve and return | POC (1-3) | 5 |
+| 5 | Deterministic Exterior World Gen | Seed-based chunks, persistence deltas, delta-sync validation | POC (1-3) | 7 |
+| 6 | Planets | Planet types, biomes, geology, material palettes, basic life | 5 | 7 |
+| 7 | Starter Ship | Discoverable wreck, repair through crafting, transportation (not freeform construction) | 12, 13 | 5 |
+| 8 | Ship Take Off | Ground to flight, orbital mechanics, Newtonian controls | 7 | 5 |
+| 9 | Contiguous Progression | Airlock, EVA, docking, seamless transition | 7, 8 | 5 |
+| 10 | Journal Architecture | Extensible knowledge framework, interaction model, diegetic UI framework, knowledge-driven rendering contract | POC (1-3) | 7 |
+| 11 | Material Science Depth | Expanded materials, alloys, procedural generation from biome/stellar context | POC (1-3), 10 | 7 |
+| 12 | Crafting | Material combination, recipe discovery, quality variation | 11 | 5 |
+| 13 | Base Building / Construction | Spatial structures, enclosed spaces, base-ship unification | 12 | 6 |
+| 14 | Alien Languages | Procedural language generation, pattern recognition, translation | 10 | 6 |
+| 15 | First Contact Through Friction | Cultural encounters, interpretation, consequence-driven learning | 14 | 5 |
+| 16 | Cultural Systems | Customs, taboos, diplomacy, inter-cultural variation | 15 | 5 |
+| 17 | Adaptive Regional Economy | Regional markets, logistics, trust-weighted information | 11, 12, 16 | 5 |
+| 18 | Non-Traditional Propulsion | Briciator, Unspace, Throughways | 8 | 5 |
+| 19 | Void-Based Space Travel | Dynamic void, anomaly generation, route stabilization | 18 | 6 |
+| 20 | Hazard Cartography | Environmental hazards, ship interactions, diegetic navigation | 11, 18 | 4 |
+| 21 | Automation / NPC Managers | Trainable NPCs, delegation, absence management | 16, 17 | 6 |
+| 22 | Multiplayer | Server-to-server, delta sync, conflict resolution | 5, 9 | 6 |
+| 23 | Modding / Community Tools | Mod pipeline, asset extensibility, workshop | 13 | 5 |
+| 24 | Art/Audio Depth | Procedural audio, graceful deferral, mod asset pipeline | 10, 11 | 3 |
+
+### Recommended Sequence
+
+The epic order follows a spiral model: each system is built to a playable layer, then the next system is built, and later rings deepen each system in ways that allow them to connect. The sequence is strictly sequential — solo development, one epic at a time.
+
+1. **Ring 1 — Make Things** (Epics 4, 5, 10, 11, 12, 13): Foundation. Inventory MVP, exterior world with delta-sync validation, knowledge architecture with diegetic UI and rendering contracts, material science depth, crafting, construction.
+2. **Ring 2 — Go Places** (Epics 6, 7, 8, 9): Expand the world. Planets with biomes and life, starter ship repair, flight, seamless interior-to-space traversal.
+3. **Ring 3 — Meet Someone** (Epics 14, 15, 16, 17): Encounter alien civilizations. Language framework, first contact, cultural depth, regional economy.
+4. **Ring 4 — Cross the Void** (Epics 18, 19, 20): Deep space. Propulsion mastery, void navigation, hazard cartography.
+5. **Ring 5 — Scale Up** (Epics 21, 22, 23, 24): Systems that multiply everything. Automation, multiplayer, modding, procedural audio depth.
+
+Within each ring, the spiral continues — later rings revisit earlier systems with new depth. New feature areas (like the void travel spec and Spacer Pirate Radio) emerge during development and are folded in as they crystallize.
+
+### Vertical Slice
+
+The first playable milestone beyond the POC is completion of Ring 1: a player who can carry items, explore exterior terrain, discover materials through the journal, understand them through experimentation, craft components, and build a structure. This proves the core accretion model — LEARN through explore, interact, try — in a tangible, self-directed way.
+
+### Cross-Cutting Concerns
+
+Three architectural systems are implemented within every epic rather than as standalone deliverables:
+
+- **Mirror System:** Each system implements behavioral observation hooks. The mirror deepens the world in the direction of player engagement. The pattern is documented during Epic 10, enforced during every subsequent epic.
+- **Journal Integration:** Epic 10 establishes the architecture. Every subsequent system implements its own journal entries following that framework.
+- **Inventory Depth:** Epic 4 delivers MVP carry. Later rings revisit inventory UX and management as the systems it serves mature.
+
+### Post-1.0
+
+- **First Living Ship** (GitHub Issue #76): Separate biological ship system requiring full attention.
+- **Creative Mode:** Simplified systems, full construction freedom, no survival stakes. Separate UX consideration.
+
+*For detailed epic breakdowns including goals, scope, deliverables, and high-level stories, see [epics.md](epics.md). GitHub issues are the authoritative source for epic scope, status, and story details.*
 
 ---
 
@@ -556,20 +1094,222 @@ Combat and arena management could become a full career choice — building arena
 
 ### Technical Metrics
 
-{{technical_metrics}}
+**Instrumentation Posture: Emit by default, prune by evidence.** If a metric *can* be emitted, it *must* be emitted. Silence requires justification — noise does not. Metrics that prove uninformative are removed only after dataset analysis confirms they carry no signal. Raw signals are emitted with contextual dimensions (biome, planet type, star system, session, player) attached as metadata for post-hoc slicing.
+
+**Collection Architecture:** Telemetry is implemented as a dedicated Bevy plugin with a `TelemetryEvent` resource. Systems write to the centralized collection point; the backend (local file, network, disabled) is swappable without touching gameplay code. A compile-time feature flag controls emission in release builds — all instrumentation stays in source, overhead stays zero when the flag is off. From day one, events are written as structured JSON lines (one event per line) with a consistent schema: timestamp, session ID, event type, dimensional metadata, and value.
+
+**Performance**
+- Frame time distribution (p50 / p95 / p99)
+- Chunk generation time (with planet type, biome, and seed dimensions)
+- Delta persistence write/read latency
+- Memory usage by system
+- Entity count over time
+- System schedule duration per frame
+- System ordering bottleneck detection — not just duration, but *why* a system waited (data contention, exclusive system lock, resource conflict)
+
+**Determinism**
+- Seed replay validation (same seed must produce identical output — binary pass/fail)
+- Determinism drift attribution — system-level checksums so failures are immediately attributable to the diverging system
+- Delta integrity checks
+
+**Seamless Transitions**
+- Transition stutter duration at boundary crossings
+- Asset streaming latency during scale transitions
+
+**Procedural Generation**
+- Material generation coherence per seed
+- Language generation consistency per seed
+- Audio generation latency
+
+**Stability**
+- Crash count — **target: zero. Any crash is a priority-zero bug, not a metric to optimize.** This is an invariant, not a KPI.
+- Panic / unwrap hits — also zero (enforced by Rust coding rules)
+
+**Graceful Deferral (Epic 24)**
+- Deferral frequency per system
+- Deferral duration
+
+**Build Health**
+- Cargo clippy warnings (target: zero)
+- Test coverage
+- Build time trend
+
+#### Key Technical KPIs
+
+| Metric | Target | Measurement Method |
+|--------|--------|--------------------|
+| Frame time p99 | TBD per platform | In-engine telemetry plugin |
+| Crash count | 0 (invariant) | Crash reporting / panic hooks |
+| Clippy warnings | 0 | CI pipeline (`cargo clippy -- -D warnings`) |
+| Seed determinism | 100% replay match | Automated seed replay tests with system-level checksums |
+| Chunk gen time | TBD per biome complexity | Per-frame system profiling |
 
 ### Gameplay Metrics
 
-{{gameplay_metrics}}
+**All gameplay metrics are behavioral observations, not scores.** A player who spends 40 hours on one planet's material science is not "behind" a player who has visited twelve star systems. Metrics describe what happens — they do not judge it.
+
+**Knowledge Accretion**
+- Journal entries discovered over time (rate curve, not count)
+- Material properties catalogued vs. available in current context
+- Language fragments decoded per civilization encounter
+- Crafting recipes discovered through experimentation vs. available
+- Knowledge density — depth in one domain vs. breadth across many
+
+**Core Verb Distribution**
+- Time and action share across explore / navigate / interact / try / talk
+- Verb transition patterns — what players do *after* each verb
+- Which verb a player gravitates toward first in a new environment
+
+**Mirror System Observations**
+- Behavioral patterns detected per session
+- World-deepening events triggered and in which direction
+- Player specialization drift over time (does the mirror converge or stay broad?)
+- Mirror event correlation during repeated failure sequences — did the world respond when the player struggled?
+
+**Material & Crafting**
+- Material interaction discovery rate (with biome, planet, star system as sliceable dimensions — not filters)
+- Experimentation attempts (successes, failures, and repeated failures on the same combination)
+- Construction scale progression (small objects to structures to mobile structures)
+
+**World Engagement**
+- Unique biomes / planets / star systems visited vs. available
+- Revisit frequency — do players return to known locations?
+- Time spent per scale tier (surface, orbit, interplanetary, interstellar)
+- Boundary crossing frequency
+
+**Social / Cultural**
+- Alien encounter frequency and duration
+- Language comprehension curve per civilization
+- Trade interaction patterns
+- Cultural understanding depth progression
+
+**Session Shape**
+- Session duration distribution
+- Cold start behavior (first 5 minutes)
+- Session end triggers (natural stopping point vs. frustration signal)
+- Time between sessions
+
+#### Key Gameplay KPIs
+
+| Metric | Target | Measurement Method |
+|--------|--------|--------------------|
+| Knowledge accretion | Zero KA events in any active session is a P1 investigation trigger | Journal telemetry — session-end summary event |
+| Core verb coverage | Try, explore, interact, navigate observed within first 3 sessions (talk excluded until Ring 3) | Action event logging |
+| Discovery rate | Sustained curve; prolonged flatlines trigger review | Material/recipe event stream |
+| Revisit rate | TBD — presence indicates knowledge-driven rendering is working | Location visit logging |
+| Mirror trigger rate | TBD — presence indicates behavioral observation is functioning | Mirror system event hooks |
+| Repeated failure correlation | Mirror event fires during sequences of 3+ failures on same combination | Failure count + mirror event join |
+
+### Qualitative Success Criteria
+
+These are assessed through playtesting observation and player feedback — not telemetry. Quantitative metrics can flag where to look; only human observation reveals whether the design is working.
+
+- **"I figured it out"** — Players describe discoveries as their own insight, not the game's tutorial. The accretion model is working when players feel ownership over knowledge.
+- **"I went back because I understood more"** — Revisiting a location with new knowledge produces a genuinely different experience. The knowledge-driven rendering contract is fulfilling its promise.
+- **"I didn't realize I was learning a language"** — Alien language acquisition feels emergent, not like a skill tree.
+- **"My base flew"** — The ship=base+engine unification feels natural, not like a mode switch.
+- **"The world noticed what I care about"** — Mirror system deepening feels organic. Players shouldn't be able to articulate the mirror — they should feel *seen*.
+- **"I don't know what the game wants me to do" (said positively)** — Absence of directed goals feels like freedom, not confusion.
+
+### Metric Review Cadence
+
+- **Per-commit:** Build health metrics (clippy, tests, determinism) enforced by CI. No exceptions.
+- **Weekly:** Batch review of session shape, verb distribution, discovery rate, and failure correlation from playtest sessions. Pair with qualitative observation notes.
+- **Per-epic completion:** Full metric review against epic goals. Prune metrics confirmed as noise. Add metrics for newly instrumented systems.
+- **Per-ring completion:** Cross-system metric review. Evaluate whether qualitative success criteria are being met across the ring's systems.
 
 ---
 
 ## Out of Scope
 
-{{out_of_scope}}
+**Post-1.0 Features**
+- **First Living Ship** (GitHub Issue #76) — Biological ship system requiring dedicated design and implementation attention. Deferred to post-1.0.
+- **Creative Mode** — Simplified systems, full construction freedom, no survival stakes. Separate UX consideration deferred to post-1.0.
+
+**Platforms**
+- Console ports (PlayStation, Xbox, Switch)
+- Mobile (iOS, Android)
+- VR
+
+**Input**
+- Controller support
+
+**Audio**
+- Traditional recorded audio — no voice acting, no orchestral score. Audio is entirely procedural.
+
+**Localization**
+- AI-generated translations — explicitly rejected. Localization to non-English languages is a community-driven effort post-launch.
+
+**Distribution**
+- Steam storefront (TBD — not committed for v1.0. Initial distribution is GitHub releases.)
+
+### Deferred to Post-Launch
+
+- First Living Ship (#76)
+- Creative Mode
+- Console / Mobile / VR platform ports
+- Controller support
+- Community-driven localization
+- Steam (or equivalent storefront) distribution
 
 ---
 
 ## Assumptions and Dependencies
 
-{{assumptions_and_dependencies}}
+### Key Assumptions
+
+**Technical**
+- Bevy engine remains stable and actively developed through all five rings of implementation
+- Rust 2024 edition remains the target toolchain
+- Procedural audio generation is viable at the quality level required — no fallback to recorded assets
+- Deterministic world generation scales to star-system level without prohibitive compute cost
+- Delta persistence (storing changes, not full world state) is sufficient for the save system at scale
+
+**Solo Developer**
+- Single developer capacity through all 21 epics across 5 rings
+- No external art or audio contractors — all assets are procedural or programmer art
+- Alpha release on GitHub; community feedback shapes iteration
+
+**Platform**
+- PC only (macOS, Windows, Linux) for v1.0
+- Players have keyboard + mouse
+- GitHub releases as initial distribution mechanism
+
+**Market**
+- Sandbox/exploration genre has sustained audience interest
+- "No hand-holding" design philosophy has a viable niche audience
+- Alpha release model — playable builds available on GitHub, iterated with community feedback
+
+### External Dependencies
+
+| Dependency | Role | Risk |
+|-----------|------|------|
+| Bevy engine + ecosystem crates | Game engine, ECS, rendering, audio | Bevy is pre-1.0; breaking changes between versions |
+| Rust compiler toolchain | Build system | Low risk — stable release channel |
+| GitHub | Source control, issue tracking, releases | Low risk |
+| Graphite | Stacked PR / branch management | Low risk — workflow tooling only |
+
+No backend services required for single-player. Multiplayer networking stack (Ring 5, Epic 22) is a future technical decision with no current dependency.
+
+### Risk Factors
+
+- **Bevy stability:** Bevy is pre-1.0. Major version upgrades may require significant migration effort. Mitigated by pinning versions per ring and upgrading between rings.
+- **Solo developer throughput:** 21 epics across 5 rings is a multi-year effort for one developer. Mitigated by the spiral model — each ring produces a playable layer, so the game is shippable at progressively richer states.
+- **Procedural audio quality:** No fallback to recorded assets means procedural generation must meet the quality bar. Mitigated by Epic 24 (Art/Audio Depth) being in Ring 5 — baseline audio established early, refined last.
+- **Multiplayer complexity:** Epic 22 is a Ring 5 commitment with no current networking architecture. Risk of scope explosion. Mitigated by deferring architectural decisions until Rings 1-4 establish the single-player systems.
+
+---
+
+## Document Information
+
+**Document:** Apeiron Cipher - Game Design Document
+**Version:** 1.0
+**Created:** 2026-03-14
+**Author:** NullOperator
+**Status:** Complete
+
+### Change Log
+
+| Version | Date | Changes |
+|---------|------|---------|
+| 1.0 | 2026-03-14 | Initial GDD complete |
