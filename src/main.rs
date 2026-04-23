@@ -10,6 +10,7 @@ use bevy::prelude::*;
 mod carry;
 mod carry_feedback;
 mod combination;
+mod debug_overlay;
 mod fabricator;
 mod heat;
 mod input;
@@ -19,6 +20,7 @@ mod materials;
 mod observation;
 mod player;
 mod scene;
+mod surface;
 mod world_generation;
 
 fn main() {
@@ -37,6 +39,8 @@ fn main() {
         )
         // Scene setup: enclosed room, furniture markers, lighting (see scene.toml).
         .add_plugins(scene::ScenePlugin)
+        // Surface override registry: walkable surfaces layered on terrain.
+        .init_resource::<surface::SurfaceOverrideRegistry>()
         // Player: entity hierarchy with camera. Movement comes in Story 1.3.
         .add_plugins(player::PlayerPlugin)
         // Carry: config + player carry state foundation for Epic 4.
@@ -63,5 +67,7 @@ fn main() {
         .add_plugins(journal::JournalPlugin)
         // World generation: deterministic planet/chunk identity foundation for exterior systems.
         .add_plugins(world_generation::WorldGenerationPlugin)
+        // Debug: terrain diagnostic overlay (temporary — remove before shipping).
+        .add_plugins(debug_overlay::DebugOverlayPlugin)
         .run();
 }

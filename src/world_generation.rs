@@ -140,6 +140,7 @@ pub trait SurfaceProvider {
 /// When the game eventually adds non-flat terrain, this struct is not deleted —
 /// it remains a valid (if boring) implementation. A new provider takes over for
 /// terrain chunks that have actual elevation data.
+#[cfg(test)]
 #[derive(Clone, Debug)]
 pub struct FlatSurface {
     /// The constant world-space Y height of the flat surface.
@@ -154,6 +155,7 @@ pub struct FlatSurface {
     pub max_z: f32,
 }
 
+#[cfg(test)]
 impl SurfaceProvider for FlatSurface {
     fn query_surface(&self, x: f32, z: f32) -> SurfaceQueryResult {
         // A flat horizontal surface always has normal straight up and a
@@ -374,6 +376,352 @@ impl SurfaceProvider for TiltedSurface {
     }
 }
 
+/// Noise-based terrain surface for runtime use.
+///
+/// `PlanetSurface` samples a multi-octave value noise field (reusing
+/// `continuous_value_field_01` at different scales) to produce elevation and
+/// surface normals across the planet. It handles torus wrapping at world-
+/// coordinate level so that terrain is continuous across the wrap seam.
+///
+/// This struct is the runtime replacement for `FlatSurface` in the exterior
+/// chunk pipeline. `FlatSurface`, `SteppedSurface`, and `TiltedSurface` remain
+/// available for tests.
+#[derive(Clone, Debug)]
+pub struct PlanetSurface {
+    /// Per-planet elevation seed (from `WorldProfile::elevation_seed`).
+    pub elevation_seed: u64,
+    /// Sea-level reference height (world units).
+    pub base_y: f32,
+    /// Maximum height deviation from `base_y` (world units).
+    pub amplitude: f32,
+    /// Base noise frequency (world units). Lower = broader features.
+    pub frequency: f32,
+    /// Number of fractal noise octaves layered additively.
+    pub octaves: u32,
+    /// Blend weight for chunk-level detail noise (0.0 = disabled).
+    pub detail_weight: f32,
+    /// Seed for the detail noise layer, derived from `elevation_seed` via
+    /// `ELEVATION_DETAIL_CHANNEL` so it is independent of base octaves.
+    pub detail_seed: u64,
+    /// Base frequency for the detail noise layer. Should be higher than the
+    /// base `frequency` to add fine-grained variation.
+    pub detail_frequency: f32,
+    /// Number of fractal noise octaves for the detail layer.
+    pub detail_octaves: u32,
+    /// Planet surface diameter in chunks (for torus wrapping).
+    pub planet_surface_diameter: i32,
+    /// Chunk edge length in world units (for torus wrapping).
+    pub chunk_size_world_units: f32,
+}
+
+impl PlanetSurface {
+    /// Construct a `PlanetSurface` from a derived `WorldProfile` and the raw
+    /// config that carries tuning parameters.
+    ///
+    /// This is the single blessed constructor — every runtime use should go
+    /// through here so elevation parameters are consistent.
+    pub fn new_from_profile(profile: &WorldProfile, config: &WorldGenerationConfig) -> Self {
+        Self {
+            elevation_seed: profile.elevation_seed,
+            base_y: config.elevation_base_y,
+            amplitude: config.elevation_amplitude,
+            frequency: config.elevation_frequency,
+            octaves: config.elevation_octaves,
+            detail_weight: config.elevation_detail_weight,
+            detail_seed: mix_seed(profile.elevation_seed, ELEVATION_DETAIL_CHANNEL),
+            detail_frequency: config.elevation_detail_frequency,
+            detail_octaves: config.elevation_detail_octaves,
+            planet_surface_diameter: profile.planet_surface_diameter,
+            chunk_size_world_units: profile.chunk_size_world_units,
+        }
+    }
+
+    /// Wrap a world-space coordinate to the canonical torus range.
+    ///
+    /// The planet surface spans `[0, diameter * chunk_size)` on both axes.
+    /// Positions outside that range are wrapped using Euclidean modulo.
+    ///
+    /// **Note:** This is no longer used by `sample_elevation` (which now uses
+    /// `abs()` folding for seam continuity) but is retained for other torus
+    /// systems that may need canonical wrapping (e.g. chunk activation).
+    #[allow(dead_code)]
+    fn wrap_world_coord(&self, v: f32) -> f32 {
+        let period = self.planet_surface_diameter as f32 * self.chunk_size_world_units;
+        ((v % period) + period) % period
+    }
+
+    /// Fold a world-space coordinate for seamless elevation sampling.
+    ///
+    /// First wraps to the canonical torus range `[0, period)` via Euclidean
+    /// modulo, then mirrors around the midpoint so the noise field is symmetric
+    /// at the torus seam (coordinate 0 / period). The result is always in
+    /// `[0, period/2]`, which keeps lattice integers small and guarantees C0
+    /// continuity at the seam boundary.
+    fn fold_elevation_coord(&self, v: f32) -> f32 {
+        let period = self.planet_surface_diameter as f32 * self.chunk_size_world_units;
+        let wrapped = ((v % period) + period) % period; // [0, period)
+        let half = period * 0.5;
+        // Mirror: values past the midpoint fold back.
+        if wrapped > half {
+            period - wrapped
+        } else {
+            wrapped
+        }
+    }
+
+    /// Sample multi-octave elevation at an arbitrary world-space XZ.
+    ///
+    /// Coordinates are folded via [`fold_elevation_coord`] before noise
+    /// sampling.  This wraps to the torus range and then mirrors around the
+    /// midpoint, guaranteeing C0 continuity at the torus seam while keeping
+    /// lattice integers within safe i32 bounds.  The underlying hash-based
+    /// noise is **not** periodic, so a plain Euclidean-mod wrap produced a
+    /// hard elevation discontinuity at the seam.  Folding eliminates the
+    /// discontinuity at the cost of mirrored terrain shape near the seam
+    /// edges — deposits, biomes, and flora still use real coordinates so
+    /// visual symmetry is masked.  If a different seam strategy is needed
+    /// later (e.g. bridge chunks or truly periodic noise), only this function
+    /// and `compute_normal` need to change.
+    ///
+    /// Each octave doubles the frequency and halves the amplitude (standard fBm
+    /// with lacunarity 2, persistence 0.5). The base `continuous_value_field_01`
+    /// returns values in `[0, 1]`, so we center each sample around 0.5 to get
+    /// positive and negative deviations from `base_y`.
+    pub(crate) fn sample_elevation(&self, x: f32, z: f32) -> f32 {
+        let x = self.fold_elevation_coord(x);
+        let z = self.fold_elevation_coord(z);
+        let mut total = 0.0_f32;
+        let mut amp = 1.0_f32;
+        let mut freq = self.frequency;
+        let mut weight_sum = 0.0_f32;
+
+        for octave in 0..self.octaves {
+            // Each octave uses a slightly different seed so the layers are
+            // independent. We mix the elevation seed with the octave index.
+            let octave_seed = mix_seed(self.elevation_seed, octave as u64);
+            let scale = 1.0 / freq; // continuous_value_field_01 divides by scale
+            let sample =
+                exterior::continuous_value_field_01(octave_seed, PositionXZ::new(x, z), scale);
+            // Center around 0: value noise returns [0,1], shift to [-0.5, 0.5].
+            total += (sample - 0.5) * amp;
+            weight_sum += amp;
+            amp *= 0.5;
+            freq *= 2.0;
+        }
+
+        // Normalize so the sum of weights = 1, then scale by amplitude.
+        if weight_sum > 0.0 {
+            total /= weight_sum;
+        }
+        let base_elevation = total * self.amplitude;
+
+        // --- Detail noise layer (chunk-level, higher frequency) ---
+        // Blended additively when detail_weight > 0. Uses a separate seed
+        // sub-channel so the detail pattern is independent of base octaves.
+        let detail_elevation = if self.detail_weight > 0.0 {
+            let mut d_total = 0.0_f32;
+            let mut d_amp = 1.0_f32;
+            let mut d_freq = self.detail_frequency;
+            let mut d_weight_sum = 0.0_f32;
+
+            for octave in 0..self.detail_octaves {
+                let octave_seed = mix_seed(self.detail_seed, octave as u64);
+                let scale = 1.0 / d_freq;
+                let sample =
+                    exterior::continuous_value_field_01(octave_seed, PositionXZ::new(x, z), scale);
+                d_total += (sample - 0.5) * d_amp;
+                d_weight_sum += d_amp;
+                d_amp *= 0.5;
+                d_freq *= 2.0;
+            }
+
+            if d_weight_sum > 0.0 {
+                d_total /= d_weight_sum;
+            }
+            d_total * self.amplitude * self.detail_weight
+        } else {
+            0.0
+        };
+
+        self.base_y + base_elevation + detail_elevation
+    }
+
+    /// Compute the surface normal from the heightmap gradient using finite
+    /// differences.
+    ///
+    /// We sample elevation at four points around (x, z) offset by `epsilon`,
+    /// then compute the cross product of the two tangent vectors to get the
+    /// surface normal. The epsilon is small enough for accuracy but large
+    /// enough to avoid floating-point noise.
+    fn compute_normal(&self, x: f32, z: f32) -> [f32; 3] {
+        let eps = 0.1_f32;
+
+        let hx_pos = self.sample_elevation(x + eps, z);
+        let hx_neg = self.sample_elevation(x - eps, z);
+        let hz_pos = self.sample_elevation(x, z + eps);
+        let hz_neg = self.sample_elevation(x, z - eps);
+
+        // Finite-difference partial derivatives:
+        let dh_dx = (hx_pos - hx_neg) / (2.0 * eps);
+        let dh_dz = (hz_pos - hz_neg) / (2.0 * eps);
+
+        // The surface is parameterized as P(x,z) = (x, h(x,z), z).
+        // tangent_x = (1, dh_dx, 0), tangent_z = (0, dh_dz, 1).
+        // normal = cross(tangent_z, tangent_x) for upward-pointing Y:
+        //        = (-dh_dx, 1, -dh_dz)
+        let nx = -dh_dx;
+        let ny = 1.0_f32;
+        let nz = -dh_dz;
+        let len = (nx * nx + ny * ny + nz * nz).sqrt();
+        if len < 1e-10 {
+            return [0.0, 1.0, 0.0];
+        }
+        let inv = 1.0 / len;
+        [nx * inv, ny * inv, nz * inv]
+    }
+}
+
+impl SurfaceProvider for PlanetSurface {
+    fn query_surface(&self, x: f32, z: f32) -> SurfaceQueryResult {
+        let position_y = self.sample_elevation(x, z);
+        let normal = self.compute_normal(x, z);
+        SurfaceQueryResult {
+            position_y,
+            normal,
+            valid: true,
+        }
+    }
+}
+
+/// Generate a subdivided heightmap mesh for a single chunk.
+///
+/// The mesh is a grid of `subdivisions × subdivisions` quads
+/// (`(subdivisions+1)²` vertices). Each vertex samples the elevation from
+/// `surface.query_surface` so the mesh follows the terrain contour.
+///
+/// ## Coordinate space
+///
+/// The returned mesh is in **world space**. Vertex positions use absolute
+/// world X/Y/Z so the caller can spawn the entity at `Transform::IDENTITY`
+/// (or at the origin) — no additional translation is required beyond what
+/// the caller already applies.
+///
+/// ## Normals
+///
+/// Per-vertex normals are computed from the cross product of adjacent vertex
+/// differences (the heightmap gradient). This gives smooth shading across
+/// the chunk and feeds into slope rejection for deposit placement.
+///
+/// ## UVs
+///
+/// UV coordinates span `[0, 1]` across the chunk so textures can be applied
+/// later without revisiting mesh generation.
+pub fn generate_chunk_heightmap_mesh(
+    surface: &PlanetSurface,
+    chunk_coord: ChunkCoord,
+    subdivisions: u32,
+) -> Mesh {
+    let subdivisions = subdivisions.max(1);
+    let verts_per_edge = subdivisions + 1;
+    let num_verts = (verts_per_edge * verts_per_edge) as usize;
+
+    let origin = chunk_origin_xz(chunk_coord, surface.chunk_size_world_units);
+    let chunk_size = surface.chunk_size_world_units;
+    let step = chunk_size / subdivisions as f32;
+
+    let mut positions: Vec<[f32; 3]> = Vec::with_capacity(num_verts);
+    let mut uvs: Vec<[f32; 2]> = Vec::with_capacity(num_verts);
+
+    // First pass: sample elevation at each grid vertex to build the position
+    // and UV arrays. We store heights in a flat grid so the second pass can
+    // compute normals from adjacent vertex height differences.
+    let mut heights: Vec<f32> = Vec::with_capacity(num_verts);
+
+    for iz in 0..verts_per_edge {
+        for ix in 0..verts_per_edge {
+            let world_x = origin.x + ix as f32 * step;
+            let world_z = origin.z + iz as f32 * step;
+            let y = surface.sample_elevation(world_x, world_z);
+
+            positions.push([world_x, y, world_z]);
+            heights.push(y);
+            uvs.push([
+                ix as f32 / subdivisions as f32,
+                iz as f32 / subdivisions as f32,
+            ]);
+        }
+    }
+
+    // Second pass: compute per-vertex normals from the cross product of
+    // adjacent vertex height differences. For interior vertices we use
+    // central differences; at edges we clamp to the nearest neighbor.
+    let mut normals: Vec<[f32; 3]> = Vec::with_capacity(num_verts);
+    let idx = |ix: u32, iz: u32| -> usize { (iz * verts_per_edge + ix) as usize };
+
+    for iz in 0..verts_per_edge {
+        for ix in 0..verts_per_edge {
+            // Height differences along x-axis (central difference when possible).
+            let dh_dx = if ix == 0 {
+                (heights[idx(ix + 1, iz)] - heights[idx(ix, iz)]) / step
+            } else if ix == subdivisions {
+                (heights[idx(ix, iz)] - heights[idx(ix - 1, iz)]) / step
+            } else {
+                (heights[idx(ix + 1, iz)] - heights[idx(ix - 1, iz)]) / (2.0 * step)
+            };
+
+            // Height differences along z-axis.
+            let dh_dz = if iz == 0 {
+                (heights[idx(ix, iz + 1)] - heights[idx(ix, iz)]) / step
+            } else if iz == subdivisions {
+                (heights[idx(ix, iz)] - heights[idx(ix, iz - 1)]) / step
+            } else {
+                (heights[idx(ix, iz + 1)] - heights[idx(ix, iz - 1)]) / (2.0 * step)
+            };
+
+            // tangent_x = (step, dh_dx * step, 0), tangent_z = (0, dh_dz * step, step)
+            // normal = cross(tangent_z, tangent_x) = (-dh_dx, 1, -dh_dz) (unnormalized)
+            let nx = -dh_dx;
+            let ny = 1.0_f32;
+            let nz = -dh_dz;
+            let len = (nx * nx + ny * ny + nz * nz).sqrt();
+            let inv = if len < 1e-10 { 1.0 } else { 1.0 / len };
+            normals.push([nx * inv, ny * inv, nz * inv]);
+        }
+    }
+
+    // Build triangle indices: two triangles per quad, counter-clockwise winding.
+    let num_quads = (subdivisions * subdivisions) as usize;
+    let mut indices: Vec<u32> = Vec::with_capacity(num_quads * 6);
+
+    for iz in 0..subdivisions {
+        for ix in 0..subdivisions {
+            let top_left = iz * verts_per_edge + ix;
+            let top_right = top_left + 1;
+            let bottom_left = top_left + verts_per_edge;
+            let bottom_right = bottom_left + 1;
+
+            // First triangle (top-left, bottom-left, top-right)
+            indices.push(top_left);
+            indices.push(bottom_left);
+            indices.push(top_right);
+
+            // Second triangle (top-right, bottom-left, bottom-right)
+            indices.push(top_right);
+            indices.push(bottom_left);
+            indices.push(bottom_right);
+        }
+    }
+
+    Mesh::new(
+        bevy::render::render_resource::PrimitiveTopology::TriangleList,
+        bevy::asset::RenderAssetUsages::default(),
+    )
+    .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
+    .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
+    .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uvs)
+    .with_inserted_indices(bevy::mesh::Indices::U32(indices))
+}
+
 const CONFIG_PATH: &str = "assets/config/world_generation.toml";
 const PLACEMENT_DENSITY_CHANNEL: u64 = 0xD3E5_17A1_0000_0001;
 const PLACEMENT_VARIATION_CHANNEL: u64 = 0xD3E5_17A1_0000_0002;
@@ -390,6 +738,15 @@ const PLANET_SURFACE_RADIUS_CHANNEL: u64 = 0xD3E5_17A1_0000_0004;
 /// moisture) to produce two independent coherent noise fields that together
 /// determine the biome at each chunk position.
 const BIOME_CLIMATE_CHANNEL: u64 = 0xD3E5_17A1_0000_0005;
+/// Channel constant for deriving the elevation seed from the planet seed.
+///
+/// The elevation seed drives multi-octave value noise that produces terrain
+/// height variation across the planet surface.
+const ELEVATION_CHANNEL: u64 = 0xE1EF_0001_0000_0001;
+/// Sub-channel for chunk-level detail noise layered on top of the base
+/// elevation field. Derived from the elevation seed (not the planet seed)
+/// so it is guaranteed independent of the base octaves.
+const ELEVATION_DETAIL_CHANNEL: u64 = 0xE1EF_0001_0000_0002;
 
 pub struct WorldGenerationPlugin;
 
@@ -474,6 +831,34 @@ pub struct WorldGenerationConfig {
     /// derived from the seed.
     #[serde(default = "default_planet_surface_max_radius")]
     pub planet_surface_max_radius: i32,
+    /// Maximum terrain height deviation from base_y (in world units).
+    #[serde(default = "default_elevation_amplitude")]
+    pub elevation_amplitude: f32,
+    /// Base frequency of the elevation noise field (in world units).
+    #[serde(default = "default_elevation_frequency")]
+    pub elevation_frequency: f32,
+    /// Number of fractal noise octaves layered for terrain elevation.
+    #[serde(default = "default_elevation_octaves")]
+    pub elevation_octaves: u32,
+    /// Blend weight for chunk-level detail noise added on top of the base
+    /// elevation field. 0.0 means no detail layer.
+    #[serde(default = "default_elevation_detail_weight")]
+    pub elevation_detail_weight: f32,
+    /// Base frequency for the detail noise layer. Higher than the base
+    /// `elevation_frequency` to add fine-grained terrain variation.
+    #[serde(default = "default_elevation_detail_frequency")]
+    pub elevation_detail_frequency: f32,
+    /// Number of fractal noise octaves for the detail noise layer.
+    #[serde(default = "default_elevation_detail_octaves")]
+    pub elevation_detail_octaves: u32,
+    /// Sea-level reference height (in world units). Elevation noise is added
+    /// on top of this value.
+    #[serde(default = "default_elevation_base_y")]
+    pub elevation_base_y: f32,
+    /// Number of subdivisions per chunk edge for the heightmap mesh.
+    /// An N×N grid produces (N+1)² vertices.
+    #[serde(default = "default_elevation_subdivisions")]
+    pub elevation_subdivisions: u32,
 }
 
 impl Default for WorldGenerationConfig {
@@ -485,6 +870,14 @@ impl Default for WorldGenerationConfig {
             building_cell_size: default_building_cell_size(),
             planet_surface_min_radius: default_planet_surface_min_radius(),
             planet_surface_max_radius: default_planet_surface_max_radius(),
+            elevation_amplitude: default_elevation_amplitude(),
+            elevation_frequency: default_elevation_frequency(),
+            elevation_octaves: default_elevation_octaves(),
+            elevation_detail_weight: default_elevation_detail_weight(),
+            elevation_detail_frequency: default_elevation_detail_frequency(),
+            elevation_detail_octaves: default_elevation_detail_octaves(),
+            elevation_base_y: default_elevation_base_y(),
+            elevation_subdivisions: default_elevation_subdivisions(),
         }
     }
 }
@@ -538,6 +931,54 @@ fn default_planet_surface_max_radius() -> i32 {
     5000
 }
 
+fn default_elevation_amplitude() -> f32 {
+    // Maximum height deviation from base_y. 10 world units gives gentle
+    // rolling hills that are clearly visible without being extreme.
+    10.0
+}
+
+fn default_elevation_frequency() -> f32 {
+    // Base noise frequency in world units. Lower values = broader features.
+    // 0.005 produces features on the scale of ~200 world units (~4-5 chunks).
+    0.005
+}
+
+fn default_elevation_octaves() -> u32 {
+    // Number of fractal noise layers. 4 octaves give a good balance of
+    // large-scale hills with smaller-scale detail.
+    4
+}
+
+fn default_elevation_detail_weight() -> f32 {
+    // Blend ratio for chunk-level detail noise. 0.0 means the detail layer
+    // is disabled by default; later phases will tune this.
+    0.0
+}
+
+fn default_elevation_detail_frequency() -> f32 {
+    // Base frequency for the detail noise layer — 4× the base elevation
+    // frequency so it adds finer-grained terrain texture.
+    0.02
+}
+
+fn default_elevation_detail_octaves() -> u32 {
+    // Two octaves of detail noise is enough for subtle variation without
+    // overwhelming the base elevation shape.
+    2
+}
+
+fn default_elevation_base_y() -> f32 {
+    // Sea-level reference height. -0.01 matches the existing FlatSurface
+    // convention used by the exterior ground patch.
+    -0.01
+}
+
+fn default_elevation_subdivisions() -> u32 {
+    // Number of subdivisions per chunk edge. 8 gives 64 quads per chunk
+    // (9×9 = 81 vertices), a reasonable default for terrain detail.
+    8
+}
+
 /// Derived deterministic world profile.
 ///
 /// The profile exists so later stories do not have to keep reverse engineering
@@ -583,6 +1024,10 @@ pub struct WorldProfile {
     /// This is the wrapping period for chunk coordinates. A coordinate of
     /// `planet_surface_diameter` wraps back to `0`.
     pub planet_surface_diameter: i32,
+    /// Per-planet elevation seed, derived from the planet seed via
+    /// `ELEVATION_CHANNEL`. Drives the multi-octave noise field that
+    /// produces terrain height variation.
+    pub elevation_seed: u64,
 }
 
 impl Default for WorldProfile {
@@ -621,6 +1066,7 @@ impl WorldProfile {
             biome_climate_seed: mix_seed(planet_seed.0, BIOME_CLIMATE_CHANNEL),
             planet_surface_radius,
             planet_surface_diameter,
+            elevation_seed: mix_seed(planet_seed.0, ELEVATION_CHANNEL),
         }
     }
 }
@@ -1258,6 +1704,7 @@ mod tests {
             building_cell_size: 1.0,
             planet_surface_min_radius: 500,
             planet_surface_max_radius: 5000,
+            ..Default::default()
         };
 
         let a = WorldProfile::from_config(&config);
@@ -1340,6 +1787,7 @@ mod tests {
             building_cell_size: 1.0,
             planet_surface_min_radius: 500,
             planet_surface_max_radius: 5000,
+            ..Default::default()
         });
         let chunk = ChunkCoord::new(-3, 4);
 
@@ -1369,6 +1817,7 @@ mod tests {
             building_cell_size: 1.0,
             planet_surface_min_radius: 500,
             planet_surface_max_radius: 5000,
+            ..Default::default()
         });
 
         let a =
@@ -1688,6 +2137,7 @@ mod tests {
             building_cell_size: 1.0,
             planet_surface_min_radius: 500,
             planet_surface_max_radius: 5000,
+            ..Default::default()
         };
         let profile = WorldProfile::from_config(&config);
 
@@ -1744,6 +2194,7 @@ mod tests {
             building_cell_size: 1.0,
             planet_surface_min_radius: 50,
             planet_surface_max_radius: 50,
+            ..Default::default()
         };
         let profile = WorldProfile::from_config(&config);
         let diameter = profile.planet_surface_diameter; // 100
@@ -1767,6 +2218,7 @@ mod tests {
             building_cell_size: 1.0,
             planet_surface_min_radius: 50,
             planet_surface_max_radius: 50,
+            ..Default::default()
         };
         let profile = WorldProfile::from_config(&config);
         let diameter = profile.planet_surface_diameter; // 100
@@ -1789,6 +2241,7 @@ mod tests {
             building_cell_size: 1.0,
             planet_surface_min_radius: 500,
             planet_surface_max_radius: 5000,
+            ..Default::default()
         }
     }
 
@@ -1910,6 +2363,19 @@ mod tests {
     }
 
     #[test]
+    fn elevation_seed_is_distinct_from_other_seeds() {
+        // The elevation seed must not collide with any other sub-seed
+        // in WorldProfile to avoid correlated noise fields.
+        let profile = WorldProfile::from_config(&sample_config());
+
+        assert_ne!(profile.elevation_seed, profile.placement_density_seed);
+        assert_ne!(profile.elevation_seed, profile.placement_variation_seed);
+        assert_ne!(profile.elevation_seed, profile.object_identity_seed);
+        assert_ne!(profile.elevation_seed, profile.biome_climate_seed);
+        assert_ne!(profile.elevation_seed, profile.planet_seed.0);
+    }
+
+    #[test]
     fn biome_registry_toml_round_trip() {
         // Verify BiomeRegistry serializes to TOML and back without data loss.
         let registry = BiomeRegistry::default();
@@ -1939,6 +2405,7 @@ mod tests {
             building_cell_size: 1.0,
             planet_surface_min_radius: 50,
             planet_surface_max_radius: 50,
+            ..Default::default()
         };
         let profile = WorldProfile::from_config(&config);
         let registry = BiomeRegistry::default();
@@ -2013,5 +2480,451 @@ mod tests {
         assert_eq!(result.biome_key, "does_not_exist");
         assert_eq!(result.ground_color, [0.26, 0.3, 0.22]);
         assert_eq!(result.density_modifier, 1.0);
+    }
+
+    // ── PlanetSurface multi-octave noise tests ──────────────────────────
+
+    /// Helper: build a `PlanetSurface` with known parameters for testing.
+    fn test_planet_surface() -> PlanetSurface {
+        PlanetSurface {
+            elevation_seed: 0xDEAD_BEEF,
+            base_y: 0.0,
+            amplitude: 10.0,
+            frequency: 0.005,
+            octaves: 4,
+            detail_weight: 0.0,
+            detail_seed: mix_seed(0xDEAD_BEEF, ELEVATION_DETAIL_CHANNEL),
+            detail_frequency: 0.02,
+            detail_octaves: 2,
+            planet_surface_diameter: 100,
+            chunk_size_world_units: 45.0,
+        }
+    }
+
+    #[test]
+    fn planet_surface_elevation_is_deterministic() {
+        let surface = test_planet_surface();
+        let a = surface.sample_elevation(123.4, 567.8);
+        let b = surface.sample_elevation(123.4, 567.8);
+        assert_eq!(a, b, "same inputs must produce identical elevation");
+    }
+
+    #[test]
+    fn planet_surface_different_seeds_produce_different_elevation() {
+        let s1 = test_planet_surface();
+        let mut s2 = test_planet_surface();
+        s2.elevation_seed = 0xCAFE_BABE;
+
+        let e1 = s1.sample_elevation(50.0, 50.0);
+        let e2 = s2.sample_elevation(50.0, 50.0);
+        assert_ne!(e1, e2, "different seeds should produce different terrain");
+    }
+
+    #[test]
+    fn planet_surface_elevation_within_amplitude() {
+        let surface = test_planet_surface();
+        // Sample a grid of points and verify all elevations stay within bounds.
+        for ix in 0..50 {
+            for iz in 0..50 {
+                let x = ix as f32 * 17.3;
+                let z = iz as f32 * 13.7;
+                let h = surface.sample_elevation(x, z);
+                assert!(
+                    h >= surface.base_y - surface.amplitude
+                        && h <= surface.base_y + surface.amplitude,
+                    "elevation {h} out of range [{}, {}] at ({x}, {z})",
+                    surface.base_y - surface.amplitude,
+                    surface.base_y + surface.amplitude,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn planet_surface_torus_wrapping_continuous() {
+        let surface = test_planet_surface();
+        let period = surface.planet_surface_diameter as f32 * surface.chunk_size_world_units;
+
+        // Elevation at (x, z) must equal elevation at (x + period, z).
+        for i in 0..20 {
+            let x = i as f32 * 37.1;
+            let z = i as f32 * 23.9;
+            let result_a = surface.query_surface(x, z);
+            let result_b = surface.query_surface(x + period, z);
+            assert!(
+                (result_a.position_y - result_b.position_y).abs() < 1e-6,
+                "torus wrap mismatch at x={x}: {} vs {}",
+                result_a.position_y,
+                result_b.position_y,
+            );
+            // Also verify z-direction wrapping.
+            let result_c = surface.query_surface(x, z + period);
+            assert!(
+                (result_a.position_y - result_c.position_y).abs() < 1e-6,
+                "torus wrap mismatch at z={z}: {} vs {}",
+                result_a.position_y,
+                result_c.position_y,
+            );
+        }
+    }
+
+    #[test]
+    fn planet_surface_flat_region_normal_points_up() {
+        // With zero amplitude the surface is perfectly flat, so the normal
+        // should be straight up.
+        let surface = PlanetSurface {
+            amplitude: 0.0,
+            ..test_planet_surface()
+        };
+        let result = surface.query_surface(100.0, 200.0);
+        let [nx, ny, nz] = result.normal;
+        assert!(
+            (nx.abs() < 1e-6) && ((ny - 1.0).abs() < 1e-6) && (nz.abs() < 1e-6),
+            "flat surface normal should be (0,1,0), got ({nx}, {ny}, {nz})"
+        );
+    }
+
+    #[test]
+    fn planet_surface_steep_region_normal_deviates_from_up() {
+        // With high amplitude and high frequency, some normals must deviate
+        // noticeably from straight up.
+        let surface = PlanetSurface {
+            amplitude: 50.0,
+            frequency: 0.1,
+            octaves: 1,
+            ..test_planet_surface()
+        };
+        let mut found_steep = false;
+        for ix in 0..100 {
+            let x = ix as f32 * 3.7;
+            let result = surface.query_surface(x, 42.0);
+            if result.normal[1] < 0.99 {
+                found_steep = true;
+                break;
+            }
+        }
+        assert!(
+            found_steep,
+            "high-amplitude terrain should have non-vertical normals"
+        );
+    }
+
+    #[test]
+    fn planet_surface_query_surface_always_valid() {
+        let surface = test_planet_surface();
+        for i in 0..50 {
+            let x = (i as f32 - 25.0) * 100.0;
+            let z = (i as f32 - 10.0) * 77.0;
+            assert!(
+                surface.query_surface(x, z).valid,
+                "PlanetSurface should always return valid=true"
+            );
+        }
+    }
+
+    #[test]
+    fn planet_surface_multiple_octaves_differ_from_single() {
+        let single = PlanetSurface {
+            octaves: 1,
+            ..test_planet_surface()
+        };
+        let multi = PlanetSurface {
+            octaves: 4,
+            ..test_planet_surface()
+        };
+        // At least some samples should differ when adding more octaves.
+        let mut any_different = false;
+        for i in 0..50 {
+            let x = i as f32 * 11.1;
+            let e1 = single.sample_elevation(x, 0.0);
+            let e4 = multi.sample_elevation(x, 0.0);
+            if (e1 - e4).abs() > 1e-6 {
+                any_different = true;
+                break;
+            }
+        }
+        assert!(
+            any_different,
+            "multi-octave noise should differ from single octave"
+        );
+    }
+
+    #[test]
+    fn planet_surface_zero_amplitude_produces_constant_base_y() {
+        let base_y = 42.0;
+        let surface = PlanetSurface {
+            amplitude: 0.0,
+            base_y,
+            ..test_planet_surface()
+        };
+        // Sample a grid of points — every elevation must equal base_y exactly,
+        // and every normal must point straight up, just like FlatSurface.
+        let flat = FlatSurface {
+            surface_y: base_y,
+            min_x: -1000.0,
+            max_x: 1000.0,
+            min_z: -1000.0,
+            max_z: 1000.0,
+        };
+        for ix in 0..20 {
+            for iz in 0..20 {
+                let x = ix as f32 * 23.7 - 100.0;
+                let z = iz as f32 * 19.3 - 100.0;
+
+                let planet_result = surface.query_surface(x, z);
+                let flat_result = flat.query_surface(x, z);
+
+                assert_eq!(
+                    planet_result.position_y, base_y,
+                    "zero-amplitude PlanetSurface must return base_y at ({x}, {z})"
+                );
+                assert_eq!(
+                    planet_result.position_y, flat_result.position_y,
+                    "zero-amplitude PlanetSurface must match FlatSurface elevation at ({x}, {z})"
+                );
+                assert!(
+                    planet_result.valid,
+                    "zero-amplitude surface should always be valid"
+                );
+                // Normal should point straight up (0, 1, 0).
+                let n = planet_result.normal;
+                assert!(
+                    (n[0].abs() < 1e-6) && ((n[1] - 1.0).abs() < 1e-6) && (n[2].abs() < 1e-6),
+                    "zero-amplitude normal should be (0,1,0), got ({}, {}, {}) at ({x}, {z})",
+                    n[0],
+                    n[1],
+                    n[2]
+                );
+            }
+        }
+    }
+
+    /// Helper that returns a `PlanetSurface` with detail noise **enabled**.
+    fn test_planet_surface_with_detail() -> PlanetSurface {
+        PlanetSurface {
+            detail_weight: 0.3,
+            ..test_planet_surface()
+        }
+    }
+
+    #[test]
+    fn detail_noise_elevation_is_deterministic() {
+        let surface = test_planet_surface_with_detail();
+        for i in 0..50 {
+            let x = i as f32 * 17.3 + 3.1;
+            let z = i as f32 * 11.7 + 7.9;
+            let a = surface.sample_elevation(x, z);
+            let b = surface.sample_elevation(x, z);
+            assert_eq!(a, b, "detail noise must be deterministic at ({x}, {z})");
+        }
+    }
+
+    #[test]
+    fn detail_noise_torus_wrapping_continuous() {
+        let surface = test_planet_surface_with_detail();
+        let period = surface.planet_surface_diameter as f32 * surface.chunk_size_world_units;
+
+        for i in 0..20 {
+            let x = i as f32 * 37.1 + 5.5;
+            let z = i as f32 * 23.9 + 2.3;
+            let a = surface.sample_elevation(x, z);
+            let b = surface.sample_elevation(x + period, z);
+            assert!(
+                (a - b).abs() < 1e-6,
+                "detail noise breaks torus continuity at x={x}: {a} vs {b}"
+            );
+            let c = surface.sample_elevation(x, z + period);
+            assert!(
+                (a - c).abs() < 1e-6,
+                "detail noise breaks torus continuity at z={z}: {a} vs {c}"
+            );
+        }
+    }
+
+    #[test]
+    fn detail_noise_elevation_within_bounds() {
+        let surface = test_planet_surface_with_detail();
+        // With detail, max deviation is amplitude * (1 + detail_weight) / 2
+        // since both base and detail are normalized to [-0.5, 0.5] before scaling.
+        let max_deviation = surface.amplitude * (1.0 + surface.detail_weight);
+        let lo = surface.base_y - max_deviation;
+        let hi = surface.base_y + max_deviation;
+        for ix in 0..50 {
+            for iz in 0..50 {
+                let x = ix as f32 * 17.3;
+                let z = iz as f32 * 13.7;
+                let h = surface.sample_elevation(x, z);
+                assert!(
+                    h >= lo && h <= hi,
+                    "elevation {h} out of range [{lo}, {hi}] at ({x}, {z})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn detail_noise_actually_changes_elevation() {
+        let without = test_planet_surface();
+        let with = test_planet_surface_with_detail();
+        let mut any_different = false;
+        for i in 0..100 {
+            let x = i as f32 * 11.1;
+            let e_no = without.sample_elevation(x, 42.0);
+            let e_yes = with.sample_elevation(x, 42.0);
+            if (e_no - e_yes).abs() > 1e-6 {
+                any_different = true;
+                break;
+            }
+        }
+        assert!(
+            any_different,
+            "enabling detail noise should change at least some elevations"
+        );
+    }
+
+    #[test]
+    fn detail_weight_zero_produces_same_result_as_no_detail() {
+        // A surface with detail_weight = 0 should produce identical elevations
+        // and normals as one that simply has no detail layer, regardless of the
+        // detail_seed, detail_frequency, or detail_octaves values.
+        let baseline = test_planet_surface(); // detail_weight already 0.0
+
+        // Build a variant with non-zero detail parameters but weight still 0.
+        let zero_weight = PlanetSurface {
+            detail_weight: 0.0,
+            detail_seed: 0xCAFE_BABE,
+            detail_frequency: 0.05,
+            detail_octaves: 6,
+            ..test_planet_surface()
+        };
+
+        for i in 0..200 {
+            let x = i as f32 * 7.7 - 300.0;
+            let z = i as f32 * 13.3 + 50.0;
+
+            let elev_base = baseline.sample_elevation(x, z);
+            let elev_zero = zero_weight.sample_elevation(x, z);
+            assert_eq!(
+                elev_base, elev_zero,
+                "detail_weight=0 must match baseline at ({x}, {z}): {elev_base} vs {elev_zero}"
+            );
+
+            let norm_base = baseline.compute_normal(x, z);
+            let norm_zero = zero_weight.compute_normal(x, z);
+            assert_eq!(
+                norm_base, norm_zero,
+                "normals must match when detail_weight=0 at ({x}, {z})"
+            );
+        }
+    }
+
+    #[test]
+    fn heightmap_mesh_vertex_count_matches_expected() {
+        let surface = test_planet_surface();
+        let chunk = ChunkCoord::new(0, 0);
+
+        for subdivisions in [1, 2, 4, 8, 16] {
+            let mesh = generate_chunk_heightmap_mesh(&surface, chunk, subdivisions);
+            let expected = ((subdivisions + 1) * (subdivisions + 1)) as usize;
+            let actual = mesh.count_vertices();
+            assert_eq!(
+                actual, expected,
+                "subdivisions={subdivisions}: expected {expected} vertices, got {actual}"
+            );
+        }
+    }
+
+    #[test]
+    fn flat_terrain_mesh_normals_all_point_up() {
+        let surface = PlanetSurface {
+            amplitude: 0.0,
+            ..test_planet_surface()
+        };
+
+        // Test across several chunk coordinates and subdivision levels.
+        let chunks = [
+            ChunkCoord::new(0, 0),
+            ChunkCoord::new(3, -2),
+            ChunkCoord::new(-5, 7),
+        ];
+        for chunk in chunks {
+            for subdivisions in [2, 4, 8] {
+                let mesh = generate_chunk_heightmap_mesh(&surface, chunk, subdivisions);
+                let normals = mesh
+                    .attribute(Mesh::ATTRIBUTE_NORMAL)
+                    .expect("mesh must have normals")
+                    .as_float3()
+                    .expect("normals must be Float32x3");
+
+                for (i, n) in normals.iter().enumerate() {
+                    assert!(
+                        n[0].abs() < 1e-5 && (n[1] - 1.0).abs() < 1e-5 && n[2].abs() < 1e-5,
+                        "vertex {i} in chunk {:?} (subdivisions={subdivisions}): \
+                         expected normal ≈ (0,1,0), got ({}, {}, {})",
+                        chunk,
+                        n[0],
+                        n[1],
+                        n[2]
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn adjacent_chunk_edges_have_identical_heights() {
+        let surface = test_planet_surface();
+        let subdivisions = 8u32;
+        let verts_per_edge = (subdivisions + 1) as usize;
+
+        // Test several adjacent chunk pairs along both axes.
+        let pairs = [
+            // (chunk_a, chunk_b, axis): axis=0 means b is +X neighbor, axis=1 means b is +Z neighbor
+            (ChunkCoord::new(0, 0), ChunkCoord::new(1, 0), 0),
+            (ChunkCoord::new(0, 0), ChunkCoord::new(0, 1), 1),
+            (ChunkCoord::new(-3, 2), ChunkCoord::new(-2, 2), 0),
+            (ChunkCoord::new(5, -1), ChunkCoord::new(5, 0), 1),
+            (ChunkCoord::new(-1, -1), ChunkCoord::new(0, -1), 0),
+        ];
+
+        for (chunk_a, chunk_b, axis) in pairs {
+            let mesh_a = generate_chunk_heightmap_mesh(&surface, chunk_a, subdivisions);
+            let mesh_b = generate_chunk_heightmap_mesh(&surface, chunk_b, subdivisions);
+
+            let positions_a = mesh_a
+                .attribute(Mesh::ATTRIBUTE_POSITION)
+                .expect("mesh must have positions")
+                .as_float3()
+                .expect("positions must be Float32x3");
+            let positions_b = mesh_b
+                .attribute(Mesh::ATTRIBUTE_POSITION)
+                .expect("mesh must have positions")
+                .as_float3()
+                .expect("positions must be Float32x3");
+
+            for i in 0..verts_per_edge {
+                // For axis=0 (+X neighbor): right edge of A (ix=subdivisions) matches left edge of B (ix=0).
+                // For axis=1 (+Z neighbor): bottom edge of A (iz=subdivisions) matches top edge of B (iz=0).
+                let idx_a = if axis == 0 {
+                    i * verts_per_edge + (verts_per_edge - 1) // right column of A
+                } else {
+                    (verts_per_edge - 1) * verts_per_edge + i // bottom row of A
+                };
+                let idx_b = if axis == 0 {
+                    i * verts_per_edge // left column of B
+                } else {
+                    i // top row of B
+                };
+
+                let ha = positions_a[idx_a][1];
+                let hb = positions_b[idx_b][1];
+                assert_eq!(
+                    ha, hb,
+                    "Seam artifact at shared edge vertex {i}: chunk {:?} edge height {ha} != \
+                     chunk {:?} edge height {hb} (axis={axis})",
+                    chunk_a, chunk_b
+                );
+            }
+        }
     }
 }

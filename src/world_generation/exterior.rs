@@ -49,10 +49,10 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     ActiveChunkNeighborhood, BiomeRegistry, ChunkBiome, ChunkCoord,
-    DEFAULT_MAX_PLACEMENT_SLOPE_RADIANS, FlatSurface, GeneratedObjectId, SurfaceProvider,
-    WorldProfile, chunk_origin_xz, derive_chunk_biome, derive_chunk_generation_key,
-    derive_generated_object_id, is_placement_valid, surface_alignment_rotation,
-    world_position_to_chunk_coord,
+    DEFAULT_MAX_PLACEMENT_SLOPE_RADIANS, GeneratedObjectId, PlanetSurface, SurfaceProvider,
+    WorldGenerationConfig, WorldProfile, chunk_origin_xz, derive_chunk_biome,
+    derive_chunk_generation_key, derive_generated_object_id, generate_chunk_heightmap_mesh,
+    is_placement_valid, surface_alignment_rotation, world_position_to_chunk_coord,
 };
 use crate::carry::InCarry;
 use crate::interaction::HeldItem;
@@ -495,15 +495,17 @@ fn sync_active_exterior_chunks(
     mut commands: Commands,
     active_chunks: Res<ActiveChunkNeighborhood>,
     world_profile: Res<WorldProfile>,
+    world_gen_config: Res<WorldGenerationConfig>,
     deposit_catalog: Res<SurfaceMineralDepositCatalog>,
     material_catalog: Res<MaterialCatalog>,
-    exterior_patch: Res<ExteriorGroundPatch>,
+    _exterior_patch: Res<ExteriorGroundPatch>,
     biome_registry: Res<BiomeRegistry>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut render_materials: ResMut<Assets<StandardMaterial>>,
     mut spawned_chunks: ResMut<ActiveExteriorChunkSpawns>,
     removal_deltas: Res<ChunkRemovalDeltas>,
     player_additions: Res<ChunkPlayerAdditions>,
+    surface_registry: Res<crate::surface::SurfaceOverrideRegistry>,
 ) {
     let active_chunk_set: HashSet<ChunkCoord> = active_chunks.chunks.iter().copied().collect();
     let inactive_chunks: Vec<ChunkCoord> = spawned_chunks
@@ -526,19 +528,11 @@ fn sync_active_exterior_chunks(
     // Story 5.3: the generation functions receive a &dyn SurfaceProvider so
     // they can be tested against synthetic surfaces without any Bevy dependency.
     //
-    // Story 5a.1: the planet surface is conceptually unbounded — every chunk on
-    // the torus has valid ground. We use effectively-infinite bounds so that
-    // `FlatSurface::query_surface` never rejects a candidate for being "out of
-    // bounds". The *visual* ground mesh is sized separately in scene.rs to
-    // cover the active neighborhood; this surface provider is purely about
-    // generation validity.
-    let surface = FlatSurface {
-        surface_y: exterior_patch.surface_y,
-        min_x: f32::MIN,
-        max_x: f32::MAX,
-        min_z: f32::MIN,
-        max_z: f32::MAX,
-    };
+    // Story 5a.3: at runtime we now use PlanetSurface, which samples
+    // multi-octave elevation noise for realistic terrain variation. The
+    // FlatSurface, SteppedSurface, and TiltedSurface providers remain
+    // available for deterministic tests.
+    let surface = PlanetSurface::new_from_profile(&world_profile, &world_gen_config);
 
     for &chunk in &active_chunks.chunks {
         if spawned_chunks
@@ -577,36 +571,44 @@ fn sync_active_exterior_chunks(
             removal_deltas.removed_by_chunk.get(&chunk),
         );
 
+        // UAT2: suppress deposits that fall inside a surface override (e.g.,
+        // the room floor). Without this filter, mineral deposits spawn through
+        // structure floors.
+        let placements: Vec<_> = placements
+            .into_iter()
+            .filter(|p| !surface_registry.any_contains_xz(p.position_xz.x, p.position_xz.z))
+            .collect();
+
         let mut spawned_entities = Vec::new();
 
-        // Story 5a.2: spawn a per-chunk ground tile colored by the biome.
+        // Story 5a.3: spawn a per-chunk heightmap ground tile colored by the
+        // biome.
         //
-        // Each active chunk gets its own `Plane3d` mesh sized to exactly one
-        // chunk, positioned at the chunk's world-space origin (center of the
-        // tile, not corner). The ground tile color comes from the biome
-        // definition, so different biomes produce visibly different ground.
+        // Each active chunk gets a subdivided heightmap mesh whose vertices
+        // sample the planet elevation noise. The mesh vertices are in
+        // world-space so the entity Transform is identity. The ground tile
+        // color comes from the biome definition.
         //
         // These tile entities are tracked in `spawned_entities` alongside
         // material objects, so they are automatically despawned when the chunk
         // deactivates.
         {
-            let origin = chunk_origin_xz(chunk, world_profile.chunk_size_world_units);
-            let half = world_profile.chunk_size_world_units * 0.5;
             let [r, g, b] = chunk_biome.ground_color;
             let ground_material = render_materials.add(StandardMaterial {
                 base_color: Color::srgb(r, g, b),
                 perceptual_roughness: 0.98,
                 ..default()
             });
-            let ground_mesh = meshes.add(Plane3d::default().mesh().size(
-                world_profile.chunk_size_world_units,
-                world_profile.chunk_size_world_units,
+            let ground_mesh = meshes.add(generate_chunk_heightmap_mesh(
+                &surface,
+                chunk,
+                world_gen_config.elevation_subdivisions,
             ));
             let tile_entity = commands
                 .spawn((
                     Mesh3d(ground_mesh),
                     MeshMaterial3d(ground_material),
-                    Transform::from_xyz(origin.x + half, exterior_patch.surface_y, origin.z + half),
+                    Transform::default(),
                 ))
                 .id();
             spawned_entities.push(tile_entity);
@@ -1599,6 +1601,7 @@ mod tests {
             building_cell_size: 1.0,
             planet_surface_min_radius: 500,
             planet_surface_max_radius: 5000,
+            ..Default::default()
         })
     }
 
@@ -1872,6 +1875,125 @@ mod tests {
         );
 
         assert_eq!(a, b, "rejection must be deterministic");
+    }
+
+    // ── Story 5a.3: PlanetSurface steep terrain rejects placements ───────
+
+    #[test]
+    fn planet_surface_steep_terrain_rejects_placements() {
+        let profile = sample_profile();
+        let catalog = sample_catalog();
+        // High amplitude + high frequency = extremely steep slopes everywhere.
+        // Amplitude 500 with frequency 0.5 means the terrain rises/falls 500
+        // units over ~2 world-unit wavelengths, producing near-vertical slopes
+        // that far exceed the 40° placement limit.
+        let surface = PlanetSurface {
+            elevation_seed: 0xDEAD_BEEF,
+            base_y: 0.0,
+            amplitude: 500.0,
+            frequency: 0.5,
+            octaves: 1,
+            detail_weight: 0.0,
+            detail_seed: 0xCAFE_0001,
+            detail_frequency: 1.0,
+            detail_octaves: 1,
+            planet_surface_diameter: profile.planet_surface_diameter,
+            chunk_size_world_units: profile.chunk_size_world_units,
+        };
+
+        let placements = generate_surface_mineral_chunk_baseline(
+            &profile,
+            &catalog,
+            &surface,
+            ChunkCoord::new(0, -1),
+            &sample_biome(),
+        );
+
+        assert!(
+            placements.is_empty(),
+            "steep PlanetSurface terrain should reject all deposit placements ({} survived)",
+            placements.len()
+        );
+    }
+
+    #[test]
+    fn planet_surface_gentle_terrain_accepts_placements() {
+        let profile = sample_profile();
+        let catalog = sample_catalog();
+        // Very low amplitude + low frequency = nearly flat terrain.
+        // Amplitude 0.01 ensures slopes are essentially zero — well under 40°.
+        let surface = PlanetSurface {
+            elevation_seed: 0xDEAD_BEEF,
+            base_y: 0.0,
+            amplitude: 0.01,
+            frequency: 0.001,
+            octaves: 1,
+            detail_weight: 0.0,
+            detail_seed: 0xCAFE_0001,
+            detail_frequency: 1.0,
+            detail_octaves: 1,
+            planet_surface_diameter: profile.planet_surface_diameter,
+            chunk_size_world_units: profile.chunk_size_world_units,
+        };
+
+        let placements = generate_surface_mineral_chunk_baseline(
+            &profile,
+            &catalog,
+            &surface,
+            ChunkCoord::new(0, -1),
+            &sample_biome(),
+        );
+
+        assert!(
+            !placements.is_empty(),
+            "gentle PlanetSurface terrain should accept deposit placements"
+        );
+    }
+
+    #[test]
+    fn planet_surface_deposit_y_matches_surface_query() {
+        // Round-trip test: every deposit placement's surface_y must exactly
+        // match what query_surface returns at that (x, z). This catches
+        // floating or buried deposits — i.e. placements whose y-position
+        // was computed from a different point than their final xz.
+        let profile = sample_profile();
+        let catalog = sample_catalog();
+        let surface = PlanetSurface {
+            elevation_seed: 0xDEAD_BEEF,
+            base_y: 5.0,
+            amplitude: 2.0,
+            frequency: 0.05,
+            octaves: 2,
+            detail_weight: 0.3,
+            detail_seed: 0xCAFE_0001,
+            detail_frequency: 0.2,
+            detail_octaves: 1,
+            planet_surface_diameter: profile.planet_surface_diameter,
+            chunk_size_world_units: profile.chunk_size_world_units,
+        };
+
+        let placements = generate_surface_mineral_chunk_baseline(
+            &profile,
+            &catalog,
+            &surface,
+            ChunkCoord::new(0, -1),
+            &sample_biome(),
+        );
+
+        assert!(
+            !placements.is_empty(),
+            "need at least one placement to verify y-position"
+        );
+
+        for p in &placements {
+            let expected = surface.query_surface(p.position_xz.x, p.position_xz.z);
+            assert_eq!(
+                p.surface_y, expected.position_y,
+                "deposit at ({}, {}) has surface_y {} but query_surface returns {} — \
+                 deposit would be floating or buried",
+                p.position_xz.x, p.position_xz.z, p.surface_y, expected.position_y
+            );
+        }
     }
 
     // ── AC3: Placement logic testable without rendering terrain ───────────
@@ -3544,5 +3666,249 @@ cluster_compactness = 0.75
             "zeroed-out weights should produce no deposit sites, got {}",
             sites.len()
         );
+    }
+
+    // ── Story 5a.3 Phase 7: Full pipeline determinism ────────────────────
+
+    /// End-to-end determinism: identical seed produces identical WorldProfile,
+    /// PlanetSurface elevation, heightmap mesh, and deposit placements.
+    ///
+    /// Two completely independent runs of the pipeline (config → profile →
+    /// surface → mesh + deposits) must yield bit-identical results. This
+    /// catches any hidden non-determinism introduced by floating-point
+    /// ordering, HashMap iteration, or thread-local state.
+    #[test]
+    fn full_pipeline_seed_to_elevation_to_mesh_to_deposits_is_deterministic() {
+        let config = WorldGenerationConfig {
+            planet_seed: 42_424_242,
+            chunk_size_world_units: 45.0,
+            active_chunk_radius: 2,
+            building_cell_size: 1.0,
+            planet_surface_min_radius: 500,
+            planet_surface_max_radius: 5000,
+            ..Default::default()
+        };
+        let chunks = [
+            ChunkCoord::new(0, 0),
+            ChunkCoord::new(1, -1),
+            ChunkCoord::new(-3, 7),
+        ];
+        let subdivisions = 8_u32;
+
+        // Run the full pipeline twice from scratch.
+        for _run in 0..2 {
+            // ── Stage 1: WorldProfile derivation ─────────────────────
+            let profile_a = WorldProfile::from_config(&config);
+            let profile_b = WorldProfile::from_config(&config);
+            assert_eq!(profile_a, profile_b, "WorldProfile must be deterministic");
+
+            // ── Stage 2: PlanetSurface construction ──────────────────
+            let surface_a = PlanetSurface::new_from_profile(&profile_a, &config);
+            let surface_b = PlanetSurface::new_from_profile(&profile_b, &config);
+
+            // ── Stage 3: Elevation sampling ──────────────────────────
+            let sample_points: Vec<(f32, f32)> = vec![
+                (0.0, 0.0),
+                (123.4, 567.8),
+                (-200.0, 300.0),
+                (9999.0, -9999.0),
+            ];
+            for &(x, z) in &sample_points {
+                let ea = surface_a.sample_elevation(x, z);
+                let eb = surface_b.sample_elevation(x, z);
+                assert_eq!(ea, eb, "elevation mismatch at ({x}, {z}): {ea} vs {eb}");
+
+                let qa = surface_a.query_surface(x, z);
+                let qb = surface_b.query_surface(x, z);
+                assert_eq!(
+                    qa.position_y, qb.position_y,
+                    "query_surface position_y mismatch at ({x}, {z})"
+                );
+                assert_eq!(
+                    qa.normal, qb.normal,
+                    "query_surface normal mismatch at ({x}, {z})"
+                );
+            }
+
+            // ── Stage 4: Heightmap mesh generation ───────────────────
+            for &chunk in &chunks {
+                let mesh_a = generate_chunk_heightmap_mesh(&surface_a, chunk, subdivisions);
+                let mesh_b = generate_chunk_heightmap_mesh(&surface_b, chunk, subdivisions);
+
+                let pos_a = mesh_a
+                    .attribute(Mesh::ATTRIBUTE_POSITION)
+                    .expect("positions")
+                    .as_float3()
+                    .expect("Float32x3");
+                let pos_b = mesh_b
+                    .attribute(Mesh::ATTRIBUTE_POSITION)
+                    .expect("positions")
+                    .as_float3()
+                    .expect("Float32x3");
+                assert_eq!(pos_a, pos_b, "mesh positions differ for chunk {chunk:?}");
+
+                let norm_a = mesh_a
+                    .attribute(Mesh::ATTRIBUTE_NORMAL)
+                    .expect("normals")
+                    .as_float3()
+                    .expect("Float32x3");
+                let norm_b = mesh_b
+                    .attribute(Mesh::ATTRIBUTE_NORMAL)
+                    .expect("normals")
+                    .as_float3()
+                    .expect("Float32x3");
+                assert_eq!(norm_a, norm_b, "mesh normals differ for chunk {chunk:?}");
+            }
+
+            // ── Stage 5: Deposit placement ───────────────────────────
+            let catalog = sample_catalog();
+            let biome = sample_biome();
+            for &chunk in &chunks {
+                let deposits_a = generate_surface_mineral_chunk_baseline(
+                    &profile_a, &catalog, &surface_a, chunk, &biome,
+                );
+                let deposits_b = generate_surface_mineral_chunk_baseline(
+                    &profile_b, &catalog, &surface_b, chunk, &biome,
+                );
+                assert_eq!(
+                    deposits_a, deposits_b,
+                    "deposit placements differ for chunk {chunk:?}"
+                );
+            }
+        }
+    }
+
+    // ── Story 5a.3 Phase 7: Full world generation smoke test ─────────────
+
+    /// Smoke test: generate many chunks across a variety of coordinates
+    /// (including negative coords, large offsets, torus wrap boundaries, and
+    /// the origin) using the full PlanetSurface pipeline. The test succeeds
+    /// if nothing panics.
+    ///
+    /// This exercises the complete runtime path: config → profile → surface →
+    /// heightmap mesh + deposit baseline for each chunk. It is intentionally
+    /// broad — covering dozens of chunks — to flush out any edge-case panics
+    /// in noise sampling, torus wrapping, mesh generation, or deposit
+    /// placement that narrower unit tests might miss.
+    #[test]
+    fn smoke_test_generate_multiple_chunks_no_panics() {
+        let config = WorldGenerationConfig {
+            planet_seed: 99_887_766,
+            chunk_size_world_units: 45.0,
+            active_chunk_radius: 2,
+            building_cell_size: 1.0,
+            planet_surface_min_radius: 500,
+            planet_surface_max_radius: 5000,
+            ..Default::default()
+        };
+        let profile = WorldProfile::from_config(&config);
+        let surface = PlanetSurface::new_from_profile(&profile, &config);
+        let catalog = sample_catalog();
+        let biome = sample_biome();
+        let subdivisions = config.elevation_subdivisions;
+
+        // Diameter in chunks — used to pick coordinates at the torus boundary.
+        let diameter = profile.planet_surface_diameter;
+
+        // A diverse set of chunk coordinates covering:
+        // - Origin
+        // - Positive and negative quadrants
+        // - Torus wrap edges (diameter-1, diameter, diameter+1)
+        // - Large negative offsets (wrapping in the other direction)
+        // - Interior coordinates at various scales
+        let chunks: Vec<ChunkCoord> = vec![
+            ChunkCoord::new(0, 0),
+            ChunkCoord::new(1, 1),
+            ChunkCoord::new(-1, -1),
+            ChunkCoord::new(10, -10),
+            ChunkCoord::new(-50, 50),
+            ChunkCoord::new(100, 200),
+            ChunkCoord::new(-100, -200),
+            // Torus boundary region
+            ChunkCoord::new(diameter - 1, diameter - 1),
+            ChunkCoord::new(diameter, diameter),
+            ChunkCoord::new(diameter + 1, 0),
+            ChunkCoord::new(0, diameter + 1),
+            // Negative wrap
+            ChunkCoord::new(-diameter, -diameter),
+            ChunkCoord::new(-diameter - 1, -diameter - 1),
+            // Mid-range
+            ChunkCoord::new(diameter / 2, diameter / 2),
+            ChunkCoord::new(diameter / 3, -diameter / 4),
+        ];
+
+        for chunk in &chunks {
+            // Heightmap mesh generation — must not panic.
+            let mesh = generate_chunk_heightmap_mesh(&surface, *chunk, subdivisions);
+
+            // Sanity: mesh has the expected vertex count.
+            let expected_verts = ((subdivisions + 1) * (subdivisions + 1)) as usize;
+            let positions = mesh
+                .attribute(Mesh::ATTRIBUTE_POSITION)
+                .expect("mesh must have positions")
+                .as_float3()
+                .expect("positions must be Float32x3");
+            assert_eq!(
+                positions.len(),
+                expected_verts,
+                "wrong vertex count for chunk {chunk:?}"
+            );
+
+            // Normals present and same count.
+            let normals = mesh
+                .attribute(Mesh::ATTRIBUTE_NORMAL)
+                .expect("mesh must have normals")
+                .as_float3()
+                .expect("normals must be Float32x3");
+            assert_eq!(normals.len(), expected_verts);
+
+            // UVs present.
+            assert!(
+                mesh.attribute(Mesh::ATTRIBUTE_UV_0).is_some(),
+                "mesh must have UVs for chunk {chunk:?}"
+            );
+
+            // Deposit baseline — must not panic.
+            let deposits = generate_surface_mineral_chunk_baseline(
+                &profile, &catalog, &surface, *chunk, &biome,
+            );
+
+            // We don't assert a specific count (seed-dependent), but the
+            // deposits should be finite and not contain NaN positions.
+            for placement in &deposits {
+                assert!(
+                    placement.position_xz.x.is_finite(),
+                    "NaN/Inf x in deposit at chunk {chunk:?}"
+                );
+                assert!(
+                    placement.position_xz.z.is_finite(),
+                    "NaN/Inf z in deposit at chunk {chunk:?}"
+                );
+                assert!(
+                    placement.surface_y.is_finite(),
+                    "NaN/Inf surface_y in deposit at chunk {chunk:?}"
+                );
+            }
+        }
+
+        // Also exercise query_surface directly at a few extreme world positions
+        // to ensure no panics from torus wrapping with large/negative floats.
+        let extreme_points = [
+            (0.0_f32, 0.0_f32),
+            (-1e6, 1e6),
+            (1e6, -1e6),
+            (f32::MIN / 2.0, f32::MAX / 2.0),
+        ];
+        for (x, z) in extreme_points {
+            let result = surface.query_surface(x, z);
+            assert!(
+                result.position_y.is_finite(),
+                "non-finite elevation at ({x}, {z})"
+            );
+            assert!(
+                result.normal[1].is_finite(),
+                "non-finite normal at ({x}, {z})"
+            );
+        }
     }
 }
