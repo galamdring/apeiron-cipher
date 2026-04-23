@@ -10,6 +10,7 @@
     { "name": "Sign Off",    "label": "status:sign-off",     "color": "#db6d28" },
     { "name": "Complete",    "label": null,                  "color": "#3fb950", "closeIssue": true }
   ],
+  "hiddenColumns": ["Backlog", "Complete"],
   "types": [
     { "name": "epic",  "label": "epic",  "color": "#a371f7" },
     { "name": "story", "label": "story", "color": "#58a6ff" },

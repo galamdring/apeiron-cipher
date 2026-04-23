@@ -50,7 +50,7 @@ const s = {
 };
 
 export default function Sidebar() {
-  const { activeTypes, toggleType, issues, filteredIssues } = useIssueStore();
+  const { activeTypes, toggleType, issues, filteredIssues, hiddenColumns, toggleHiddenColumn } = useIssueStore();
   const filtered = filteredIssues();
 
   const countByType = {};
@@ -88,9 +88,14 @@ export default function Sidebar() {
       <div style={s.section}>
         <span style={s.heading}>Columns</span>
         {COLUMNS.map((col) => (
-          <div key={col} style={{ ...s.typeRow, cursor: "default" }}>
+          <div
+            key={col}
+            style={s.typeRow}
+            onClick={() => toggleHiddenColumn(col)}
+            title={hiddenColumns.has(col) ? "Show column" : "Hide column"}
+          >
             <span style={s.dot(COLUMN_COLORS[col] || "#8b949e")} />
-            <span style={s.label(true)}>{col}</span>
+            <span style={s.label(!hiddenColumns.has(col))}>{col}</span>
             <span style={s.count}>{countByColumn[col] ?? 0}</span>
           </div>
         ))}

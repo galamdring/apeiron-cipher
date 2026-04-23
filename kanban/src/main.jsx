@@ -10,7 +10,7 @@ configPromise.then((config) => {
       "Failed to load config: missing required 'columns' or 'types' keys in config.json";
     return;
   }
-  initColumns(config.columns, config.types);
+  initColumns(config.columns, config.types, config.hiddenColumns);
   ReactDOM.createRoot(document.getElementById("root")).render(
     <React.StrictMode>
       <App config={config} />
