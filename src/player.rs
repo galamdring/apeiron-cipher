@@ -17,6 +17,7 @@ use leafwing_input_manager::prelude::*;
 use crate::carry::CarryMovementState;
 use crate::input::InputAction;
 use crate::scene::{PlayerSceneConfig, PositionXZ, RoomShellCollision};
+use crate::world_generation::{PlanetSurface, WorldGenerationConfig, WorldProfile};
 
 /// Converts the leafwing axis_pair output (pixels * config sensitivity) to radians.
 /// Tune by adjusting `sensitivity_x` / `sensitivity_y` in input.toml rather than
@@ -45,8 +46,13 @@ pub fn cursor_is_captured(grab_mode: CursorGrabMode) -> bool {
     grab_mode != CursorGrabMode::None
 }
 
-fn enforce_eye_height(translation: &mut Vec3, eye_height: f32) {
-    translation.y = eye_height;
+/// Set the player's Y to terrain elevation + eye height.
+///
+/// Queries the planet heightmap at the player's current XZ so the camera
+/// follows terrain slopes instead of floating at a fixed Y.
+fn enforce_eye_height(translation: &mut Vec3, eye_height: f32, surface: &PlanetSurface) {
+    let terrain_y = surface.sample_elevation(translation.x, translation.z);
+    translation.y = terrain_y + eye_height;
 }
 
 pub struct PlayerPlugin;
@@ -81,11 +87,15 @@ pub fn spawn_player(
     mut commands: Commands,
     scene: Res<PlayerSceneConfig>,
     carry_movement: Res<CarryMovementState>,
+    world_profile: Res<WorldProfile>,
+    world_gen_config: Res<WorldGenerationConfig>,
 ) {
+    let surface = PlanetSurface::new_from_profile(&world_profile, &world_gen_config);
+    let terrain_y = surface.sample_elevation(scene.spawn_x, scene.spawn_z);
     commands
         .spawn((
             Player,
-            Transform::from_xyz(scene.spawn_x, scene.eye_height, scene.spawn_z),
+            Transform::from_xyz(scene.spawn_x, terrain_y + scene.eye_height, scene.spawn_z),
             Visibility::default(),
             // leafwing tracks which actions are active on this entity.
             // The InputMap is attached separately by InputPlugin after spawn.
@@ -170,6 +180,8 @@ fn player_move(
     scene: Res<PlayerSceneConfig>,
     room_shell: Res<RoomShellCollision>,
     carry_movement: Res<CarryMovementState>,
+    world_profile: Res<WorldProfile>,
+    world_gen_config: Res<WorldGenerationConfig>,
     mut player_query: Query<
         (&ActionState<InputAction>, &mut Transform, &mut StaminaState),
         With<Player>,
@@ -183,7 +195,8 @@ fn player_move(
         return;
     };
 
-    enforce_eye_height(&mut transform.translation, scene.eye_height);
+    let surface = PlanetSurface::new_from_profile(&world_profile, &world_gen_config);
+    enforce_eye_height(&mut transform.translation, scene.eye_height, &surface);
 
     let input = action_state.clamped_axis_pair(&InputAction::Move);
 
@@ -243,7 +256,7 @@ fn player_move(
         transform.translation.z = proposed.z;
     }
 
-    enforce_eye_height(&mut transform.translation, scene.eye_height);
+    enforce_eye_height(&mut transform.translation, scene.eye_height, &surface);
 }
 
 #[cfg(test)]
@@ -268,8 +281,21 @@ mod tests {
 
     #[test]
     fn enforce_eye_height_overwrites_vertical_drift() {
+        let surface = PlanetSurface {
+            elevation_seed: 0,
+            base_y: 0.0,
+            amplitude: 0.0,
+            frequency: 1.0,
+            octaves: 1,
+            detail_weight: 0.0,
+            detail_seed: 0,
+            detail_frequency: 1.0,
+            detail_octaves: 1,
+            planet_surface_diameter: 10,
+            chunk_size_world_units: 10.0,
+        };
         let mut translation = Vec3::new(1.0, 9.0, -2.0);
-        enforce_eye_height(&mut translation, 1.7);
+        enforce_eye_height(&mut translation, 1.7, &surface);
         assert!((translation.y - 1.7).abs() < f32::EPSILON);
     }
 

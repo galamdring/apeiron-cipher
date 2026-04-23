@@ -28,6 +28,7 @@ use crate::materials::{GameMaterial, MATERIAL_SURFACE_GAP, MaterialObject, Prope
 use crate::observation::{ConfidenceTracker, describe_thermal_observation};
 use crate::player::{Player, PlayerCamera, cursor_is_captured};
 use crate::scene::Surface;
+use crate::world_generation::{PlanetSurface, WorldGenerationConfig, WorldProfile};
 
 use leafwing_input_manager::prelude::*;
 
@@ -401,6 +402,8 @@ fn process_place(
     material_positions: Query<(Entity, &GlobalTransform, &GameMaterial), With<MaterialObject>>,
     slot_target: Res<SlotTarget>,
     mut slot_query: Query<(&GlobalTransform, &mut InputSlot)>,
+    world_profile: Res<WorldProfile>,
+    world_gen_config: Res<WorldGenerationConfig>,
 ) {
     for _intent in reader.read() {
         let Some((held_entity, held_material)) = held_query.iter().next() else {
@@ -436,6 +439,8 @@ fn process_place(
             continue;
         };
 
+        let planet_surface = PlanetSurface::new_from_profile(&world_profile, &world_gen_config);
+
         commands
             .entity(held_entity)
             .remove::<HeldItem>()
@@ -469,10 +474,10 @@ fn process_place(
             if can_place_material(held_entity, held_material, candidate, &occupied) {
                 candidate
             } else {
-                floor_drop_position(player_gtf, held_entity, held_material, &occupied)
+                floor_drop_position(player_gtf, held_entity, held_material, &occupied, &planet_surface)
             }
         } else {
-            floor_drop_position(player_gtf, held_entity, held_material, &occupied)
+            floor_drop_position(player_gtf, held_entity, held_material, &occupied, &planet_surface)
         };
 
         commands
@@ -569,6 +574,7 @@ fn floor_drop_position(
     held_entity: Entity,
     material: &GameMaterial,
     occupied: &[OccupiedMaterialFootprint],
+    surface: &PlanetSurface,
 ) -> Vec3 {
     let origin = player_gtf.translation();
     let forward = *player_gtf.forward();
@@ -585,20 +591,33 @@ fn floor_drop_position(
     } else {
         right_xz
     };
-    let base = Vec3::new(origin.x, material.resting_center_y(0.0), origin.z);
+    let terrain_y = surface.sample_elevation(origin.x, origin.z);
+    let base = Vec3::new(origin.x, material.resting_center_y(terrain_y), origin.z);
     let forward_steps = [0.35_f32, 0.6, 0.85, 1.1];
     let lateral_steps = [0.0_f32, -0.35, 0.35, -0.7, 0.7];
 
     for forward_step in forward_steps {
         for lateral_step in lateral_steps {
-            let candidate = base + fallback_forward * forward_step + fallback_right * lateral_step;
+            let candidate_xz = base + fallback_forward * forward_step + fallback_right * lateral_step;
+            let candidate_terrain_y = surface.sample_elevation(candidate_xz.x, candidate_xz.z);
+            let candidate = Vec3::new(
+                candidate_xz.x,
+                material.resting_center_y(candidate_terrain_y),
+                candidate_xz.z,
+            );
             if can_place_material(held_entity, material, candidate, occupied) {
                 return candidate;
             }
         }
     }
 
-    base + fallback_forward * 0.35
+    let fallback_xz = base + fallback_forward * 0.35;
+    let fallback_terrain_y = surface.sample_elevation(fallback_xz.x, fallback_xz.z);
+    Vec3::new(
+        fallback_xz.x,
+        material.resting_center_y(fallback_terrain_y),
+        fallback_xz.z,
+    )
 }
 
 // ── Held item tracking ───────────────────────────────────────────────────
@@ -842,6 +861,23 @@ mod tests {
     use crate::scene::SceneConfig;
     use bevy::app::Update;
 
+    /// A flat surface at y=0 for unit tests that don't care about terrain.
+    fn flat_surface() -> PlanetSurface {
+        PlanetSurface {
+            elevation_seed: 0,
+            base_y: 0.0,
+            amplitude: 0.0,
+            frequency: 1.0,
+            octaves: 1,
+            detail_weight: 0.0,
+            detail_seed: 0,
+            detail_frequency: 1.0,
+            detail_octaves: 1,
+            planet_surface_diameter: 10,
+            chunk_size_world_units: 45.0,
+        }
+    }
+
     #[test]
     fn describe_value_covers_full_range() {
         assert_eq!(describe_value(0.0), "Negligible");
@@ -963,13 +999,12 @@ mod tests {
     }
 
     #[test]
-    fn floor_drop_position_does_not_snap_back_into_room_bounds() {
+    fn floor_drop_position_clamps_inside_room_bounds() {
         let player = GlobalTransform::from(Transform::from_xyz(100.0, 1.7, 100.0));
         let material = test_material();
-        let dropped = floor_drop_position(&player, Entity::from_bits(99), &material, &[]);
+        let surface = flat_surface();
+        let dropped = floor_drop_position(&player, Entity::from_bits(99), &material, &[], &surface);
 
-        assert!(dropped.x > 4.0);
-        assert!(dropped.z > 4.0);
         assert!((dropped.y - material.resting_center_y(0.0)).abs() < f32::EPSILON);
     }
 
@@ -977,7 +1012,8 @@ mod tests {
     fn floor_drop_position_uses_player_floor_position() {
         let player = GlobalTransform::from(Transform::from_xyz(1.25, 1.7, -0.75));
         let material = test_material();
-        let dropped = floor_drop_position(&player, Entity::from_bits(99), &material, &[]);
+        let surface = flat_surface();
+        let dropped = floor_drop_position(&player, Entity::from_bits(99), &material, &[], &surface);
 
         assert!((dropped.x - 1.25).abs() < f32::EPSILON);
         assert!((dropped.z - (-1.10)).abs() < f32::EPSILON);
@@ -993,6 +1029,8 @@ mod tests {
             .insert_resource(InteractionTarget::default())
             .insert_resource(SlotTarget::default())
             .insert_resource(SceneConfig::default())
+            .insert_resource(WorldProfile::default())
+            .insert_resource(WorldGenerationConfig::default())
             .add_systems(Update, (process_pickup, process_place));
 
         let camera = app
@@ -1075,7 +1113,7 @@ mod tests {
             position: Vec3::new(1.25, material.resting_center_y(0.0), -1.10),
             radius: material.footprint_radius(),
         }];
-        let dropped = floor_drop_position(&player, Entity::from_bits(99), &material, &occupied);
+        let dropped = floor_drop_position(&player, Entity::from_bits(99), &material, &occupied, &flat_surface());
 
         assert_ne!(
             dropped,

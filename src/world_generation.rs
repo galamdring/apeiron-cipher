@@ -439,25 +439,57 @@ impl PlanetSurface {
     /// Wrap a world-space coordinate to the canonical torus range.
     ///
     /// The planet surface spans `[0, diameter * chunk_size)` on both axes.
-    /// Positions outside that range are wrapped using Euclidean modulo so the
-    /// noise field is continuous across the seam.
+    /// Positions outside that range are wrapped using Euclidean modulo.
+    ///
+    /// **Note:** This is no longer used by `sample_elevation` (which now uses
+    /// `abs()` folding for seam continuity) but is retained for other torus
+    /// systems that may need canonical wrapping (e.g. chunk activation).
+    #[allow(dead_code)]
     fn wrap_world_coord(&self, v: f32) -> f32 {
         let period = self.planet_surface_diameter as f32 * self.chunk_size_world_units;
         ((v % period) + period) % period
     }
 
+    /// Fold a world-space coordinate for seamless elevation sampling.
+    ///
+    /// First wraps to the canonical torus range `[0, period)` via Euclidean
+    /// modulo, then mirrors around the midpoint so the noise field is symmetric
+    /// at the torus seam (coordinate 0 / period). The result is always in
+    /// `[0, period/2]`, which keeps lattice integers small and guarantees C0
+    /// continuity at the seam boundary.
+    fn fold_elevation_coord(&self, v: f32) -> f32 {
+        let period = self.planet_surface_diameter as f32 * self.chunk_size_world_units;
+        let wrapped = ((v % period) + period) % period; // [0, period)
+        let half = period * 0.5;
+        // Mirror: values past the midpoint fold back.
+        if wrapped > half {
+            period - wrapped
+        } else {
+            wrapped
+        }
+    }
+
     /// Sample multi-octave elevation at an arbitrary world-space XZ.
     ///
-    /// Canonical torus wrapping is applied **before** any noise sampling so
-    /// callers are not required to pre-wrap their coordinates.
+    /// Coordinates are folded via [`fold_elevation_coord`] before noise
+    /// sampling.  This wraps to the torus range and then mirrors around the
+    /// midpoint, guaranteeing C0 continuity at the torus seam while keeping
+    /// lattice integers within safe i32 bounds.  The underlying hash-based
+    /// noise is **not** periodic, so a plain Euclidean-mod wrap produced a
+    /// hard elevation discontinuity at the seam.  Folding eliminates the
+    /// discontinuity at the cost of mirrored terrain shape near the seam
+    /// edges — deposits, biomes, and flora still use real coordinates so
+    /// visual symmetry is masked.  If a different seam strategy is needed
+    /// later (e.g. bridge chunks or truly periodic noise), only this function
+    /// and `compute_normal` need to change.
     ///
     /// Each octave doubles the frequency and halves the amplitude (standard fBm
     /// with lacunarity 2, persistence 0.5). The base `continuous_value_field_01`
     /// returns values in `[0, 1]`, so we center each sample around 0.5 to get
     /// positive and negative deviations from `base_y`.
     pub(crate) fn sample_elevation(&self, x: f32, z: f32) -> f32 {
-        let x = self.wrap_world_coord(x);
-        let z = self.wrap_world_coord(z);
+        let x = self.fold_elevation_coord(x);
+        let z = self.fold_elevation_coord(z);
         let mut total = 0.0_f32;
         let mut amp = 1.0_f32;
         let mut freq = self.frequency;

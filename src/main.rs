@@ -10,6 +10,7 @@ use bevy::prelude::*;
 mod carry;
 mod carry_feedback;
 mod combination;
+mod debug_overlay;
 mod fabricator;
 mod heat;
 mod input;
@@ -63,5 +64,7 @@ fn main() {
         .add_plugins(journal::JournalPlugin)
         // World generation: deterministic planet/chunk identity foundation for exterior systems.
         .add_plugins(world_generation::WorldGenerationPlugin)
+        // Debug: terrain diagnostic overlay (temporary — remove before shipping).
+        .add_plugins(debug_overlay::DebugOverlayPlugin)
         .run();
 }
