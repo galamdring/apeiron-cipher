@@ -269,7 +269,7 @@ fn update_active_chunk_neighborhood(
 ///
 /// That last case is why floor matters. Truncation would incorrectly map
 /// slightly-negative positions back to chunk `0`.
-pub(crate) fn world_position_to_chunk_coord(
+fn world_position_to_chunk_coord(
     position_xz: PositionXZ,
     chunk_size_world_units: f32,
 ) -> ChunkCoord {
@@ -304,7 +304,7 @@ pub(crate) fn chunk_origin_xz(chunk_coord: ChunkCoord, chunk_size_world_units: f
 ///
 /// The nested loop order is stable, so any later story that iterates this list
 /// gets the same ordering every run.
-pub(crate) fn active_chunk_neighborhood(center_chunk: ChunkCoord, radius: i32) -> Vec<ChunkCoord> {
+fn active_chunk_neighborhood(center_chunk: ChunkCoord, radius: i32) -> Vec<ChunkCoord> {
     let mut chunks = Vec::new();
 
     for dz in -radius..=radius {

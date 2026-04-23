@@ -59,7 +59,7 @@ impl Plugin for ExteriorGenerationPlugin {
 /// - how likely it is relative to sibling deposit definitions
 /// - how large it can appear
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub(crate) struct SurfaceMineralDepositDefinition {
+struct SurfaceMineralDepositDefinition {
     pub key: String,
     pub material_key: String,
     pub selection_weight: f32,
@@ -79,7 +79,7 @@ pub(crate) struct SurfaceMineralDepositDefinition {
 /// threshold here because they are part of "what this exterior object family
 /// looks like in the world" rather than generic world foundation config.
 #[derive(Clone, Debug, PartialEq, Resource, Serialize, Deserialize)]
-pub(crate) struct SurfaceMineralDepositCatalog {
+struct SurfaceMineralDepositCatalog {
     #[serde(default = "default_site_spacing_world_units")]
     pub site_spacing_world_units: f32,
     #[serde(default = "default_site_density_field_scale_world_units")]
@@ -175,7 +175,7 @@ fn default_surface_mineral_deposits() -> Vec<SurfaceMineralDepositDefinition> {
 /// untouched chunk-baseline object and should no longer be managed by chunk
 /// loading/unloading rules.
 #[derive(Component, Clone, Debug, PartialEq, Eq)]
-pub(crate) struct GeneratedExteriorObject {
+struct GeneratedExteriorObject {
     pub home_chunk: ChunkCoord,
 }
 
@@ -187,7 +187,7 @@ pub(crate) struct GeneratedExteriorObject {
 /// this exterior-specific role instead of pretending they are just anonymous
 /// loose material objects.
 #[derive(Component, Clone, Debug, PartialEq, Eq)]
-pub(crate) struct SurfaceMineralDeposit {
+struct SurfaceMineralDeposit {
     pub definition_key: String,
 }
 
@@ -197,7 +197,7 @@ pub(crate) struct SurfaceMineralDeposit {
 /// above them so the world can say "this whole Ferrite patch is one deposit"
 /// instead of pretending the individual loose pieces are unrelated.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Component)]
-pub(crate) struct GeneratedDepositSiteId {
+struct GeneratedDepositSiteId {
     pub planet_seed: u64,
     pub chunk_coord: ChunkCoord,
     pub deposit_kind_key: String,
@@ -207,7 +207,7 @@ pub(crate) struct GeneratedDepositSiteId {
 
 /// Marker connecting a generated child mineral back to its parent deposit site.
 #[derive(Component, Clone, Debug, PartialEq, Eq)]
-pub(crate) struct DepositSiteMember {
+struct DepositSiteMember {
     pub site_id: GeneratedDepositSiteId,
     pub local_child_index: u32,
 }
@@ -246,7 +246,7 @@ struct GeneratedSurfaceMineralDepositSite {
 
 /// Active chunk baseline entities currently spawned into the world.
 #[derive(Resource, Default)]
-pub(crate) struct ActiveExteriorChunkSpawns {
+struct ActiveExteriorChunkSpawns {
     pub spawned_entities_by_chunk: HashMap<ChunkCoord, Vec<Entity>>,
 }
 

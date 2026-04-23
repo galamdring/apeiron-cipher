@@ -36,7 +36,7 @@ const PLAYER_COLLISION_RADIUS: f32 = 0.2;
 /// This is intentionally enough to make weight feel physical without pretending
 /// we already have the final progression system.
 #[derive(Component, Clone, Copy, Debug, PartialEq)]
-pub(crate) struct StaminaState {
+struct StaminaState {
     pub current: f32,
     pub max: f32,
 }

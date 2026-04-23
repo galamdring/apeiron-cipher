@@ -52,7 +52,7 @@ impl ConfidenceLevel {
     }
 }
 
-pub(crate) fn describe_thermal_behavior(value: f32) -> &'static str {
+fn describe_thermal_behavior(value: f32) -> &'static str {
     if value < 0.25 {
         "soften quickly under heat"
     } else if value < 0.5 {
