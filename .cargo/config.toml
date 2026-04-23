@@ -1,0 +1,6 @@
+[build]
+# Shared build cache across all worktrees of this repo.
+# Keeps compiled Bevy deps from being rebuilt from scratch every time you
+# switch worktrees. The path lives outside any worktree so it is never
+# accidentally staged or committed.
+target-dir = "/Users/lmckechn/projects/opensky-target"

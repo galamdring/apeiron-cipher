@@ -1,10 +1,14 @@
 import axios from "axios";
 
 export function redirectToGitHubLogin(config) {
+  // "repo" — full repo access (issues, labels, PRs).
+  // "read:user user:email" — OIDC-compatible identity claims so the backend
+  // (n8n / orchestrator) can use GitHub as an OIDC provider and verify the
+  // user's identity without a separate IdP.
   const params = new URLSearchParams({
     client_id: config.githubClientId,
     redirect_uri: config.authCallbackUrl,
-    scope: "repo",
+    scope: "repo read:user user:email",
   });
   window.location.href = `https://github.com/login/oauth/authorize?${params}`;
 }

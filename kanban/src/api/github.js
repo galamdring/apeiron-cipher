@@ -1,13 +1,32 @@
 import axios from "axios";
+import { useAuthStore } from "../store/auth";
+
+// GitHub returns 401 for expired / revoked tokens and 403 for "Bad credentials"
+// or insufficient scope. Both mean the session is unusable.
+function isCredentialError(status) {
+  return status === 401 || status === 403;
+}
 
 function client(token) {
-  return axios.create({
+  const instance = axios.create({
     baseURL: "https://api.github.com",
     headers: {
       Authorization: token ? `Bearer ${token}` : undefined,
       Accept: "application/vnd.github+json",
     },
   });
+
+  instance.interceptors.response.use(
+    (response) => response,
+    (error) => {
+      if (error.response && isCredentialError(error.response.status)) {
+        useAuthStore.getState().signOut();
+      }
+      return Promise.reject(error);
+    }
+  );
+
+  return instance;
 }
 
 export async function fetchAllIssues(owner, repo, token) {
