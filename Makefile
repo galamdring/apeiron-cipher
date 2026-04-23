@@ -1,4 +1,4 @@
-.PHONY: build test lint fmt-check fmt run check clean install-hooks
+.PHONY: build test lint fmt-check fmt run check clean install-hooks coverage coverage-html
 
 build:
 	cargo build
@@ -27,3 +27,9 @@ install-hooks:
 	cp hooks/pre-commit .git/hooks/pre-commit
 	chmod +x .git/hooks/pre-commit
 	@echo "Pre-commit hook installed."
+
+coverage:
+	cargo llvm-cov --summary-only
+
+coverage-html:
+	cargo llvm-cov --html --open

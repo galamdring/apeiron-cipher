@@ -18,3 +18,10 @@ chunk_size_world_units = 45.0
 #
 # Radius 1 means a 3x3 block of chunks centered on the player's chunk.
 active_chunk_radius = 1
+
+# Side length (in world units) of 3D building cells used for spatial overlap
+# detection when merging player additions from different sources.
+#
+# Two player-added objects in the same cell are considered a conflict during
+# delta merging. Smaller values = finer granularity, larger = more forgiving.
+building_cell_size = 1.0
