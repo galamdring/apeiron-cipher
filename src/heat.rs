@@ -86,9 +86,14 @@ fn update_exposure_elapsed_for_material(
     )
 }
 
-/// Prevents a single material entity from incrementing confidence more than once.
+/// Prevents repeated confidence increments while the same continuous heat test is
+/// still in progress.
+///
+/// This is intentionally per-exposure-cycle rather than per-entity lifetime. If
+/// the same physical sample cools back down and the player heats it again, that
+/// counts as another observation and should strengthen confidence.
 #[derive(Component)]
-struct ThermalObservationRecorded;
+struct ThermalObservationRecordedThisCycle;
 
 // ── Spawn ───────────────────────────────────────────────────────────────
 
@@ -267,15 +272,21 @@ fn reveal_thermal_property(
             Entity,
             &HeatExposure,
             &mut GameMaterial,
-            Option<&ThermalObservationRecorded>,
+            Option<&ThermalObservationRecordedThisCycle>,
         ),
         With<MaterialObject>,
     >,
 ) {
     let reveal_secs = cfg.heat_source.reveal_seconds;
+    let mut revealed_seeds = Vec::new();
 
     for (entity, exp, mut mat, recorded) in &mut material_query {
         if exp.elapsed < reveal_secs {
+            if recorded.is_some() {
+                commands
+                    .entity(entity)
+                    .remove::<ThermalObservationRecordedThisCycle>();
+            }
             continue;
         }
 
@@ -286,10 +297,13 @@ fn reveal_thermal_property(
                 mat.name, exp.elapsed
             );
         }
+        revealed_seeds.push(mat.seed);
 
         if recorded.is_none() {
             let count = tracker.record(mat.seed, "thermal_resistance");
-            commands.entity(entity).insert(ThermalObservationRecorded);
+            commands
+                .entity(entity)
+                .insert(ThermalObservationRecordedThisCycle);
             journal_writer.write(RecordThermalObservation {
                 seed: mat.seed,
                 name: mat.name.clone(),
@@ -302,6 +316,16 @@ fn reveal_thermal_property(
             );
         }
     }
+
+    if !revealed_seeds.is_empty() {
+        for (_entity, _exp, mut mat, _recorded) in &mut material_query {
+            if revealed_seeds.contains(&mat.seed)
+                && mat.thermal_resistance.visibility == PropertyVisibility::Hidden
+            {
+                mat.thermal_resistance.visibility = PropertyVisibility::Revealed;
+            }
+        }
+    }
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────
@@ -309,6 +333,35 @@ fn reveal_thermal_property(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::materials::MaterialProperty;
+
+    fn test_material(seed: u64) -> GameMaterial {
+        GameMaterial {
+            name: format!("TestMat-{seed}"),
+            seed,
+            color: [0.5, 0.5, 0.5],
+            density: MaterialProperty {
+                value: 0.5,
+                visibility: PropertyVisibility::Observable,
+            },
+            thermal_resistance: MaterialProperty {
+                value: 0.65,
+                visibility: PropertyVisibility::Hidden,
+            },
+            reactivity: MaterialProperty {
+                value: 0.35,
+                visibility: PropertyVisibility::Hidden,
+            },
+            conductivity: MaterialProperty {
+                value: 0.4,
+                visibility: PropertyVisibility::Hidden,
+            },
+            toxicity: MaterialProperty {
+                value: 0.05,
+                visibility: PropertyVisibility::Hidden,
+            },
+        }
+    }
 
     #[test]
     fn reaction_intensity_zero_at_no_exposure() {
@@ -395,5 +448,97 @@ mod tests {
         let s = reaction_scale(0.0, 0.1);
         assert!((s.x - 1.0).abs() < f32::EPSILON);
         assert!((s.y - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn thermal_observation_repeats_after_cooling_cycle() {
+        let mut app = App::new();
+        app.add_message::<RecordThermalObservation>();
+        app.insert_resource(SceneConfig::default());
+        app.insert_resource(ConfidenceTracker::default());
+        app.add_systems(Update, reveal_thermal_property);
+
+        let entity = app
+            .world_mut()
+            .spawn((
+                MaterialObject,
+                test_material(7),
+                HeatExposure {
+                    elapsed: 5.0,
+                    in_zone: true,
+                },
+            ))
+            .id();
+
+        app.update();
+        assert_eq!(
+            app.world()
+                .resource::<ConfidenceTracker>()
+                .count(7, "thermal_resistance"),
+            1
+        );
+
+        app.world_mut()
+            .entity_mut(entity)
+            .get_mut::<HeatExposure>()
+            .unwrap()
+            .elapsed = 0.0;
+        app.update();
+
+        app.world_mut()
+            .entity_mut(entity)
+            .get_mut::<HeatExposure>()
+            .unwrap()
+            .elapsed = 5.0;
+        app.update();
+
+        assert_eq!(
+            app.world()
+                .resource::<ConfidenceTracker>()
+                .count(7, "thermal_resistance"),
+            2
+        );
+    }
+
+    #[test]
+    fn revealing_one_entity_propagates_visibility_to_same_seed() {
+        let mut app = App::new();
+        app.add_message::<RecordThermalObservation>();
+        app.insert_resource(SceneConfig::default());
+        app.insert_resource(ConfidenceTracker::default());
+        app.add_systems(Update, reveal_thermal_property);
+
+        app.world_mut().spawn((
+            MaterialObject,
+            test_material(99),
+            HeatExposure {
+                elapsed: 5.0,
+                in_zone: true,
+            },
+        ));
+
+        let hidden_peer = app
+            .world_mut()
+            .spawn((
+                MaterialObject,
+                test_material(99),
+                HeatExposure {
+                    elapsed: 0.0,
+                    in_zone: false,
+                },
+            ))
+            .id();
+
+        app.update();
+
+        let peer = app
+            .world()
+            .entity(hidden_peer)
+            .get::<GameMaterial>()
+            .unwrap();
+        assert_eq!(
+            peer.thermal_resistance.visibility,
+            PropertyVisibility::Revealed
+        );
     }
 }

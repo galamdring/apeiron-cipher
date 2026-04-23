@@ -24,7 +24,7 @@ use crate::carry::{
     CarryConfig, CarryState, CarryStrength, can_stash_material, record_weight_observation,
     stash_entity_into_carry,
 };
-use crate::fabricator::{ActivateIntent, InputSlot};
+use crate::fabricator::{ActivateIntent, InputSlot, OutputSlot};
 use crate::input::InputAction;
 use crate::journal::{RecordEncounter, RecordWeightObservation};
 use crate::materials::{GameMaterial, MATERIAL_SURFACE_GAP, MaterialObject, PropertyVisibility};
@@ -320,6 +320,8 @@ fn process_pickup(
     held_query: Query<(Entity, &GameMaterial), With<HeldItem>>,
     material_query: Query<&GameMaterial, With<MaterialObject>>,
     camera_query: Query<Entity, With<PlayerCamera>>,
+    mut input_slots: Query<&mut InputSlot>,
+    mut output_slots: Query<&mut OutputSlot>,
 ) {
     for _intent in reader.read() {
         let Some(target_entity) = target.entity else {
@@ -359,6 +361,17 @@ fn process_pickup(
             &mut journal_writer,
         );
 
+        // Fabricator slot state must follow the actual object in the world.
+        // If the player picks a material up off a slot or output pad, clear the
+        // slot's stored entity reference immediately so later fabrication only
+        // consumes what is physically still seated in the machine.
+        for mut slot in &mut input_slots {
+            clear_input_slot_reference(&mut slot, target_entity);
+        }
+        for mut output in &mut output_slots {
+            clear_output_slot_reference(&mut output, target_entity);
+        }
+
         commands
             .entity(target_entity)
             .insert(HeldItem)
@@ -377,6 +390,18 @@ struct OccupiedMaterialFootprint {
     entity: Entity,
     position: Vec3,
     radius: f32,
+}
+
+fn clear_input_slot_reference(slot: &mut InputSlot, entity: Entity) {
+    if slot.material == Some(entity) {
+        slot.material = None;
+    }
+}
+
+fn clear_output_slot_reference(slot: &mut OutputSlot, entity: Entity) {
+    if slot.material == Some(entity) {
+        slot.material = None;
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -806,9 +831,14 @@ fn append_prop(
 }
 
 fn append_thermal_prop(lines: &mut Vec<String>, mat: &GameMaterial, tracker: &ConfidenceTracker) {
+    let seed_has_thermal_knowledge = tracker.count(mat.seed, "thermal_resistance") > 0;
     match mat.thermal_resistance.visibility {
-        PropertyVisibility::Hidden => lines.push("Heat response: ???".to_string()),
-        PropertyVisibility::Observable | PropertyVisibility::Revealed => {
+        PropertyVisibility::Hidden if !seed_has_thermal_knowledge => {
+            lines.push("Heat response: ???".to_string())
+        }
+        PropertyVisibility::Hidden
+        | PropertyVisibility::Observable
+        | PropertyVisibility::Revealed => {
             let confidence = tracker.level(mat.seed, "thermal_resistance");
             let description =
                 describe_thermal_observation(mat.thermal_resistance.value, confidence);
@@ -915,6 +945,17 @@ mod tests {
         tracker.record(mat.seed, "thermal_resistance");
         let confident = build_examine_text(&mat, &tracker);
         assert!(confident.contains("Heat response: Reliably hold together under heat"));
+    }
+
+    #[test]
+    fn examine_text_uses_seed_level_thermal_knowledge_even_if_entity_is_hidden() {
+        let mat = test_material();
+        let mut tracker = ConfidenceTracker::default();
+        tracker.record(mat.seed, "thermal_resistance");
+
+        let text = build_examine_text(&mat, &tracker);
+        assert!(!text.contains("Heat response: ???"));
+        assert!(text.contains("Heat response: Seemed to hold together under heat"));
     }
 
     #[test]
@@ -1041,5 +1082,45 @@ mod tests {
             dropped,
             Vec3::new(1.25, material.resting_center_y(0.0), -1.10)
         );
+    }
+
+    #[test]
+    fn clearing_input_slot_reference_only_removes_matching_entity() {
+        let target = Entity::from_bits(7);
+        let mut slot = InputSlot {
+            index: 0,
+            material: Some(target),
+            top_y: 1.0,
+        };
+        clear_input_slot_reference(&mut slot, target);
+        assert_eq!(slot.material, None);
+
+        let other = Entity::from_bits(8);
+        let mut slot = InputSlot {
+            index: 1,
+            material: Some(other),
+            top_y: 1.0,
+        };
+        clear_input_slot_reference(&mut slot, target);
+        assert_eq!(slot.material, Some(other));
+    }
+
+    #[test]
+    fn clearing_output_slot_reference_only_removes_matching_entity() {
+        let target = Entity::from_bits(11);
+        let mut slot = OutputSlot {
+            material: Some(target),
+            top_y: 1.0,
+        };
+        clear_output_slot_reference(&mut slot, target);
+        assert_eq!(slot.material, None);
+
+        let other = Entity::from_bits(12);
+        let mut slot = OutputSlot {
+            material: Some(other),
+            top_y: 1.0,
+        };
+        clear_output_slot_reference(&mut slot, target);
+        assert_eq!(slot.material, Some(other));
     }
 }

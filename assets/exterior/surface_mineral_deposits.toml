@@ -5,20 +5,23 @@
 # structure so later stories do not have to reverse-engineer what "the first
 # exterior thing" was meant to be.
 
-# Distance between deterministic candidate cells inside each chunk.
-candidate_spacing_world_units = 6.0
+# Distance between deterministic deposit-site candidate cells inside each chunk.
+site_spacing_world_units = 8.5
 
-# World-space scale for the continuous density field.
+# World-space scale for the continuous site-density field.
 #
 # Larger values make neighboring areas feel more similar. Smaller values make
 # the field change more quickly across the world.
-density_field_scale_world_units = 18.0
+site_density_field_scale_world_units = 24.0
 
-# Minimum field value required for a candidate cell to become a visible deposit.
-spawn_threshold = 0.62
+# Minimum field value required for a site candidate to become a visible deposit.
+site_spawn_threshold = 0.42
 
-# Fraction of candidate spacing the deposit may jitter away from the cell center.
-jitter_fraction = 0.34
+# Fraction of site spacing the deposit center may jitter away from the cell center.
+site_jitter_fraction = 0.28
+
+# Minimum air gap between separate deposit sites once their radii are considered.
+site_min_gap_world_units = 1.5
 
 [[deposits]]
 key = "ferrite_surface_deposit"
@@ -26,6 +29,11 @@ material_key = "Ferrite"
 selection_weight = 1.0
 scale_min = 0.9
 scale_max = 1.2
+deposit_radius_min = 2.4
+deposit_radius_max = 3.8
+child_count_min = 7
+child_count_max = 11
+cluster_compactness = 0.75
 
 [[deposits]]
 key = "silite_surface_deposit"
@@ -33,6 +41,11 @@ material_key = "Silite"
 selection_weight = 0.8
 scale_min = 0.85
 scale_max = 1.15
+deposit_radius_min = 2.0
+deposit_radius_max = 3.2
+child_count_min = 6
+child_count_max = 9
+cluster_compactness = 0.68
 
 [[deposits]]
 key = "prismate_surface_deposit"
@@ -40,3 +53,8 @@ material_key = "Prismate"
 selection_weight = 0.45
 scale_min = 0.8
 scale_max = 1.05
+deposit_radius_min = 1.7
+deposit_radius_max = 2.6
+child_count_min = 4
+child_count_max = 7
+cluster_compactness = 0.82
