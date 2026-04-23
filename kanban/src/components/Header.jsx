@@ -56,9 +56,35 @@ const s = {
     marginLeft: "auto",
   },
   userName: { fontSize: 13, color: "#e6edf3" },
+  tabStrip: {
+    display: "flex",
+    gap: 0,
+    marginLeft: 16,
+    borderRadius: 6,
+    overflow: "hidden",
+    border: "1px solid #30363d",
+  },
+  tab: {
+    padding: "5px 14px",
+    fontSize: 13,
+    fontWeight: 500,
+    background: "#0d1117",
+    color: "#8b949e",
+    border: "none",
+    cursor: "pointer",
+    borderRight: "1px solid #30363d",
+    transition: "all 0.15s",
+  },
+  tabActive: {
+    background: "#1f6feb",
+    color: "#fff",
+  },
+  tabLast: {
+    borderRight: "none",
+  },
 };
 
-export default function Header({ repo, onRepoChange }) {
+export default function Header({ repo, onRepoChange, view, onViewChange }) {
   const { setIssues, setLoading, setError, loading, error } = useIssueStore();
   const { user, signOut } = useAuthStore();
 
@@ -123,6 +149,21 @@ export default function Header({ repo, onRepoChange }) {
           <option key={r} value={r}>{r}</option>
         ))}
       </select>
+
+      <div style={s.tabStrip}>
+        <button
+          style={{ ...s.tab, ...(view === "board" ? s.tabActive : {}) }}
+          onClick={() => onViewChange("board")}
+        >
+          Board
+        </button>
+        <button
+          style={{ ...s.tab, ...s.tabLast, ...(view === "backlog" ? s.tabActive : {}) }}
+          onClick={() => onViewChange("backlog")}
+        >
+          Backlog
+        </button>
+      </div>
 
       {reposError && <span style={s.error}>{reposError}</span>}
       {error && <span style={s.error}>{error}</span>}
