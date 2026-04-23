@@ -193,6 +193,12 @@ pub struct PlayerSceneConfig {
     pub spawn_z: f32,
     #[serde(default = "default_move_speed")]
     pub move_speed: f32,
+    /// Max height the player can step up onto a surface (meters).
+    #[serde(default = "default_step_up_tolerance")]
+    pub step_up_tolerance: f32,
+    /// Height above feet at which dropped items search for a surface (meters).
+    #[serde(default = "default_drop_surface_reach")]
+    pub drop_surface_reach: f32,
 }
 
 fn default_eye_height() -> f32 {
@@ -204,6 +210,12 @@ fn default_spawn_z() -> f32 {
 fn default_move_speed() -> f32 {
     5.0
 }
+fn default_step_up_tolerance() -> f32 {
+    0.5
+}
+fn default_drop_surface_reach() -> f32 {
+    1.5
+}
 
 impl Default for PlayerSceneConfig {
     fn default() -> Self {
@@ -212,6 +224,8 @@ impl Default for PlayerSceneConfig {
             spawn_x: 0.0,
             spawn_z: default_spawn_z(),
             move_speed: default_move_speed(),
+            step_up_tolerance: default_step_up_tolerance(),
+            drop_surface_reach: default_drop_surface_reach(),
         }
     }
 }
@@ -613,11 +627,21 @@ fn setup_scene(
     room: Res<RoomConfig>,
     lighting: Res<LightingConfig>,
     fur: Res<FurnitureConfig>,
+    world_profile: Res<crate::world_generation::WorldProfile>,
+    world_gen_config: Res<crate::world_generation::WorldGenerationConfig>,
+    mut surface_registry: ResMut<crate::surface::SurfaceOverrideRegistry>,
 ) {
     let hx = room.half_extent_x;
     let hz = room.half_extent_z;
     let h = room.wall_height;
     let t = room.wall_thickness;
+
+    // Compute the floor Y from terrain elevation at the room center (0, 0).
+    let surface = crate::world_generation::PlanetSurface::new_from_profile(
+        &world_profile,
+        &world_gen_config,
+    );
+    let floor_y = surface.sample_elevation(0.0, 0.0);
 
     // Room shell materials — darker than furniture so interactive materials read clearly.
     let floor_mat = materials.add(StandardMaterial {
@@ -636,22 +660,34 @@ fn setup_scene(
         ..default()
     });
 
-    // Floor — XZ plane, centered.
-    commands.spawn((
+    // Floor — XZ plane, centered at terrain height.
+    let floor_entity = commands.spawn((
         Mesh3d(meshes.add(Plane3d::default().mesh().size(hx * 2.0, hz * 2.0))),
         MeshMaterial3d(floor_mat),
-    ));
+        Transform::from_xyz(0.0, floor_y, 0.0),
+    )).id();
+
+    // Register the room floor as a surface override so the player and
+    // dropped items stand on it rather than the terrain underneath.
+    surface_registry.register(crate::surface::SurfaceOverride {
+        owner: floor_entity,
+        min_x: -hx,
+        max_x: hx,
+        min_z: -hz,
+        max_z: hz,
+        surface_y: floor_y,
+    });
 
     // Ceiling — same plane, flipped so normals face down into the room.
     commands.spawn((
         Mesh3d(meshes.add(Plane3d::default().mesh().size(hx * 2.0, hz * 2.0))),
         MeshMaterial3d(ceiling_mat),
-        Transform::from_xyz(0.0, h, 0.0)
+        Transform::from_xyz(0.0, floor_y + h, 0.0)
             .with_rotation(Quat::from_rotation_x(core::f32::consts::PI)),
     ));
 
     // Four walls (thin boxes along the inner perimeter).
-    let wall_y = h * 0.5;
+    let wall_y = floor_y + h * 0.5;
     let west_east_depth = hz * 2.0 + t * 2.0;
     let north_south_width = hx * 2.0 + t * 2.0;
     let doorway_half_width = DOORWAY_WIDTH * 0.5;
@@ -695,7 +731,7 @@ fn setup_scene(
         MeshMaterial3d(wall_mat.clone()),
         Transform::from_xyz(
             0.0,
-            DOORWAY_HEIGHT + lintel_height * 0.5,
+            floor_y + DOORWAY_HEIGHT + lintel_height * 0.5,
             south_wall_center_z(hz, t),
         ),
     ));
@@ -748,7 +784,7 @@ fn setup_scene(
             fur.workbench_depth,
         ))),
         MeshMaterial3d(workbench_mat),
-        Transform::from_xyz(fur.workbench_x, wb_half_y, fur.workbench_z),
+        Transform::from_xyz(fur.workbench_x, floor_y + wb_half_y, fur.workbench_z),
     ));
     // Placement plane at the true top of the workbench.
     commands.spawn((
@@ -756,7 +792,7 @@ fn setup_scene(
             half_extent_x: fur.workbench_width * 0.5,
             half_extent_z: fur.workbench_depth * 0.5,
         },
-        Transform::from_xyz(fur.workbench_x, fur.workbench_height, fur.workbench_z),
+        Transform::from_xyz(fur.workbench_x, floor_y + fur.workbench_height, fur.workbench_z),
     ));
 
     // Shelf surfaces — warm neutral, clearly not wall paint.
@@ -774,7 +810,7 @@ fn setup_scene(
         commands.spawn((
             Mesh3d(meshes.add(Cuboid::new(shelf_w, shelf_h, shelf_d))),
             MeshMaterial3d(shelf_mat.clone()),
-            Transform::from_xyz(shelf.x, shelf.y - shelf_half_y, shelf.z),
+            Transform::from_xyz(shelf.x, floor_y + shelf.y - shelf_half_y, shelf.z),
         ));
         // Placement plane at the true top of each shelf.
         commands.spawn((
@@ -783,7 +819,7 @@ fn setup_scene(
                 half_extent_z: shelf_d * 0.5,
             },
             Shelf,
-            Transform::from_xyz(shelf.x, shelf.y, shelf.z),
+            Transform::from_xyz(shelf.x, floor_y + shelf.y, shelf.z),
         ));
     }
 
@@ -794,7 +830,8 @@ fn setup_scene(
             shadows_enabled: lighting.directional_shadows,
             ..default()
         },
-        Transform::from_xyz(6.0, 9.0, 4.0).looking_at(Vec3::new(0.0, 0.6, 0.0), Vec3::Y),
+        Transform::from_xyz(6.0, floor_y + 9.0, 4.0)
+            .looking_at(Vec3::new(0.0, floor_y + 0.6, 0.0), Vec3::Y),
     ));
 
     commands.spawn(AmbientLight {
@@ -803,8 +840,8 @@ fn setup_scene(
     });
 
     // Focused spot over the workbench — contrast for future material placement.
-    let spot_y = lighting.spot_height;
-    let target_y = lighting.spot_target_y;
+    let spot_y = floor_y + lighting.spot_height;
+    let target_y = floor_y + lighting.spot_target_y;
     commands.spawn((
         SpotLight {
             color: Color::srgb(1.0, 0.97, 0.92),

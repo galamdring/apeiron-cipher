@@ -14,6 +14,10 @@ eye_height = 1.7
 spawn_x = 0.0
 spawn_z = 2.0
 move_speed = 5.0
+# Max height the player can step up onto a surface (meters).
+step_up_tolerance = 0.5
+# Height above feet at which dropped items search for a surface (meters).
+drop_surface_reach = 1.5
 
 [lighting]
 ambient_brightness = 14.0

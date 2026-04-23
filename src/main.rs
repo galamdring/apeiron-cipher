@@ -20,6 +20,7 @@ mod materials;
 mod observation;
 mod player;
 mod scene;
+mod surface;
 mod world_generation;
 
 fn main() {
@@ -38,6 +39,8 @@ fn main() {
         )
         // Scene setup: enclosed room, furniture markers, lighting (see scene.toml).
         .add_plugins(scene::ScenePlugin)
+        // Surface override registry: walkable surfaces layered on terrain.
+        .init_resource::<surface::SurfaceOverrideRegistry>()
         // Player: entity hierarchy with camera. Movement comes in Story 1.3.
         .add_plugins(player::PlayerPlugin)
         // Carry: config + player carry state foundation for Epic 4.

@@ -505,6 +505,7 @@ fn sync_active_exterior_chunks(
     mut spawned_chunks: ResMut<ActiveExteriorChunkSpawns>,
     removal_deltas: Res<ChunkRemovalDeltas>,
     player_additions: Res<ChunkPlayerAdditions>,
+    surface_registry: Res<crate::surface::SurfaceOverrideRegistry>,
 ) {
     let active_chunk_set: HashSet<ChunkCoord> = active_chunks.chunks.iter().copied().collect();
     let inactive_chunks: Vec<ChunkCoord> = spawned_chunks
@@ -569,6 +570,14 @@ fn sync_active_exterior_chunks(
             baseline_placements,
             removal_deltas.removed_by_chunk.get(&chunk),
         );
+
+        // UAT2: suppress deposits that fall inside a surface override (e.g.,
+        // the room floor). Without this filter, mineral deposits spawn through
+        // structure floors.
+        let placements: Vec<_> = placements
+            .into_iter()
+            .filter(|p| !surface_registry.any_contains_xz(p.position_xz.x, p.position_xz.z))
+            .collect();
 
         let mut spawned_entities = Vec::new();
 

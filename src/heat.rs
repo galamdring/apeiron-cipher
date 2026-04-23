@@ -110,9 +110,10 @@ fn spawn_heat_source(
         return;
     };
 
+    let wb_top_y = wb_tf.translation.y + fur.workbench_height * 0.5;
     let pos = Vec3::new(
         wb_tf.translation.x + hs.offset_x,
-        fur.workbench_height + hs.radius * 0.5,
+        wb_top_y + hs.radius * 0.5,
         wb_tf.translation.z + hs.offset_z,
     );
 

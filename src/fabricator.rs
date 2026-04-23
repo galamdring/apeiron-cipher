@@ -89,7 +89,7 @@ fn spawn_fabricator_slots(
         return;
     };
 
-    let wb_top_y = fur.workbench_height;
+    let wb_top_y = wb_tf.translation.y + fur.workbench_height * 0.5;
     let wb_center = wb_tf.translation;
 
     let slot_mat = materials.add(StandardMaterial {
