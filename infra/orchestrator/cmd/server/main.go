@@ -49,6 +49,26 @@ func main() {
 	})
 	mux.HandleFunc("POST /webhook", webhookHandler(database, webhookSecret))
 
+	// --- Kanban Auth ---
+	kanbanClientID := os.Getenv("GITHUB_OAUTH_CLIENT_ID")
+	kanbanClientSecret := os.Getenv("GITHUB_OAUTH_CLIENT_SECRET")
+	cookieSecret := os.Getenv("COOKIE_SIGNING_SECRET")
+	kanbanOrigin := envOrDefault("KANBAN_ORIGIN", "http://localhost:5173")
+
+	if kanbanClientID != "" && kanbanClientSecret != "" && cookieSecret != "" {
+		authCfg := KanbanAuthConfig{
+			ClientID:     kanbanClientID,
+			ClientSecret: kanbanClientSecret,
+			CookieSecret: cookieSecret,
+			KanbanOrigin: kanbanOrigin,
+		}
+		RegisterKanbanAuthRoutes(mux, database, authCfg)
+		log.Printf("kanban auth endpoints registered (origin: %s)", kanbanOrigin)
+	} else {
+		log.Printf("kanban auth endpoints disabled (missing GITHUB_OAUTH_CLIENT_ID, GITHUB_OAUTH_CLIENT_SECRET, or COOKIE_SIGNING_SECRET)")
+	}
+	// --- End Kanban Auth ---
+
 	server := &http.Server{
 		Addr:         ":" + port,
 		Handler:      mux,

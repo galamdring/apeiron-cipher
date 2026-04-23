@@ -71,6 +71,12 @@ type DBClient interface {
 	GetJobSteps(ctx context.Context, jobID int64) ([]JobStepRow, error)
 	UpsertTemplate(ctx context.Context, name, body string) error
 	GetTemplate(ctx context.Context, name string) (string, error)
+	// --- Kanban Auth ---
+	UpsertKanbanSession(ctx context.Context, session KanbanSession) error
+	GetKanbanSession(ctx context.Context, sessionID string) (*KanbanSession, error)
+	DeleteKanbanSession(ctx context.Context, sessionID string) error
+	UpdateKanbanSessionTokens(ctx context.Context, sessionID, accessToken, refreshToken string, expiresAt *time.Time) error
+	// --- End Kanban Auth ---
 }
 
 // DBClientImpl wraps a Postgres connection pool.
@@ -178,4 +184,20 @@ CREATE TABLE IF NOT EXISTS templates (
 	created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 	updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- --- Kanban Auth ---
+CREATE TABLE IF NOT EXISTS kanban_sessions (
+	id              BIGSERIAL PRIMARY KEY,
+	session_id      TEXT NOT NULL UNIQUE,
+	github_user_id  BIGINT NOT NULL,
+	github_login    TEXT NOT NULL,
+	access_token    TEXT NOT NULL,
+	refresh_token   TEXT NOT NULL DEFAULT '',
+	token_expires_at TIMESTAMPTZ,
+	created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+	updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_kanban_sessions_session_id ON kanban_sessions (session_id);
+-- --- End Kanban Auth ---
 `
