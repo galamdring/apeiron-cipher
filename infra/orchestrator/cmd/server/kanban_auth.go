@@ -38,6 +38,9 @@ const (
 	githubAPIBase = "https://api.github.com"
 	// Maximum proxy request body size (10 MB)
 	maxProxyBodySize = 10 * 1024 * 1024
+	// Refresh the access token this long before it actually expires, so
+	// requests near the boundary don't race against clock skew.
+	tokenRefreshBuffer = 5 * time.Minute
 )
 
 // KanbanAuthConfig holds the environment-provided configuration for the
@@ -166,10 +169,19 @@ func kanbanSessionCheck(database db.DBClient, cfg KanbanAuthConfig) http.Handler
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{
+		resp := map[string]any{
 			"id":    session.GitHubUserID,
 			"login": session.GitHubLogin,
-		})
+		}
+		// Include token expiry so the frontend can show a warning or
+		// proactively re-check before the session dies.
+		if session.TokenExpiresAt != nil {
+			resp["token_expires_at"] = session.TokenExpiresAt.UTC().Format(time.RFC3339)
+		}
+		// Signal whether the session has a refresh token — the frontend can
+		// use this to decide whether silent renewal is possible.
+		resp["has_refresh_token"] = session.RefreshToken != ""
+		json.NewEncoder(w).Encode(resp)
 	}
 }
 
@@ -183,8 +195,10 @@ func kanbanGitHubProxy(database db.DBClient, cfg KanbanAuthConfig) http.HandlerF
 			return
 		}
 
-		// If the token is expired and we have a refresh token, try refreshing.
-		if session.TokenExpiresAt != nil && time.Now().After(*session.TokenExpiresAt) && session.RefreshToken != "" {
+		// Proactively refresh if the token expires within the buffer window.
+		// This avoids failed requests when the clock is slightly skewed or when
+		// GitHub rejects a token that is technically still inside its window.
+		if session.TokenExpiresAt != nil && time.Now().Add(tokenRefreshBuffer).After(*session.TokenExpiresAt) && session.RefreshToken != "" {
 			refreshed, refreshErr := refreshAccessToken(r.Context(), cfg, session.RefreshToken)
 			if refreshErr != nil {
 				log.Printf("kanban auth: token refresh failed for session %s: %v", session.SessionID, refreshErr)
