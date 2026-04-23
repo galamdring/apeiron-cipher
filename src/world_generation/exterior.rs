@@ -3658,4 +3658,114 @@ cluster_compactness = 0.75
             sites.len()
         );
     }
+
+    // ── Story 5a.3 Phase 7: Full pipeline determinism ────────────────────
+
+    /// End-to-end determinism: identical seed produces identical WorldProfile,
+    /// PlanetSurface elevation, heightmap mesh, and deposit placements.
+    ///
+    /// Two completely independent runs of the pipeline (config → profile →
+    /// surface → mesh + deposits) must yield bit-identical results. This
+    /// catches any hidden non-determinism introduced by floating-point
+    /// ordering, HashMap iteration, or thread-local state.
+    #[test]
+    fn full_pipeline_seed_to_elevation_to_mesh_to_deposits_is_deterministic() {
+        let config = WorldGenerationConfig {
+            planet_seed: 42_424_242,
+            chunk_size_world_units: 45.0,
+            active_chunk_radius: 2,
+            building_cell_size: 1.0,
+            planet_surface_min_radius: 500,
+            planet_surface_max_radius: 5000,
+            ..Default::default()
+        };
+        let chunks = [
+            ChunkCoord::new(0, 0),
+            ChunkCoord::new(1, -1),
+            ChunkCoord::new(-3, 7),
+        ];
+        let subdivisions = 8_u32;
+
+        // Run the full pipeline twice from scratch.
+        for _run in 0..2 {
+            // ── Stage 1: WorldProfile derivation ─────────────────────
+            let profile_a = WorldProfile::from_config(&config);
+            let profile_b = WorldProfile::from_config(&config);
+            assert_eq!(profile_a, profile_b, "WorldProfile must be deterministic");
+
+            // ── Stage 2: PlanetSurface construction ──────────────────
+            let surface_a = PlanetSurface::new_from_profile(&profile_a, &config);
+            let surface_b = PlanetSurface::new_from_profile(&profile_b, &config);
+
+            // ── Stage 3: Elevation sampling ──────────────────────────
+            let sample_points: Vec<(f32, f32)> = vec![
+                (0.0, 0.0),
+                (123.4, 567.8),
+                (-200.0, 300.0),
+                (9999.0, -9999.0),
+            ];
+            for &(x, z) in &sample_points {
+                let ea = surface_a.sample_elevation(x, z);
+                let eb = surface_b.sample_elevation(x, z);
+                assert_eq!(ea, eb, "elevation mismatch at ({x}, {z}): {ea} vs {eb}");
+
+                let qa = surface_a.query_surface(x, z);
+                let qb = surface_b.query_surface(x, z);
+                assert_eq!(
+                    qa.position_y, qb.position_y,
+                    "query_surface position_y mismatch at ({x}, {z})"
+                );
+                assert_eq!(
+                    qa.normal, qb.normal,
+                    "query_surface normal mismatch at ({x}, {z})"
+                );
+            }
+
+            // ── Stage 4: Heightmap mesh generation ───────────────────
+            for &chunk in &chunks {
+                let mesh_a = generate_chunk_heightmap_mesh(&surface_a, chunk, subdivisions);
+                let mesh_b = generate_chunk_heightmap_mesh(&surface_b, chunk, subdivisions);
+
+                let pos_a = mesh_a
+                    .attribute(Mesh::ATTRIBUTE_POSITION)
+                    .expect("positions")
+                    .as_float3()
+                    .expect("Float32x3");
+                let pos_b = mesh_b
+                    .attribute(Mesh::ATTRIBUTE_POSITION)
+                    .expect("positions")
+                    .as_float3()
+                    .expect("Float32x3");
+                assert_eq!(pos_a, pos_b, "mesh positions differ for chunk {chunk:?}");
+
+                let norm_a = mesh_a
+                    .attribute(Mesh::ATTRIBUTE_NORMAL)
+                    .expect("normals")
+                    .as_float3()
+                    .expect("Float32x3");
+                let norm_b = mesh_b
+                    .attribute(Mesh::ATTRIBUTE_NORMAL)
+                    .expect("normals")
+                    .as_float3()
+                    .expect("Float32x3");
+                assert_eq!(norm_a, norm_b, "mesh normals differ for chunk {chunk:?}");
+            }
+
+            // ── Stage 5: Deposit placement ───────────────────────────
+            let catalog = sample_catalog();
+            let biome = sample_biome();
+            for &chunk in &chunks {
+                let deposits_a = generate_surface_mineral_chunk_baseline(
+                    &profile_a, &catalog, &surface_a, chunk, &biome,
+                );
+                let deposits_b = generate_surface_mineral_chunk_baseline(
+                    &profile_b, &catalog, &surface_b, chunk, &biome,
+                );
+                assert_eq!(
+                    deposits_a, deposits_b,
+                    "deposit placements differ for chunk {chunk:?}"
+                );
+            }
+        }
+    }
 }
