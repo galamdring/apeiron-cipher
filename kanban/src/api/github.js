@@ -97,6 +97,31 @@ export async function updateIssue(owner, repo, number, payload) {
   return data;
 }
 
+// Fetch sub-issues for an epic. Tries the GitHub sub_issues API first;
+// falls back to scanning all issues for an `epic-N` label if that fails.
+export async function fetchSubIssues(owner, repo, issueNumber) {
+  const gh = client();
+  try {
+    const { data } = await gh.get(
+      `/repos/${owner}/${repo}/issues/${issueNumber}/sub_issues`
+    );
+    if (data && data.length > 0) return data;
+  } catch {
+    // 404 or other error — fall through to label-based fallback
+  }
+
+  // Fallback: fetch issues with the epic-N label
+  const label = `epic-${issueNumber}`;
+  try {
+    const { data } = await gh.get(`/repos/${owner}/${repo}/issues`, {
+      params: { labels: label, state: "all", per_page: 100 },
+    });
+    return data.filter((i) => !i.pull_request);
+  } catch {
+    return [];
+  }
+}
+
 export async function fetchUserRepos() {
   const gh = client();
   let page = 1;
