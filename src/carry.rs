@@ -40,6 +40,8 @@ impl Plugin for CarryPlugin {
             .add_message::<CycleCarryIntent>()
             .add_message::<CarryWeightChanged>()
             .add_message::<CarryActionRejected>()
+            .add_message::<StashHeldForPickup>()
+            .add_message::<ObserveWeight>()
             .init_resource::<CarryConfig>()
             .init_resource::<ActiveCarryProfile>()
             .init_resource::<CarryMovementState>()
@@ -56,6 +58,8 @@ impl Plugin for CarryPlugin {
                     emit_stash_intent,
                     emit_cycle_carry_intent,
                     process_stash_intent,
+                    process_stash_held_for_pickup,
+                    process_observe_weight,
                     process_cycle_carry_intent.after(process_stash_intent),
                 ),
             );
@@ -98,6 +102,23 @@ pub(crate) enum CarryRejectionReason {
     CarryEmpty,
     /// The next entity in carry order has been despawned (evicted from carry).
     StaleEntity,
+}
+
+/// Interaction emits this when picking up a new material while already holding one.
+/// Carry handles the stash mutation and weight observation for the held item.
+#[derive(Message)]
+pub struct StashHeldForPickup {
+    pub held_entity: Entity,
+    pub held_material: GameMaterial,
+    pub picked_material: GameMaterial,
+}
+
+/// Request carry to record a weight observation for a material the player just
+/// interacted with (pickup, examine, etc.). Carry handles confidence tracking
+/// and journal recording.
+#[derive(Message)]
+pub struct ObserveWeight {
+    pub material: GameMaterial,
 }
 
 /// Later stories will emit this whenever carry weight changes so movement/stamina
@@ -237,6 +258,15 @@ impl CarryState {
             self.current_weight = 0.0;
         }
         Some(removed)
+    }
+
+    /// Check whether there is room to stash one more material given the current
+    /// weight and capacity rules.
+    pub fn can_stash(&self, material: &GameMaterial) -> bool {
+        if !self.hard_limit_enabled {
+            return true;
+        }
+        (self.current_weight + material.density.value) <= (self.effective_capacity + f32::EPSILON)
     }
 
     /// Select which carried entity should be returned next when cycling or dropping.
@@ -1221,6 +1251,72 @@ fn process_stash_intent(
             &mut journal_writer,
         );
         emit_carry_weight_changed(&mut weight_writer, &carry_state);
+    }
+}
+
+/// Handle interaction's request to stash the held item so a new pickup can proceed.
+///
+/// This keeps all carry-state mutation inside the carry module. Interaction only
+/// needs to read `CarryState` for the capacity gate and emit this message.
+#[allow(clippy::too_many_arguments)]
+fn process_stash_held_for_pickup(
+    mut commands: Commands,
+    mut reader: MessageReader<StashHeldForPickup>,
+    mut weight_writer: MessageWriter<CarryWeightChanged>,
+    mut journal_writer: MessageWriter<RecordWeightObservation>,
+    mut tracker: ResMut<ConfidenceTracker>,
+    config: Res<CarryConfig>,
+    mut player_query: Query<(&mut CarryState, &CarryStrength), With<Player>>,
+) {
+    for request in reader.read() {
+        let Ok((mut carry_state, carry_strength)) = player_query.single_mut() else {
+            continue;
+        };
+
+        stash_entity_into_carry(
+            &mut commands,
+            &mut carry_state,
+            request.held_entity,
+            &request.held_material,
+        );
+        record_weight_observation(
+            &request.held_material,
+            carry_strength.current,
+            &config,
+            &mut tracker,
+            &mut journal_writer,
+        );
+        // Also record weight for the newly picked material.
+        record_weight_observation(
+            &request.picked_material,
+            carry_strength.current,
+            &config,
+            &mut tracker,
+            &mut journal_writer,
+        );
+        emit_carry_weight_changed(&mut weight_writer, &carry_state);
+    }
+}
+
+/// Handle standalone weight observation requests from interaction (pickup without stash).
+fn process_observe_weight(
+    mut reader: MessageReader<ObserveWeight>,
+    mut journal_writer: MessageWriter<RecordWeightObservation>,
+    mut tracker: ResMut<ConfidenceTracker>,
+    config: Res<CarryConfig>,
+    player_query: Query<&CarryStrength, With<Player>>,
+) {
+    for request in reader.read() {
+        let Ok(carry_strength) = player_query.single() else {
+            continue;
+        };
+        record_weight_observation(
+            &request.material,
+            carry_strength.current,
+            &config,
+            &mut tracker,
+            &mut journal_writer,
+        );
     }
 }
 

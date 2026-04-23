@@ -20,10 +20,7 @@
 use bevy::picking::mesh_picking::ray_cast::{MeshRayCast, MeshRayCastSettings, RayCastVisibility};
 use bevy::prelude::*;
 
-use crate::carry::{
-    CarryConfig, CarryState, CarryStrength, can_stash_material, record_weight_observation,
-    stash_entity_into_carry,
-};
+use crate::carry::{CarryState, ObserveWeight, StashHeldForPickup};
 use crate::fabricator::{ActivateIntent, InputSlot, OutputSlot};
 use crate::input::InputAction;
 use crate::journal::{RecordEncounter, RecordWeightObservation};
@@ -305,18 +302,15 @@ fn emit_activate_intent(
 
 // ── Server-side processing ───────────────────────────────────────────────
 
-// This system bridges world interaction with carry state, confidence tracking,
-// and journal updates. The explicit ECS parameters are easier to audit than
-// hiding the touch points behind wrapper structs here.
 #[allow(clippy::too_many_arguments)]
 fn process_pickup(
     mut commands: Commands,
     mut reader: MessageReader<PickupIntent>,
     config: Res<CarryConfig>,
     target: Res<InteractionTarget>,
-    mut tracker: ResMut<ConfidenceTracker>,
-    mut journal_writer: MessageWriter<RecordWeightObservation>,
-    mut player_query: Query<(&mut CarryState, &CarryStrength), With<Player>>,
+    mut stash_writer: MessageWriter<StashHeldForPickup>,
+    mut observe_writer: MessageWriter<ObserveWeight>,
+    player_query: Query<&CarryState, With<Player>>,
     held_query: Query<(Entity, &GameMaterial), With<HeldItem>>,
     material_query: Query<&GameMaterial, With<MaterialObject>>,
     camera_query: Query<Entity, With<PlayerCamera>>,
@@ -331,40 +325,32 @@ fn process_pickup(
         let Ok(camera_entity) = camera_query.single() else {
             continue;
         };
-        let Ok((mut carry_state, carry_strength)) = player_query.single_mut() else {
+        let Ok(carry_state) = player_query.single() else {
             continue;
         };
-
-        if let Some((held_entity, held_material)) = held_query.iter().next() {
-            if !can_stash_material(&carry_state, held_material) {
-                continue;
-            }
-            stash_entity_into_carry(&mut commands, &mut carry_state, held_entity, held_material);
-            record_weight_observation(
-                held_material,
-                carry_strength.current,
-                &config,
-                &mut tracker,
-                &mut journal_writer,
-            );
-        }
 
         let Ok(target_material) = material_query.get(target_entity) else {
             continue;
         };
 
-        record_weight_observation(
-            target_material,
-            carry_strength.current,
-            &config,
-            &mut tracker,
-            &mut journal_writer,
-        );
+        if let Some((held_entity, held_material)) = held_query.iter().next() {
+            if !carry_state.can_stash(held_material) {
+                continue;
+            }
+            // Carry module handles stash mutation + weight observations for both items.
+            stash_writer.write(StashHeldForPickup {
+                held_entity,
+                held_material: held_material.clone(),
+                picked_material: target_material.clone(),
+            });
+        } else {
+            // No held item — just observe weight for the pickup target.
+            observe_writer.write(ObserveWeight {
+                material: target_material.clone(),
+            });
+        }
 
         // Fabricator slot state must follow the actual object in the world.
-        // If the player picks a material up off a slot or output pad, clear the
-        // slot's stored entity reference immediately so later fabrication only
-        // consumes what is physically still seated in the machine.
         for mut slot in &mut input_slots {
             clear_input_slot_reference(&mut slot, target_entity);
         }
