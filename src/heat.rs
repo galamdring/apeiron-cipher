@@ -19,7 +19,7 @@ use bevy::prelude::*;
 use crate::journal::RecordThermalObservation;
 use crate::materials::{GameMaterial, MaterialObject, PropertyVisibility};
 use crate::observation::ConfidenceTracker;
-use crate::scene::{SceneConfig, Workbench};
+use crate::scene::{FurnitureConfig, HeatSourceConfig, Workbench};
 
 pub struct HeatPlugin;
 
@@ -101,16 +101,14 @@ fn spawn_heat_source(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    cfg: Res<SceneConfig>,
+    hs: Res<HeatSourceConfig>,
+    fur: Res<FurnitureConfig>,
     workbench_query: Query<&Transform, With<Workbench>>,
 ) {
     let Ok(wb_tf) = workbench_query.single() else {
         warn!("No workbench found — heat source will not be spawned");
         return;
     };
-
-    let hs = &cfg.heat_source;
-    let fur = &cfg.furniture;
 
     let pos = Vec3::new(
         wb_tf.translation.x + hs.offset_x,
@@ -151,7 +149,7 @@ fn spawn_heat_source(
 fn track_heat_exposure(
     mut commands: Commands,
     time: Res<Time>,
-    cfg: Res<SceneConfig>,
+    hs_cfg: Res<HeatSourceConfig>,
     heat_query: Query<&GlobalTransform, With<HeatSource>>,
     mut material_query: Query<
         (
@@ -167,7 +165,7 @@ fn track_heat_exposure(
         return;
     };
     let heat_pos = heat_gtf.translation();
-    let zone_r_sq = cfg.heat_source.zone_radius * cfg.heat_source.zone_radius;
+    let zone_r_sq = hs_cfg.zone_radius * hs_cfg.zone_radius;
     let dt = time.delta_secs();
 
     for (entity, mat_gtf, mat, exposure) in &mut material_query {
@@ -219,7 +217,7 @@ fn reaction_scale(intensity: f32, thermal_resistance: f32) -> Vec3 {
 // for the mutable transform. Collapsing would require unsafe world access.
 #[allow(clippy::type_complexity)]
 fn apply_thermal_reaction(
-    cfg: Res<SceneConfig>,
+    hs_cfg: Res<HeatSourceConfig>,
     exposure_query: Query<
         (
             &HeatExposure,
@@ -234,7 +232,7 @@ fn apply_thermal_reaction(
         With<MaterialObject>,
     >,
 ) {
-    let reaction_secs = cfg.heat_source.reaction_seconds;
+    let reaction_secs = hs_cfg.reaction_seconds;
 
     for (exp, mat, mat_handle) in &exposure_query {
         let frac = (exp.elapsed / reaction_secs).clamp(0.0, 1.0);
@@ -264,7 +262,7 @@ fn apply_thermal_reaction(
 
 fn reveal_thermal_property(
     mut commands: Commands,
-    cfg: Res<SceneConfig>,
+    hs_cfg: Res<HeatSourceConfig>,
     mut tracker: ResMut<ConfidenceTracker>,
     mut journal_writer: MessageWriter<RecordThermalObservation>,
     mut material_query: Query<
@@ -277,7 +275,7 @@ fn reveal_thermal_property(
         With<MaterialObject>,
     >,
 ) {
-    let reveal_secs = cfg.heat_source.reveal_seconds;
+    let reveal_secs = hs_cfg.reveal_seconds;
     let mut revealed_seeds = Vec::new();
 
     for (entity, exp, mut mat, recorded) in &mut material_query {
@@ -454,7 +452,7 @@ mod tests {
     fn thermal_observation_repeats_after_cooling_cycle() {
         let mut app = App::new();
         app.add_message::<RecordThermalObservation>();
-        app.insert_resource(SceneConfig::default());
+        app.insert_resource(HeatSourceConfig::default());
         app.insert_resource(ConfidenceTracker::default());
         app.add_systems(Update, reveal_thermal_property);
 
@@ -504,7 +502,7 @@ mod tests {
     fn revealing_one_entity_propagates_visibility_to_same_seed() {
         let mut app = App::new();
         app.add_message::<RecordThermalObservation>();
-        app.insert_resource(SceneConfig::default());
+        app.insert_resource(HeatSourceConfig::default());
         app.insert_resource(ConfidenceTracker::default());
         app.add_systems(Update, reveal_thermal_property);
 
