@@ -199,6 +199,7 @@ fn player_look(
 /// Translates the player along the XZ plane in the direction they're facing.
 /// Movement is normalised so diagonals aren't faster than cardinals. The player
 /// is clamped to the ground plane boundaries and locked to eye height.
+#[allow(clippy::too_many_arguments)]
 fn player_move(
     time: Res<Time>,
     cursor_options: Single<&CursorOptions>,

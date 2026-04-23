@@ -620,6 +620,7 @@ pub fn build_room_shell_collision(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn setup_scene(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -637,10 +638,8 @@ fn setup_scene(
     let t = room.wall_thickness;
 
     // Compute the floor Y from terrain elevation at the room center (0, 0).
-    let surface = crate::world_generation::PlanetSurface::new_from_profile(
-        &world_profile,
-        &world_gen_config,
-    );
+    let surface =
+        crate::world_generation::PlanetSurface::new_from_profile(&world_profile, &world_gen_config);
     let floor_y = surface.sample_elevation(0.0, 0.0);
 
     // Room shell materials — darker than furniture so interactive materials read clearly.
@@ -661,11 +660,13 @@ fn setup_scene(
     });
 
     // Floor — XZ plane, centered at terrain height.
-    let floor_entity = commands.spawn((
-        Mesh3d(meshes.add(Plane3d::default().mesh().size(hx * 2.0, hz * 2.0))),
-        MeshMaterial3d(floor_mat),
-        Transform::from_xyz(0.0, floor_y, 0.0),
-    )).id();
+    let floor_entity = commands
+        .spawn((
+            Mesh3d(meshes.add(Plane3d::default().mesh().size(hx * 2.0, hz * 2.0))),
+            MeshMaterial3d(floor_mat),
+            Transform::from_xyz(0.0, floor_y, 0.0),
+        ))
+        .id();
 
     // Register the room floor as a surface override so the player and
     // dropped items stand on it rather than the terrain underneath.
@@ -792,7 +793,11 @@ fn setup_scene(
             half_extent_x: fur.workbench_width * 0.5,
             half_extent_z: fur.workbench_depth * 0.5,
         },
-        Transform::from_xyz(fur.workbench_x, floor_y + fur.workbench_height, fur.workbench_z),
+        Transform::from_xyz(
+            fur.workbench_x,
+            floor_y + fur.workbench_height,
+            fur.workbench_z,
+        ),
     ));
 
     // Shelf surfaces — warm neutral, clearly not wall paint.

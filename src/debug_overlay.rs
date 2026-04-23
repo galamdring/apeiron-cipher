@@ -11,8 +11,8 @@ use bevy::prelude::*;
 use crate::player::{Player, PlayerCamera};
 use crate::scene::PositionXZ;
 use crate::world_generation::{
-    PlanetSurface, WorldGenerationConfig, WorldProfile,
-    chunk_origin_xz, world_position_to_chunk_coord,
+    PlanetSurface, WorldGenerationConfig, WorldProfile, chunk_origin_xz,
+    world_position_to_chunk_coord,
 };
 
 pub struct DebugOverlayPlugin;
@@ -114,15 +114,19 @@ fn update_debug_panel(
          octaves:      {}\n\
          detail_wt:    {:.2}\n\
          subdivisions: {}",
-        pos.x, pos.z,
+        pos.x,
+        pos.z,
         pos.y,
         cam_world_y,
         terrain_y,
         delta_player_terrain,
         pos.y - terrain_y,
-        chunk.x, chunk.z,
-        chunk_origin.x, chunk_origin.z,
-        chunk_min, chunk_max,
+        chunk.x,
+        chunk.z,
+        chunk_origin.x,
+        chunk_origin.z,
+        chunk_min,
+        chunk_max,
         chunk_max - chunk_min,
         world_gen_config.elevation_amplitude,
         world_gen_config.elevation_frequency,

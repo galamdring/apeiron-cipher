@@ -20,10 +20,10 @@
 use bevy::picking::mesh_picking::ray_cast::{MeshRayCast, MeshRayCastSettings, RayCastVisibility};
 use bevy::prelude::*;
 
-use crate::carry::{CarryState, ObserveWeight, StashHeldForPickup};
+use crate::carry::{CarryConfig, CarryState, ObserveWeight, StashHeldForPickup};
 use crate::fabricator::{ActivateIntent, InputSlot, OutputSlot};
 use crate::input::InputAction;
-use crate::journal::{RecordEncounter, RecordWeightObservation};
+use crate::journal::RecordEncounter;
 use crate::materials::{GameMaterial, MATERIAL_SURFACE_GAP, MaterialObject, PropertyVisibility};
 use crate::observation::{ConfidenceTracker, describe_thermal_observation};
 use crate::player::{Player, PlayerCamera, cursor_is_captured};
@@ -307,7 +307,7 @@ fn emit_activate_intent(
 fn process_pickup(
     mut commands: Commands,
     mut reader: MessageReader<PickupIntent>,
-    config: Res<CarryConfig>,
+    _config: Res<CarryConfig>,
     target: Res<InteractionTarget>,
     mut stash_writer: MessageWriter<StashHeldForPickup>,
     mut observe_writer: MessageWriter<ObserveWeight>,
@@ -476,10 +476,26 @@ fn process_place(
             if can_place_material(held_entity, held_material, candidate, &occupied) {
                 candidate
             } else {
-                floor_drop_position(player_gtf, held_entity, held_material, &occupied, &planet_surface, &surface_registry, scene.drop_surface_reach)
+                floor_drop_position(
+                    player_gtf,
+                    held_entity,
+                    held_material,
+                    &occupied,
+                    &planet_surface,
+                    &surface_registry,
+                    scene.drop_surface_reach,
+                )
             }
         } else {
-            floor_drop_position(player_gtf, held_entity, held_material, &occupied, &planet_surface, &surface_registry, scene.drop_surface_reach)
+            floor_drop_position(
+                player_gtf,
+                held_entity,
+                held_material,
+                &occupied,
+                &planet_surface,
+                &surface_registry,
+                scene.drop_surface_reach,
+            )
         };
 
         commands
@@ -599,7 +615,11 @@ fn floor_drop_position(
     let max_y = feet_y + drop_surface_reach;
     let terrain_y = surface.sample_elevation(origin.x, origin.z);
     let standing_y = crate::surface::resolve_standing_surface(
-        origin.x, origin.z, max_y, terrain_y, surface_registry,
+        origin.x,
+        origin.z,
+        max_y,
+        terrain_y,
+        surface_registry,
     );
     let base = Vec3::new(origin.x, material.resting_center_y(standing_y), origin.z);
     let forward_steps = [0.35_f32, 0.6, 0.85, 1.1];
@@ -607,10 +627,15 @@ fn floor_drop_position(
 
     for forward_step in forward_steps {
         for lateral_step in lateral_steps {
-            let candidate_xz = base + fallback_forward * forward_step + fallback_right * lateral_step;
+            let candidate_xz =
+                base + fallback_forward * forward_step + fallback_right * lateral_step;
             let candidate_terrain_y = surface.sample_elevation(candidate_xz.x, candidate_xz.z);
             let candidate_standing_y = crate::surface::resolve_standing_surface(
-                candidate_xz.x, candidate_xz.z, max_y, candidate_terrain_y, surface_registry,
+                candidate_xz.x,
+                candidate_xz.z,
+                max_y,
+                candidate_terrain_y,
+                surface_registry,
             );
             let candidate = Vec3::new(
                 candidate_xz.x,
@@ -626,7 +651,11 @@ fn floor_drop_position(
     let fallback_xz = base + fallback_forward * 0.35;
     let fallback_terrain_y = surface.sample_elevation(fallback_xz.x, fallback_xz.z);
     let fallback_standing_y = crate::surface::resolve_standing_surface(
-        fallback_xz.x, fallback_xz.z, max_y, fallback_terrain_y, surface_registry,
+        fallback_xz.x,
+        fallback_xz.z,
+        max_y,
+        fallback_terrain_y,
+        surface_registry,
     );
     Vec3::new(
         fallback_xz.x,
@@ -1019,7 +1048,15 @@ mod tests {
         let material = test_material();
         let surface = flat_surface();
         let registry = crate::surface::SurfaceOverrideRegistry::default();
-        let dropped = floor_drop_position(&player, Entity::from_bits(99), &material, &[], &surface, &registry, 1.5);
+        let dropped = floor_drop_position(
+            &player,
+            Entity::from_bits(99),
+            &material,
+            &[],
+            &surface,
+            &registry,
+            1.5,
+        );
 
         assert!((dropped.y - material.resting_center_y(0.0)).abs() < f32::EPSILON);
     }
@@ -1030,7 +1067,15 @@ mod tests {
         let material = test_material();
         let surface = flat_surface();
         let registry = crate::surface::SurfaceOverrideRegistry::default();
-        let dropped = floor_drop_position(&player, Entity::from_bits(99), &material, &[], &surface, &registry, 1.5);
+        let dropped = floor_drop_position(
+            &player,
+            Entity::from_bits(99),
+            &material,
+            &[],
+            &surface,
+            &registry,
+            1.5,
+        );
 
         assert!((dropped.x - 1.25).abs() < f32::EPSILON);
         assert!((dropped.z - (-1.10)).abs() < f32::EPSILON);
@@ -1045,6 +1090,9 @@ mod tests {
             .add_message::<ObserveWeight>()
             .insert_resource(InteractionTarget::default())
             .insert_resource(SlotTarget::default())
+            .insert_resource(
+                toml::from_str::<crate::carry::CarryConfig>("").expect("empty CarryConfig"),
+            )
             .insert_resource(SceneConfig::default())
             .insert_resource(WorldProfile::default())
             .insert_resource(WorldGenerationConfig::default())
@@ -1132,7 +1180,15 @@ mod tests {
             position: Vec3::new(1.25, material.resting_center_y(0.0), -1.10),
             radius: material.footprint_radius(),
         }];
-        let dropped = floor_drop_position(&player, Entity::from_bits(99), &material, &occupied, &flat_surface(), &crate::surface::SurfaceOverrideRegistry::default(), 1.5);
+        let dropped = floor_drop_position(
+            &player,
+            Entity::from_bits(99),
+            &material,
+            &occupied,
+            &flat_surface(),
+            &crate::surface::SurfaceOverrideRegistry::default(),
+            1.5,
+        );
 
         assert_ne!(
             dropped,
