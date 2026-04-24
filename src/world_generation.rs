@@ -1454,6 +1454,32 @@ impl Default for BiomeRegistry {
     }
 }
 
+/// A single entry in a biome's material palette.
+///
+/// Each biome defines a list of `PaletteMaterial` entries that control which
+/// materials can appear in that biome and how likely each one is relative to
+/// the others. The `material_seed` drives deterministic property generation
+/// via `derive_material_from_seed`, and `selection_weight` is used for
+/// weighted random selection when placing deposits.
+///
+/// A given seed may appear in multiple biomes with different weights, allowing
+/// materials to be common in one biome and rare in another.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[allow(dead_code)] // Used by Story 5a.4 phases 4+ (biome palette integration)
+pub struct PaletteMaterial {
+    /// Seed value that deterministically defines this material's properties.
+    ///
+    /// The same seed always produces the same `GameMaterial` (density, color,
+    /// name, etc.) regardless of which biome references it.
+    pub material_seed: u64,
+    /// Relative likelihood of this material being selected when placing a
+    /// deposit in the biome.
+    ///
+    /// Higher values make this material more common. The actual probability
+    /// is `selection_weight / sum(all weights in palette)`. Must be positive.
+    pub selection_weight: f32,
+}
+
 /// One biome definition describing a region of temperature × moisture space.
 ///
 /// Each biome occupies a rectangular region on the two climate axes. A chunk
