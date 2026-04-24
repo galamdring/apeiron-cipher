@@ -4233,4 +4233,128 @@ cluster_compactness = 0.75
             mat_catalog.len()
         );
     }
+
+    #[test]
+    fn second_chunk_in_same_biome_reuses_catalog_entries_no_duplicates() {
+        use crate::materials::MaterialCatalog;
+
+        let palette_seeds: Vec<u64> = vec![1001, 1003, 1006];
+        let biome = ChunkBiome {
+            biome_key: "test_biome".to_string(),
+            ground_color: [0.5, 0.5, 0.5],
+            density_modifier: 1.0,
+            deposit_weight_modifiers: HashMap::new(),
+            material_palette: palette_seeds
+                .iter()
+                .map(|&seed| PaletteMaterial {
+                    material_seed: seed,
+                    selection_weight: 1.0,
+                })
+                .collect(),
+        };
+
+        let profile = sample_profile();
+        let catalog = sample_catalog();
+        let surface = PlanetSurface::new_from_profile(
+            &profile,
+            &WorldGenerationConfig {
+                planet_seed: 2026,
+                chunk_size_world_units: 45.0,
+                active_chunk_radius: 1,
+                building_cell_size: 1.0,
+                planet_surface_min_radius: 500,
+                planet_surface_max_radius: 5000,
+                ..Default::default()
+            },
+        );
+
+        // Generate placements from a first batch of chunks.
+        let mut first_batch_placements = Vec::new();
+        for cx in -2..=2 {
+            for cz in -2..=2 {
+                let chunk = ChunkCoord::new(cx, cz);
+                let placements = generate_surface_mineral_chunk_baseline(
+                    &profile, &catalog, &surface, chunk, &biome,
+                );
+                first_batch_placements.extend(placements);
+            }
+        }
+
+        let valid_first: Vec<_> = first_batch_placements
+            .iter()
+            .filter(|p| p.material_seed != 0)
+            .collect();
+        assert!(
+            !valid_first.is_empty(),
+            "expected deposits from first batch of chunks"
+        );
+
+        // Register all materials from the first batch.
+        let mut mat_catalog = MaterialCatalog::default();
+        for placement in &valid_first {
+            mat_catalog.derive_and_register(placement.material_seed);
+        }
+
+        let catalog_size_after_first_batch = mat_catalog.len();
+        assert!(
+            catalog_size_after_first_batch > 0,
+            "catalog must be non-empty after first batch"
+        );
+
+        // Generate placements from a second batch of chunks (different coords,
+        // same biome). These chunks should only produce seeds already in the
+        // palette, so the catalog must not grow beyond the palette size.
+        let mut second_batch_placements = Vec::new();
+        for cx in 3..=7 {
+            for cz in 3..=7 {
+                let chunk = ChunkCoord::new(cx, cz);
+                let placements = generate_surface_mineral_chunk_baseline(
+                    &profile, &catalog, &surface, chunk, &biome,
+                );
+                second_batch_placements.extend(placements);
+            }
+        }
+
+        let valid_second: Vec<_> = second_batch_placements
+            .iter()
+            .filter(|p| p.material_seed != 0)
+            .collect();
+        assert!(
+            !valid_second.is_empty(),
+            "expected deposits from second batch of chunks"
+        );
+
+        // Register all materials from the second batch.
+        for placement in &valid_second {
+            mat_catalog.derive_and_register(placement.material_seed);
+        }
+
+        // The catalog size must not have grown: all seeds from the second batch
+        // were already registered from the first batch (both batches use the
+        // same biome palette with only 3 seeds).
+        assert_eq!(
+            mat_catalog.len(),
+            catalog_size_after_first_batch,
+            "catalog grew from {} to {} after second batch — duplicate registration occurred",
+            catalog_size_after_first_batch,
+            mat_catalog.len()
+        );
+
+        // Every seed in the catalog belongs to the palette.
+        let palette_seed_set: HashSet<u64> = palette_seeds.iter().copied().collect();
+        for seed in mat_catalog.seeds() {
+            assert!(
+                palette_seed_set.contains(seed),
+                "catalog contains seed {seed} not in biome palette"
+            );
+        }
+
+        // Catalog should contain at most as many entries as the palette.
+        assert!(
+            mat_catalog.len() <= palette_seeds.len(),
+            "catalog has {} entries but palette only has {} seeds",
+            mat_catalog.len(),
+            palette_seeds.len()
+        );
+    }
 }
