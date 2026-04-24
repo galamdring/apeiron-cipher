@@ -60,6 +60,30 @@ pub const MAT_COLOR_G_CHANNEL: u64 = 0xA7E1_0001_0000_0007;
 #[allow(dead_code)]
 pub const MAT_COLOR_B_CHANNEL: u64 = 0xA7E1_0001_0000_0008;
 
+// ── Well-known material seeds ────────────────────────────────────────────
+//
+// Migration table: maps the 10 original hand-authored material names to their
+// canonical seed values (from the `seed` field in each `assets/materials/*.toml`
+// file). These seeds are referenced by biome palettes so the legacy materials
+// appear naturally through exploration. The seed values must never change —
+// doing so would break saved worlds and biome palette references.
+
+/// Well-known material seeds: `(name, seed)` pairs for the 10 original
+/// materials that shipped in the static TOML catalog.
+#[allow(dead_code)] // Consumed by biome palette integration in Story 5a.4 Phase 7+.
+pub const WELL_KNOWN_MATERIAL_SEEDS: &[(&str, u64)] = &[
+    ("Ferrite", 1001),
+    ("Calcium", 1002),
+    ("Sulfurite", 1003),
+    ("Prismate", 1004),
+    ("Verdant", 1005),
+    ("Osmium", 1006),
+    ("Volatite", 1007),
+    ("Cobaltine", 1008),
+    ("Silite", 1009),
+    ("Phosphite", 1010),
+];
+
 impl Plugin for MaterialPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(PreStartup, load_material_catalog)
