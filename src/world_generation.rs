@@ -1600,10 +1600,7 @@ pub struct ChunkBiome {
     /// deposits within this biome region.
     ///
     /// Not yet consumed by deposit generation — wired in Story 5a.5.
-    #[expect(
-        dead_code,
-        reason = "populated now, consumed by deposit generation in Story 5a.5"
-    )]
+    #[allow(dead_code)]
     pub material_palette: Vec<PaletteMaterial>,
 }
 
@@ -2686,6 +2683,167 @@ mod tests {
         assert_eq!(result.biome_key, "does_not_exist");
         assert_eq!(result.ground_color, [0.26, 0.3, 0.22]);
         assert_eq!(result.density_modifier, 1.0);
+    }
+
+    // ── Story 5a.4: ChunkBiome includes correct palette per biome ──────
+
+    #[test]
+    fn chunk_biome_includes_correct_palette_for_each_biome_type() {
+        // Derive chunks across a large coordinate range, collecting the
+        // material palette returned for each biome key. Verify that every
+        // biome's palette matches the palette defined in its BiomeDefinition.
+        let profile = WorldProfile::from_config(&sample_config());
+        let registry = BiomeRegistry::default();
+
+        // Build expected palettes from the registry, keyed by biome key.
+        let expected: HashMap<String, Vec<(u64, f32)>> = registry
+            .biomes
+            .iter()
+            .map(|b| {
+                let palette = b
+                    .material_palette
+                    .iter()
+                    .map(|p| (p.material_seed, p.selection_weight))
+                    .collect::<Vec<_>>();
+                (b.key.clone(), palette)
+            })
+            .collect();
+
+        // Track which biomes we have verified so we can assert full coverage.
+        let mut verified: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+        for x in -50..50 {
+            for z in -50..50 {
+                let biome = derive_chunk_biome(&profile, &registry, ChunkCoord::new(x, z));
+
+                let Some(expected_palette) = expected.get(&biome.biome_key) else {
+                    panic!(
+                        "derive_chunk_biome returned unknown biome key '{}'",
+                        biome.biome_key
+                    );
+                };
+
+                let actual: Vec<(u64, f32)> = biome
+                    .material_palette
+                    .iter()
+                    .map(|p| (p.material_seed, p.selection_weight))
+                    .collect();
+
+                assert_eq!(
+                    &actual, expected_palette,
+                    "palette mismatch for biome '{}' at chunk ({}, {})",
+                    biome.biome_key, x, z
+                );
+
+                verified.insert(biome.biome_key);
+                if verified.len() == expected.len() {
+                    break;
+                }
+            }
+            if verified.len() == expected.len() {
+                break;
+            }
+        }
+
+        // Ensure we actually hit all three biomes, not just a subset.
+        for key in expected.keys() {
+            assert!(
+                verified.contains(key),
+                "biome '{key}' was never reached in 100×100 scan — cannot verify its palette"
+            );
+        }
+    }
+
+    #[test]
+    fn chunk_biome_fallback_carries_fallback_palette() {
+        // When no biome range matches, the fallback biome's palette must be
+        // propagated into the ChunkBiome, not an empty vec.
+        let profile = WorldProfile::from_config(&sample_config());
+        let fallback_palette = vec![
+            PaletteMaterial {
+                material_seed: 0xAAAA,
+                selection_weight: 1.0,
+            },
+            PaletteMaterial {
+                material_seed: 0xBBBB,
+                selection_weight: 2.0,
+            },
+        ];
+        let registry = BiomeRegistry {
+            noise_scale_chunks: 12.0,
+            temperature_noise_channel: 0xB10E_0001_0000_0001,
+            moisture_noise_channel: 0xB10E_0001_0000_0002,
+            fallback_biome_key: "fb".to_string(),
+            biomes: vec![
+                // Impossibly narrow range — almost nothing will match.
+                BiomeDefinition {
+                    key: "narrow".to_string(),
+                    temperature_min: 0.999,
+                    temperature_max: 1.0,
+                    moisture_min: 0.999,
+                    moisture_max: 1.0,
+                    ground_color: [1.0, 0.0, 0.0],
+                    density_modifier: 1.0,
+                    deposit_weight_modifiers: HashMap::new(),
+                    material_palette: Vec::new(),
+                },
+                BiomeDefinition {
+                    key: "fb".to_string(),
+                    temperature_min: 0.0,
+                    temperature_max: 0.0,
+                    moisture_min: 0.0,
+                    moisture_max: 0.0,
+                    ground_color: [0.5, 0.5, 0.5],
+                    density_modifier: 1.0,
+                    deposit_weight_modifiers: HashMap::new(),
+                    material_palette: fallback_palette.clone(),
+                },
+            ],
+        };
+
+        // Most coords will miss the narrow biome and hit the fallback.
+        let mut found = false;
+        for x in 0..20 {
+            let biome = derive_chunk_biome(&profile, &registry, ChunkCoord::new(x, 0));
+            if biome.biome_key == "fb" {
+                assert_eq!(
+                    biome.material_palette.len(),
+                    fallback_palette.len(),
+                    "fallback biome palette length mismatch"
+                );
+                for (actual, expected) in biome.material_palette.iter().zip(fallback_palette.iter())
+                {
+                    assert_eq!(actual.material_seed, expected.material_seed);
+                    assert_eq!(actual.selection_weight, expected.selection_weight);
+                }
+                found = true;
+                break;
+            }
+        }
+        assert!(
+            found,
+            "expected at least one coord to trigger fallback biome"
+        );
+    }
+
+    #[test]
+    fn chunk_biome_hardcoded_default_has_empty_palette() {
+        // When the fallback key itself is missing from the registry, the
+        // hardcoded neutral default must have an empty material palette.
+        let profile = WorldProfile::from_config(&sample_config());
+        let registry = BiomeRegistry {
+            fallback_biome_key: "does_not_exist".to_string(),
+            biomes: Vec::new(),
+            noise_scale_chunks: 12.0,
+            temperature_noise_channel: 0xB10E_0001_0000_0001,
+            moisture_noise_channel: 0xB10E_0001_0000_0002,
+        };
+
+        let biome = derive_chunk_biome(&profile, &registry, ChunkCoord::new(5, 5));
+        assert!(
+            biome.material_palette.is_empty(),
+            "hardcoded neutral default must have an empty material palette"
+        );
     }
 
     // ── PlanetSurface multi-octave noise tests ──────────────────────────
