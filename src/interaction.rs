@@ -20,7 +20,7 @@
 use bevy::picking::mesh_picking::ray_cast::{MeshRayCast, MeshRayCastSettings, RayCastVisibility};
 use bevy::prelude::*;
 
-use crate::carry::{CarryConfig, CarryState, ObserveWeight, StashHeldForPickup};
+use crate::carry::{CarryState, ObserveWeight, StashHeldForPickup};
 use crate::fabricator::{ActivateIntent, InputSlot, OutputSlot};
 use crate::input::InputAction;
 use crate::journal::RecordEncounter;
@@ -307,7 +307,6 @@ fn emit_activate_intent(
 fn process_pickup(
     mut commands: Commands,
     mut reader: MessageReader<PickupIntent>,
-    _config: Res<CarryConfig>,
     target: Res<InteractionTarget>,
     mut stash_writer: MessageWriter<StashHeldForPickup>,
     mut observe_writer: MessageWriter<ObserveWeight>,
@@ -903,7 +902,6 @@ mod tests {
     use super::*;
     use crate::materials::MaterialProperty;
     use crate::scene::SceneConfig;
-    use bevy::app::Update;
 
     /// A flat surface at y=0 for unit tests that don't care about terrain.
     fn flat_surface() -> PlanetSurface {
@@ -1043,7 +1041,7 @@ mod tests {
     }
 
     #[test]
-    fn floor_drop_position_clamps_inside_room_bounds() {
+    fn floor_drop_position_does_not_snap_back_into_room_bounds() {
         let player = GlobalTransform::from(Transform::from_xyz(100.0, 1.7, 100.0));
         let material = test_material();
         let surface = flat_surface();
@@ -1058,6 +1056,8 @@ mod tests {
             1.5,
         );
 
+        assert!(dropped.x > 4.0);
+        assert!(dropped.z > 4.0);
         assert!((dropped.y - material.resting_center_y(0.0)).abs() < f32::EPSILON);
     }
 
@@ -1090,9 +1090,6 @@ mod tests {
             .add_message::<ObserveWeight>()
             .insert_resource(InteractionTarget::default())
             .insert_resource(SlotTarget::default())
-            .insert_resource(
-                toml::from_str::<crate::carry::CarryConfig>("").expect("empty CarryConfig"),
-            )
             .insert_resource(SceneConfig::default())
             .insert_resource(WorldProfile::default())
             .insert_resource(WorldGenerationConfig::default())

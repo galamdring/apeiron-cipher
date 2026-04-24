@@ -60,6 +60,7 @@ breathing_tone_hz = 110.0
 breathing_cycle_ms = 1100
 bob_forward_ratio = 0.35
 footstep_sprint_cadence = 0.78
+bob_decay_rate = 11.9
 
 [profiles.default]
 stamina_cost_multiplier = 1.4

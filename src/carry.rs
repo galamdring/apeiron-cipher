@@ -541,6 +541,10 @@ pub struct CarryCueConfig {
     pub bob_forward_ratio: f32,
     #[serde(default = "default_footstep_sprint_cadence")]
     pub footstep_sprint_cadence: f32,
+    /// Exponential decay rate (per second) for the camera bob when the player
+    /// stops moving. Higher values mean a faster snap back to neutral.
+    #[serde(default = "default_bob_decay_rate")]
+    pub bob_decay_rate: f32,
 }
 
 impl Default for CarryCueConfig {
@@ -566,6 +570,7 @@ impl Default for CarryCueConfig {
             breathing_cycle_ms: default_breathing_cycle_ms(),
             bob_forward_ratio: default_bob_forward_ratio(),
             footstep_sprint_cadence: default_footstep_sprint_cadence(),
+            bob_decay_rate: default_bob_decay_rate(),
         }
     }
 }
@@ -648,6 +653,12 @@ fn default_bob_forward_ratio() -> f32 {
 
 fn default_footstep_sprint_cadence() -> f32 {
     0.78
+}
+
+/// Derived so the exponential decay matches the original per-frame factor of
+/// 0.18 at 60 fps: rate = -ln(1 - 0.18) / (1/60) ≈ 11.9.
+fn default_bob_decay_rate() -> f32 {
+    11.9
 }
 
 /// How carry retrieval should behave once Story 4.2 starts cycling items.
