@@ -803,4 +803,29 @@ mod tests {
             "error should mention mass_min, got: {err}"
         );
     }
+
+    /// `SolarSystemSeed` must round-trip through serde without data loss.
+    /// This validates that the newtype's `Serialize`/`Deserialize` derives
+    /// correctly preserve the inner `u64` value.
+    #[test]
+    fn solar_system_seed_serde_round_trip() {
+        let seeds = [
+            SolarSystemSeed(0),
+            SolarSystemSeed(1),
+            SolarSystemSeed(u64::MAX),
+            SolarSystemSeed(0xDEAD_BEEF_CAFE_BABE),
+        ];
+
+        for original in seeds {
+            let json =
+                serde_json::to_string(&original).expect("SolarSystemSeed should serialize to JSON");
+            let deserialized: SolarSystemSeed =
+                serde_json::from_str(&json).expect("SolarSystemSeed should deserialize from JSON");
+            assert_eq!(
+                original, deserialized,
+                "SolarSystemSeed({}) must survive JSON round-trip",
+                original.0
+            );
+        }
+    }
 }
