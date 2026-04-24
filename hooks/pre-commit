@@ -7,8 +7,8 @@ echo "Running pre-commit checks..."
 STAGED=$(git diff --cached --name-only --diff-filter=ACMR)
 
 # --- Rust / Game code ---
-if echo "$STAGED" | grep -qE '\.rs$'; then
-  echo "  Rust files staged — running cargo checks."
+if echo "$STAGED" | grep -qE '(\.rs$|^Cargo\.(toml|lock)$)'; then
+  echo "  Rust/Cargo files staged — running cargo checks."
   echo "  cargo fmt --check"
   cargo fmt --check
   echo "  cargo clippy -- -D warnings"

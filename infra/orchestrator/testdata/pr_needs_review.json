@@ -1,0 +1,44 @@
+[
+  {
+    "headers": {
+      "x-github-delivery": "test-delivery-001",
+      "x-github-event": "pull_request"
+    },
+    "body": {
+      "action": "labeled",
+      "number": 1,
+      "label": {
+        "id": 100,
+        "name": "status:needs-review",
+        "color": "0e8a16"
+      },
+      "pull_request": {
+        "number": 1,
+        "title": "feat: test PR for fixture",
+        "state": "open",
+        "html_url": "https://github.com/galamdring/apeiron-cipher/pull/1",
+        "user": {
+          "login": "test-user",
+          "id": 12345
+        },
+        "head": {
+          "ref": "feat/test-branch",
+          "sha": "abc123def456"
+        },
+        "base": {
+          "ref": "main",
+          "sha": "789abc012def"
+        }
+      },
+      "repository": {
+        "id": 1,
+        "full_name": "galamdring/apeiron-cipher",
+        "html_url": "https://github.com/galamdring/apeiron-cipher"
+      },
+      "sender": {
+        "login": "test-user",
+        "id": 12345
+      }
+    }
+  }
+]
