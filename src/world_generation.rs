@@ -2442,6 +2442,161 @@ mod tests {
             assert_eq!(a.temperature_max, b.temperature_max);
             assert_eq!(a.density_modifier, b.density_modifier);
             assert_eq!(a.deposit_weight_modifiers, b.deposit_weight_modifiers);
+            assert_eq!(a.material_palette.len(), b.material_palette.len());
+            for (pa, pb) in a.material_palette.iter().zip(b.material_palette.iter()) {
+                assert_eq!(pa.material_seed, pb.material_seed);
+                assert_eq!(pa.selection_weight, pb.selection_weight);
+            }
+        }
+    }
+
+    #[test]
+    fn biome_registry_toml_round_trip_with_palette_entries() {
+        // Verify that material palette entries survive a TOML serialize→deserialize cycle,
+        // including hex seed values and fractional weights.
+        let mut registry = BiomeRegistry::default();
+
+        // Inject palette entries into the first biome (or add a biome if none exist).
+        if registry.biomes.is_empty() {
+            registry.biomes.push(BiomeDefinition {
+                key: "test_biome".to_string(),
+                temperature_min: 0.0,
+                temperature_max: 1.0,
+                moisture_min: 0.0,
+                moisture_max: 1.0,
+                ground_color: [0.5, 0.5, 0.5],
+                density_modifier: 1.0,
+                deposit_weight_modifiers: HashMap::new(),
+                material_palette: Vec::new(),
+            });
+        }
+        let palette = &mut registry.biomes[0].material_palette;
+        palette.clear();
+        palette.push(PaletteMaterial {
+            material_seed: 0xFE00_0000_0000_0001,
+            selection_weight: 3.0,
+        });
+        palette.push(PaletteMaterial {
+            material_seed: 0xFE00_0000_0000_0002,
+            selection_weight: 0.5,
+        });
+        palette.push(PaletteMaterial {
+            material_seed: 42,
+            selection_weight: 1.0,
+        });
+
+        let toml_str =
+            toml::to_string(&registry).expect("BiomeRegistry with palettes should serialize");
+        let parsed: BiomeRegistry =
+            toml::from_str(&toml_str).expect("BiomeRegistry with palettes should parse back");
+
+        let original_palette = &registry.biomes[0].material_palette;
+        let parsed_palette = &parsed.biomes[0].material_palette;
+        assert_eq!(
+            original_palette.len(),
+            parsed_palette.len(),
+            "palette length must survive round-trip"
+        );
+        for (orig, rt) in original_palette.iter().zip(parsed_palette.iter()) {
+            assert_eq!(
+                orig.material_seed, rt.material_seed,
+                "material_seed must survive round-trip"
+            );
+            assert_eq!(
+                orig.selection_weight, rt.selection_weight,
+                "selection_weight must survive round-trip"
+            );
+        }
+    }
+
+    #[test]
+    fn biome_toml_round_trip_empty_palette() {
+        // A biome with an empty material_palette must round-trip cleanly.
+        let mut registry = BiomeRegistry::default();
+        for biome in &mut registry.biomes {
+            biome.material_palette.clear();
+        }
+        let toml_str = toml::to_string(&registry).expect("serialize with empty palettes");
+        let parsed: BiomeRegistry = toml::from_str(&toml_str).expect("parse with empty palettes");
+        for (a, b) in registry.biomes.iter().zip(parsed.biomes.iter()) {
+            assert!(
+                b.material_palette.is_empty(),
+                "biome '{}' palette should be empty after round-trip",
+                a.key,
+            );
+        }
+    }
+
+    #[test]
+    fn biome_toml_round_trip_shared_seed_across_biomes() {
+        // The same material seed can appear in multiple biomes with different weights.
+        let shared_seed: u64 = 0xABCD_0000_0000_0099;
+        let mut registry = BiomeRegistry::default();
+
+        // Ensure at least two biomes exist.
+        while registry.biomes.len() < 2 {
+            registry.biomes.push(BiomeDefinition {
+                key: format!("synth_biome_{}", registry.biomes.len()),
+                temperature_min: 0.0,
+                temperature_max: 1.0,
+                moisture_min: 0.0,
+                moisture_max: 1.0,
+                ground_color: [0.3, 0.3, 0.3],
+                density_modifier: 1.0,
+                deposit_weight_modifiers: HashMap::new(),
+                material_palette: Vec::new(),
+            });
+        }
+
+        // Place the same seed in the first two biomes with different weights.
+        registry.biomes[0].material_palette = vec![PaletteMaterial {
+            material_seed: shared_seed,
+            selection_weight: 5.0,
+        }];
+        registry.biomes[1].material_palette = vec![PaletteMaterial {
+            material_seed: shared_seed,
+            selection_weight: 0.1,
+        }];
+
+        let toml_str = toml::to_string(&registry).expect("serialize shared-seed registry");
+        let parsed: BiomeRegistry = toml::from_str(&toml_str).expect("parse shared-seed registry");
+
+        assert_eq!(
+            parsed.biomes[0].material_palette[0].material_seed,
+            shared_seed
+        );
+        assert_eq!(parsed.biomes[0].material_palette[0].selection_weight, 5.0);
+        assert_eq!(
+            parsed.biomes[1].material_palette[0].material_seed,
+            shared_seed
+        );
+        assert_eq!(parsed.biomes[1].material_palette[0].selection_weight, 0.1);
+    }
+
+    #[test]
+    fn biome_toml_parses_shipped_asset_file() {
+        // Verify the actual shipped biomes.toml parses correctly, including any
+        // material palette entries defined there.
+        let toml_content =
+            std::fs::read_to_string(BIOME_CONFIG_PATH).expect("shipped biomes.toml must exist");
+        let registry: BiomeRegistry =
+            toml::from_str(&toml_content).expect("shipped biomes.toml must parse");
+
+        assert!(
+            !registry.biomes.is_empty(),
+            "shipped biomes.toml must define at least one biome"
+        );
+
+        // Every palette entry must have a positive weight and non-zero seed.
+        for biome in &registry.biomes {
+            for entry in &biome.material_palette {
+                assert!(
+                    entry.selection_weight > 0.0,
+                    "biome '{}' has palette entry with non-positive weight {}",
+                    biome.key,
+                    entry.selection_weight,
+                );
+            }
         }
     }
 
