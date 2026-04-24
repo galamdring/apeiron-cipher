@@ -35,9 +35,22 @@ pub const SUFFIXES: &[&str] = &[
 /// The mapping is intentionally simple and stable — changing it would rename
 /// every procedurally generated material across all saved worlds.
 pub fn procedural_name(seed: u64) -> String {
-    let prefix_idx = ((seed >> 8) as usize) % PREFIXES.len();
-    let root_idx = ((seed >> 12) as usize) % ROOTS.len();
-    let suffix_idx = ((seed >> 16) as usize) % SUFFIXES.len();
+    // Hash the seed so that small sequential values (e.g. well-known seeds
+    // 1001..1010) spread across the full bit range.  Uses the same
+    // splitmix64 finaliser employed elsewhere in the codebase for
+    // deterministic mixing.
+    let h = {
+        let mut x = seed;
+        x ^= x >> 30;
+        x = x.wrapping_mul(0xbf58476d1ce4e5b9);
+        x ^= x >> 27;
+        x = x.wrapping_mul(0x94d049bb133111eb);
+        x ^= x >> 31;
+        x
+    };
+    let prefix_idx = ((h) as usize) % PREFIXES.len();
+    let root_idx = ((h >> 16) as usize) % ROOTS.len();
+    let suffix_idx = ((h >> 32) as usize) % SUFFIXES.len();
     format!(
         "{}{}{}",
         PREFIXES[prefix_idx], ROOTS[root_idx], SUFFIXES[suffix_idx]

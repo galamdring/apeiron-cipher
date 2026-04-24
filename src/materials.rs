@@ -1016,6 +1016,24 @@ visibility = "Hidden"
         );
     }
 
+    /// Verifies that every well-known seed material derives a distinct name.
+    /// Duplicate names would confuse the player and break the journal/catalog UX.
+    #[test]
+    fn well_known_seeds_have_distinct_names() {
+        let mut seen: std::collections::HashMap<String, (&str, u64)> =
+            std::collections::HashMap::new();
+        for &(label, seed) in WELL_KNOWN_MATERIAL_SEEDS {
+            let mat = derive_material_from_seed(seed);
+            if let Some(&(prev_label, prev_seed)) = seen.get(&mat.name) {
+                panic!(
+                    "name collision: \"{}\") produced by both {} (seed {:#X}) and {} (seed {:#X})",
+                    mat.name, prev_label, prev_seed, label, seed,
+                );
+            }
+            seen.insert(mat.name.clone(), (label, seed));
+        }
+    }
+
     /// Verifies that `load_material_catalog` inserts an empty [`MaterialCatalog`]
     /// during startup, before any chunk-generation systems have a chance to run.
     /// This mirrors the real plugin's `PreStartup` registration and confirms the
