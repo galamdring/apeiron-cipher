@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 
-use crate::world_generation::WorldGenerationConfig;
+use crate::world_generation::{PlanetSeed, WorldGenerationConfig};
 
 // ── Seed Channel Constants ───────────────────────────────────────────────
 //
@@ -37,8 +37,19 @@ const STAR_TEMPERATURE_CHANNEL: u64 = 0x57A2_0001_0000_0003;
 /// Channel for interpolating stellar mass within the selected type's range.
 const STAR_MASS_CHANNEL: u64 = 0x57A2_0001_0000_0004;
 
+/// Channel for deriving planet count from a system seed.
+#[allow(dead_code)]
+const PLANET_COUNT_CHANNEL: u64 = 0x02B1_0001_0000_0001;
+
+/// Channel for seeding the orbital distance RNG.
+#[allow(dead_code)]
+const ORBITAL_LAYOUT_CHANNEL: u64 = 0x02B1_0001_0000_0002;
+
 /// Path to the star type definitions TOML file.
 const STAR_TYPES_CONFIG_PATH: &str = "assets/config/star_types.toml";
+
+/// Path to the orbital configuration TOML file.
+const ORBITAL_CONFIG_PATH: &str = "assets/config/orbital_config.toml";
 
 // ── Data Types ───────────────────────────────────────────────────────────
 
@@ -117,6 +128,125 @@ pub struct StarTypeDefinition {
 pub struct StarTypeRegistry {
     /// Ordered list of star type definitions.
     pub star_types: Vec<StarTypeDefinition>,
+}
+
+// ── Orbital Layout Types ────────────────────────────────────────────────
+
+/// A planet's position and identity within the solar system.
+///
+/// Each slot represents one planet at a specific orbital distance. The
+/// `planet_seed` is derived from the system seed and the orbital distance
+/// (not the index), so inserting a planet between two existing ones in a
+/// future story will not change their seeds.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[allow(dead_code)]
+pub struct OrbitalSlot {
+    /// Deterministic seed for this planet, derived from system seed and orbital distance.
+    pub planet_seed: PlanetSeed,
+    /// Distance from the star in astronomical units.
+    pub orbital_distance_au: f32,
+    /// Zero-based index from the star outward.
+    pub orbital_index: u32,
+}
+
+/// Full orbital layout for a solar system.
+///
+/// Contains every planet in the system, sorted by orbital distance from
+/// the star outward. Deterministically derived from a `SolarSystemSeed`
+/// and an `OrbitalConfig`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[allow(dead_code)]
+pub struct OrbitalLayout {
+    /// Planets sorted by orbital distance, innermost first.
+    pub planets: Vec<OrbitalSlot>,
+}
+
+/// Configuration constraints for orbital generation.
+///
+/// All tuning values are data-driven — loaded from
+/// `assets/config/orbital_config.toml` at startup. The defaults here
+/// serve as a hardcoded fallback matching the shipped config file.
+#[derive(Clone, Debug, Resource, Serialize, Deserialize)]
+pub struct OrbitalConfig {
+    /// Minimum number of planets a system can have.
+    pub planet_count_min: u32,
+    /// Maximum number of planets a system can have.
+    pub planet_count_max: u32,
+    /// Closest possible orbit in AU.
+    pub inner_orbit_au: f32,
+    /// Farthest possible orbit in AU.
+    pub outer_orbit_au: f32,
+    /// Minimum distance between adjacent orbits in AU.
+    pub min_separation_au: f32,
+}
+
+impl Default for OrbitalConfig {
+    /// Hardcoded fallback matching the shipped `orbital_config.toml`.
+    ///
+    /// The TOML file is the source of truth for tuning; these values
+    /// ensure the game is playable even when the file is missing.
+    fn default() -> Self {
+        Self {
+            planet_count_min: 2,
+            planet_count_max: 8,
+            inner_orbit_au: 0.3,
+            outer_orbit_au: 50.0,
+            min_separation_au: 0.5,
+        }
+    }
+}
+
+impl OrbitalConfig {
+    /// Validate every structural invariant the config must uphold.
+    ///
+    /// Returns `Ok(())` when valid, or `Err` with a human-readable description
+    /// of the first violation found. Checks performed:
+    ///
+    /// 1. `planet_count_min >= 1` — a system must have at least one planet.
+    /// 2. `planet_count_min <= planet_count_max` — range must not be inverted.
+    /// 3. `inner_orbit_au > 0.0` and finite — must be a positive distance.
+    /// 4. `inner_orbit_au < outer_orbit_au` — range must not be inverted.
+    /// 5. `outer_orbit_au` is finite.
+    /// 6. `min_separation_au > 0.0` and finite — must be a positive distance.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.planet_count_min < 1 {
+            return Err(format!(
+                "planet_count_min must be >= 1, got {}",
+                self.planet_count_min
+            ));
+        }
+        if self.planet_count_min > self.planet_count_max {
+            return Err(format!(
+                "planet_count_min ({}) must be <= planet_count_max ({})",
+                self.planet_count_min, self.planet_count_max
+            ));
+        }
+        if !self.inner_orbit_au.is_finite() || self.inner_orbit_au <= 0.0 {
+            return Err(format!(
+                "inner_orbit_au must be positive and finite, got {}",
+                self.inner_orbit_au
+            ));
+        }
+        if !self.outer_orbit_au.is_finite() {
+            return Err(format!(
+                "outer_orbit_au must be finite, got {}",
+                self.outer_orbit_au
+            ));
+        }
+        if self.inner_orbit_au >= self.outer_orbit_au {
+            return Err(format!(
+                "inner_orbit_au ({}) must be < outer_orbit_au ({})",
+                self.inner_orbit_au, self.outer_orbit_au
+            ));
+        }
+        if !self.min_separation_au.is_finite() || self.min_separation_au <= 0.0 {
+            return Err(format!(
+                "min_separation_au must be positive and finite, got {}",
+                self.min_separation_au
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl StarTypeRegistry {
@@ -276,7 +406,8 @@ pub struct SolarSystemPlugin;
 impl Plugin for SolarSystemPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<StarTypeRegistry>()
-            .add_systems(PreStartup, load_star_type_registry)
+            .init_resource::<OrbitalConfig>()
+            .add_systems(PreStartup, (load_star_type_registry, load_orbital_config))
             .add_systems(Startup, log_star_profile_on_startup);
     }
 }
@@ -321,6 +452,53 @@ fn load_star_type_registry(mut commands: Commands) {
     };
 
     commands.insert_resource(registry);
+}
+
+/// Load the orbital configuration from TOML, falling back to hardcoded defaults.
+///
+/// Follows the same pattern as `load_star_type_registry`: check existence →
+/// read → parse → validate → fallback on any error.
+fn load_orbital_config(mut commands: Commands) {
+    let config = if Path::new(ORBITAL_CONFIG_PATH).exists() {
+        match fs::read_to_string(ORBITAL_CONFIG_PATH) {
+            Ok(contents) => match toml::from_str::<OrbitalConfig>(&contents) {
+                Ok(config) => match config.validate() {
+                    Ok(()) => {
+                        info!(
+                            "Loaded orbital config from {ORBITAL_CONFIG_PATH}: \
+                             planets=[{}, {}], orbits=[{}, {}] AU, min_sep={} AU",
+                            config.planet_count_min,
+                            config.planet_count_max,
+                            config.inner_orbit_au,
+                            config.outer_orbit_au,
+                            config.min_separation_au,
+                        );
+                        config
+                    }
+                    Err(validation_error) => {
+                        warn!(
+                            "Orbital config from {ORBITAL_CONFIG_PATH} failed validation, \
+                             using defaults: {validation_error}"
+                        );
+                        OrbitalConfig::default()
+                    }
+                },
+                Err(error) => {
+                    warn!("Could not parse {ORBITAL_CONFIG_PATH}, using defaults: {error}");
+                    OrbitalConfig::default()
+                }
+            },
+            Err(error) => {
+                warn!("Could not read {ORBITAL_CONFIG_PATH}, using defaults: {error}");
+                OrbitalConfig::default()
+            }
+        }
+    } else {
+        warn!("{ORBITAL_CONFIG_PATH} not found, using defaults");
+        OrbitalConfig::default()
+    };
+
+    commands.insert_resource(config);
 }
 
 /// Derive and log the star profile for the current solar system on startup.
@@ -1285,5 +1463,202 @@ weight = 7.0
                 raw
             );
         }
+    }
+
+    // ── OrbitalConfig Validation Tests ───────────────────────────────────
+
+    /// The default orbital config must pass validation.
+    #[test]
+    fn default_orbital_config_validates() {
+        OrbitalConfig::default()
+            .validate()
+            .expect("default OrbitalConfig must pass validation");
+    }
+
+    /// planet_count_min < 1 must be rejected.
+    #[test]
+    fn orbital_config_rejects_zero_planet_count_min() {
+        let mut config = OrbitalConfig::default();
+        config.planet_count_min = 0;
+        let err = config.validate().unwrap_err();
+        assert!(
+            err.contains("planet_count_min"),
+            "error should mention planet_count_min, got: {err}"
+        );
+    }
+
+    /// Inverted planet count range must be rejected.
+    #[test]
+    fn orbital_config_rejects_inverted_planet_count() {
+        let mut config = OrbitalConfig::default();
+        config.planet_count_min = 10;
+        config.planet_count_max = 3;
+        let err = config.validate().unwrap_err();
+        assert!(
+            err.contains("planet_count_min"),
+            "error should mention planet_count_min, got: {err}"
+        );
+    }
+
+    /// Zero inner_orbit_au must be rejected.
+    #[test]
+    fn orbital_config_rejects_zero_inner_orbit() {
+        let mut config = OrbitalConfig::default();
+        config.inner_orbit_au = 0.0;
+        let err = config.validate().unwrap_err();
+        assert!(
+            err.contains("inner_orbit_au"),
+            "error should mention inner_orbit_au, got: {err}"
+        );
+    }
+
+    /// Inverted orbit range must be rejected.
+    #[test]
+    fn orbital_config_rejects_inverted_orbit_range() {
+        let mut config = OrbitalConfig::default();
+        config.inner_orbit_au = 60.0;
+        config.outer_orbit_au = 10.0;
+        let err = config.validate().unwrap_err();
+        assert!(
+            err.contains("inner_orbit_au"),
+            "error should mention inner_orbit_au, got: {err}"
+        );
+    }
+
+    /// Zero min_separation_au must be rejected.
+    #[test]
+    fn orbital_config_rejects_zero_separation() {
+        let mut config = OrbitalConfig::default();
+        config.min_separation_au = 0.0;
+        let err = config.validate().unwrap_err();
+        assert!(
+            err.contains("min_separation_au"),
+            "error should mention min_separation_au, got: {err}"
+        );
+    }
+
+    /// NaN in outer_orbit_au must be rejected.
+    #[test]
+    fn orbital_config_rejects_nan_outer_orbit() {
+        let mut config = OrbitalConfig::default();
+        config.outer_orbit_au = f32::NAN;
+        let err = config.validate().unwrap_err();
+        assert!(
+            err.contains("outer_orbit_au"),
+            "error should mention outer_orbit_au, got: {err}"
+        );
+    }
+
+    /// Equal min and max planet count is valid (deterministic count).
+    #[test]
+    fn orbital_config_accepts_equal_planet_count() {
+        let mut config = OrbitalConfig::default();
+        config.planet_count_min = 5;
+        config.planet_count_max = 5;
+        config
+            .validate()
+            .expect("equal planet_count_min and planet_count_max should be valid");
+    }
+
+    /// OrbitalConfig must round-trip through TOML without data loss.
+    #[test]
+    fn orbital_config_toml_round_trip() {
+        let original = OrbitalConfig::default();
+        let serialized =
+            toml::to_string(&original).expect("OrbitalConfig should serialize to TOML");
+        let deserialized: OrbitalConfig =
+            toml::from_str(&serialized).expect("serialized TOML should deserialize back");
+
+        assert_eq!(
+            original.planet_count_min, deserialized.planet_count_min,
+            "round-trip should preserve planet_count_min"
+        );
+        assert_eq!(
+            original.planet_count_max, deserialized.planet_count_max,
+            "round-trip should preserve planet_count_max"
+        );
+        assert!(
+            (original.inner_orbit_au - deserialized.inner_orbit_au).abs() < f32::EPSILON,
+            "round-trip should preserve inner_orbit_au"
+        );
+        assert!(
+            (original.outer_orbit_au - deserialized.outer_orbit_au).abs() < f32::EPSILON,
+            "round-trip should preserve outer_orbit_au"
+        );
+        assert!(
+            (original.min_separation_au - deserialized.min_separation_au).abs() < f32::EPSILON,
+            "round-trip should preserve min_separation_au"
+        );
+    }
+
+    /// OrbitalSlot must round-trip through serde (JSON) without data loss.
+    #[test]
+    fn orbital_slot_serde_round_trip() {
+        let slot = OrbitalSlot {
+            planet_seed: PlanetSeed(0xCAFE_BABE),
+            orbital_distance_au: 1.5,
+            orbital_index: 2,
+        };
+        let json = serde_json::to_string(&slot).expect("OrbitalSlot should serialize to JSON");
+        let deserialized: OrbitalSlot =
+            serde_json::from_str(&json).expect("OrbitalSlot should deserialize from JSON");
+        assert_eq!(
+            slot, deserialized,
+            "OrbitalSlot must survive JSON round-trip"
+        );
+    }
+
+    /// OrbitalLayout must round-trip through serde (JSON) without data loss.
+    #[test]
+    fn orbital_layout_serde_round_trip() {
+        let layout = OrbitalLayout {
+            planets: vec![
+                OrbitalSlot {
+                    planet_seed: PlanetSeed(1),
+                    orbital_distance_au: 0.5,
+                    orbital_index: 0,
+                },
+                OrbitalSlot {
+                    planet_seed: PlanetSeed(2),
+                    orbital_distance_au: 3.0,
+                    orbital_index: 1,
+                },
+            ],
+        };
+        let json = serde_json::to_string(&layout).expect("OrbitalLayout should serialize to JSON");
+        let deserialized: OrbitalLayout =
+            serde_json::from_str(&json).expect("OrbitalLayout should deserialize from JSON");
+        assert_eq!(
+            layout, deserialized,
+            "OrbitalLayout must survive JSON round-trip"
+        );
+    }
+
+    /// Seed channel constants for orbital layout must not collide with
+    /// existing star generation channels.
+    #[test]
+    fn orbital_channel_constants_do_not_collide_with_star_channels() {
+        let star_channels = [
+            STAR_TYPE_CHANNEL,
+            STAR_LUMINOSITY_CHANNEL,
+            STAR_TEMPERATURE_CHANNEL,
+            STAR_MASS_CHANNEL,
+        ];
+        let orbital_channels = [PLANET_COUNT_CHANNEL, ORBITAL_LAYOUT_CHANNEL];
+
+        for &oc in &orbital_channels {
+            for &sc in &star_channels {
+                assert_ne!(
+                    oc, sc,
+                    "orbital channel {oc:#018X} collides with star channel {sc:#018X}"
+                );
+            }
+        }
+
+        // Orbital channels must also not collide with each other.
+        assert_ne!(
+            PLANET_COUNT_CHANNEL, ORBITAL_LAYOUT_CHANNEL,
+            "PLANET_COUNT_CHANNEL and ORBITAL_LAYOUT_CHANNEL must differ"
+        );
     }
 }
