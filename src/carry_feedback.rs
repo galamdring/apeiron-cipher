@@ -168,7 +168,11 @@ fn update_carry_camera_bob(
 
     if !is_moving {
         bob_state.phase_radians = 0.0;
-        camera_transform.translation = decay_toward_zero(camera_transform.translation, 0.18);
+        camera_transform.translation = decay_toward_zero(
+            camera_transform.translation,
+            config.weight_cues.bob_decay_rate,
+            time.delta_secs(),
+        );
         return;
     }
 
@@ -312,7 +316,13 @@ fn breathing_mix(encumbrance_ratio: f32, config: &CarryCueConfig) -> f32 {
     }
 }
 
-fn decay_toward_zero(current: Vec3, factor: f32) -> Vec3 {
+/// Exponential decay toward zero, frame-rate independent.
+///
+/// `rate` is in "per second" units (higher = faster snap). The exponential
+/// form `1 - exp(-rate * dt)` ensures the same visual decay speed regardless
+/// of whether the game runs at 30 fps or 144 fps.
+fn decay_toward_zero(current: Vec3, rate: f32, delta_secs: f32) -> Vec3 {
+    let factor = 1.0 - (-rate * delta_secs).exp();
     let result = current * (1.0 - factor.clamp(0.0, 1.0));
     if result.length_squared() < 1e-8 {
         Vec3::ZERO
@@ -358,15 +368,36 @@ mod tests {
     #[test]
     fn decay_toward_zero_snaps_below_threshold() {
         let tiny = Vec3::new(1e-5, 1e-5, 0.0);
-        let result = decay_toward_zero(tiny, 0.18);
+        let result = decay_toward_zero(tiny, 11.9, 0.016);
         assert_eq!(result, Vec3::ZERO);
     }
 
     #[test]
     fn decay_toward_zero_decays_above_threshold() {
         let large = Vec3::new(1.0, 0.0, 0.0);
-        let result = decay_toward_zero(large, 0.18);
+        let result = decay_toward_zero(large, 11.9, 0.016);
         assert!(result.x > 0.0);
         assert!(result.x < 1.0);
+    }
+
+    #[test]
+    fn decay_toward_zero_is_framerate_independent() {
+        let start = Vec3::new(1.0, 0.0, 0.0);
+        let rate = 11.9;
+
+        // Simulate 1 second at 60 fps
+        let mut pos_60 = start;
+        for _ in 0..60 {
+            pos_60 = decay_toward_zero(pos_60, rate, 1.0 / 60.0);
+        }
+
+        // Simulate 1 second at 30 fps
+        let mut pos_30 = start;
+        for _ in 0..30 {
+            pos_30 = decay_toward_zero(pos_30, rate, 1.0 / 30.0);
+        }
+
+        // Both should converge to approximately the same value
+        assert!((pos_60.x - pos_30.x).abs() < 1e-4);
     }
 }
