@@ -43,6 +43,31 @@ ferrite  = 3.0
 silite   = 0.8
 prismate = 0.2
 
+# Material palette — hot, metallic, and reactive materials dominate.
+[[biomes.material_palette]]
+material_seed = 1001  # Ferrite — iron-rich, at home in baked desert
+selection_weight = 3.0
+
+[[biomes.material_palette]]
+material_seed = 1003  # Sulfurite — volcanic/sulfurous affinity
+selection_weight = 2.5
+
+[[biomes.material_palette]]
+material_seed = 1006  # Osmium — dense metal exposed by erosion
+selection_weight = 2.0
+
+[[biomes.material_palette]]
+material_seed = 1007  # Volatite — reactive, heat-associated
+selection_weight = 1.5
+
+[[biomes.material_palette]]
+material_seed = 1002  # Calcium — trace presence
+selection_weight = 0.5
+
+[[biomes.material_palette]]
+material_seed = 1009  # Silite — rare in hot regions
+selection_weight = 0.3
+
 [[biomes]]
 key = "mineral_steppe"
 temperature_min = 0.3
@@ -56,6 +81,35 @@ density_modifier = 1.0
 
 [biomes.deposit_weight_modifiers]
 # All weights at 1.0 (identity) — the steppe uses global catalog weights.
+
+# Material palette — balanced mix, the generalist biome.
+[[biomes.material_palette]]
+material_seed = 1002  # Calcium — common mineral deposit
+selection_weight = 2.0
+
+[[biomes.material_palette]]
+material_seed = 1005  # Verdant — organic/plant-adjacent, thrives in temperate
+selection_weight = 2.5
+
+[[biomes.material_palette]]
+material_seed = 1008  # Cobaltine — moderate metal ore
+selection_weight = 2.0
+
+[[biomes.material_palette]]
+material_seed = 1009  # Silite — silicate, well-represented here
+selection_weight = 1.5
+
+[[biomes.material_palette]]
+material_seed = 1001  # Ferrite — present but not dominant
+selection_weight = 1.0
+
+[[biomes.material_palette]]
+material_seed = 1003  # Sulfurite — trace amounts
+selection_weight = 0.5
+
+[[biomes.material_palette]]
+material_seed = 1010  # Phosphite — occasional find
+selection_weight = 0.8
 
 [[biomes]]
 key = "frost_shelf"
@@ -72,3 +126,28 @@ density_modifier = 0.7
 ferrite  = 0.2
 silite   = 1.0
 prismate = 3.0
+
+# Material palette — crystalline, cold-affinity materials dominate.
+[[biomes.material_palette]]
+material_seed = 1004  # Prismate — crystalline, thrives in cold
+selection_weight = 3.0
+
+[[biomes.material_palette]]
+material_seed = 1009  # Silite — silicate, ice-embedded
+selection_weight = 2.0
+
+[[biomes.material_palette]]
+material_seed = 1010  # Phosphite — phosphorescent, cold-stable
+selection_weight = 2.5
+
+[[biomes.material_palette]]
+material_seed = 1008  # Cobaltine — metallic veins in ice
+selection_weight = 1.0
+
+[[biomes.material_palette]]
+material_seed = 1005  # Verdant — frozen organic traces
+selection_weight = 0.3
+
+[[biomes.material_palette]]
+material_seed = 1006  # Osmium — rare deep-ice pockets
+selection_weight = 0.5
