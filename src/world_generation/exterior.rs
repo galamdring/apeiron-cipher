@@ -4132,6 +4132,64 @@ cluster_compactness = 0.75
         );
     }
 
+    /// Story 5a.4 – Phase 8: when every palette entry has `selection_weight` of
+    /// 0.0 the total weight is effectively zero and `choose_material_seed_from_palette`
+    /// returns 0 — the same sentinel as an empty palette. The deposit sites are
+    /// still generated (physical shapes) but every site carries `material_seed 0`,
+    /// which the spawn loop skips so no entities are created without a material.
+    #[test]
+    fn all_zero_weight_palette_produces_zero_material_seed() {
+        let profile = sample_profile();
+        let catalog = sample_catalog();
+        let surface = sample_flat_surface();
+
+        let biome = ChunkBiome {
+            biome_key: "zero_weight_biome".to_string(),
+            ground_color: [0.3, 0.3, 0.3],
+            density_modifier: 1.0,
+            deposit_weight_modifiers: HashMap::new(),
+            material_palette: vec![
+                PaletteMaterial {
+                    material_seed: 0xAA00_0000_0000_0001,
+                    selection_weight: 0.0,
+                },
+                PaletteMaterial {
+                    material_seed: 0xAA00_0000_0000_0002,
+                    selection_weight: 0.0,
+                },
+                PaletteMaterial {
+                    material_seed: 0xAA00_0000_0000_0003,
+                    selection_weight: 0.0,
+                },
+            ],
+        };
+
+        let mut total_sites = 0_usize;
+        for cx in -10..10 {
+            for cz in -10..10 {
+                let sites = generate_surface_mineral_deposit_sites(
+                    &profile,
+                    &catalog,
+                    &surface,
+                    ChunkCoord::new(cx, cz),
+                    &biome,
+                );
+                for site in &sites {
+                    total_sites += 1;
+                    assert_eq!(
+                        site.material_seed, 0,
+                        "all-zero-weight palette must produce material_seed 0, got {} for site in chunk ({}, {})",
+                        site.material_seed, cx, cz
+                    );
+                }
+            }
+        }
+        assert!(
+            total_sites > 0,
+            "at least some chunks should produce deposit sites even with an all-zero-weight palette"
+        );
+    }
+
     /// Story 5a.4 – Phase 8: a biome palette containing exactly one entry must
     /// always select that material seed, regardless of chunk coordinate or site
     /// index. We sweep a wide grid of chunks and verify every generated deposit
