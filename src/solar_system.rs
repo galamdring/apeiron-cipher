@@ -1144,4 +1144,97 @@ weight = 7.0
             );
         }
     }
+
+    /// Extreme seed values (0, 1, u64::MAX, u64::MAX - 1) must produce valid
+    /// profiles with no overflow, NaN, or out-of-range parameters.
+    #[test]
+    fn extreme_seed_values_produce_valid_profiles() {
+        let registry = StarTypeRegistry::default();
+        registry
+            .validate()
+            .expect("default registry should be valid");
+
+        let extreme_seeds: &[u64] = &[0, 1, u64::MAX, u64::MAX - 1];
+
+        for &raw in extreme_seeds {
+            let seed = SolarSystemSeed(raw);
+            let profile = derive_star_profile(seed, &registry);
+
+            // Find the matching star type definition so we can validate ranges.
+            let star_def = registry
+                .star_types
+                .iter()
+                .find(|st| st.key == profile.star_type_key)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "seed {}: star_type_key '{}' not found in registry",
+                        raw, profile.star_type_key
+                    )
+                });
+
+            assert!(
+                profile.luminosity >= star_def.luminosity_min
+                    && profile.luminosity <= star_def.luminosity_max,
+                "seed {}: luminosity {} outside [{}, {}]",
+                raw,
+                profile.luminosity,
+                star_def.luminosity_min,
+                star_def.luminosity_max,
+            );
+
+            assert!(
+                profile.surface_temperature_k >= star_def.temperature_min
+                    && profile.surface_temperature_k <= star_def.temperature_max,
+                "seed {}: temperature {} outside [{}, {}]",
+                raw,
+                profile.surface_temperature_k,
+                star_def.temperature_min,
+                star_def.temperature_max,
+            );
+
+            assert!(
+                profile.mass_solar >= star_def.mass_min && profile.mass_solar <= star_def.mass_max,
+                "seed {}: mass {} outside [{}, {}]",
+                raw,
+                profile.mass_solar,
+                star_def.mass_min,
+                star_def.mass_max,
+            );
+
+            // Habitable zone values must be finite, positive, and inner < outer.
+            assert!(
+                profile.habitable_zone_inner_au.is_finite()
+                    && profile.habitable_zone_inner_au > 0.0,
+                "seed {}: habitable_zone_inner_au {} is not finite and positive",
+                raw,
+                profile.habitable_zone_inner_au,
+            );
+            assert!(
+                profile.habitable_zone_outer_au.is_finite()
+                    && profile.habitable_zone_outer_au > 0.0,
+                "seed {}: habitable_zone_outer_au {} is not finite and positive",
+                raw,
+                profile.habitable_zone_outer_au,
+            );
+            assert!(
+                profile.habitable_zone_inner_au < profile.habitable_zone_outer_au,
+                "seed {}: inner {} >= outer {}",
+                raw,
+                profile.habitable_zone_inner_au,
+                profile.habitable_zone_outer_au,
+            );
+
+            // No NaN in any float field.
+            assert!(
+                !profile.luminosity.is_nan(),
+                "seed {}: luminosity is NaN",
+                raw
+            );
+            assert!(
+                !profile.mass_solar.is_nan(),
+                "seed {}: mass_solar is NaN",
+                raw
+            );
+        }
+    }
 }
