@@ -196,7 +196,7 @@ fn unit_interval_01(value: u64) -> f32 {
 /// **Determinism guarantee:** same seed always produces the same material.
 #[allow(dead_code)] // Public API for Story 5a.4 Phase 2+ (biome palette integration).
 pub fn derive_material_from_seed(seed: u64) -> GameMaterial {
-    let name = crate::fabricator::procedural_name(seed);
+    let name = crate::naming::procedural_name(seed);
 
     let color = [
         unit_interval_01(mix_seed(seed, MAT_COLOR_R_CHANNEL)),

@@ -329,22 +329,11 @@ fn apply_rule_with_perturbation(
 }
 
 // ── Procedural naming ────────────────────────────────────────────────────
+// Vocabulary tables and the `procedural_name` function live in
+// `crate::naming` so both the fabricator and the seed-derived material
+// pipeline can share them without cross-module coupling.
 
-pub const PREFIXES: &[&str] = &[
-    "Neo", "Aur", "Vex", "Cor", "Nyx", "Zel", "Pyr", "Lux", "Thal", "Kyn", "Ven", "Dra", "Sol",
-    "Mor", "Cyn", "Vir",
-];
-
-pub const SUFFIXES: &[&str] = &[
-    "ite", "ium", "ite", "ane", "ene", "oid", "ate", "ide", "yne", "ase", "ose", "ine", "ile",
-    "ore", "ux", "al",
-];
-
-pub fn procedural_name(seed: u64) -> String {
-    let prefix_idx = ((seed >> 8) as usize) % PREFIXES.len();
-    let suffix_idx = ((seed >> 16) as usize) % SUFFIXES.len();
-    format!("{}{}", PREFIXES[prefix_idx], SUFFIXES[suffix_idx])
-}
+pub use crate::naming::procedural_name;
 
 // ── Color blending ───────────────────────────────────────────────────────
 
