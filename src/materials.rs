@@ -464,8 +464,19 @@ fn spawn_material_objects(
 /// define which material seeds appear in each region, and
 /// [`MaterialCatalog::derive_and_register`] inserts them on first encounter.
 fn load_material_catalog(mut commands: Commands) {
-    let catalog = MaterialCatalog::default();
-    info!("Material catalog initialized (empty — materials are seed-derived on demand)");
+    let mut catalog = MaterialCatalog::default();
+
+    // Pre-seed the catalog with the 10 well-known materials so that indoor
+    // scenes (which spawn material objects at PostStartup) have something to
+    // display before exterior chunk generation populates the catalog further.
+    for &(_name, seed) in WELL_KNOWN_MATERIAL_SEEDS {
+        catalog.derive_and_register(seed);
+    }
+
+    info!(
+        "Material catalog initialized with {} well-known starter materials",
+        catalog.len()
+    );
     commands.insert_resource(catalog);
 }
 
@@ -1009,12 +1020,11 @@ visibility = "Hidden"
         }
     }
 
-    /// Verifies that `load_material_catalog` inserts an empty [`MaterialCatalog`]
-    /// during startup, before any chunk-generation systems have a chance to run.
-    /// This mirrors the real plugin's `PreStartup` registration and confirms the
-    /// "start empty, grow on demand" invariant.
+    /// Verifies that `load_material_catalog` pre-seeds the catalog with the
+    /// well-known materials so that indoor scene spawning (which runs at
+    /// `PostStartup`) has materials to display before exterior chunk generation.
     #[test]
-    fn catalog_starts_empty_before_chunk_generation() {
+    fn catalog_pre_seeded_with_well_known_materials() {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
         app.add_systems(PreStartup, load_material_catalog);
@@ -1024,11 +1034,16 @@ visibility = "Hidden"
             .world()
             .get_resource::<MaterialCatalog>()
             .expect("MaterialCatalog resource must exist after startup");
-        assert!(
-            catalog.is_empty(),
-            "catalog must be empty before any chunk generation; found {} entries",
-            catalog.len()
+        assert_eq!(
+            catalog.len(),
+            WELL_KNOWN_MATERIAL_SEEDS.len(),
+            "catalog must contain exactly the well-known starter materials",
         );
-        assert_eq!(catalog.len(), 0);
+        for &(_name, seed) in WELL_KNOWN_MATERIAL_SEEDS {
+            assert!(
+                catalog.get_by_seed(seed).is_some(),
+                "well-known seed {seed} must be present in the catalog after startup",
+            );
+        }
     }
 }
