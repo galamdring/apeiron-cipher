@@ -4127,4 +4127,110 @@ cluster_compactness = 0.75
         };
         assert_eq!(placement.material_seed, 0xCAFE_BABE);
     }
+
+    /// Story 5a.4 – Phase 5: first chunk generation populates the material
+    /// catalog with materials drawn from the biome palette.
+    ///
+    /// We generate deposit placements for a single chunk whose biome defines a
+    /// multi-material palette, then feed each placement's `material_seed` into
+    /// `MaterialCatalog::derive_and_register` (mirroring the runtime path in
+    /// `sync_active_exterior_chunks`). Afterward we verify:
+    ///
+    /// 1. The catalog is no longer empty.
+    /// 2. Every registered seed belongs to the biome palette.
+    /// 3. Over enough deposit sites, more than one palette material appears
+    ///    (both seeds have non-trivial weight, so probabilistic certainty is
+    ///    high).
+    #[test]
+    fn first_chunk_generation_populates_catalog_from_biome_palette() {
+        use crate::materials::MaterialCatalog;
+
+        let palette_seeds: Vec<u64> = vec![1001, 1003, 1006];
+        let biome = ChunkBiome {
+            biome_key: "test_biome".to_string(),
+            ground_color: [0.5, 0.5, 0.5],
+            density_modifier: 1.0,
+            deposit_weight_modifiers: HashMap::new(),
+            material_palette: palette_seeds
+                .iter()
+                .map(|&seed| PaletteMaterial {
+                    material_seed: seed,
+                    selection_weight: 1.0,
+                })
+                .collect(),
+        };
+
+        let profile = sample_profile();
+        let catalog = sample_catalog();
+        let surface = PlanetSurface::new_from_profile(
+            &profile,
+            &WorldGenerationConfig {
+                planet_seed: 2026,
+                chunk_size_world_units: 45.0,
+                active_chunk_radius: 1,
+                building_cell_size: 1.0,
+                planet_surface_min_radius: 500,
+                planet_surface_max_radius: 5000,
+                ..Default::default()
+            },
+        );
+
+        // Generate placements across several chunks to ensure we get deposits.
+        let mut all_placements = Vec::new();
+        for cx in -2..=2 {
+            for cz in -2..=2 {
+                let chunk = ChunkCoord::new(cx, cz);
+                let placements = generate_surface_mineral_chunk_baseline(
+                    &profile, &catalog, &surface, chunk, &biome,
+                );
+                all_placements.extend(placements);
+            }
+        }
+
+        // Filter to placements with valid material seeds (non-zero).
+        let valid_placements: Vec<_> = all_placements
+            .iter()
+            .filter(|p| p.material_seed != 0)
+            .collect();
+
+        // We expect at least some deposits were generated.
+        assert!(
+            !valid_placements.is_empty(),
+            "expected at least one deposit placement across 25 chunks"
+        );
+
+        // Mirror the runtime registration path: derive_and_register each seed.
+        let mut mat_catalog = MaterialCatalog::default();
+        assert!(
+            mat_catalog.is_empty(),
+            "catalog must start empty (seed-on-demand model)"
+        );
+
+        for placement in &valid_placements {
+            mat_catalog.derive_and_register(placement.material_seed);
+        }
+
+        // 1. Catalog is no longer empty.
+        assert!(
+            !mat_catalog.is_empty(),
+            "catalog must contain materials after chunk generation"
+        );
+
+        // 2. Every registered seed belongs to the biome palette.
+        let palette_seed_set: HashSet<u64> = palette_seeds.iter().copied().collect();
+        for seed in mat_catalog.seeds() {
+            assert!(
+                palette_seed_set.contains(seed),
+                "catalog contains seed {seed} not in biome palette {palette_seed_set:?}"
+            );
+        }
+
+        // 3. Multiple palette materials appear (with equal weights across 25
+        //    chunks, a single-material outcome is astronomically unlikely).
+        assert!(
+            mat_catalog.len() > 1,
+            "expected multiple palette materials in catalog, got {}",
+            mat_catalog.len()
+        );
+    }
 }
