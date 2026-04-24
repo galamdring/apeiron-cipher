@@ -330,17 +330,17 @@ fn apply_rule_with_perturbation(
 
 // ── Procedural naming ────────────────────────────────────────────────────
 
-const PREFIXES: &[&str] = &[
+pub const PREFIXES: &[&str] = &[
     "Neo", "Aur", "Vex", "Cor", "Nyx", "Zel", "Pyr", "Lux", "Thal", "Kyn", "Ven", "Dra", "Sol",
     "Mor", "Cyn", "Vir",
 ];
 
-const SUFFIXES: &[&str] = &[
+pub const SUFFIXES: &[&str] = &[
     "ite", "ium", "ite", "ane", "ene", "oid", "ate", "ide", "yne", "ase", "ose", "ine", "ile",
     "ore", "ux", "al",
 ];
 
-fn procedural_name(seed: u64) -> String {
+pub fn procedural_name(seed: u64) -> String {
     let prefix_idx = ((seed >> 8) as usize) % PREFIXES.len();
     let suffix_idx = ((seed >> 16) as usize) % SUFFIXES.len();
     format!("{}{}", PREFIXES[prefix_idx], SUFFIXES[suffix_idx])

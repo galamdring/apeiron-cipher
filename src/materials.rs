@@ -35,20 +35,28 @@ pub const MATERIAL_SURFACE_GAP: f32 = 0.01;
 // every seed-derived material in every saved world.
 
 /// Channel for deriving material density from a seed.
+#[allow(dead_code)] // Used by derive_material_from_seed; callers arrive in Story 5a.4 Phase 2+.
 pub const MAT_DENSITY_CHANNEL: u64 = 0xA7E1_0001_0000_0001;
 /// Channel for deriving material thermal resistance from a seed.
+#[allow(dead_code)]
 pub const MAT_THERMAL_RESISTANCE_CHANNEL: u64 = 0xA7E1_0001_0000_0002;
 /// Channel for deriving material reactivity from a seed.
+#[allow(dead_code)]
 pub const MAT_REACTIVITY_CHANNEL: u64 = 0xA7E1_0001_0000_0003;
 /// Channel for deriving material conductivity from a seed.
+#[allow(dead_code)]
 pub const MAT_CONDUCTIVITY_CHANNEL: u64 = 0xA7E1_0001_0000_0004;
 /// Channel for deriving material toxicity from a seed.
+#[allow(dead_code)]
 pub const MAT_TOXICITY_CHANNEL: u64 = 0xA7E1_0001_0000_0005;
 /// Channel for deriving the red component of material color from a seed.
+#[allow(dead_code)]
 pub const MAT_COLOR_R_CHANNEL: u64 = 0xA7E1_0001_0000_0006;
 /// Channel for deriving the green component of material color from a seed.
+#[allow(dead_code)]
 pub const MAT_COLOR_G_CHANNEL: u64 = 0xA7E1_0001_0000_0007;
 /// Channel for deriving the blue component of material color from a seed.
+#[allow(dead_code)]
 pub const MAT_COLOR_B_CHANNEL: u64 = 0xA7E1_0001_0000_0008;
 
 impl Plugin for MaterialPlugin {
@@ -151,6 +159,75 @@ impl GameMaterial {
         } else {
             0.13
         }
+    }
+}
+
+// ── Seed-derived helpers ─────────────────────────────────────────────────
+
+/// Deterministically mix a base seed and a channel into a new 64-bit value.
+///
+/// SplitMix64-style bit mixer — cheap, deterministic, no external crate.
+/// Identical to the mixer in `world_generation`; duplicated here so the
+/// material module has no coupling to world-gen internals.
+#[allow(dead_code)] // Called by derive_material_from_seed; callers arrive in later phases.
+fn mix_seed(base: u64, channel: u64) -> u64 {
+    let mut z = base.wrapping_add(channel.wrapping_mul(0x9E37_79B9_7F4A_7C15));
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
+/// Map a `u64` into the closed unit interval \[0.0, 1.0\].
+#[allow(dead_code)]
+fn unit_interval_01(value: u64) -> f32 {
+    (value as f64 / u64::MAX as f64) as f32
+}
+
+/// Derive a complete [`GameMaterial`] deterministically from a seed.
+///
+/// Every property is produced by mixing the seed with a fixed channel constant
+/// and mapping the result to \[0.0, 1.0\]. Color channels (R, G, B) use three
+/// additional channels. The name is generated procedurally via
+/// [`crate::fabricator::procedural_name`].
+///
+/// All property visibilities start as [`PropertyVisibility::Hidden`] — the
+/// observation/journal system reveals them through gameplay.
+///
+/// **Determinism guarantee:** same seed always produces the same material.
+#[allow(dead_code)] // Public API for Story 5a.4 Phase 2+ (biome palette integration).
+pub fn derive_material_from_seed(seed: u64) -> GameMaterial {
+    let name = crate::fabricator::procedural_name(seed);
+
+    let color = [
+        unit_interval_01(mix_seed(seed, MAT_COLOR_R_CHANNEL)),
+        unit_interval_01(mix_seed(seed, MAT_COLOR_G_CHANNEL)),
+        unit_interval_01(mix_seed(seed, MAT_COLOR_B_CHANNEL)),
+    ];
+
+    GameMaterial {
+        name,
+        seed,
+        color,
+        density: MaterialProperty {
+            value: unit_interval_01(mix_seed(seed, MAT_DENSITY_CHANNEL)),
+            visibility: PropertyVisibility::Hidden,
+        },
+        thermal_resistance: MaterialProperty {
+            value: unit_interval_01(mix_seed(seed, MAT_THERMAL_RESISTANCE_CHANNEL)),
+            visibility: PropertyVisibility::Hidden,
+        },
+        reactivity: MaterialProperty {
+            value: unit_interval_01(mix_seed(seed, MAT_REACTIVITY_CHANNEL)),
+            visibility: PropertyVisibility::Hidden,
+        },
+        conductivity: MaterialProperty {
+            value: unit_interval_01(mix_seed(seed, MAT_CONDUCTIVITY_CHANNEL)),
+            visibility: PropertyVisibility::Hidden,
+        },
+        toxicity: MaterialProperty {
+            value: unit_interval_01(mix_seed(seed, MAT_TOXICITY_CHANNEL)),
+            visibility: PropertyVisibility::Hidden,
+        },
     }
 }
 
@@ -455,5 +532,106 @@ visibility = "Hidden"
             assert!(seeds.insert(mat.seed), "duplicate seed: {}", mat.seed);
         }
         assert_eq!(names.len(), 10, "expected 10 unique materials");
+    }
+
+    // ── derive_material_from_seed tests ──────────────────────────────────
+
+    #[test]
+    fn derive_material_deterministic() {
+        let a = derive_material_from_seed(0xDEAD_BEEF);
+        let b = derive_material_from_seed(0xDEAD_BEEF);
+        assert_eq!(a.name, b.name);
+        assert_eq!(a.seed, b.seed);
+        assert!((a.density.value - b.density.value).abs() < f32::EPSILON);
+        assert!((a.thermal_resistance.value - b.thermal_resistance.value).abs() < f32::EPSILON);
+        assert!((a.reactivity.value - b.reactivity.value).abs() < f32::EPSILON);
+        assert!((a.conductivity.value - b.conductivity.value).abs() < f32::EPSILON);
+        assert!((a.toxicity.value - b.toxicity.value).abs() < f32::EPSILON);
+        assert_eq!(a.color, b.color);
+    }
+
+    #[test]
+    fn derive_material_different_seeds_differ() {
+        let a = derive_material_from_seed(1);
+        let b = derive_material_from_seed(2);
+        // With good mixing, at least one property should differ.
+        let same_density = (a.density.value - b.density.value).abs() < f32::EPSILON;
+        let same_reactivity = (a.reactivity.value - b.reactivity.value).abs() < f32::EPSILON;
+        let same_conductivity = (a.conductivity.value - b.conductivity.value).abs() < f32::EPSILON;
+        assert!(
+            !(same_density && same_reactivity && same_conductivity),
+            "different seeds should produce different materials"
+        );
+    }
+
+    #[test]
+    fn derive_material_all_hidden() {
+        let mat = derive_material_from_seed(42);
+        assert_eq!(mat.density.visibility, PropertyVisibility::Hidden);
+        assert_eq!(
+            mat.thermal_resistance.visibility,
+            PropertyVisibility::Hidden
+        );
+        assert_eq!(mat.reactivity.visibility, PropertyVisibility::Hidden);
+        assert_eq!(mat.conductivity.visibility, PropertyVisibility::Hidden);
+        assert_eq!(mat.toxicity.visibility, PropertyVisibility::Hidden);
+    }
+
+    #[test]
+    fn derive_material_values_in_unit_range() {
+        // Test across a spread of seeds to ensure all properties stay in [0, 1].
+        for seed in [0, 1, u64::MAX, 0xCAFE_BABE, 0x1234_5678_9ABC_DEF0] {
+            let mat = derive_material_from_seed(seed);
+            for (label, val) in [
+                ("density", mat.density.value),
+                ("thermal_resistance", mat.thermal_resistance.value),
+                ("reactivity", mat.reactivity.value),
+                ("conductivity", mat.conductivity.value),
+                ("toxicity", mat.toxicity.value),
+                ("color_r", mat.color[0]),
+                ("color_g", mat.color[1]),
+                ("color_b", mat.color[2]),
+            ] {
+                assert!(
+                    (0.0..=1.0).contains(&val),
+                    "seed {seed:#X}: {label} = {val} out of [0,1]"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn derive_material_name_not_empty() {
+        let mat = derive_material_from_seed(999);
+        assert!(!mat.name.is_empty());
+    }
+
+    #[test]
+    fn derive_material_preserves_seed() {
+        let seed = 0xFE00_0000_0000_0001;
+        let mat = derive_material_from_seed(seed);
+        assert_eq!(mat.seed, seed);
+    }
+
+    #[test]
+    fn mix_seed_deterministic() {
+        let a = mix_seed(100, 200);
+        let b = mix_seed(100, 200);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn mix_seed_different_channels_differ() {
+        let a = mix_seed(100, 1);
+        let b = mix_seed(100, 2);
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn unit_interval_01_bounds() {
+        assert!((unit_interval_01(0) - 0.0).abs() < f32::EPSILON);
+        assert!((unit_interval_01(u64::MAX) - 1.0).abs() < f32::EPSILON);
+        let mid = unit_interval_01(u64::MAX / 2);
+        assert!((0.0..=1.0).contains(&mid));
     }
 }
