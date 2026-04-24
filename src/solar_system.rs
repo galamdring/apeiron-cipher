@@ -1015,6 +1015,53 @@ weight = 7.0
         );
     }
 
+    /// All 3 star types must be reachable across 1000 seeds and the observed
+    /// distribution must approximately match the configured weights (7:2:1).
+    /// We allow ±10 percentage-points tolerance to account for pseudo-random
+    /// variance while still catching gross selection bugs.
+    #[test]
+    fn star_type_weighted_distribution_across_1000_seeds() {
+        let registry = test_registry();
+        let total_seeds: usize = 1_000;
+        let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+
+        for i in 0..total_seeds {
+            let profile = derive_star_profile(SolarSystemSeed(i as u64), &registry);
+            *counts.entry(profile.star_type_key).or_insert(0) += 1;
+        }
+
+        // Every type must appear at least once.
+        for star_type in &registry.star_types {
+            assert!(
+                counts.contains_key(&star_type.key),
+                "star type '{}' was never selected across {total_seeds} seeds",
+                star_type.key
+            );
+        }
+
+        // Compute total weight for expected proportions.
+        let total_weight: f64 = registry.star_types.iter().map(|st| st.weight as f64).sum();
+
+        for star_type in &registry.star_types {
+            let expected_fraction = star_type.weight as f64 / total_weight;
+            let observed_count = *counts.get(&star_type.key).unwrap_or(&0);
+            let observed_fraction = observed_count as f64 / total_seeds as f64;
+            let deviation = (observed_fraction - expected_fraction).abs();
+
+            assert!(
+                deviation < 0.10,
+                "star type '{}': expected ~{:.1}% but got {:.1}% ({} / {}), \
+                 deviation {:.1}pp exceeds 10pp tolerance",
+                star_type.key,
+                expected_fraction * 100.0,
+                observed_fraction * 100.0,
+                observed_count,
+                total_seeds,
+                deviation * 100.0,
+            );
+        }
+    }
+
     /// `SolarSystemSeed` must round-trip through serde without data loss.
     /// This validates that the newtype's `Serialize`/`Deserialize` derives
     /// correctly preserve the inner `u64` value.
