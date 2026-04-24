@@ -917,4 +917,75 @@ mod tests {
             "minimum fabricator output ({min_output}) must exceed maximum palette seed ({max_palette})"
         );
     }
+
+    /// Fabricate two distinct materials from different input pairs and verify
+    /// both outputs are independently retrievable from the catalog by seed.
+    #[test]
+    fn fabricate_two_materials_both_appear_in_catalog() {
+        use crate::materials::MaterialCatalog;
+
+        let rules = default_rules();
+        let mut catalog = MaterialCatalog::default();
+
+        // First fabrication: seeds 1001 + 1002
+        let a1 = test_material("InputA1", 1001, 0.4);
+        let b1 = test_material("InputB1", 1002, 0.6);
+        let output1 = rule_combine(&rules, &a1, &b1);
+        let seed1 = output1.seed;
+        let name1 = output1.name.clone();
+        let density1 = output1.density.value;
+        catalog.register_fabricated(output1);
+
+        // Second fabrication: seeds 1003 + 1004
+        let a2 = test_material("InputA2", 1003, 0.3);
+        let b2 = test_material("InputB2", 1004, 0.7);
+        let output2 = rule_combine(&rules, &a2, &b2);
+        let seed2 = output2.seed;
+        let name2 = output2.name.clone();
+        let density2 = output2.density.value;
+        catalog.register_fabricated(output2);
+
+        // Both seeds must differ (fabrication produces distinct combined seeds).
+        assert_ne!(
+            seed1, seed2,
+            "two fabrications from different inputs must produce different seeds"
+        );
+
+        // Catalog must contain exactly 2 entries.
+        assert_eq!(
+            catalog.len(),
+            2,
+            "catalog must contain both fabricated materials"
+        );
+
+        // First material retrievable by seed with preserved blended properties.
+        let entry1 = catalog
+            .get_by_seed(seed1)
+            .expect("first fabricated material must be in catalog");
+        assert_eq!(entry1.name, name1);
+        assert!(
+            (entry1.density.value - density1).abs() < f32::EPSILON,
+            "catalog must preserve blended density for first material"
+        );
+
+        // Second material retrievable by seed with preserved blended properties.
+        let entry2 = catalog
+            .get_by_seed(seed2)
+            .expect("second fabricated material must be in catalog");
+        assert_eq!(entry2.name, name2);
+        assert!(
+            (entry2.density.value - density2).abs() < f32::EPSILON,
+            "catalog must preserve blended density for second material"
+        );
+
+        // Both materials also retrievable by name.
+        assert!(
+            catalog.get_by_name(&name1).is_some(),
+            "first fabricated material must be retrievable by name"
+        );
+        assert!(
+            catalog.get_by_name(&name2).is_some(),
+            "second fabricated material must be retrievable by name"
+        );
+    }
 }
