@@ -5,18 +5,19 @@
 //! visibility states that control what the player can observe directly versus
 //! what must be discovered through experimentation.
 //!
-//! Material definitions live in TOML files under `assets/materials/`. They are
-//! loaded at startup via `std::fs` (not `AssetServer` — material definitions are
-//! startup configuration, not hot-reloadable game assets). Each file defines one
-//! material with its seed, color, and property values.
+//! Materials are seed-derived: each material is deterministically generated from
+//! a `u64` seed via [`derive_material_from_seed`]. The [`MaterialCatalog`]
+//! starts empty at startup and grows as the player explores — biome palettes
+//! define which seeds appear in each region, and materials are registered on
+//! first encounter.
 //!
-//! The [`MaterialCatalog`] resource holds every loaded definition, keyed by name.
+//! Legacy TOML files under `assets/materials/` are retained as reference
+//! documentation but are no longer loaded at startup.
+//!
 //! The `spawn_material_objects` system creates 3D entities from the catalog and
 //! distributes them across [`Surface`](crate::scene::Surface) shelves.
 
 use std::collections::HashMap;
-use std::fs;
-use std::path::Path;
 
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -374,51 +375,15 @@ fn spawn_material_objects(
 
 // ── Loading ──────────────────────────────────────────────────────────────
 
-const MATERIALS_DIR: &str = "assets/materials";
-
+/// Initializes an empty [`MaterialCatalog`].
+///
+/// Materials are no longer loaded from TOML files at startup. Instead, the
+/// catalog starts empty and grows as the player explores — biome palettes
+/// define which material seeds appear in each region, and
+/// [`MaterialCatalog::derive_and_register`] inserts them on first encounter.
 fn load_material_catalog(mut commands: Commands) {
-    let mut catalog = MaterialCatalog::default();
-    let dir = Path::new(MATERIALS_DIR);
-
-    if !dir.exists() || !dir.is_dir() {
-        warn!("{MATERIALS_DIR} directory not found — starting with an empty material catalog");
-        commands.insert_resource(catalog);
-        return;
-    }
-
-    let entries = match fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(err) => {
-            warn!("Could not read {MATERIALS_DIR}: {err}");
-            commands.insert_resource(catalog);
-            return;
-        }
-    };
-
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().is_some_and(|ext| ext == "toml") {
-            match fs::read_to_string(&path) {
-                Ok(contents) => match toml::from_str::<GameMaterial>(&contents) {
-                    Ok(mat) => {
-                        info!("Loaded material '{}' from {}", mat.name, path.display());
-                        catalog.materials.insert(mat.name.clone(), mat);
-                    }
-                    Err(e) => {
-                        warn!("Skipping malformed material file {}: {e}", path.display());
-                    }
-                },
-                Err(e) => {
-                    warn!("Could not read {}: {e}", path.display());
-                }
-            }
-        }
-    }
-
-    info!(
-        "Material catalog loaded: {} materials",
-        catalog.materials.len()
-    );
+    let catalog = MaterialCatalog::default();
+    info!("Material catalog initialized (empty — materials are seed-derived on demand)");
     commands.insert_resource(catalog);
 }
 
