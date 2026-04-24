@@ -291,6 +291,24 @@ impl MaterialCatalog {
         &self.by_seed[&seed]
     }
 
+    /// Register a pre-built material (e.g. from the fabricator) in the catalog.
+    ///
+    /// If a material with the same **seed** already exists, the existing entry is
+    /// kept unchanged and a reference to it is returned.  Otherwise the supplied
+    /// material is inserted after applying name disambiguation, and a reference
+    /// to the newly-inserted entry is returned.
+    pub fn register_fabricated(&mut self, mut mat: GameMaterial) -> &GameMaterial {
+        if self.by_seed.contains_key(&mat.seed) {
+            return &self.by_seed[&mat.seed];
+        }
+
+        mat.name = Self::disambiguated_name(&mat.name, mat.seed, &self.by_name);
+        let seed = mat.seed;
+        self.by_name.insert(mat.name.clone(), seed);
+        self.by_seed.insert(seed, mat);
+        &self.by_seed[&seed]
+    }
+
     /// Look up a material by its seed, returning `None` if not yet registered.
     #[allow(dead_code)]
     pub fn get_by_seed(&self, seed: u64) -> Option<&GameMaterial> {

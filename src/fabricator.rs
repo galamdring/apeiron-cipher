@@ -16,7 +16,8 @@ use bevy::prelude::*;
 use crate::combination::CombinationRules;
 use crate::journal::RecordFabrication;
 use crate::materials::{
-    GameMaterial, MATERIAL_SURFACE_GAP, MaterialObject, MaterialProperty, PropertyVisibility,
+    GameMaterial, MATERIAL_SURFACE_GAP, MaterialCatalog, MaterialObject, MaterialProperty,
+    PropertyVisibility,
 };
 use crate::scene::{FabricatorSceneConfig, FurnitureConfig, Workbench};
 
@@ -185,6 +186,7 @@ fn tick_processing(
     rules: Res<CombinationRules>,
     _journal_writer: MessageWriter<RecordFabrication>,
     mut state: ResMut<FabricatorState>,
+    mut catalog: ResMut<MaterialCatalog>,
     mut slots: Query<&mut InputSlot>,
     material_query: Query<&GameMaterial, With<MaterialObject>>,
     mut output_slot: Query<(&GlobalTransform, &mut OutputSlot)>,
@@ -222,6 +224,10 @@ fn tick_processing(
 
     // Rule-driven combination.
     let output_mat = rule_combine(&rules, &input_mats[0], &input_mats[1]);
+
+    // Register the fabricated material in the catalog so it is discoverable
+    // by seed/name lookups (e.g. journal, future recipes).
+    let _ = catalog.register_fabricated(output_mat.clone());
 
     // Spawn the output material on the output slot.
     let Ok((output_gtf, mut out_slot)) = output_slot.single_mut() else {
@@ -809,15 +815,22 @@ mod tests {
                 "fabricated name must equal procedural_name(combined_seed) for seeds ({seed_a}, {seed_b})"
             );
 
-            // Registration into the catalog must succeed without panic.
-            let registered = catalog.derive_and_register(output.seed);
+            // Registration via `register_fabricated` must preserve blended properties.
+            let blended_density = output.density.value;
+            let registered = catalog.register_fabricated(output);
             assert_eq!(
-                registered.seed, output.seed,
+                registered.seed,
+                a.seed.wrapping_mul(31).wrapping_add(b.seed),
                 "catalog entry seed must match fabricated seed for seeds ({seed_a}, {seed_b})"
             );
             assert!(
                 !registered.name.is_empty(),
                 "registered name must not be empty for seeds ({seed_a}, {seed_b})"
+            );
+            // The catalog must store the actual blended properties, not re-derived ones.
+            assert!(
+                (registered.density.value - blended_density).abs() < f32::EPSILON,
+                "catalog must preserve fabricated (blended) properties, not re-derive from seed for seeds ({seed_a}, {seed_b})"
             );
         }
 
