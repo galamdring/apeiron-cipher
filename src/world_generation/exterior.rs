@@ -4646,4 +4646,163 @@ cluster_compactness = 0.75
             chunks.len()
         );
     }
+
+    /// Story 5a.4 – Phase 9: different biomes produce different materials.
+    ///
+    /// Constructs two biomes with completely disjoint material palettes (no
+    /// shared seeds), generates deposits for each across many chunks, and
+    /// asserts that the material seed sets are disjoint. This proves that
+    /// walking between biome regions yields genuinely different resources.
+    #[test]
+    fn disjoint_biome_palettes_produce_disjoint_deposit_materials() {
+        let profile = sample_profile();
+        let catalog = sample_catalog();
+        let surface = sample_flat_surface();
+
+        // Scorched-style biome: only seeds 1001, 1003, 1007.
+        let scorched_biome = ChunkBiome {
+            biome_key: "scorched_flats".to_string(),
+            ground_color: [0.55, 0.38, 0.22],
+            density_modifier: 1.15,
+            deposit_weight_modifiers: HashMap::new(),
+            material_palette: vec![
+                PaletteMaterial {
+                    material_seed: 1001,
+                    selection_weight: 3.0,
+                },
+                PaletteMaterial {
+                    material_seed: 1003,
+                    selection_weight: 2.5,
+                },
+                PaletteMaterial {
+                    material_seed: 1007,
+                    selection_weight: 1.5,
+                },
+            ],
+        };
+
+        // Frost-style biome: only seeds 1004, 1010, 1008 — completely disjoint.
+        let frost_biome = ChunkBiome {
+            biome_key: "frost_shelf".to_string(),
+            ground_color: [0.42, 0.48, 0.56],
+            density_modifier: 0.7,
+            deposit_weight_modifiers: HashMap::new(),
+            material_palette: vec![
+                PaletteMaterial {
+                    material_seed: 1004,
+                    selection_weight: 3.0,
+                },
+                PaletteMaterial {
+                    material_seed: 1010,
+                    selection_weight: 2.5,
+                },
+                PaletteMaterial {
+                    material_seed: 1008,
+                    selection_weight: 1.0,
+                },
+            ],
+        };
+
+        let scorched_palette_seeds: std::collections::HashSet<u64> = scorched_biome
+            .material_palette
+            .iter()
+            .map(|p| p.material_seed)
+            .collect();
+        let frost_palette_seeds: std::collections::HashSet<u64> = frost_biome
+            .material_palette
+            .iter()
+            .map(|p| p.material_seed)
+            .collect();
+
+        // Sanity: the two palettes share no seeds.
+        assert!(
+            scorched_palette_seeds
+                .intersection(&frost_palette_seeds)
+                .next()
+                .is_none(),
+            "test precondition: palettes must be disjoint"
+        );
+
+        let mut scorched_observed: std::collections::HashSet<u64> =
+            std::collections::HashSet::new();
+        let mut frost_observed: std::collections::HashSet<u64> = std::collections::HashSet::new();
+
+        // Generate deposits across a grid of chunks for each biome.
+        for cx in -15..15 {
+            for cz in -15..15 {
+                let coord = ChunkCoord::new(cx, cz);
+
+                for site in generate_surface_mineral_deposit_sites(
+                    &profile,
+                    &catalog,
+                    &surface,
+                    coord,
+                    &scorched_biome,
+                ) {
+                    if site.material_seed != 0 {
+                        scorched_observed.insert(site.material_seed);
+                    }
+                }
+
+                for site in generate_surface_mineral_deposit_sites(
+                    &profile,
+                    &catalog,
+                    &surface,
+                    coord,
+                    &frost_biome,
+                ) {
+                    if site.material_seed != 0 {
+                        frost_observed.insert(site.material_seed);
+                    }
+                }
+            }
+        }
+
+        // Both biomes must have produced some deposits.
+        assert!(
+            !scorched_observed.is_empty(),
+            "scorched_flats biome must produce deposits with non-zero material seeds"
+        );
+        assert!(
+            !frost_observed.is_empty(),
+            "frost_shelf biome must produce deposits with non-zero material seeds"
+        );
+
+        // All observed scorched seeds must come from the scorched palette only.
+        for &seed in &scorched_observed {
+            assert!(
+                scorched_palette_seeds.contains(&seed),
+                "scorched deposit seed {seed:#018X} not in scorched palette"
+            );
+            assert!(
+                !frost_palette_seeds.contains(&seed),
+                "scorched deposit seed {seed:#018X} unexpectedly found in frost palette — \
+                 biomes are not producing distinct materials"
+            );
+        }
+
+        // All observed frost seeds must come from the frost palette only.
+        for &seed in &frost_observed {
+            assert!(
+                frost_palette_seeds.contains(&seed),
+                "frost deposit seed {seed:#018X} not in frost palette"
+            );
+            assert!(
+                !scorched_palette_seeds.contains(&seed),
+                "frost deposit seed {seed:#018X} unexpectedly found in scorched palette — \
+                 biomes are not producing distinct materials"
+            );
+        }
+
+        // The two observed sets must be completely disjoint.
+        let overlap: Vec<u64> = scorched_observed
+            .intersection(&frost_observed)
+            .copied()
+            .collect();
+        assert!(
+            overlap.is_empty(),
+            "scorched and frost deposits must use entirely different material seeds, \
+             but found overlap: {overlap:?}"
+        );
+    }
 }

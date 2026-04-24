@@ -1686,10 +1686,8 @@ pub struct ChunkBiome {
     pub deposit_weight_modifiers: HashMap<String, f32>,
     /// Material palette copied from the matched biome definition. Chunk
     /// generation uses this to select which material seeds can appear in
-    /// deposits within this biome region.
-    ///
-    /// Not yet consumed by deposit generation — wired in Story 5a.5.
-    #[allow(dead_code)]
+    /// deposits within this biome region. Consumed by
+    /// `choose_material_seed_from_palette` during deposit site generation.
     pub material_palette: Vec<PaletteMaterial>,
 }
 
