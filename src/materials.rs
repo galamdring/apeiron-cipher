@@ -853,6 +853,39 @@ visibility = "Hidden"
     }
 
     #[test]
+    fn derive_and_register_1000_seeds_no_duplicate_names() {
+        // With only 4 096 possible base names (16³), 1 000 seeds are expected
+        // to produce raw collisions.  `derive_and_register` must disambiguate
+        // every collision so the catalog never contains duplicate names.
+        let mut catalog = MaterialCatalog::default();
+
+        // Use a deterministic spread across the u64 range.
+        let seeds: Vec<u64> = (0u64..1000)
+            .map(|i| i.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(1))
+            .collect();
+
+        for &seed in &seeds {
+            catalog.derive_and_register(seed);
+        }
+
+        // Every entry in the catalog must have a unique name (HashMap keys
+        // guarantee this structurally, but verify the count matches).
+        assert_eq!(
+            catalog.materials.len(),
+            1000,
+            "catalog should contain exactly 1000 materials after 1000 unique seeds"
+        );
+
+        // Double-check: collect all names into a HashSet and confirm no loss.
+        let unique_names: std::collections::HashSet<&String> = catalog.materials.keys().collect();
+        assert_eq!(
+            unique_names.len(),
+            1000,
+            "all 1000 registered material names must be unique"
+        );
+    }
+
+    #[test]
     fn disambiguated_name_deterministic() {
         let mut existing = HashMap::new();
         existing.insert("Coranite".to_string(), derive_material_from_seed(0xBBBB));
