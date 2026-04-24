@@ -1636,7 +1636,7 @@ fn merge_player_additions(
 mod tests {
     use super::*;
     use crate::world_generation::{
-        FlatSurface, SteppedSurface, TiltedSurface, WorldGenerationConfig,
+        FlatSurface, PlanetSeed, SteppedSurface, TiltedSurface, WorldGenerationConfig,
     };
 
     fn sample_profile() -> WorldProfile {
@@ -3953,5 +3953,178 @@ cluster_compactness = 0.75
                 "non-finite normal at ({x}, {z})"
             );
         }
+    }
+
+    // ── Story 5a.4: Deposit sites carry material_seed from biome palette ─
+
+    #[test]
+    fn deposit_sites_carry_material_seed_from_palette() {
+        let profile = sample_profile();
+        let catalog = sample_catalog();
+        let surface = sample_flat_surface();
+
+        let seed_a: u64 = 0xFE00_0000_0000_0001;
+        let seed_b: u64 = 0xFE00_0000_0000_0002;
+        let biome = ChunkBiome {
+            biome_key: "test_biome".to_string(),
+            ground_color: [0.5, 0.5, 0.5],
+            density_modifier: 1.0,
+            deposit_weight_modifiers: HashMap::new(),
+            material_palette: vec![
+                PaletteMaterial {
+                    material_seed: seed_a,
+                    selection_weight: 1.0,
+                },
+                PaletteMaterial {
+                    material_seed: seed_b,
+                    selection_weight: 1.0,
+                },
+            ],
+        };
+
+        let sites = generate_surface_mineral_deposit_sites(
+            &profile,
+            &catalog,
+            &surface,
+            ChunkCoord::new(0, -1),
+            &biome,
+        );
+
+        assert!(
+            !sites.is_empty(),
+            "biome with a material palette should produce deposit sites"
+        );
+
+        for site in &sites {
+            assert!(
+                site.material_seed == seed_a || site.material_seed == seed_b,
+                "deposit site material_seed ({:#018X}) must come from the biome palette, \
+                 expected one of {seed_a:#018X} or {seed_b:#018X}",
+                site.material_seed,
+            );
+        }
+    }
+
+    #[test]
+    fn deposit_placements_inherit_material_seed_from_site() {
+        let profile = sample_profile();
+        let catalog = sample_catalog();
+        let surface = sample_flat_surface();
+
+        let seed: u64 = 0xAB00_0000_0000_0099;
+        let biome = ChunkBiome {
+            biome_key: "single_mat_biome".to_string(),
+            ground_color: [0.3, 0.3, 0.3],
+            density_modifier: 1.0,
+            deposit_weight_modifiers: HashMap::new(),
+            material_palette: vec![PaletteMaterial {
+                material_seed: seed,
+                selection_weight: 1.0,
+            }],
+        };
+
+        let sites = generate_surface_mineral_deposit_sites(
+            &profile,
+            &catalog,
+            &surface,
+            ChunkCoord::new(0, -1),
+            &biome,
+        );
+
+        assert!(!sites.is_empty(), "should produce at least one site");
+
+        for site in &sites {
+            assert_eq!(
+                site.material_seed, seed,
+                "single-material palette: every site must carry the sole seed"
+            );
+
+            let placements = expand_deposit_site_into_cluster(&profile, site, &surface);
+            for placement in &placements {
+                assert_eq!(
+                    placement.material_seed, site.material_seed,
+                    "child placement material_seed must match its parent site"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn empty_palette_produces_zero_material_seed() {
+        let profile = sample_profile();
+        let catalog = sample_catalog();
+        let surface = sample_flat_surface();
+
+        // Biome with no material palette entries.
+        let biome = ChunkBiome {
+            biome_key: "barren_biome".to_string(),
+            ground_color: [0.2, 0.2, 0.2],
+            density_modifier: 1.0,
+            deposit_weight_modifiers: HashMap::new(),
+            material_palette: Vec::new(),
+        };
+
+        let sites = generate_surface_mineral_deposit_sites(
+            &profile,
+            &catalog,
+            &surface,
+            ChunkCoord::new(0, -1),
+            &biome,
+        );
+
+        for site in &sites {
+            assert_eq!(
+                site.material_seed, 0,
+                "empty palette must produce material_seed 0"
+            );
+        }
+    }
+
+    #[test]
+    fn deposit_site_has_no_material_key_field() {
+        // Structural assertion: GeneratedSurfaceMineralDepositSite carries
+        // `material_seed: u64` — not a string-based `material_key`. We verify
+        // this by constructing a site and reading its material_seed, which would
+        // fail to compile if the field were renamed or removed.
+        let site = GeneratedSurfaceMineralDepositSite {
+            site_id: GeneratedDepositSiteId {
+                planet_seed: 1,
+                chunk_coord: ChunkCoord::new(0, 0),
+                definition_key: "test".to_string(),
+                local_site_index: 0,
+                generator_version: 1,
+            },
+            definition_key: "test".to_string(),
+            material_seed: 0xDEAD_BEEF,
+            center_xz: PositionXZ::new(0.0, 0.0),
+            radius_world_units: 1.0,
+            child_count: 1,
+            surface_y: 0.0,
+            surface_normal: [0.0, 1.0, 0.0],
+            scale_min: 0.5,
+            scale_max: 1.0,
+            cluster_compactness: 0.5,
+        };
+        assert_eq!(site.material_seed, 0xDEAD_BEEF);
+
+        // Same for the placement struct.
+        let placement = GeneratedSurfaceMineralPlacement {
+            generated_id: GeneratedObjectId {
+                planet_seed: PlanetSeed(1),
+                chunk_coord: ChunkCoord::new(0, 0),
+                object_kind_key: "test".to_string(),
+                local_candidate_index: 0,
+                generator_version: 1,
+            },
+            deposit_site_id: site.site_id.clone(),
+            definition_key: "test".to_string(),
+            material_seed: 0xCAFE_BABE,
+            position_xz: PositionXZ::new(0.0, 0.0),
+            surface_y: 0.0,
+            surface_normal: [0.0, 1.0, 0.0],
+            visual_scale: 1.0,
+            local_child_index: 0,
+        };
+        assert_eq!(placement.material_seed, 0xCAFE_BABE);
     }
 }
