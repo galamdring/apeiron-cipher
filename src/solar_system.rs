@@ -582,6 +582,31 @@ mod tests {
         );
     }
 
+    /// Three deliberately spaced seeds must not all collapse to the same
+    /// star profile. At least one pair must differ in some parameter,
+    /// confirming the derivation is non-degenerate for a small sample.
+    #[test]
+    fn three_seeds_produce_at_least_some_variation() {
+        let registry = test_registry();
+        let seeds = [
+            SolarSystemSeed(42),
+            SolarSystemSeed(123_456),
+            SolarSystemSeed(0xDEAD_BEEF),
+        ];
+        let profiles: Vec<StarProfile> = seeds
+            .iter()
+            .map(|s| derive_star_profile(*s, &registry))
+            .collect();
+
+        // At least one pair must differ in at least one field.
+        let all_identical = profiles[0] == profiles[1] && profiles[1] == profiles[2];
+        assert!(
+            !all_identical,
+            "three different seeds must not all produce identical star profiles: {:?}",
+            profiles
+        );
+    }
+
     /// All star types defined in the registry must be reachable. We brute-force
     /// a range of seeds and collect which type keys appear. With the default
     /// weights (7:2:1), even 10_000 seeds should comfortably hit all three.
