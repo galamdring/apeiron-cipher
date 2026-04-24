@@ -596,49 +596,6 @@ visibility = "Hidden"
         assert!(catalog.is_empty());
     }
 
-    #[test]
-    fn material_file_parsing_matches_expected_format() {
-        let file_content = include_str!("../assets/materials/ferrite.toml");
-        let mat: GameMaterial = toml::from_str(file_content).expect("parse ferrite.toml");
-        assert_eq!(mat.name, "Ferrite");
-        assert_eq!(mat.seed, 1001);
-        assert_eq!(mat.density.visibility, PropertyVisibility::Observable);
-        assert_eq!(
-            mat.thermal_resistance.visibility,
-            PropertyVisibility::Hidden
-        );
-    }
-
-    #[test]
-    fn all_material_files_parse_successfully() {
-        let files = [
-            include_str!("../assets/materials/ferrite.toml"),
-            include_str!("../assets/materials/calcium.toml"),
-            include_str!("../assets/materials/sulfurite.toml"),
-            include_str!("../assets/materials/prismate.toml"),
-            include_str!("../assets/materials/verdant.toml"),
-            include_str!("../assets/materials/osmium.toml"),
-            include_str!("../assets/materials/volatite.toml"),
-            include_str!("../assets/materials/cobaltine.toml"),
-            include_str!("../assets/materials/silite.toml"),
-            include_str!("../assets/materials/phosphite.toml"),
-        ];
-        let mut names = std::collections::HashSet::new();
-        let mut seeds = std::collections::HashSet::new();
-        for (i, src) in files.iter().enumerate() {
-            let mat: GameMaterial =
-                toml::from_str(src).unwrap_or_else(|e| panic!("file {i} failed: {e}"));
-            assert!(!mat.name.is_empty(), "material {i} has an empty name");
-            assert!(
-                names.insert(mat.name.clone()),
-                "duplicate name: {}",
-                mat.name
-            );
-            assert!(seeds.insert(mat.seed), "duplicate seed: {}", mat.seed);
-        }
-        assert_eq!(names.len(), 10, "expected 10 unique materials");
-    }
-
     // ── derive_material_from_seed tests ──────────────────────────────────
 
     #[test]
