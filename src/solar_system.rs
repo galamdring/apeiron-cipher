@@ -1591,6 +1591,37 @@ weight = 7.0
         );
     }
 
+    /// OrbitalConfig must round-trip through serde (JSON) without data loss.
+    #[test]
+    fn orbital_config_serde_round_trip() {
+        let original = OrbitalConfig::default();
+        let json =
+            serde_json::to_string(&original).expect("OrbitalConfig should serialize to JSON");
+        let deserialized: OrbitalConfig =
+            serde_json::from_str(&json).expect("OrbitalConfig should deserialize from JSON");
+
+        assert_eq!(
+            original.planet_count_min, deserialized.planet_count_min,
+            "round-trip should preserve planet_count_min"
+        );
+        assert_eq!(
+            original.planet_count_max, deserialized.planet_count_max,
+            "round-trip should preserve planet_count_max"
+        );
+        assert!(
+            (original.inner_orbit_au - deserialized.inner_orbit_au).abs() < f32::EPSILON,
+            "round-trip should preserve inner_orbit_au"
+        );
+        assert!(
+            (original.outer_orbit_au - deserialized.outer_orbit_au).abs() < f32::EPSILON,
+            "round-trip should preserve outer_orbit_au"
+        );
+        assert!(
+            (original.min_separation_au - deserialized.min_separation_au).abs() < f32::EPSILON,
+            "round-trip should preserve min_separation_au"
+        );
+    }
+
     /// OrbitalSlot must round-trip through serde (JSON) without data loss.
     #[test]
     fn orbital_slot_serde_round_trip() {
