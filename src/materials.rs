@@ -242,6 +242,66 @@ pub struct MaterialCatalog {
     pub materials: HashMap<String, GameMaterial>,
 }
 
+impl MaterialCatalog {
+    /// Derive a material from a seed and register it in the catalog, returning a
+    /// reference to the (possibly already-present) entry.
+    ///
+    /// If a material with the same **seed** already exists, returns the existing
+    /// entry unchanged.  If the procedurally generated name collides with a
+    /// *different* seed's material, a deterministic disambiguator derived from
+    /// the seed is appended (e.g. `"Vexorite-a3f1"`) until the name is unique.
+    #[allow(dead_code)] // Public API for Story 5a.4 Phase 3+ (biome palette integration).
+    pub fn derive_and_register(&mut self, seed: u64) -> &GameMaterial {
+        // Fast path: already registered (lookup by name of this seed's base material).
+        // We check all entries for a matching seed to avoid re-deriving.
+        if let Some(name) = self.materials.values().find_map(|m| {
+            if m.seed == seed {
+                Some(m.name.clone())
+            } else {
+                None
+            }
+        }) {
+            return &self.materials[&name];
+        }
+
+        let mut mat = derive_material_from_seed(seed);
+        mat.name = Self::disambiguated_name(&mat.name, seed, &self.materials);
+        let key = mat.name.clone();
+        self.materials.insert(key.clone(), mat);
+        &self.materials[&key]
+    }
+
+    /// Return `base_name` if it is not already taken in `existing`, otherwise
+    /// append a short hex suffix derived deterministically from `seed`.
+    ///
+    /// The suffix is produced by taking successive 16-bit windows of the seed
+    /// (formatted as lowercase hex).  In the astronomically unlikely case that
+    /// *all* eight 16-bit windows also collide, we fall back to the full 16-hex
+    /// seed representation which is unique by definition (different seeds).
+    #[allow(dead_code)] // Used by `derive_and_register`; called indirectly in tests.
+    fn disambiguated_name(
+        base_name: &str,
+        seed: u64,
+        existing: &HashMap<String, GameMaterial>,
+    ) -> String {
+        if !existing.contains_key(base_name) {
+            return base_name.to_owned();
+        }
+
+        // Try successive 16-bit windows of the seed as a 4-hex-char suffix.
+        for shift in (0..64).step_by(16) {
+            let fragment = (seed >> shift) as u16;
+            let candidate = format!("{base_name}-{fragment:04x}");
+            if !existing.contains_key(&candidate) {
+                return candidate;
+            }
+        }
+
+        // Ultimate fallback: full seed hex (guaranteed unique for distinct seeds).
+        format!("{base_name}-{seed:016x}")
+    }
+}
+
 // ── World-object marker ──────────────────────────────────────────────────
 
 /// Marks an entity as a material object that exists physically in the world.
@@ -733,5 +793,71 @@ visibility = "Hidden"
         assert!((unit_interval_01(u64::MAX) - 1.0).abs() < f32::EPSILON);
         let mid = unit_interval_01(u64::MAX / 2);
         assert!((0.0..=1.0).contains(&mid));
+    }
+
+    // ── Collision-avoidance tests ────────────────────────────────────────
+
+    #[test]
+    fn derive_and_register_returns_same_entry_for_same_seed() {
+        let mut catalog = MaterialCatalog::default();
+        let name1 = catalog.derive_and_register(42).name.clone();
+        let name2 = catalog.derive_and_register(42).name.clone();
+        assert_eq!(name1, name2);
+        assert_eq!(catalog.materials.len(), 1);
+    }
+
+    #[test]
+    fn derive_and_register_disambiguates_name_collision() {
+        // Force a collision by pre-inserting a material whose name matches
+        // what seed 999 would generate, but with a different seed.
+        let mut catalog = MaterialCatalog::default();
+        let base_name = crate::naming::procedural_name(999);
+
+        let mut imposter = derive_material_from_seed(0xBEEF);
+        imposter.name = base_name.clone();
+        imposter.seed = 0xBEEF; // different seed, same name
+        catalog.materials.insert(base_name.clone(), imposter);
+
+        let registered = catalog.derive_and_register(999);
+        // Name must differ from the pre-existing entry.
+        assert_ne!(registered.name, base_name);
+        // Must contain the base name as a prefix with a hex suffix.
+        assert!(
+            registered.name.starts_with(&base_name),
+            "disambiguated name '{}' should start with base '{}'",
+            registered.name,
+            base_name
+        );
+        assert!(
+            registered.name.contains('-'),
+            "disambiguated name should contain a '-' separator"
+        );
+        // Catalog now has both entries.
+        assert_eq!(catalog.materials.len(), 2);
+    }
+
+    #[test]
+    fn disambiguated_name_no_collision_returns_base() {
+        let existing = HashMap::new();
+        let result = MaterialCatalog::disambiguated_name("Vexorite", 42, &existing);
+        assert_eq!(result, "Vexorite");
+    }
+
+    #[test]
+    fn disambiguated_name_with_collision_appends_suffix() {
+        let mut existing = HashMap::new();
+        existing.insert("Vexorite".to_string(), derive_material_from_seed(0xAAAA));
+        let result =
+            MaterialCatalog::disambiguated_name("Vexorite", 0x1234_5678_9ABC_DEF0, &existing);
+        assert_eq!(result, "Vexorite-def0");
+    }
+
+    #[test]
+    fn disambiguated_name_deterministic() {
+        let mut existing = HashMap::new();
+        existing.insert("Coranite".to_string(), derive_material_from_seed(0xBBBB));
+        let a = MaterialCatalog::disambiguated_name("Coranite", 777, &existing);
+        let b = MaterialCatalog::disambiguated_name("Coranite", 777, &existing);
+        assert_eq!(a, b);
     }
 }
