@@ -188,7 +188,7 @@ fn unit_interval_01(value: u64) -> f32 {
 /// Every property is produced by mixing the seed with a fixed channel constant
 /// and mapping the result to \[0.0, 1.0\]. Color channels (R, G, B) use three
 /// additional channels. The name is generated procedurally via
-/// [`crate::fabricator::procedural_name`].
+/// [`crate::naming::procedural_name`].
 ///
 /// All property visibilities start as [`PropertyVisibility::Hidden`] — the
 /// observation/journal system reveals them through gameplay.
