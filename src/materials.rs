@@ -250,7 +250,6 @@ impl MaterialCatalog {
     /// entry unchanged.  If the procedurally generated name collides with a
     /// *different* seed's material, a deterministic disambiguator derived from
     /// the seed is appended (e.g. `"Vexorite-a3f1"`) until the name is unique.
-    #[allow(dead_code)] // Public API for Story 5a.4 Phase 3+ (biome palette integration).
     pub fn derive_and_register(&mut self, seed: u64) -> &GameMaterial {
         // Fast path: already registered (lookup by name of this seed's base material).
         // We check all entries for a matching seed to avoid re-deriving.
@@ -278,7 +277,6 @@ impl MaterialCatalog {
     /// (formatted as lowercase hex).  In the astronomically unlikely case that
     /// *all* eight 16-bit windows also collide, we fall back to the full 16-hex
     /// seed representation which is unique by definition (different seeds).
-    #[allow(dead_code)] // Used by `derive_and_register`; called indirectly in tests.
     fn disambiguated_name(
         base_name: &str,
         seed: u64,

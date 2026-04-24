@@ -49,8 +49,8 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     ActiveChunkNeighborhood, BiomeRegistry, ChunkBiome, ChunkCoord,
-    DEFAULT_MAX_PLACEMENT_SLOPE_RADIANS, GeneratedObjectId, PlanetSurface, SurfaceProvider,
-    WorldGenerationConfig, WorldProfile, chunk_origin_xz, derive_chunk_biome,
+    DEFAULT_MAX_PLACEMENT_SLOPE_RADIANS, GeneratedObjectId, PaletteMaterial, PlanetSurface,
+    SurfaceProvider, WorldGenerationConfig, WorldProfile, chunk_origin_xz, derive_chunk_biome,
     derive_chunk_generation_key, derive_generated_object_id, generate_chunk_heightmap_mesh,
     is_placement_valid, surface_alignment_rotation, world_position_to_chunk_coord,
 };
@@ -90,13 +90,15 @@ impl Plugin for ExteriorGenerationPlugin {
 ///
 /// The object type is always "surface mineral deposit". The definition tells us
 /// *which* deposit flavor this is:
-/// - which existing material it should yield / be represented by
 /// - how likely it is relative to sibling deposit definitions
 /// - how large it can appear
+///
+/// Deposit definitions are material-agnostic: they define *how* a deposit
+/// looks (shape, clustering), not *what* material it contains. Material
+/// selection is driven by the biome's `material_palette`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 struct SurfaceMineralDepositDefinition {
     pub key: String,
-    pub material_key: String,
     pub selection_weight: f32,
     pub scale_min: f32,
     pub scale_max: f32,
@@ -166,7 +168,6 @@ fn default_surface_mineral_deposits() -> Vec<SurfaceMineralDepositDefinition> {
     vec![
         SurfaceMineralDepositDefinition {
             key: "ferrite_surface_deposit".into(),
-            material_key: "Ferrite".into(),
             selection_weight: 1.0,
             scale_min: 0.9,
             scale_max: 1.2,
@@ -178,7 +179,6 @@ fn default_surface_mineral_deposits() -> Vec<SurfaceMineralDepositDefinition> {
         },
         SurfaceMineralDepositDefinition {
             key: "silite_surface_deposit".into(),
-            material_key: "Silite".into(),
             selection_weight: 0.8,
             scale_min: 0.85,
             scale_max: 1.15,
@@ -190,7 +190,6 @@ fn default_surface_mineral_deposits() -> Vec<SurfaceMineralDepositDefinition> {
         },
         SurfaceMineralDepositDefinition {
             key: "prismate_surface_deposit".into(),
-            material_key: "Prismate".into(),
             selection_weight: 0.45,
             scale_min: 0.8,
             scale_max: 1.05,
@@ -261,7 +260,7 @@ struct GeneratedSurfaceMineralPlacement {
     generated_id: GeneratedObjectId,
     deposit_site_id: GeneratedDepositSiteId,
     definition_key: String,
-    material_key: String,
+    material_seed: u64,
     position_xz: PositionXZ,
     surface_y: f32,
     /// Surface normal at the placement point, used for object alignment.
@@ -279,7 +278,7 @@ struct GeneratedSurfaceMineralPlacement {
 struct GeneratedSurfaceMineralDepositSite {
     site_id: GeneratedDepositSiteId,
     definition_key: String,
-    material_key: String,
+    material_seed: u64,
     center_xz: PositionXZ,
     radius_world_units: f32,
     child_count: u32,
@@ -497,7 +496,7 @@ fn sync_active_exterior_chunks(
     world_profile: Res<WorldProfile>,
     world_gen_config: Res<WorldGenerationConfig>,
     deposit_catalog: Res<SurfaceMineralDepositCatalog>,
-    material_catalog: Res<MaterialCatalog>,
+    mut material_catalog: ResMut<MaterialCatalog>,
     _exterior_patch: Res<ExteriorGroundPatch>,
     biome_registry: Res<BiomeRegistry>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -615,16 +614,14 @@ fn sync_active_exterior_chunks(
         }
 
         for placement in placements {
-            let Some(base_material) = material_catalog.materials.get(&placement.material_key)
-            else {
-                warn!(
-                    "Surface mineral deposit '{}' references unknown material '{}'; skipping placement",
-                    placement.definition_key, placement.material_key
-                );
+            // Skip deposits with no material (biome had an empty palette).
+            if placement.material_seed == 0 {
                 continue;
-            };
+            }
 
-            let deposit_material = base_material.clone();
+            let deposit_material = material_catalog
+                .derive_and_register(placement.material_seed)
+                .clone();
             let mesh = deposit_material.mesh_for_density(&mut meshes);
             let render_material = render_materials.add(StandardMaterial {
                 base_color: deposit_material.bevy_color(),
@@ -1104,7 +1101,12 @@ fn generate_surface_mineral_deposit_sites(
                     generator_version: SURFACE_MINERAL_DEPOSIT_GENERATOR_VERSION,
                 },
                 definition_key: definition.key.clone(),
-                material_key: definition.material_key.clone(),
+                material_seed: choose_material_seed_from_palette(
+                    &biome.material_palette,
+                    generation_key.placement_variation_key,
+                    chunk_coord,
+                    local_site_index,
+                ),
                 center_xz,
                 radius_world_units,
                 child_count: child_count.max(1),
@@ -1183,7 +1185,7 @@ fn expand_deposit_site_into_cluster(
             ),
             deposit_site_id: site.site_id.clone(),
             definition_key: site.definition_key.clone(),
-            material_key: site.material_key.clone(),
+            material_seed: site.material_seed,
             position_xz,
             surface_y: child_surface.position_y,
             surface_normal: child_surface.normal,
@@ -1245,6 +1247,50 @@ fn choose_deposit_definition<'a>(
     }
 
     definitions.last()
+}
+
+/// Choose a material seed from the biome's material palette using weighted
+/// random selection.
+///
+/// Returns `0` if the palette is empty (the spawning system will skip deposits
+/// with seed `0` since no valid material can be derived). The deterministic
+/// roll uses a distinct channel (`0x4400_0000_0000_0001`) so it does not
+/// correlate with the deposit-definition selection roll.
+fn choose_material_seed_from_palette(
+    palette: &[PaletteMaterial],
+    variation_key: u64,
+    chunk_coord: ChunkCoord,
+    local_candidate_index: u32,
+) -> u64 {
+    if palette.is_empty() {
+        return 0;
+    }
+
+    let total_weight: f32 = palette
+        .iter()
+        .map(|entry| entry.selection_weight.max(0.0))
+        .sum();
+    if total_weight <= f32::EPSILON {
+        return 0;
+    }
+
+    let roll = unit_interval_01(mix_candidate_input(
+        variation_key,
+        chunk_coord,
+        local_candidate_index,
+        0x4400_0000_0000_0001,
+    )) * total_weight;
+
+    let mut running = 0.0_f32;
+    for entry in palette {
+        running += entry.selection_weight.max(0.0);
+        if roll <= running {
+            return entry.material_seed;
+        }
+    }
+
+    // Fallback to last entry (float rounding edge case).
+    palette.last().map(|e| e.material_seed).unwrap_or(0)
 }
 
 fn jitter_offset_xz(
@@ -2210,7 +2256,6 @@ site_min_gap_world_units = 2.5
 
 [[deposits]]
 key = "ferrite_surface_deposit"
-material_key = "Ferrite"
 selection_weight = 1.0
 scale_min = 0.9
 scale_max = 1.2
@@ -2225,7 +2270,7 @@ cluster_compactness = 0.75
             toml::from_str(toml_str).expect("surface deposit catalog should parse");
 
         assert_eq!(catalog.deposits.len(), 1);
-        assert_eq!(catalog.deposits[0].material_key, "Ferrite");
+        assert_eq!(catalog.deposits[0].key, "ferrite_surface_deposit");
     }
 
     // ── Story 5.4: Removal delta tests ───────────────────────────────────
@@ -3322,7 +3367,6 @@ cluster_compactness = 0.75
         // total effective weight is zero.
         let definitions = vec![SurfaceMineralDepositDefinition {
             key: "ferrite".to_string(),
-            material_key: "Ferrite".to_string(),
             selection_weight: 1.0,
             scale_min: 0.9,
             scale_max: 1.2,
@@ -3359,7 +3403,6 @@ cluster_compactness = 0.75
         let definitions = vec![
             SurfaceMineralDepositDefinition {
                 key: "common".to_string(),
-                material_key: "Common".to_string(),
                 selection_weight: 1.0,
                 scale_min: 0.9,
                 scale_max: 1.2,
@@ -3371,7 +3414,6 @@ cluster_compactness = 0.75
             },
             SurfaceMineralDepositDefinition {
                 key: "rare".to_string(),
-                material_key: "Rare".to_string(),
                 selection_weight: 1.0,
                 scale_min: 0.9,
                 scale_max: 1.2,
@@ -3533,7 +3575,6 @@ cluster_compactness = 0.75
         let definitions = vec![
             SurfaceMineralDepositDefinition {
                 key: "only_option".to_string(),
-                material_key: "mat_a".to_string(),
                 selection_weight: 1.0,
                 scale_min: 0.5,
                 scale_max: 1.0,
@@ -3545,7 +3586,6 @@ cluster_compactness = 0.75
             },
             SurfaceMineralDepositDefinition {
                 key: "forbidden".to_string(),
-                material_key: "mat_b".to_string(),
                 selection_weight: 1.0,
                 scale_min: 0.5,
                 scale_max: 1.0,
@@ -3597,7 +3637,6 @@ cluster_compactness = 0.75
         let definitions = vec![
             SurfaceMineralDepositDefinition {
                 key: "a".to_string(),
-                material_key: "mat_a".to_string(),
                 selection_weight: 1.0,
                 scale_min: 0.5,
                 scale_max: 1.0,
@@ -3609,7 +3648,6 @@ cluster_compactness = 0.75
             },
             SurfaceMineralDepositDefinition {
                 key: "b".to_string(),
-                material_key: "mat_b".to_string(),
                 selection_weight: 2.0,
                 scale_min: 0.5,
                 scale_max: 1.0,
