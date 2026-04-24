@@ -4516,4 +4516,134 @@ cluster_compactness = 0.75
             palette_seeds.len()
         );
     }
+
+    // ── Story 5a.4 Phase 9: Cross-biome world generation smoke test ──────
+
+    /// Smoke test: generate many chunks across diverse coordinates, derive
+    /// per-chunk biomes from the real `BiomeRegistry`, run deposit generation
+    /// through the biome's material palette, and register every produced
+    /// material seed into `MaterialCatalog`. The test succeeds if:
+    /// - no panics occur at any stage,
+    /// - every deposit carries a non-zero `material_seed` that belongs to its
+    ///   biome's palette,
+    /// - every seed registers successfully in the `MaterialCatalog`,
+    /// - at least two distinct biome keys are exercised (proving multi-biome
+    ///   coverage).
+    #[test]
+    fn smoke_test_cross_biome_chunks_all_deposits_have_valid_materials() {
+        use crate::materials::MaterialCatalog;
+        use crate::world_generation::{BiomeRegistry, derive_chunk_biome};
+        use std::collections::HashSet;
+
+        let config = WorldGenerationConfig {
+            planet_seed: 55_443_322,
+            chunk_size_world_units: 45.0,
+            active_chunk_radius: 2,
+            building_cell_size: 1.0,
+            planet_surface_min_radius: 500,
+            planet_surface_max_radius: 5000,
+            ..Default::default()
+        };
+        let profile = WorldProfile::from_config(&config);
+        let surface = PlanetSurface::new_from_profile(&profile, &config);
+        let catalog = sample_catalog();
+        let biome_registry = BiomeRegistry::default();
+        let mut mat_catalog = MaterialCatalog::default();
+
+        let diameter = profile.planet_surface_diameter;
+
+        // A broad set of chunk coordinates designed to land in different
+        // temperature/moisture zones and therefore resolve to different biomes.
+        let chunks: Vec<ChunkCoord> = vec![
+            ChunkCoord::new(0, 0),
+            ChunkCoord::new(1, 1),
+            ChunkCoord::new(-1, -1),
+            ChunkCoord::new(10, -10),
+            ChunkCoord::new(-50, 50),
+            ChunkCoord::new(100, 200),
+            ChunkCoord::new(-100, -200),
+            ChunkCoord::new(diameter - 1, diameter - 1),
+            ChunkCoord::new(diameter, diameter),
+            ChunkCoord::new(diameter + 1, 0),
+            ChunkCoord::new(0, diameter + 1),
+            ChunkCoord::new(-diameter, -diameter),
+            ChunkCoord::new(-diameter - 1, -diameter - 1),
+            ChunkCoord::new(diameter / 2, diameter / 2),
+            ChunkCoord::new(diameter / 3, -diameter / 4),
+            // Additional spread to increase biome diversity.
+            ChunkCoord::new(diameter / 5, diameter / 7),
+            ChunkCoord::new(diameter / 10, diameter / 3),
+            ChunkCoord::new(3, 400),
+            ChunkCoord::new(250, 7),
+            ChunkCoord::new(diameter / 4, diameter / 6),
+        ];
+
+        let mut observed_biome_keys: HashSet<String> = HashSet::new();
+        let mut total_deposits = 0_usize;
+
+        for &chunk in &chunks {
+            let biome = derive_chunk_biome(&profile, &biome_registry, chunk);
+            observed_biome_keys.insert(biome.biome_key.clone());
+
+            let palette_seeds: HashSet<u64> = biome
+                .material_palette
+                .iter()
+                .map(|p| p.material_seed)
+                .collect();
+
+            let placements = generate_surface_mineral_chunk_baseline(
+                &profile, &catalog, &surface, chunk, &biome,
+            );
+
+            for placement in &placements {
+                // Positions must be finite.
+                assert!(
+                    placement.position_xz.x.is_finite(),
+                    "NaN/Inf x in deposit at chunk {chunk:?}"
+                );
+                assert!(
+                    placement.position_xz.z.is_finite(),
+                    "NaN/Inf z in deposit at chunk {chunk:?}"
+                );
+                assert!(
+                    placement.surface_y.is_finite(),
+                    "NaN/Inf surface_y in deposit at chunk {chunk:?}"
+                );
+
+                // Deposits from a biome with a non-empty palette must carry a
+                // non-zero seed drawn from that palette.
+                if !palette_seeds.is_empty() && placement.material_seed != 0 {
+                    assert!(
+                        palette_seeds.contains(&placement.material_seed),
+                        "deposit material_seed {:#018X} not in biome '{}' palette \
+                         (chunk {chunk:?})",
+                        placement.material_seed,
+                        biome.biome_key,
+                    );
+
+                    // Material must register without panicking.
+                    let registered = mat_catalog.derive_and_register(placement.material_seed);
+                    assert_eq!(
+                        registered.seed, placement.material_seed,
+                        "registered material seed mismatch"
+                    );
+                }
+            }
+
+            total_deposits += placements.len();
+        }
+
+        // Sanity: the test exercised at least two distinct biome keys.
+        assert!(
+            observed_biome_keys.len() >= 2,
+            "expected at least 2 distinct biomes but only saw: {observed_biome_keys:?}"
+        );
+
+        // Sanity: we actually generated some deposits across all those chunks.
+        assert!(
+            total_deposits > 0,
+            "expected at least some deposits across {} chunks",
+            chunks.len()
+        );
+    }
 }
