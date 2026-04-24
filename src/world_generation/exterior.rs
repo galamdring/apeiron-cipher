@@ -4917,6 +4917,108 @@ cluster_compactness = 0.75
         );
     }
 
+    // ── Story 5a.4 Phase 9: Deposit pickup yields valid material ───────
+
+    /// Verify that every deposit generated from biome palettes produces a
+    /// `GameMaterial` with a non-empty name, finite color channels, and
+    /// at least one non-zero property. This is the contract the pickup
+    /// system relies on: when a player picks up a deposit it must yield a
+    /// material with meaningful, displayable data — not a default stub.
+    #[test]
+    fn every_deposit_material_is_pickup_ready() {
+        use crate::materials::MaterialCatalog;
+
+        let config = WorldGenerationConfig {
+            planet_seed: 99_887_766,
+            chunk_size_world_units: 45.0,
+            active_chunk_radius: 2,
+            building_cell_size: 1.0,
+            planet_surface_min_radius: 500,
+            planet_surface_max_radius: 5000,
+            ..Default::default()
+        };
+        let profile = WorldProfile::from_config(&config);
+        let catalog = sample_catalog();
+        let surface = PlanetSurface::new_from_profile(&profile, &config);
+
+        let biome = ChunkBiome {
+            biome_key: "scorched_flats".to_string(),
+            ground_color: [0.55, 0.38, 0.22],
+            density_modifier: 1.15,
+            deposit_weight_modifiers: HashMap::new(),
+            material_palette: vec![
+                PaletteMaterial {
+                    material_seed: 1001,
+                    selection_weight: 3.0,
+                },
+                PaletteMaterial {
+                    material_seed: 1003,
+                    selection_weight: 2.0,
+                },
+                PaletteMaterial {
+                    material_seed: 1007,
+                    selection_weight: 1.5,
+                },
+            ],
+        };
+
+        let mut mat_catalog = MaterialCatalog::default();
+        let mut checked = 0_usize;
+
+        for cx in -3..=3 {
+            for cz in -3..=3 {
+                let chunk = ChunkCoord::new(cx, cz);
+                let placements = generate_surface_mineral_chunk_baseline(
+                    &profile, &catalog, &surface, chunk, &biome,
+                );
+
+                for placement in &placements {
+                    if placement.material_seed == 0 {
+                        continue;
+                    }
+
+                    let mat = mat_catalog.derive_and_register(placement.material_seed);
+
+                    // Name must be non-empty (the pickup HUD displays it).
+                    assert!(
+                        !mat.name.is_empty(),
+                        "deposit seed {} produced an empty name",
+                        placement.material_seed,
+                    );
+
+                    // Color channels must be finite and in [0, 1].
+                    for (i, &c) in mat.color.iter().enumerate() {
+                        assert!(
+                            c.is_finite() && (0.0..=1.0).contains(&c),
+                            "deposit seed {} color[{i}] = {c} out of range",
+                            placement.material_seed,
+                        );
+                    }
+
+                    // At least one property must be non-zero so the material
+                    // is distinguishable from a default stub.
+                    let any_nonzero = mat.density.value != 0.0
+                        || mat.thermal_resistance.value != 0.0
+                        || mat.reactivity.value != 0.0
+                        || mat.conductivity.value != 0.0
+                        || mat.toxicity.value != 0.0;
+                    assert!(
+                        any_nonzero,
+                        "deposit seed {} has all-zero properties",
+                        placement.material_seed,
+                    );
+
+                    checked += 1;
+                }
+            }
+        }
+
+        assert!(
+            checked > 0,
+            "expected at least one deposit to verify but found none"
+        );
+    }
+
     // ── Story 5a.4 Phase 9: Restart determinism ──────────────────────────
 
     /// Simulate two independent "restarts" with the same world seed: build
