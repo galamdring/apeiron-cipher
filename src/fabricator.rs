@@ -757,4 +757,77 @@ mod tests {
             "expected conductivity to move upward for a thermally conductive result"
         );
     }
+
+    /// Fabricated materials must produce valid procedural names that register
+    /// cleanly in the `MaterialCatalog` — even after the migration from
+    /// static TOML materials to seed-derived generation.
+    #[test]
+    fn fabricated_materials_register_valid_names_in_catalog() {
+        use crate::materials::MaterialCatalog;
+
+        let rules = default_rules();
+
+        // Simulate a range of fabrication outputs from different seed pairs.
+        let seed_pairs: &[(u64, u64)] = &[
+            (100, 200),
+            (1, 2),
+            (0xDEAD_BEEF, 0xCAFE_BABE),
+            (u64::MAX, 1),
+            (0, 0),
+            (7, 7),
+            (0xFE00_0000_0000_0001, 0xFE00_0000_0000_0002),
+        ];
+
+        let mut catalog = MaterialCatalog::default();
+
+        for &(seed_a, seed_b) in seed_pairs {
+            let a = test_material("InputA", seed_a, 0.5);
+            let b = test_material("InputB", seed_b, 0.5);
+            let output = rule_combine(&rules, &a, &b);
+
+            // Name must be non-empty and follow the three-part procedural pattern
+            // (no dashes — disambiguation only happens at catalog registration).
+            assert!(
+                !output.name.is_empty(),
+                "fabricated name must not be empty for seeds ({seed_a}, {seed_b})"
+            );
+            assert!(
+                output.name.len() >= 6,
+                "procedural names have at least 6 chars (prefix+root+suffix): got '{}' for seeds ({seed_a}, {seed_b})",
+                output.name
+            );
+            assert!(
+                output.name.chars().all(|c| c.is_alphanumeric()),
+                "base procedural name must be alphanumeric: got '{}' for seeds ({seed_a}, {seed_b})",
+                output.name
+            );
+
+            // Name must match what `procedural_name` returns for the combined seed.
+            let expected_name = procedural_name(output.seed);
+            assert_eq!(
+                output.name, expected_name,
+                "fabricated name must equal procedural_name(combined_seed) for seeds ({seed_a}, {seed_b})"
+            );
+
+            // Registration into the catalog must succeed without panic.
+            let registered = catalog.derive_and_register(output.seed);
+            assert_eq!(
+                registered.seed, output.seed,
+                "catalog entry seed must match fabricated seed for seeds ({seed_a}, {seed_b})"
+            );
+            assert!(
+                !registered.name.is_empty(),
+                "registered name must not be empty for seeds ({seed_a}, {seed_b})"
+            );
+        }
+
+        // All registered entries must have unique names (catalog invariant).
+        let names: Vec<&String> = catalog.materials.keys().collect();
+        let unique_count = names.iter().collect::<std::collections::HashSet<_>>().len();
+        assert_eq!(
+            names.len(),
+            unique_count,
+            "catalog must not contain duplicate names"
+        );
+    }
 }
