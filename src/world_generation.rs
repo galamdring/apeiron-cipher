@@ -1595,6 +1595,16 @@ pub struct ChunkBiome {
     pub density_modifier: f32,
     /// Per-deposit-key weight multipliers for material selection.
     pub deposit_weight_modifiers: HashMap<String, f32>,
+    /// Material palette copied from the matched biome definition. Chunk
+    /// generation uses this to select which material seeds can appear in
+    /// deposits within this biome region.
+    ///
+    /// Not yet consumed by deposit generation — wired in Story 5a.5.
+    #[expect(
+        dead_code,
+        reason = "populated now, consumed by deposit generation in Story 5a.5"
+    )]
+    pub material_palette: Vec<PaletteMaterial>,
 }
 
 /// Derive the biome for a chunk based on its canonical position on the planet.
@@ -1663,6 +1673,7 @@ pub fn derive_chunk_biome(
                 ground_color: biome_def.ground_color,
                 density_modifier: biome_def.density_modifier,
                 deposit_weight_modifiers: biome_def.deposit_weight_modifiers.clone(),
+                material_palette: biome_def.material_palette.clone(),
             };
         }
     }
@@ -1678,6 +1689,7 @@ pub fn derive_chunk_biome(
             ground_color: fallback.ground_color,
             density_modifier: fallback.density_modifier,
             deposit_weight_modifiers: fallback.deposit_weight_modifiers.clone(),
+            material_palette: fallback.material_palette.clone(),
         };
     }
 
@@ -1693,6 +1705,7 @@ pub fn derive_chunk_biome(
         ground_color: [0.26, 0.3, 0.22],
         density_modifier: 1.0,
         deposit_weight_modifiers: HashMap::new(),
+        material_palette: Vec::new(),
     }
 }
 

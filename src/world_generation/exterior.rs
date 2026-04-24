@@ -1623,6 +1623,7 @@ mod tests {
             ground_color: [0.42, 0.45, 0.30],
             density_modifier: 1.0,
             deposit_weight_modifiers: HashMap::new(),
+            material_palette: Vec::new(),
         }
     }
 
@@ -3427,12 +3428,14 @@ cluster_compactness = 0.75
             ground_color: [0.5, 0.5, 0.5],
             density_modifier: 1.0,
             deposit_weight_modifiers: HashMap::new(),
+            material_palette: Vec::new(),
         };
         let dense_biome = ChunkBiome {
             biome_key: "dense".to_string(),
             ground_color: [0.5, 0.5, 0.5],
             density_modifier: 3.0,
             deposit_weight_modifiers: HashMap::new(),
+            material_palette: Vec::new(),
         };
 
         // Sum placements across many chunks to smooth out noise variance.
@@ -3504,6 +3507,7 @@ cluster_compactness = 0.75
             ground_color: [0.5, 0.5, 0.5],
             density_modifier: 0.0,
             deposit_weight_modifiers: HashMap::new(),
+            material_palette: Vec::new(),
         };
 
         // Must not panic. With effective_threshold = threshold / EPSILON ≈ huge,
@@ -3655,6 +3659,7 @@ cluster_compactness = 0.75
             ground_color: [0.1, 0.1, 0.1],
             density_modifier: 1.0,
             deposit_weight_modifiers: modifiers,
+            material_palette: Vec::new(),
         };
 
         let chunk = ChunkCoord::new(0, 0);
