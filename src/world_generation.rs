@@ -1465,7 +1465,6 @@ impl Default for BiomeRegistry {
 /// A given seed may appear in multiple biomes with different weights, allowing
 /// materials to be common in one biome and rare in another.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[allow(dead_code)] // Used by Story 5a.4 phases 4+ (biome palette integration)
 pub struct PaletteMaterial {
     /// Seed value that deterministically defines this material's properties.
     ///
@@ -1516,6 +1515,13 @@ pub struct BiomeDefinition {
     /// which deposit type to place. Missing keys default to 1.0 (no change).
     #[serde(default)]
     pub deposit_weight_modifiers: HashMap<String, f32>,
+    /// Material palette for this biome: which material seeds can appear and at
+    /// what relative weight. During deposit generation, a seed is chosen from
+    /// this palette via weighted random selection. If a seed hasn't been
+    /// encountered before, it is derived and registered into `MaterialCatalog`
+    /// on first use.
+    #[serde(default)]
+    pub material_palette: Vec<PaletteMaterial>,
 }
 
 fn one_f32() -> f32 {
@@ -1542,6 +1548,7 @@ fn default_biome_definitions() -> Vec<BiomeDefinition> {
                 ("silite".to_string(), 0.8),
                 ("prismate".to_string(), 0.2),
             ]),
+            material_palette: Vec::new(),
         },
         BiomeDefinition {
             key: "mineral_steppe".to_string(),
@@ -1552,6 +1559,7 @@ fn default_biome_definitions() -> Vec<BiomeDefinition> {
             ground_color: [0.26, 0.3, 0.22],
             density_modifier: 1.0,
             deposit_weight_modifiers: HashMap::new(),
+            material_palette: Vec::new(),
         },
         BiomeDefinition {
             key: "frost_shelf".to_string(),
@@ -1566,6 +1574,7 @@ fn default_biome_definitions() -> Vec<BiomeDefinition> {
                 ("silite".to_string(), 1.0),
                 ("prismate".to_string(), 3.0),
             ]),
+            material_palette: Vec::new(),
         },
     ]
 }
@@ -2343,6 +2352,7 @@ mod tests {
                     ground_color: [1.0, 0.0, 0.0],
                     density_modifier: 1.0,
                     deposit_weight_modifiers: HashMap::new(),
+                    material_palette: Vec::new(),
                 },
                 // Fallback biome.
                 BiomeDefinition {
@@ -2354,6 +2364,7 @@ mod tests {
                     ground_color: [0.5, 0.5, 0.5],
                     density_modifier: 0.5,
                     deposit_weight_modifiers: HashMap::new(),
+                    material_palette: Vec::new(),
                 },
             ],
         };
@@ -2493,6 +2504,7 @@ mod tests {
                 ground_color: [1.0, 0.0, 0.0],
                 density_modifier: 5.0,
                 deposit_weight_modifiers: HashMap::new(),
+                material_palette: Vec::new(),
             }],
             fallback_biome_key: "does_not_exist".to_string(),
             noise_scale_chunks: 10.0,
