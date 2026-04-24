@@ -988,4 +988,77 @@ mod tests {
             "second fabricated material must be retrievable by name"
         );
     }
+
+    /// Fabricated material names must not shadow seed-derived material names.
+    ///
+    /// Both `derive_and_register` (biome palette path) and `register_fabricated`
+    /// (fabricator path) call `procedural_name` on their respective seeds.  If a
+    /// fabricated combined-seed happens to produce the same base name as an
+    /// already-registered biome seed, the `disambiguated_name` logic must kick in
+    /// so that every catalog entry remains independently retrievable by name.
+    ///
+    /// This test registers all well-known biome palette seeds first, then
+    /// fabricates every pairwise combination and registers the results.  After
+    /// all registrations the catalog must contain exactly
+    /// `palette_count + fabrication_count` entries with fully unique names.
+    #[test]
+    fn fabricated_material_name_does_not_collide_with_seed_derived_names() {
+        use crate::materials::MaterialCatalog;
+        use std::collections::HashSet;
+
+        let palette_seeds: Vec<u64> = (1001..=1010).collect();
+        let rules = default_rules();
+
+        let mut catalog = MaterialCatalog::default();
+
+        // ── Phase 1: register all biome palette materials (seed-derived) ─────
+        for &seed in &palette_seeds {
+            catalog.derive_and_register(seed);
+        }
+        assert_eq!(catalog.len(), palette_seeds.len());
+
+        // ── Phase 2: fabricate every pairwise combo and register ─────────────
+        let mut fabricated_seeds: Vec<u64> = Vec::new();
+        for &a_seed in &palette_seeds {
+            for &b_seed in &palette_seeds {
+                let a = test_material("A", a_seed, 0.5);
+                let b = test_material("B", b_seed, 0.5);
+                let output = rule_combine(&rules, &a, &b);
+                let fab_seed = output.seed;
+                fabricated_seeds.push(fab_seed);
+                catalog.register_fabricated(output);
+            }
+        }
+
+        // Deduplicate fabricated seeds (some combos could theoretically collide
+        // at the seed level, though in practice they don't for this range).
+        let unique_fab_seeds: HashSet<u64> = fabricated_seeds.iter().copied().collect();
+        let expected_count = palette_seeds.len() + unique_fab_seeds.len();
+
+        assert_eq!(
+            catalog.len(),
+            expected_count,
+            "catalog must contain every palette material and every unique fabricated material"
+        );
+
+        // ── Phase 3: verify all names are unique ────────────────────────────
+        let names: Vec<String> = catalog.names().cloned().collect();
+        let unique_names: HashSet<&String> = names.iter().collect();
+        assert_eq!(
+            names.len(),
+            unique_names.len(),
+            "every material in the catalog must have a unique name; found {} names for {} entries",
+            unique_names.len(),
+            names.len()
+        );
+
+        // ── Phase 4: every entry retrievable by its own name ────────────────
+        for name in &names {
+            assert!(
+                catalog.get_by_name(name).is_some(),
+                "material '{}' must be retrievable by name",
+                name
+            );
+        }
+    }
 }
