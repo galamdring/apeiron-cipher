@@ -484,9 +484,15 @@ mod tests {
     }
 
     /// Different seeds should (with overwhelming probability) produce
-    /// different profiles. We test 100 consecutive seeds and assert that
-    /// not all of them are identical — a trivially broken derivation
-    /// (e.g., always returning the first type) would fail this.
+    /// different profiles. We test 100 consecutive seeds and verify:
+    /// 1. Not all profiles are identical (basic non-degeneracy).
+    /// 2. Multiple distinct profiles exist (not just two values).
+    /// 3. Numeric parameters show actual variation (not clamped to a
+    ///    single value).
+    ///
+    /// A trivially broken derivation (e.g., ignoring the seed, always
+    /// returning the first type, or collapsing all parameters to a
+    /// boundary) would fail at least one of these checks.
     #[test]
     fn different_seeds_produce_different_stars() {
         let registry = test_registry();
@@ -494,11 +500,61 @@ mod tests {
             .map(|i| derive_star_profile(SolarSystemSeed(i), &registry))
             .collect();
 
+        // Check 1: not all identical.
         let first = &profiles[0];
         let all_same = profiles.iter().all(|p| p == first);
         assert!(
             !all_same,
             "100 consecutive seeds must not all produce the same star"
+        );
+
+        // Check 2: meaningful count of distinct profiles. With 100 seeds
+        // and a well-mixed derivation, we expect many unique combinations.
+        // Requiring at least 10 distinct profiles is conservative.
+        let distinct_count = {
+            let mut seen = std::collections::HashSet::new();
+            for p in &profiles {
+                // Hash on the concatenation of all distinguishing fields.
+                // StarProfile does not implement Hash, so we use a string key.
+                let key = format!(
+                    "{}|{:.8}|{}|{:.8}",
+                    p.star_type_key, p.luminosity, p.surface_temperature_k, p.mass_solar
+                );
+                seen.insert(key);
+            }
+            seen.len()
+        };
+        assert!(
+            distinct_count >= 10,
+            "expected at least 10 distinct profiles from 100 seeds, got {distinct_count}"
+        );
+
+        // Check 3: numeric parameter variation. Collect min/max of
+        // luminosity across all profiles and verify the range is non-trivial.
+        let lum_min = profiles
+            .iter()
+            .map(|p| p.luminosity)
+            .fold(f32::INFINITY, f32::min);
+        let lum_max = profiles
+            .iter()
+            .map(|p| p.luminosity)
+            .fold(f32::NEG_INFINITY, f32::max);
+        assert!(
+            (lum_max - lum_min) > 0.001,
+            "luminosity should vary across 100 seeds, got range [{lum_min}, {lum_max}]"
+        );
+
+        let mass_min = profiles
+            .iter()
+            .map(|p| p.mass_solar)
+            .fold(f32::INFINITY, f32::min);
+        let mass_max = profiles
+            .iter()
+            .map(|p| p.mass_solar)
+            .fold(f32::NEG_INFINITY, f32::max);
+        assert!(
+            (mass_max - mass_min) > 0.001,
+            "mass should vary across 100 seeds, got range [{mass_min}, {mass_max}]"
         );
     }
 
