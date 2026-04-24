@@ -36,28 +36,20 @@ pub const MATERIAL_SURFACE_GAP: f32 = 0.01;
 // every seed-derived material in every saved world.
 
 /// Channel for deriving material density from a seed.
-#[allow(dead_code)] // Used by derive_material_from_seed; callers arrive in Story 5a.4 Phase 2+.
 pub const MAT_DENSITY_CHANNEL: u64 = 0xA7E1_0001_0000_0001;
 /// Channel for deriving material thermal resistance from a seed.
-#[allow(dead_code)]
 pub const MAT_THERMAL_RESISTANCE_CHANNEL: u64 = 0xA7E1_0001_0000_0002;
 /// Channel for deriving material reactivity from a seed.
-#[allow(dead_code)]
 pub const MAT_REACTIVITY_CHANNEL: u64 = 0xA7E1_0001_0000_0003;
 /// Channel for deriving material conductivity from a seed.
-#[allow(dead_code)]
 pub const MAT_CONDUCTIVITY_CHANNEL: u64 = 0xA7E1_0001_0000_0004;
 /// Channel for deriving material toxicity from a seed.
-#[allow(dead_code)]
 pub const MAT_TOXICITY_CHANNEL: u64 = 0xA7E1_0001_0000_0005;
 /// Channel for deriving the red component of material color from a seed.
-#[allow(dead_code)]
 pub const MAT_COLOR_R_CHANNEL: u64 = 0xA7E1_0001_0000_0006;
 /// Channel for deriving the green component of material color from a seed.
-#[allow(dead_code)]
 pub const MAT_COLOR_G_CHANNEL: u64 = 0xA7E1_0001_0000_0007;
 /// Channel for deriving the blue component of material color from a seed.
-#[allow(dead_code)]
 pub const MAT_COLOR_B_CHANNEL: u64 = 0xA7E1_0001_0000_0008;
 
 // ── Well-known material seeds ────────────────────────────────────────────
@@ -70,7 +62,6 @@ pub const MAT_COLOR_B_CHANNEL: u64 = 0xA7E1_0001_0000_0008;
 
 /// Well-known material seeds: `(name, seed)` pairs for the 10 original
 /// materials that shipped in the static TOML catalog.
-#[allow(dead_code)] // Consumed by biome palette integration in Story 5a.4 Phase 7+.
 pub const WELL_KNOWN_MATERIAL_SEEDS: &[(&str, u64)] = &[
     ("Ferrite", 1001),
     ("Calcium", 1002),
@@ -194,7 +185,6 @@ impl GameMaterial {
 /// SplitMix64-style bit mixer — cheap, deterministic, no external crate.
 /// Identical to the mixer in `world_generation`; duplicated here so the
 /// material module has no coupling to world-gen internals.
-#[allow(dead_code)] // Called by derive_material_from_seed; callers arrive in later phases.
 fn mix_seed(base: u64, channel: u64) -> u64 {
     let mut z = base.wrapping_add(channel.wrapping_mul(0x9E37_79B9_7F4A_7C15));
     z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
@@ -203,7 +193,6 @@ fn mix_seed(base: u64, channel: u64) -> u64 {
 }
 
 /// Map a `u64` into the closed unit interval \[0.0, 1.0\].
-#[allow(dead_code)]
 fn unit_interval_01(value: u64) -> f32 {
     (value as f64 / u64::MAX as f64) as f32
 }
@@ -219,7 +208,6 @@ fn unit_interval_01(value: u64) -> f32 {
 /// observation/journal system reveals them through gameplay.
 ///
 /// **Determinism guarantee:** same seed always produces the same material.
-#[allow(dead_code)] // Public API for Story 5a.4 Phase 2+ (biome palette integration).
 pub fn derive_material_from_seed(seed: u64) -> GameMaterial {
     let name = crate::naming::procedural_name(seed);
 

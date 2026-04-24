@@ -4517,6 +4517,116 @@ cluster_compactness = 0.75
         );
     }
 
+    // ── Story 5a.4 Phase 9: Palette swap does not change deposit count ──
+
+    /// Changing a biome's material palette must not alter how many deposits
+    /// spawn — only *which* materials they carry. This test constructs two
+    /// biomes that are identical except for their `material_palette`, then
+    /// generates deposits across many chunks for each and asserts that the
+    /// total deposit count is the same. The material seeds produced must
+    /// differ (proving the palette swap took effect), but the spatial
+    /// distribution of deposit sites is palette-independent.
+    #[test]
+    fn palette_swap_does_not_change_deposit_count() {
+        let profile = sample_profile();
+        let catalog = sample_catalog();
+        let surface = sample_flat_surface();
+
+        let palette_a = vec![
+            PaletteMaterial {
+                material_seed: 1001,
+                selection_weight: 3.0,
+            },
+            PaletteMaterial {
+                material_seed: 1003,
+                selection_weight: 2.0,
+            },
+        ];
+        let palette_b = vec![
+            PaletteMaterial {
+                material_seed: 1004,
+                selection_weight: 1.5,
+            },
+            PaletteMaterial {
+                material_seed: 1010,
+                selection_weight: 4.0,
+            },
+        ];
+
+        let biome_a = ChunkBiome {
+            biome_key: "test_a".to_string(),
+            ground_color: [0.5, 0.5, 0.5],
+            density_modifier: 1.0,
+            deposit_weight_modifiers: HashMap::new(),
+            material_palette: palette_a,
+        };
+        let biome_b = ChunkBiome {
+            biome_key: "test_b".to_string(),
+            ground_color: [0.5, 0.5, 0.5],
+            density_modifier: 1.0,
+            deposit_weight_modifiers: HashMap::new(),
+            material_palette: palette_b,
+        };
+
+        let mut count_a = 0_usize;
+        let mut count_b = 0_usize;
+        let mut seeds_a: std::collections::HashSet<u64> = std::collections::HashSet::new();
+        let mut seeds_b: std::collections::HashSet<u64> = std::collections::HashSet::new();
+
+        for cx in -10..10 {
+            for cz in -10..10 {
+                let coord = ChunkCoord::new(cx, cz);
+
+                let placements_a = generate_surface_mineral_chunk_baseline(
+                    &profile, &catalog, &surface, coord, &biome_a,
+                );
+                let placements_b = generate_surface_mineral_chunk_baseline(
+                    &profile, &catalog, &surface, coord, &biome_b,
+                );
+
+                // Per-chunk counts must be identical because every generation
+                // decision except material selection is identical.
+                assert_eq!(
+                    placements_a.len(),
+                    placements_b.len(),
+                    "chunk ({cx}, {cz}): palette swap changed deposit count \
+                     ({} vs {})",
+                    placements_a.len(),
+                    placements_b.len()
+                );
+
+                count_a += placements_a.len();
+                count_b += placements_b.len();
+
+                for p in &placements_a {
+                    if p.material_seed != 0 {
+                        seeds_a.insert(p.material_seed);
+                    }
+                }
+                for p in &placements_b {
+                    if p.material_seed != 0 {
+                        seeds_b.insert(p.material_seed);
+                    }
+                }
+            }
+        }
+
+        // Total counts must match exactly.
+        assert_eq!(
+            count_a, count_b,
+            "total deposit count changed with palette swap: {count_a} vs {count_b}"
+        );
+
+        // Sanity: we actually generated some deposits.
+        assert!(count_a > 0, "expected at least some deposits");
+
+        // The material seeds should differ — proving the palette took effect.
+        assert_ne!(
+            seeds_a, seeds_b,
+            "both palettes produced identical material seeds — palette swap had no effect"
+        );
+    }
+
     // ── Story 5a.4 Phase 9: Cross-biome world generation smoke test ──────
 
     /// Smoke test: generate many chunks across diverse coordinates, derive
