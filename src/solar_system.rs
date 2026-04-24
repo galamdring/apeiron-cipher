@@ -804,6 +804,161 @@ mod tests {
         );
     }
 
+    // ── Invalid TOML Tests ────────────────────────────────────────────────
+    //
+    // These tests verify that malformed TOML input produces clear,
+    // actionable errors — either at the deserialization stage (missing
+    // required fields) or at the validation stage (semantically invalid
+    // values like negative weights).
+
+    /// TOML missing a required field (`weight`) must fail deserialization
+    /// with an error message that identifies the missing field.
+    #[test]
+    fn invalid_toml_missing_field_produces_clear_error() {
+        let toml_str = r#"
+[[star_types]]
+key = "red_dwarf"
+luminosity_min = 0.01
+luminosity_max = 0.08
+temperature_min = 2500
+temperature_max = 3700
+mass_min = 0.08
+mass_max = 0.45
+"#;
+        let err = toml::from_str::<StarTypeRegistry>(toml_str)
+            .expect_err("TOML missing 'weight' field should fail to deserialize");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("weight"),
+            "error should identify the missing 'weight' field, got: {msg}"
+        );
+    }
+
+    /// TOML missing the `key` field must fail deserialization with a clear
+    /// message identifying which field is absent.
+    #[test]
+    fn invalid_toml_missing_key_field_produces_clear_error() {
+        let toml_str = r#"
+[[star_types]]
+luminosity_min = 0.01
+luminosity_max = 0.08
+temperature_min = 2500
+temperature_max = 3700
+mass_min = 0.08
+mass_max = 0.45
+weight = 7.0
+"#;
+        let err = toml::from_str::<StarTypeRegistry>(toml_str)
+            .expect_err("TOML missing 'key' field should fail to deserialize");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("key"),
+            "error should identify the missing 'key' field, got: {msg}"
+        );
+    }
+
+    /// TOML missing a numeric range field (`temperature_max`) must fail
+    /// deserialization with a message identifying the absent field.
+    #[test]
+    fn invalid_toml_missing_temperature_max_produces_clear_error() {
+        let toml_str = r#"
+[[star_types]]
+key = "red_dwarf"
+luminosity_min = 0.01
+luminosity_max = 0.08
+temperature_min = 2500
+mass_min = 0.08
+mass_max = 0.45
+weight = 7.0
+"#;
+        let err = toml::from_str::<StarTypeRegistry>(toml_str)
+            .expect_err("TOML missing 'temperature_max' should fail to deserialize");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("temperature_max"),
+            "error should identify the missing 'temperature_max' field, got: {msg}"
+        );
+    }
+
+    /// TOML with a negative weight parses successfully (it's a valid f32),
+    /// but must be caught by `validate()` with a clear error message.
+    #[test]
+    fn invalid_toml_negative_weight_caught_by_validation() {
+        let toml_str = r#"
+[[star_types]]
+key = "red_dwarf"
+luminosity_min = 0.01
+luminosity_max = 0.08
+temperature_min = 2500
+temperature_max = 3700
+mass_min = 0.08
+mass_max = 0.45
+weight = -3.0
+"#;
+        let registry = toml::from_str::<StarTypeRegistry>(toml_str)
+            .expect("negative weight is valid f32, should parse");
+        let err = registry
+            .validate()
+            .expect_err("negative weight must fail validation");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("weight") && msg.contains("positive"),
+            "error should mention weight must be positive, got: {msg}"
+        );
+    }
+
+    /// Completely empty TOML (no `star_types` array) should either fail to
+    /// deserialize or produce an empty registry that fails validation.
+    #[test]
+    fn invalid_toml_empty_file_produces_clear_error() {
+        let toml_str = "";
+        match toml::from_str::<StarTypeRegistry>(toml_str) {
+            Err(e) => {
+                // Deserialization failed — that's acceptable as long as the
+                // error is not completely opaque.
+                let msg = e.to_string();
+                assert!(
+                    !msg.is_empty(),
+                    "deserialization error should have a non-empty message"
+                );
+            }
+            Ok(registry) => {
+                // Parsed into an empty registry — validation must catch it.
+                let err = registry
+                    .validate()
+                    .expect_err("empty registry must fail validation");
+                assert!(
+                    err.contains("at least one"),
+                    "error should mention 'at least one', got: {err}"
+                );
+            }
+        }
+    }
+
+    /// TOML with a wrong type for a field (string where u32 expected) must
+    /// fail deserialization with a clear error.
+    #[test]
+    fn invalid_toml_wrong_type_produces_clear_error() {
+        let toml_str = r#"
+[[star_types]]
+key = "red_dwarf"
+luminosity_min = 0.01
+luminosity_max = 0.08
+temperature_min = "not_a_number"
+temperature_max = 3700
+mass_min = 0.08
+mass_max = 0.45
+weight = 7.0
+"#;
+        let err = toml::from_str::<StarTypeRegistry>(toml_str)
+            .expect_err("wrong type for temperature_min should fail to deserialize");
+        let msg = err.to_string();
+        assert!(
+            !msg.is_empty(),
+            "deserialization error should have a non-empty message, got: {msg}"
+        );
+    }
+
     /// `SolarSystemSeed` must round-trip through serde without data loss.
     /// This validates that the newtype's `Serialize`/`Deserialize` derives
     /// correctly preserve the inner `u64` value.
