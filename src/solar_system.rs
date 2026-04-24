@@ -1086,4 +1086,62 @@ weight = 7.0
             );
         }
     }
+
+    /// A registry containing exactly one star type must always select that
+    /// type, regardless of the seed. This validates that the weighted
+    /// selection logic handles the degenerate single-entry case correctly
+    /// rather than panicking, wrapping, or falling through.
+    #[test]
+    fn single_type_registry_always_selects_that_type() {
+        let registry = StarTypeRegistry {
+            star_types: vec![StarTypeDefinition {
+                key: "lone_star".to_string(),
+                luminosity_min: 0.5,
+                luminosity_max: 1.5,
+                temperature_min: 4500,
+                temperature_max: 6500,
+                mass_min: 0.7,
+                mass_max: 1.3,
+                weight: 1.0,
+            }],
+        };
+
+        // Verify the registry is valid so we are not testing against an
+        // accidentally broken configuration.
+        registry
+            .validate()
+            .expect("single-type registry should be valid");
+
+        // Sweep a variety of seeds — every one must resolve to "lone_star"
+        // with parameters within the defined ranges.
+        for i in 0..500 {
+            let seed = SolarSystemSeed(i * 7_919); // spaced primes to avoid clustering
+            let profile = derive_star_profile(seed, &registry);
+
+            assert_eq!(
+                profile.star_type_key, "lone_star",
+                "seed {} selected '{}' instead of the only available type",
+                seed.0, profile.star_type_key
+            );
+
+            assert!(
+                profile.luminosity >= 0.5 && profile.luminosity <= 1.5,
+                "seed {}: luminosity {} outside [0.5, 1.5]",
+                seed.0,
+                profile.luminosity
+            );
+            assert!(
+                profile.surface_temperature_k >= 4500 && profile.surface_temperature_k <= 6500,
+                "seed {}: temperature {} outside [4500, 6500]",
+                seed.0,
+                profile.surface_temperature_k
+            );
+            assert!(
+                profile.mass_solar >= 0.7 && profile.mass_solar <= 1.3,
+                "seed {}: mass {} outside [0.7, 1.3]",
+                seed.0,
+                profile.mass_solar
+            );
+        }
+    }
 }
