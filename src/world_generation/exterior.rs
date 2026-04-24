@@ -4132,6 +4132,55 @@ cluster_compactness = 0.75
         );
     }
 
+    /// Story 5a.4 – Phase 8: a biome palette containing exactly one entry must
+    /// always select that material seed, regardless of chunk coordinate or site
+    /// index. We sweep a wide grid of chunks and verify every generated deposit
+    /// site carries the sole palette seed.
+    #[test]
+    fn single_palette_entry_always_selected() {
+        let profile = sample_profile();
+        let catalog = sample_catalog();
+        let surface = sample_flat_surface();
+
+        let sole_seed: u64 = 0xAA00_0000_0000_0042;
+        let biome = ChunkBiome {
+            biome_key: "mono_biome".to_string(),
+            ground_color: [0.4, 0.4, 0.4],
+            density_modifier: 1.0,
+            deposit_weight_modifiers: HashMap::new(),
+            material_palette: vec![PaletteMaterial {
+                material_seed: sole_seed,
+                selection_weight: 5.0,
+            }],
+        };
+
+        let mut total_sites = 0_usize;
+        for cx in -20..20 {
+            for cz in -20..20 {
+                let sites = generate_surface_mineral_deposit_sites(
+                    &profile,
+                    &catalog,
+                    &surface,
+                    ChunkCoord::new(cx, cz),
+                    &biome,
+                );
+                for site in &sites {
+                    total_sites += 1;
+                    assert_eq!(
+                        site.material_seed, sole_seed,
+                        "single-entry palette must always select the sole seed; \
+                         got {:#018X} at chunk ({cx}, {cz})",
+                        site.material_seed,
+                    );
+                }
+            }
+        }
+        assert!(
+            total_sites > 0,
+            "at least some chunks should produce deposit sites with a non-empty palette"
+        );
+    }
+
     #[test]
     fn deposit_site_has_no_material_key_field() {
         // Structural assertion: GeneratedSurfaceMineralDepositSite carries
