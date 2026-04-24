@@ -69,7 +69,7 @@ func TestServerBinary_WebhookPersistsExpectedFields(t *testing.T) {
 
 	binaryPath := filepath.Join(t.TempDir(), "orchestrator-server")
 	buildCmd := exec.Command("go", "build", "-o", binaryPath, ".")
-	buildCmd.Dir = "/Users/lmckechn/projects/opensky/infra/orchestrator/cmd/server"
+	buildCmd.Dir = resolveTestFileDir(t)
 	buildOut, err := buildCmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("building server binary: %v\n%s", err, string(buildOut))
@@ -196,7 +196,7 @@ func TestServerBinary_InvalidSignatureDoesNotPersistEvent(t *testing.T) {
 
 	binaryPath := filepath.Join(t.TempDir(), "orchestrator-server")
 	buildCmd := exec.Command("go", "build", "-o", binaryPath, ".")
-	buildCmd.Dir = "/Users/lmckechn/projects/opensky/infra/orchestrator/cmd/server"
+	buildCmd.Dir = resolveTestFileDir(t)
 	buildOut, err := buildCmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("building server binary: %v\n%s", err, string(buildOut))
@@ -307,7 +307,7 @@ func TestServerBinary_FixtureWebhookWithEnvSecretPersistsEvent(t *testing.T) {
 
 	binaryPath := filepath.Join(t.TempDir(), "orchestrator-server")
 	buildCmd := exec.Command("go", "build", "-o", binaryPath, ".")
-	buildCmd.Dir = "/Users/lmckechn/projects/opensky/infra/orchestrator/cmd/server"
+	buildCmd.Dir = resolveTestFileDir(t)
 	buildOut, err := buildCmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("building server binary: %v\n%s", err, string(buildOut))
@@ -569,4 +569,15 @@ func jsonBodiesEqual(got, want []byte) bool {
 	}
 
 	return strings.EqualFold(string(gotJSON), string(wantJSON))
+}
+
+// resolveTestFileDir returns the directory containing this test file,
+// used so `go build` targets the correct package without hardcoded paths.
+func resolveTestFileDir(t *testing.T) string {
+	t.Helper()
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("unable to resolve test file location")
+	}
+	return filepath.Dir(thisFile)
 }
