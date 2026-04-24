@@ -4916,4 +4916,232 @@ cluster_compactness = 0.75
              but only {differing_properties} differed"
         );
     }
+
+    // ── Story 5a.4 Phase 9: Restart determinism ──────────────────────────
+
+    /// Simulate two independent "restarts" with the same world seed: build
+    /// the full pipeline from scratch each time, generate deposits across
+    /// multiple chunks in multiple biomes, derive materials from every
+    /// deposit seed, and verify that both runs produce identical materials
+    /// (same names, same properties, same colors) for every seed encountered.
+    ///
+    /// This is the capstone determinism guarantee: same seed + same biome →
+    /// same deposits → same materials with same names and properties.
+    #[test]
+    fn restart_same_seed_same_biome_yields_identical_materials() {
+        use crate::materials::{MaterialCatalog, derive_material_from_seed};
+
+        let config = WorldGenerationConfig {
+            planet_seed: 54_321_678,
+            chunk_size_world_units: 45.0,
+            active_chunk_radius: 2,
+            building_cell_size: 1.0,
+            planet_surface_min_radius: 500,
+            planet_surface_max_radius: 5000,
+            ..Default::default()
+        };
+
+        // Three distinct biomes with overlapping and unique palette entries.
+        let biomes = [
+            ChunkBiome {
+                biome_key: "scorched_flats".to_string(),
+                ground_color: [0.6, 0.3, 0.1],
+                density_modifier: 0.8,
+                deposit_weight_modifiers: HashMap::new(),
+                material_palette: vec![
+                    PaletteMaterial {
+                        material_seed: 1001,
+                        selection_weight: 3.0,
+                    },
+                    PaletteMaterial {
+                        material_seed: 1003,
+                        selection_weight: 2.5,
+                    },
+                    PaletteMaterial {
+                        material_seed: 1006,
+                        selection_weight: 2.0,
+                    },
+                ],
+            },
+            ChunkBiome {
+                biome_key: "mineral_steppe".to_string(),
+                ground_color: [0.42, 0.45, 0.30],
+                density_modifier: 1.0,
+                deposit_weight_modifiers: HashMap::new(),
+                material_palette: vec![
+                    PaletteMaterial {
+                        material_seed: 1002,
+                        selection_weight: 2.0,
+                    },
+                    PaletteMaterial {
+                        material_seed: 1005,
+                        selection_weight: 2.5,
+                    },
+                    PaletteMaterial {
+                        material_seed: 1008,
+                        selection_weight: 2.0,
+                    },
+                    PaletteMaterial {
+                        material_seed: 1001,
+                        selection_weight: 1.0,
+                    },
+                ],
+            },
+            ChunkBiome {
+                biome_key: "frost_shelf".to_string(),
+                ground_color: [0.7, 0.75, 0.85],
+                density_modifier: 1.2,
+                deposit_weight_modifiers: HashMap::new(),
+                material_palette: vec![
+                    PaletteMaterial {
+                        material_seed: 1004,
+                        selection_weight: 3.0,
+                    },
+                    PaletteMaterial {
+                        material_seed: 1009,
+                        selection_weight: 2.0,
+                    },
+                    PaletteMaterial {
+                        material_seed: 1010,
+                        selection_weight: 2.5,
+                    },
+                ],
+            },
+        ];
+
+        let chunks: Vec<ChunkCoord> = vec![
+            ChunkCoord::new(0, 0),
+            ChunkCoord::new(1, -1),
+            ChunkCoord::new(-3, 7),
+            ChunkCoord::new(5, 5),
+            ChunkCoord::new(-2, -4),
+        ];
+
+        /// Represents a single "session": run the pipeline from scratch and
+        /// collect every (material_seed, GameMaterial) pair encountered.
+        fn run_session(
+            config: &WorldGenerationConfig,
+            biomes: &[ChunkBiome],
+            chunks: &[ChunkCoord],
+        ) -> MaterialCatalog {
+            let profile = WorldProfile::from_config(config);
+            let surface = PlanetSurface::new_from_profile(&profile, config);
+            let deposit_catalog = SurfaceMineralDepositCatalog {
+                site_spawn_threshold: 0.0,
+                ..SurfaceMineralDepositCatalog::default()
+            };
+
+            let mut mat_catalog = MaterialCatalog::default();
+
+            for biome in biomes {
+                for &chunk in chunks {
+                    let placements = generate_surface_mineral_chunk_baseline(
+                        &profile,
+                        &deposit_catalog,
+                        &surface,
+                        chunk,
+                        biome,
+                    );
+                    for placement in &placements {
+                        if placement.material_seed != 0 {
+                            mat_catalog.derive_and_register(placement.material_seed);
+                        }
+                    }
+                }
+            }
+
+            mat_catalog
+        }
+
+        // ── Run 1 ────────────────────────────────────────────────────────
+        let catalog_a = run_session(&config, &biomes, &chunks);
+
+        // ── Run 2 (fresh from scratch) ───────────────────────────────────
+        let catalog_b = run_session(&config, &biomes, &chunks);
+
+        // Both catalogs must contain the same number of materials.
+        assert_eq!(
+            catalog_a.len(),
+            catalog_b.len(),
+            "catalog sizes differ between restarts: {} vs {}",
+            catalog_a.len(),
+            catalog_b.len()
+        );
+
+        // Must have generated at least some materials.
+        assert!(
+            catalog_a.len() > 0,
+            "expected at least one material in catalog after generation"
+        );
+
+        // Every material in catalog A must exist in catalog B with identical
+        // name, color, and all scalar properties.
+        for mat_a in catalog_a.values() {
+            let mat_b = catalog_b.get_by_seed(mat_a.seed).unwrap_or_else(|| {
+                panic!(
+                    "seed {} ({}) present in run 1 but missing in run 2",
+                    mat_a.seed, mat_a.name
+                )
+            });
+
+            assert_eq!(
+                mat_a.name, mat_b.name,
+                "name mismatch for seed {}: {:?} vs {:?}",
+                mat_a.seed, mat_a.name, mat_b.name
+            );
+            assert_eq!(
+                mat_a.color, mat_b.color,
+                "color mismatch for seed {} ({})",
+                mat_a.seed, mat_a.name
+            );
+            assert_eq!(
+                mat_a.density.value, mat_b.density.value,
+                "density mismatch for seed {} ({})",
+                mat_a.seed, mat_a.name
+            );
+            assert_eq!(
+                mat_a.thermal_resistance.value, mat_b.thermal_resistance.value,
+                "thermal_resistance mismatch for seed {} ({})",
+                mat_a.seed, mat_a.name
+            );
+            assert_eq!(
+                mat_a.reactivity.value, mat_b.reactivity.value,
+                "reactivity mismatch for seed {} ({})",
+                mat_a.seed, mat_a.name
+            );
+            assert_eq!(
+                mat_a.conductivity.value, mat_b.conductivity.value,
+                "conductivity mismatch for seed {} ({})",
+                mat_a.seed, mat_a.name
+            );
+            assert_eq!(
+                mat_a.toxicity.value, mat_b.toxicity.value,
+                "toxicity mismatch for seed {} ({})",
+                mat_a.seed, mat_a.name
+            );
+        }
+
+        // Additionally verify that derive_material_from_seed itself is
+        // deterministic for every seed we encountered (belt-and-suspenders
+        // check independent of catalog registration order).
+        for mat_a in catalog_a.values() {
+            let raw_1 = derive_material_from_seed(mat_a.seed);
+            let raw_2 = derive_material_from_seed(mat_a.seed);
+            assert_eq!(
+                raw_1.name, raw_2.name,
+                "raw derivation name mismatch for seed {}",
+                mat_a.seed
+            );
+            assert_eq!(
+                raw_1.color, raw_2.color,
+                "raw derivation color mismatch for seed {}",
+                mat_a.seed
+            );
+            assert_eq!(
+                raw_1.density.value, raw_2.density.value,
+                "raw derivation density mismatch for seed {}",
+                mat_a.seed
+            );
+        }
+    }
 }
