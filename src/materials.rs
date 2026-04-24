@@ -897,4 +897,27 @@ visibility = "Hidden"
         let b = MaterialCatalog::disambiguated_name("Coranite", 777, &existing);
         assert_eq!(a, b);
     }
+
+    /// Verifies that `load_material_catalog` inserts an empty [`MaterialCatalog`]
+    /// during startup, before any chunk-generation systems have a chance to run.
+    /// This mirrors the real plugin's `PreStartup` registration and confirms the
+    /// "start empty, grow on demand" invariant.
+    #[test]
+    fn catalog_starts_empty_before_chunk_generation() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.add_systems(PreStartup, load_material_catalog);
+        app.update();
+
+        let catalog = app
+            .world()
+            .get_resource::<MaterialCatalog>()
+            .expect("MaterialCatalog resource must exist after startup");
+        assert!(
+            catalog.is_empty(),
+            "catalog must be empty before any chunk generation; found {} entries",
+            catalog.len()
+        );
+        assert_eq!(catalog.len(), 0);
+    }
 }
