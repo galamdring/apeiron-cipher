@@ -234,7 +234,7 @@ struct SurfaceMineralDeposit {
 struct GeneratedDepositSiteId {
     pub planet_seed: u64,
     pub chunk_coord: ChunkCoord,
-    pub deposit_kind_key: String,
+    pub definition_key: String,
     pub local_site_index: u32,
     pub generator_version: u32,
 }
@@ -1096,7 +1096,7 @@ fn generate_surface_mineral_deposit_sites(
                 site_id: GeneratedDepositSiteId {
                     planet_seed: profile.planet_seed.0,
                     chunk_coord,
-                    deposit_kind_key: definition.key.clone(),
+                    definition_key: definition.key.clone(),
                     local_site_index,
                     generator_version: SURFACE_MINERAL_DEPOSIT_GENERATOR_VERSION,
                 },
