@@ -843,4 +843,78 @@ mod tests {
             "catalog must not contain duplicate names"
         );
     }
+
+    /// Verify that fabricator `combined_seed` values never collide with biome
+    /// palette seeds.
+    ///
+    /// Biome palettes use well-known seeds in the range 1001–1010. The
+    /// fabricator computes `a.seed.wrapping_mul(31).wrapping_add(b.seed)`.
+    /// Because `wrapping_mul(31)` on any seed ≥ 1 produces a value ≥ 31,
+    /// the minimum fabricator output for palette-range inputs is
+    /// `1001 * 31 + 1001 = 32_032`, which is well above the palette range.
+    ///
+    /// This test exhaustively checks all pairwise combinations of the
+    /// well-known palette seeds and confirms no output lands in that range.
+    /// It also checks multi-generation chains (fabricated seeds fed back in).
+    #[test]
+    fn combined_seed_does_not_collide_with_biome_palette_seeds() {
+        // Well-known biome palette seeds from `assets/config/biomes.toml`.
+        let palette_seeds: Vec<u64> = (1001..=1010).collect();
+        let palette_set: std::collections::HashSet<u64> = palette_seeds.iter().copied().collect();
+
+        // ── Single-step fabrication ──────────────────────────────────────
+        let mut first_gen_seeds: Vec<u64> = Vec::new();
+        for &a in &palette_seeds {
+            for &b in &palette_seeds {
+                let combined = a.wrapping_mul(31).wrapping_add(b);
+                assert!(
+                    !palette_set.contains(&combined),
+                    "single-step fabrication of seeds ({a}, {b}) produced {combined} which collides with a palette seed"
+                );
+                first_gen_seeds.push(combined);
+            }
+        }
+
+        // ── Second-step fabrication (fabricated × palette, palette × fabricated) ─
+        for &fab in &first_gen_seeds {
+            for &p in &palette_seeds {
+                let combined_fp = fab.wrapping_mul(31).wrapping_add(p);
+                assert!(
+                    !palette_set.contains(&combined_fp),
+                    "second-step fabrication (fab={fab}, palette={p}) produced {combined_fp} which collides with a palette seed"
+                );
+                let combined_pf = p.wrapping_mul(31).wrapping_add(fab);
+                assert!(
+                    !palette_set.contains(&combined_pf),
+                    "second-step fabrication (palette={p}, fab={fab}) produced {combined_pf} which collides with a palette seed"
+                );
+            }
+        }
+
+        // ── Structural argument ─────────────────────────────────────────
+        // The minimum single-step output is 1001 * 31 + 1001 = 32_032.
+        // All palette seeds are ≤ 1010. The gap is 31× the input floor.
+        let min_output = palette_seeds
+            .iter()
+            .copied()
+            .min()
+            .expect("palette_seeds is non-empty")
+            .wrapping_mul(31)
+            .wrapping_add(
+                palette_seeds
+                    .iter()
+                    .copied()
+                    .min()
+                    .expect("palette_seeds is non-empty"),
+            );
+        let max_palette = palette_seeds
+            .iter()
+            .copied()
+            .max()
+            .expect("palette_seeds is non-empty");
+        assert!(
+            min_output > max_palette,
+            "minimum fabricator output ({min_output}) must exceed maximum palette seed ({max_palette})"
+        );
+    }
 }
