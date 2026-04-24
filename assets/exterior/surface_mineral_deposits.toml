@@ -24,7 +24,7 @@ site_jitter_fraction = 0.28
 site_min_gap_world_units = 1.5
 
 [[deposits]]
-key = "ferrite_surface_deposit"
+key = "dense_cluster_deposit"
 selection_weight = 1.0
 scale_min = 0.9
 scale_max = 1.2
@@ -35,7 +35,7 @@ child_count_max = 11
 cluster_compactness = 0.75
 
 [[deposits]]
-key = "silite_surface_deposit"
+key = "scattered_cluster_deposit"
 selection_weight = 0.8
 scale_min = 0.85
 scale_max = 1.15
@@ -46,7 +46,7 @@ child_count_max = 9
 cluster_compactness = 0.68
 
 [[deposits]]
-key = "prismate_surface_deposit"
+key = "compact_cluster_deposit"
 selection_weight = 0.45
 scale_min = 0.8
 scale_max = 1.05

@@ -167,7 +167,7 @@ fn default_site_min_gap_world_units() -> f32 {
 fn default_surface_mineral_deposits() -> Vec<SurfaceMineralDepositDefinition> {
     vec![
         SurfaceMineralDepositDefinition {
-            key: "ferrite_surface_deposit".into(),
+            key: "dense_cluster_deposit".into(),
             selection_weight: 1.0,
             scale_min: 0.9,
             scale_max: 1.2,
@@ -178,7 +178,7 @@ fn default_surface_mineral_deposits() -> Vec<SurfaceMineralDepositDefinition> {
             cluster_compactness: 0.75,
         },
         SurfaceMineralDepositDefinition {
-            key: "silite_surface_deposit".into(),
+            key: "scattered_cluster_deposit".into(),
             selection_weight: 0.8,
             scale_min: 0.85,
             scale_max: 1.15,
@@ -189,7 +189,7 @@ fn default_surface_mineral_deposits() -> Vec<SurfaceMineralDepositDefinition> {
             cluster_compactness: 0.68,
         },
         SurfaceMineralDepositDefinition {
-            key: "prismate_surface_deposit".into(),
+            key: "compact_cluster_deposit".into(),
             selection_weight: 0.45,
             scale_min: 0.8,
             scale_max: 1.05,
@@ -2255,7 +2255,7 @@ site_jitter_fraction = 0.28
 site_min_gap_world_units = 2.5
 
 [[deposits]]
-key = "ferrite_surface_deposit"
+key = "dense_cluster_deposit"
 selection_weight = 1.0
 scale_min = 0.9
 scale_max = 1.2
@@ -2270,7 +2270,7 @@ cluster_compactness = 0.75
             toml::from_str(toml_str).expect("surface deposit catalog should parse");
 
         assert_eq!(catalog.deposits.len(), 1);
-        assert_eq!(catalog.deposits[0].key, "ferrite_surface_deposit");
+        assert_eq!(catalog.deposits[0].key, "dense_cluster_deposit");
     }
 
     // ── Story 5.4: Removal delta tests ───────────────────────────────────
