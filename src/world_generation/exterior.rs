@@ -4805,4 +4805,115 @@ cluster_compactness = 0.75
              but found overlap: {overlap:?}"
         );
     }
+
+    /// Story 5a.4 – Phase 9: material properties vary across biomes.
+    ///
+    /// Takes the disjoint palettes from two biomes, derives every material,
+    /// and asserts that the property distributions (density, reactivity,
+    /// conductivity, thermal resistance, toxicity) are not identical across
+    /// the two biome material sets. This proves that exploring a new biome
+    /// rewards the player with materials that behave differently.
+    #[test]
+    fn cross_biome_materials_have_distinct_properties() {
+        use crate::materials::derive_material_from_seed;
+
+        // Scorched-palette seeds (from biomes.toml: ferrite, sulfurite, osmium).
+        let scorched_seeds: Vec<u64> = vec![1001, 1003, 1007];
+        // Frost-palette seeds (from biomes.toml: prismate, phosphite, cobaltine).
+        let frost_seeds: Vec<u64> = vec![1004, 1010, 1008];
+
+        let scorched_materials: Vec<_> = scorched_seeds
+            .iter()
+            .map(|&s| derive_material_from_seed(s))
+            .collect();
+        let frost_materials: Vec<_> = frost_seeds
+            .iter()
+            .map(|&s| derive_material_from_seed(s))
+            .collect();
+
+        // Collect per-biome property value sets for comparison.
+        let extract_props = |mats: &[crate::materials::GameMaterial]| -> Vec<[f32; 5]> {
+            mats.iter()
+                .map(|m| {
+                    [
+                        m.density.value,
+                        m.reactivity.value,
+                        m.conductivity.value,
+                        m.thermal_resistance.value,
+                        m.toxicity.value,
+                    ]
+                })
+                .collect::<Vec<_>>()
+        };
+
+        let scorched_props = extract_props(&scorched_materials);
+        let frost_props = extract_props(&frost_materials);
+
+        // 1) Within each biome, materials must not all be identical — the
+        //    player should encounter variety even within a single region.
+        for (label, props) in [("scorched", &scorched_props), ("frost", &frost_props)] {
+            let first = &props[0];
+            let all_same = props.iter().skip(1).all(|p| p == first);
+            assert!(
+                !all_same,
+                "{label} biome: all materials have identical properties — \
+                 seed derivation is not producing intra-biome variety"
+            );
+        }
+
+        // 2) The two biomes' material sets must differ: collect the sorted
+        //    multisets of property values and verify they are not equal.
+        let mut scorched_sorted = scorched_props.clone();
+        let mut frost_sorted = frost_props.clone();
+        scorched_sorted.sort_by(|a, b| {
+            a.iter()
+                .zip(b.iter())
+                .find_map(|(x, y)| x.partial_cmp(y).filter(|o| !o.is_eq()))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        frost_sorted.sort_by(|a, b| {
+            a.iter()
+                .zip(b.iter())
+                .find_map(|(x, y)| x.partial_cmp(y).filter(|o| !o.is_eq()))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        assert_ne!(
+            scorched_sorted, frost_sorted,
+            "scorched and frost biomes produced identical property distributions — \
+             materials should differ between biomes"
+        );
+
+        // 3) Per-property: the mean value of each property must differ between
+        //    the two biomes for at least 2 out of 5 properties.  This guards
+        //    against a degenerate case where only one property varies.
+        let mean = |props: &[[f32; 5]], idx: usize| -> f32 {
+            props.iter().map(|p| p[idx]).sum::<f32>() / props.len() as f32
+        };
+        let property_names = [
+            "density",
+            "reactivity",
+            "conductivity",
+            "thermal_resistance",
+            "toxicity",
+        ];
+        let mut differing_properties = 0u32;
+        for (i, name) in property_names.iter().enumerate() {
+            let s_mean = mean(&scorched_props, i);
+            let f_mean = mean(&frost_props, i);
+            let delta = (s_mean - f_mean).abs();
+            if delta > 0.001 {
+                differing_properties += 1;
+            } else {
+                eprintln!(
+                    "  note: {name} mean is nearly identical across biomes \
+                     (scorched={s_mean:.4}, frost={f_mean:.4}, delta={delta:.6})"
+                );
+            }
+        }
+        assert!(
+            differing_properties >= 2,
+            "expected at least 2 properties with different mean values across biomes, \
+             but only {differing_properties} differed"
+        );
+    }
 }
