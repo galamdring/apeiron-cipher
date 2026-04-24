@@ -4064,20 +4064,72 @@ cluster_compactness = 0.75
             material_palette: Vec::new(),
         };
 
-        let sites = generate_surface_mineral_deposit_sites(
-            &profile,
-            &catalog,
-            &surface,
-            ChunkCoord::new(0, -1),
-            &biome,
-        );
-
-        for site in &sites {
-            assert_eq!(
-                site.material_seed, 0,
-                "empty palette must produce material_seed 0"
-            );
+        let mut total_sites = 0_usize;
+        for cx in -10..10 {
+            for cz in -10..10 {
+                let sites = generate_surface_mineral_deposit_sites(
+                    &profile,
+                    &catalog,
+                    &surface,
+                    ChunkCoord::new(cx, cz),
+                    &biome,
+                );
+                for site in &sites {
+                    total_sites += 1;
+                    assert_eq!(
+                        site.material_seed, 0,
+                        "empty palette must produce material_seed 0"
+                    );
+                }
+            }
         }
+        assert!(
+            total_sites > 0,
+            "at least some chunks should produce deposit sites even with an empty palette"
+        );
+    }
+
+    #[test]
+    fn empty_palette_baseline_placements_exist_but_all_have_zero_seed() {
+        // Phase 8: biome with empty material_palette still generates deposit
+        // sites (physical shapes) but every placement carries material_seed 0,
+        // which the spawn loop skips — no entities without material.
+        let profile = sample_profile();
+        let catalog = sample_catalog();
+        let surface = sample_flat_surface();
+
+        let biome = ChunkBiome {
+            biome_key: "barren_biome".to_string(),
+            ground_color: [0.2, 0.2, 0.2],
+            density_modifier: 1.0,
+            deposit_weight_modifiers: HashMap::new(),
+            material_palette: Vec::new(),
+        };
+
+        // Try several chunks to ensure at least one generates placements.
+        let mut total_placements = 0_usize;
+        for cx in -20..20 {
+            for cz in -20..20 {
+                let placements = generate_surface_mineral_chunk_baseline(
+                    &profile,
+                    &catalog,
+                    &surface,
+                    ChunkCoord::new(cx, cz),
+                    &biome,
+                );
+                for p in &placements {
+                    total_placements += 1;
+                    assert_eq!(
+                        p.material_seed, 0,
+                        "all placements from an empty-palette biome must have material_seed 0"
+                    );
+                }
+            }
+        }
+        assert!(
+            total_placements > 0,
+            "at least one chunk should produce deposit placements (physical shapes exist even without materials)"
+        );
     }
 
     #[test]
