@@ -240,7 +240,10 @@ pub fn derive_material_from_seed(seed: u64) -> GameMaterial {
 /// definitions during fabrication.
 #[derive(Resource, Debug, Default)]
 pub struct MaterialCatalog {
-    pub materials: HashMap<String, GameMaterial>,
+    /// Primary index: seed → material.
+    by_seed: HashMap<u64, GameMaterial>,
+    /// Secondary index: name → seed (for name-based lookups).
+    by_name: HashMap<String, u64>,
 }
 
 impl MaterialCatalog {
@@ -252,27 +255,62 @@ impl MaterialCatalog {
     /// *different* seed's material, a deterministic disambiguator derived from
     /// the seed is appended (e.g. `"Vexorite-a3f1"`) until the name is unique.
     pub fn derive_and_register(&mut self, seed: u64) -> &GameMaterial {
-        // Fast path: already registered (lookup by name of this seed's base material).
-        // We check all entries for a matching seed to avoid re-deriving.
-        if let Some(name) = self.materials.values().find_map(|m| {
-            if m.seed == seed {
-                Some(m.name.clone())
-            } else {
-                None
-            }
-        }) {
-            return &self.materials[&name];
+        // Fast path: already registered by seed — O(1) lookup.
+        if self.by_seed.contains_key(&seed) {
+            return &self.by_seed[&seed];
         }
 
         let mut mat = derive_material_from_seed(seed);
-        mat.name = Self::disambiguated_name(&mat.name, seed, &self.materials);
-        let key = mat.name.clone();
-        self.materials.insert(key.clone(), mat);
-        &self.materials[&key]
+        mat.name = Self::disambiguated_name(&mat.name, seed, &self.by_name);
+        self.by_name.insert(mat.name.clone(), seed);
+        self.by_seed.insert(seed, mat);
+        &self.by_seed[&seed]
     }
 
-    /// Return `base_name` if it is not already taken in `existing`, otherwise
-    /// append a short hex suffix derived deterministically from `seed`.
+    /// Look up a material by its seed, returning `None` if not yet registered.
+    #[allow(dead_code)]
+    pub fn get_by_seed(&self, seed: u64) -> Option<&GameMaterial> {
+        self.by_seed.get(&seed)
+    }
+
+    /// Look up a material by its display name, returning `None` if not found.
+    pub fn get_by_name(&self, name: &str) -> Option<&GameMaterial> {
+        self.by_name
+            .get(name)
+            .and_then(|seed| self.by_seed.get(seed))
+    }
+
+    /// Returns the number of materials in the catalog.
+    #[allow(dead_code)]
+    pub fn len(&self) -> usize {
+        self.by_seed.len()
+    }
+
+    /// Returns `true` if the catalog contains no materials.
+    #[allow(dead_code)]
+    pub fn is_empty(&self) -> bool {
+        self.by_seed.is_empty()
+    }
+
+    /// Iterate over all materials in the catalog.
+    #[allow(dead_code)]
+    pub fn values(&self) -> impl Iterator<Item = &GameMaterial> {
+        self.by_seed.values()
+    }
+
+    /// Iterate over all material names in the catalog.
+    pub fn names(&self) -> impl Iterator<Item = &String> {
+        self.by_name.keys()
+    }
+
+    /// Iterate over all seeds in the catalog.
+    #[allow(dead_code)]
+    pub fn seeds(&self) -> impl Iterator<Item = &u64> {
+        self.by_seed.keys()
+    }
+
+    /// Return `base_name` if it is not already taken, otherwise append a short
+    /// hex suffix derived deterministically from `seed`.
     ///
     /// The suffix is produced by taking successive 16-bit windows of the seed
     /// (formatted as lowercase hex).  In the astronomically unlikely case that
@@ -281,9 +319,9 @@ impl MaterialCatalog {
     fn disambiguated_name(
         base_name: &str,
         seed: u64,
-        existing: &HashMap<String, GameMaterial>,
+        existing_names: &HashMap<String, u64>,
     ) -> String {
-        if !existing.contains_key(base_name) {
+        if !existing_names.contains_key(base_name) {
             return base_name.to_owned();
         }
 
@@ -291,7 +329,7 @@ impl MaterialCatalog {
         for shift in (0..64).step_by(16) {
             let fragment = (seed >> shift) as u16;
             let candidate = format!("{base_name}-{fragment:04x}");
-            if !existing.contains_key(&candidate) {
+            if !existing_names.contains_key(&candidate) {
                 return candidate;
             }
         }
@@ -328,11 +366,13 @@ fn spawn_material_objects(
         return;
     }
 
-    let mut sorted_names: Vec<&String> = catalog.materials.keys().collect();
+    let mut sorted_names: Vec<&String> = catalog.names().collect();
     sorted_names.sort();
 
     for (i, name) in sorted_names.iter().enumerate() {
-        let mat = &catalog.materials[*name];
+        let mat = catalog
+            .get_by_name(name)
+            .expect("name index references a valid material");
         let surface_tf = shelf_transforms[i % shelf_transforms.len()];
 
         let items_on_this_surface = sorted_names
@@ -511,7 +551,7 @@ visibility = "Hidden"
     #[test]
     fn catalog_default_is_empty() {
         let catalog = MaterialCatalog::default();
-        assert!(catalog.materials.is_empty());
+        assert!(catalog.is_empty());
     }
 
     #[test]
@@ -766,7 +806,7 @@ visibility = "Hidden"
         let name1 = catalog.derive_and_register(42).name.clone();
         let name2 = catalog.derive_and_register(42).name.clone();
         assert_eq!(name1, name2);
-        assert_eq!(catalog.materials.len(), 1);
+        assert_eq!(catalog.len(), 1);
     }
 
     #[test]
@@ -779,7 +819,8 @@ visibility = "Hidden"
         let mut imposter = derive_material_from_seed(0xBEEF);
         imposter.name = base_name.clone();
         imposter.seed = 0xBEEF; // different seed, same name
-        catalog.materials.insert(base_name.clone(), imposter);
+        catalog.by_name.insert(base_name.clone(), 0xBEEF);
+        catalog.by_seed.insert(0xBEEF, imposter);
 
         let registered = catalog.derive_and_register(999);
         // Name must differ from the pre-existing entry.
@@ -796,7 +837,7 @@ visibility = "Hidden"
             "disambiguated name should contain a '-' separator"
         );
         // Catalog now has both entries.
-        assert_eq!(catalog.materials.len(), 2);
+        assert_eq!(catalog.len(), 2);
     }
 
     #[test]
@@ -808,8 +849,8 @@ visibility = "Hidden"
 
     #[test]
     fn disambiguated_name_with_collision_appends_suffix() {
-        let mut existing = HashMap::new();
-        existing.insert("Vexorite".to_string(), derive_material_from_seed(0xAAAA));
+        let mut existing: HashMap<String, u64> = HashMap::new();
+        existing.insert("Vexorite".to_string(), 0xAAAA);
         let result =
             MaterialCatalog::disambiguated_name("Vexorite", 0x1234_5678_9ABC_DEF0, &existing);
         assert_eq!(result, "Vexorite-def0");
@@ -831,16 +872,16 @@ visibility = "Hidden"
             catalog.derive_and_register(seed);
         }
 
-        // Every entry in the catalog must have a unique name (HashMap keys
-        // guarantee this structurally, but verify the count matches).
+        // Every entry in the catalog must have a unique name (dual-index
+        // guarantees this structurally, but verify the count matches).
         assert_eq!(
-            catalog.materials.len(),
+            catalog.len(),
             1000,
             "catalog should contain exactly 1000 materials after 1000 unique seeds"
         );
 
         // Double-check: collect all names into a HashSet and confirm no loss.
-        let unique_names: std::collections::HashSet<&String> = catalog.materials.keys().collect();
+        let unique_names: std::collections::HashSet<&String> = catalog.names().collect();
         assert_eq!(
             unique_names.len(),
             1000,
@@ -850,8 +891,8 @@ visibility = "Hidden"
 
     #[test]
     fn disambiguated_name_deterministic() {
-        let mut existing = HashMap::new();
-        existing.insert("Coranite".to_string(), derive_material_from_seed(0xBBBB));
+        let mut existing: HashMap<String, u64> = HashMap::new();
+        existing.insert("Coranite".to_string(), 0xBBBB);
         let a = MaterialCatalog::disambiguated_name("Coranite", 777, &existing);
         let b = MaterialCatalog::disambiguated_name("Coranite", 777, &existing);
         assert_eq!(a, b);

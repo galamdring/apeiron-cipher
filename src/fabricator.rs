@@ -822,7 +822,7 @@ mod tests {
         }
 
         // All registered entries must have unique names (catalog invariant).
-        let names: Vec<&String> = catalog.materials.keys().collect();
+        let names: Vec<&String> = catalog.names().collect();
         let unique_count = names.iter().collect::<std::collections::HashSet<_>>().len();
         assert_eq!(
             names.len(),
