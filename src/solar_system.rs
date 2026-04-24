@@ -114,11 +114,115 @@ pub struct StarTypeDefinition {
 /// Registry of all star type definitions, loaded from `assets/config/star_types.toml`.
 ///
 /// The registry is loaded once at startup and never mutated. Generation
-/// systems access it via `Res<StarTypeRegistry>`.
+/// systems access it via `Res<StarTypeRegistry>`. After deserialization,
+/// callers should invoke [`StarTypeRegistry::validate`] to ensure all
+/// definitions satisfy physical and structural invariants before use.
 #[derive(Clone, Debug, Resource, Serialize, Deserialize)]
 pub struct StarTypeRegistry {
     /// Ordered list of star type definitions.
     pub star_types: Vec<StarTypeDefinition>,
+}
+
+impl StarTypeRegistry {
+    /// Validate every structural and physical invariant the registry must uphold.
+    ///
+    /// Returns `Ok(())` when valid, or `Err` with a human-readable description
+    /// of the first violation found. Checks performed:
+    ///
+    /// 1. **Non-empty** — at least one star type must be defined.
+    /// 2. **No empty keys** — every definition must have a non-empty `key`.
+    /// 3. **No duplicate keys** — each `key` must be unique across the registry.
+    /// 4. **Positive weight** — `weight` must be > 0.0 and finite.
+    /// 5. **Valid luminosity range** — `luminosity_min` must be > 0.0, `luminosity_min < luminosity_max`, both finite.
+    /// 6. **Valid temperature range** — `temperature_min` must be > 0, `temperature_min < temperature_max`.
+    /// 7. **Valid mass range** — `mass_min` must be > 0.0, `mass_min < mass_max`, both finite.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.star_types.is_empty() {
+            return Err("StarTypeRegistry must contain at least one star type".to_string());
+        }
+
+        let mut seen_keys = std::collections::HashSet::new();
+
+        for (i, def) in self.star_types.iter().enumerate() {
+            let label = if def.key.is_empty() {
+                format!("star_types[{i}]")
+            } else {
+                format!("star_types[{i}] ('{}')", def.key)
+            };
+
+            // Key checks.
+            if def.key.is_empty() {
+                return Err(format!("{label}: key must not be empty"));
+            }
+            if !seen_keys.insert(&def.key) {
+                return Err(format!("{label}: duplicate key '{}'", def.key));
+            }
+
+            // Weight check.
+            if !def.weight.is_finite() || def.weight <= 0.0 {
+                return Err(format!(
+                    "{label}: weight must be positive and finite, got {}",
+                    def.weight
+                ));
+            }
+
+            // Luminosity range.
+            if !def.luminosity_min.is_finite() || !def.luminosity_max.is_finite() {
+                return Err(format!(
+                    "{label}: luminosity bounds must be finite, got [{}, {}]",
+                    def.luminosity_min, def.luminosity_max
+                ));
+            }
+            if def.luminosity_min <= 0.0 {
+                return Err(format!(
+                    "{label}: luminosity_min must be > 0.0, got {}",
+                    def.luminosity_min
+                ));
+            }
+            if def.luminosity_min >= def.luminosity_max {
+                return Err(format!(
+                    "{label}: luminosity_min ({}) must be < luminosity_max ({})",
+                    def.luminosity_min, def.luminosity_max
+                ));
+            }
+
+            // Temperature range.
+            if def.temperature_min == 0 {
+                return Err(format!(
+                    "{label}: temperature_min must be > 0, got {}",
+                    def.temperature_min
+                ));
+            }
+            if def.temperature_min >= def.temperature_max {
+                return Err(format!(
+                    "{label}: temperature_min ({}) must be < temperature_max ({})",
+                    def.temperature_min, def.temperature_max
+                ));
+            }
+
+            // Mass range.
+            if !def.mass_min.is_finite() || !def.mass_max.is_finite() {
+                return Err(format!(
+                    "{label}: mass bounds must be finite, got [{}, {}]",
+                    def.mass_min, def.mass_max
+                ));
+            }
+            if def.mass_min <= 0.0 {
+                return Err(format!(
+                    "{label}: mass_min must be > 0.0, got {}",
+                    def.mass_min
+                ));
+            }
+            if def.mass_min >= def.mass_max {
+                return Err(format!(
+                    "{label}: mass_min ({}) must be < mass_max ({})",
+                    def.mass_min, def.mass_max
+                ));
+            }
+        }
+
+        Ok(())
+    }
 }
 
 impl Default for StarTypeRegistry {
@@ -188,13 +292,22 @@ fn load_star_type_registry(mut commands: Commands) {
     let registry = if Path::new(STAR_TYPES_CONFIG_PATH).exists() {
         match fs::read_to_string(STAR_TYPES_CONFIG_PATH) {
             Ok(contents) => match toml::from_str::<StarTypeRegistry>(&contents) {
-                Ok(registry) => {
-                    info!(
-                        "Loaded star type registry from {STAR_TYPES_CONFIG_PATH} ({} types)",
-                        registry.star_types.len()
-                    );
-                    registry
-                }
+                Ok(registry) => match registry.validate() {
+                    Ok(()) => {
+                        info!(
+                            "Loaded star type registry from {STAR_TYPES_CONFIG_PATH} ({} types)",
+                            registry.star_types.len()
+                        );
+                        registry
+                    }
+                    Err(validation_error) => {
+                        warn!(
+                            "Star type registry from {STAR_TYPES_CONFIG_PATH} failed validation, \
+                             using defaults: {validation_error}"
+                        );
+                        StarTypeRegistry::default()
+                    }
+                },
                 Err(error) => {
                     warn!("Could not parse {STAR_TYPES_CONFIG_PATH}, using defaults: {error}");
                     StarTypeRegistry::default()
@@ -531,5 +644,163 @@ mod tests {
                 profile.habitable_zone_outer_au
             );
         }
+    }
+
+    // ── Validation Tests ─────────────────────────────────────────────────
+
+    /// The default registry must pass validation — if it doesn't, the
+    /// hardcoded fallback is broken.
+    #[test]
+    fn default_registry_validates() {
+        let registry = StarTypeRegistry::default();
+        registry
+            .validate()
+            .expect("default StarTypeRegistry must pass validation");
+    }
+
+    /// An empty registry must be rejected.
+    #[test]
+    fn validate_rejects_empty_registry() {
+        let registry = StarTypeRegistry { star_types: vec![] };
+        let err = registry.validate().unwrap_err();
+        assert!(
+            err.contains("at least one"),
+            "error should mention 'at least one', got: {err}"
+        );
+    }
+
+    /// A star type with an empty key must be rejected.
+    #[test]
+    fn validate_rejects_empty_key() {
+        let mut registry = StarTypeRegistry::default();
+        registry.star_types[0].key = String::new();
+        let err = registry.validate().unwrap_err();
+        assert!(
+            err.contains("key must not be empty"),
+            "error should mention empty key, got: {err}"
+        );
+    }
+
+    /// Duplicate keys must be rejected.
+    #[test]
+    fn validate_rejects_duplicate_keys() {
+        let mut registry = StarTypeRegistry::default();
+        registry.star_types[1].key = registry.star_types[0].key.clone();
+        let err = registry.validate().unwrap_err();
+        assert!(
+            err.contains("duplicate key"),
+            "error should mention duplicate key, got: {err}"
+        );
+    }
+
+    /// Zero weight must be rejected.
+    #[test]
+    fn validate_rejects_zero_weight() {
+        let mut registry = StarTypeRegistry::default();
+        registry.star_types[0].weight = 0.0;
+        let err = registry.validate().unwrap_err();
+        assert!(
+            err.contains("weight"),
+            "error should mention weight, got: {err}"
+        );
+    }
+
+    /// Negative weight must be rejected.
+    #[test]
+    fn validate_rejects_negative_weight() {
+        let mut registry = StarTypeRegistry::default();
+        registry.star_types[0].weight = -1.0;
+        let err = registry.validate().unwrap_err();
+        assert!(
+            err.contains("weight"),
+            "error should mention weight, got: {err}"
+        );
+    }
+
+    /// Non-finite weight (NaN) must be rejected.
+    #[test]
+    fn validate_rejects_nan_weight() {
+        let mut registry = StarTypeRegistry::default();
+        registry.star_types[0].weight = f32::NAN;
+        let err = registry.validate().unwrap_err();
+        assert!(
+            err.contains("weight"),
+            "error should mention weight, got: {err}"
+        );
+    }
+
+    /// Inverted luminosity range (min >= max) must be rejected.
+    #[test]
+    fn validate_rejects_inverted_luminosity_range() {
+        let mut registry = StarTypeRegistry::default();
+        registry.star_types[0].luminosity_min = 5.0;
+        registry.star_types[0].luminosity_max = 1.0;
+        let err = registry.validate().unwrap_err();
+        assert!(
+            err.contains("luminosity_min"),
+            "error should mention luminosity_min, got: {err}"
+        );
+    }
+
+    /// Zero luminosity_min must be rejected.
+    #[test]
+    fn validate_rejects_zero_luminosity_min() {
+        let mut registry = StarTypeRegistry::default();
+        registry.star_types[0].luminosity_min = 0.0;
+        let err = registry.validate().unwrap_err();
+        assert!(
+            err.contains("luminosity_min"),
+            "error should mention luminosity_min, got: {err}"
+        );
+    }
+
+    /// Inverted temperature range must be rejected.
+    #[test]
+    fn validate_rejects_inverted_temperature_range() {
+        let mut registry = StarTypeRegistry::default();
+        registry.star_types[0].temperature_min = 5000;
+        registry.star_types[0].temperature_max = 1000;
+        let err = registry.validate().unwrap_err();
+        assert!(
+            err.contains("temperature_min"),
+            "error should mention temperature_min, got: {err}"
+        );
+    }
+
+    /// Zero temperature_min must be rejected.
+    #[test]
+    fn validate_rejects_zero_temperature_min() {
+        let mut registry = StarTypeRegistry::default();
+        registry.star_types[0].temperature_min = 0;
+        let err = registry.validate().unwrap_err();
+        assert!(
+            err.contains("temperature_min"),
+            "error should mention temperature_min, got: {err}"
+        );
+    }
+
+    /// Inverted mass range must be rejected.
+    #[test]
+    fn validate_rejects_inverted_mass_range() {
+        let mut registry = StarTypeRegistry::default();
+        registry.star_types[0].mass_min = 10.0;
+        registry.star_types[0].mass_max = 1.0;
+        let err = registry.validate().unwrap_err();
+        assert!(
+            err.contains("mass_min"),
+            "error should mention mass_min, got: {err}"
+        );
+    }
+
+    /// Zero mass_min must be rejected.
+    #[test]
+    fn validate_rejects_zero_mass_min() {
+        let mut registry = StarTypeRegistry::default();
+        registry.star_types[0].mass_min = 0.0;
+        let err = registry.validate().unwrap_err();
+        assert!(
+            err.contains("mass_min"),
+            "error should mention mass_min, got: {err}"
+        );
     }
 }
