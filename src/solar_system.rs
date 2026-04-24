@@ -15,6 +15,8 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 
+use crate::world_generation::WorldGenerationConfig;
+
 // ── Seed Channel Constants ───────────────────────────────────────────────
 //
 // Each constant occupies a unique 64-bit value in the `0x57A2_0001` prefix
@@ -24,19 +26,15 @@ use std::path::Path;
 // adding or removing a parameter never shifts the derivation of any other.
 
 /// Channel for selecting the star type via weighted random.
-#[allow(dead_code)] // Used by derive_star_profile, not yet called from other modules.
 const STAR_TYPE_CHANNEL: u64 = 0x57A2_0001_0000_0001;
 
 /// Channel for interpolating luminosity within the selected type's range.
-#[allow(dead_code)] // Used by derive_star_profile, not yet called from other modules.
 const STAR_LUMINOSITY_CHANNEL: u64 = 0x57A2_0001_0000_0002;
 
 /// Channel for interpolating surface temperature within the selected type's range.
-#[allow(dead_code)] // Used by derive_star_profile, not yet called from other modules.
 const STAR_TEMPERATURE_CHANNEL: u64 = 0x57A2_0001_0000_0003;
 
 /// Channel for interpolating stellar mass within the selected type's range.
-#[allow(dead_code)] // Used by derive_star_profile, not yet called from other modules.
 const STAR_MASS_CHANNEL: u64 = 0x57A2_0001_0000_0004;
 
 /// Path to the star type definitions TOML file.
@@ -50,7 +48,6 @@ const STAR_TYPES_CONFIG_PATH: &str = "assets/config/star_types.toml";
 /// mixing of unrelated `u64` values in function signatures. The inner
 /// value is the root of all deterministic derivation for a solar system.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[allow(dead_code)] // Public API for future solar system generation callers.
 pub struct SolarSystemSeed(pub u64);
 
 /// Derived star parameters for a solar system.
@@ -69,7 +66,6 @@ pub struct SolarSystemSeed(pub u64);
 /// These are rough approximations — good enough for game-world coherence,
 /// not intended as astrophysics research.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[allow(dead_code)] // Public API for future solar system generation callers.
 pub struct StarProfile {
     /// Key identifying which star type was selected (e.g., `"red_dwarf"`).
     pub star_type_key: String,
@@ -280,7 +276,8 @@ pub struct SolarSystemPlugin;
 impl Plugin for SolarSystemPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<StarTypeRegistry>()
-            .add_systems(PreStartup, load_star_type_registry);
+            .add_systems(PreStartup, load_star_type_registry)
+            .add_systems(Startup, log_star_profile_on_startup);
     }
 }
 
@@ -326,6 +323,37 @@ fn load_star_type_registry(mut commands: Commands) {
     commands.insert_resource(registry);
 }
 
+/// Derive and log the star profile for the current solar system on startup.
+///
+/// Runs in `Startup` (after `PreStartup` has loaded both the
+/// `WorldGenerationConfig` and `StarTypeRegistry`). Reads the `system_seed`
+/// from the world generation config, derives a `StarProfile`, and logs every
+/// parameter at `info!` level so developers can verify the values look
+/// physically plausible (e.g., red dwarf → low luminosity, blue giant → high
+/// temperature).
+///
+/// This system is read-only — it does not insert or mutate any resources.
+fn log_star_profile_on_startup(
+    world_config: Res<WorldGenerationConfig>,
+    star_registry: Res<StarTypeRegistry>,
+) {
+    let seed = SolarSystemSeed(world_config.system_seed);
+    let profile = derive_star_profile(seed, &star_registry);
+
+    info!(
+        "Star profile derived from system seed {}: \
+         type={}, luminosity={:.4} sol, temperature={}K, \
+         mass={:.4} solar masses, habitable zone=[{:.4}, {:.4}] AU",
+        seed.0,
+        profile.star_type_key,
+        profile.luminosity,
+        profile.surface_temperature_k,
+        profile.mass_solar,
+        profile.habitable_zone_inner_au,
+        profile.habitable_zone_outer_au,
+    );
+}
+
 // ── Seed Derivation ──────────────────────────────────────────────────────
 
 /// Deterministically mix a base seed and a channel into a new 64-bit value.
@@ -342,7 +370,6 @@ fn load_star_type_registry(mut commands: Commands) {
 /// utility module (architectural change) or `pub` visibility (violates the
 /// no-`pub(crate)` rule). When a shared `seed_util` module is warranted,
 /// these copies can be consolidated.
-#[allow(dead_code)] // Used by derive_star_profile, called only from tests currently.
 fn mix_seed(base: u64, channel: u64) -> u64 {
     let mut z = base.wrapping_add(channel.wrapping_mul(0x9E37_79B9_7F4A_7C15));
     z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
@@ -355,7 +382,6 @@ fn mix_seed(base: u64, channel: u64) -> u64 {
 /// Takes the lower 32 bits and divides by `2^32`. This gives ~7 decimal
 /// digits of granularity — more than enough for interpolating physical
 /// parameters that will be displayed to the player as rounded values.
-#[allow(dead_code)] // Used by derive_star_profile, called only from tests currently.
 fn seed_to_unit_f32(mixed: u64) -> f32 {
     (mixed as u32) as f32 / (u32::MAX as f32 + 1.0)
 }
@@ -364,7 +390,6 @@ fn seed_to_unit_f32(mixed: u64) -> f32 {
 ///
 /// Returns exactly `min` when `t == 0.0` and approaches `max` as `t → 1.0`.
 /// Does not clamp — callers are responsible for providing `t` in range.
-#[allow(dead_code)] // Used by derive_star_profile, called only from tests currently.
 fn lerp(min: f32, max: f32, t: f32) -> f32 {
     min + (max - min) * t
 }
@@ -395,7 +420,6 @@ fn lerp(min: f32, max: f32, t: f32) -> f32 {
 /// Panics (via `expect`) if the registry contains no star types. A registry
 /// with zero entries is a configuration error that should be caught during
 /// development, not silently handled at runtime.
-#[allow(dead_code)] // Public API for future solar system generation callers.
 pub fn derive_star_profile(
     system_seed: SolarSystemSeed,
     star_registry: &StarTypeRegistry,

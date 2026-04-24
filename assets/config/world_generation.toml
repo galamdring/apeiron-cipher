@@ -4,6 +4,10 @@
 # it at runtime. That keeps the first deterministic exterior stories easy to
 # inspect and easy to reproduce.
 
+# Stable identity for the solar system this planet belongs to.
+# The star profile is deterministically derived from this seed at startup.
+system_seed = 20260501
+
 # Stable identity for this world / planet.
 planet_seed = 20260408
 

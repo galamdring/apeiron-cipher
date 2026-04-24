@@ -803,6 +803,13 @@ impl ChunkCoord {
 ///   detection during delta merging (Story 5.6)
 #[derive(Clone, Debug, Resource, PartialEq, Serialize, Deserialize)]
 pub struct WorldGenerationConfig {
+    /// Solar system seed — root of all deterministic star derivation.
+    ///
+    /// The star profile (type, luminosity, temperature, mass, habitable zone)
+    /// is derived from this seed at startup. Changing this value changes the
+    /// star the player's planet orbits.
+    #[serde(default = "default_system_seed")]
+    pub system_seed: u64,
     #[serde(default = "default_planet_seed")]
     pub planet_seed: u64,
     #[serde(default = "default_chunk_size_world_units")]
@@ -864,6 +871,7 @@ pub struct WorldGenerationConfig {
 impl Default for WorldGenerationConfig {
     fn default() -> Self {
         Self {
+            system_seed: default_system_seed(),
             planet_seed: default_planet_seed(),
             chunk_size_world_units: default_chunk_size_world_units(),
             active_chunk_radius: default_active_chunk_radius(),
@@ -880,6 +888,10 @@ impl Default for WorldGenerationConfig {
             elevation_subdivisions: default_elevation_subdivisions(),
         }
     }
+}
+
+fn default_system_seed() -> u64 {
+    20_260_501
 }
 
 fn default_planet_seed() -> u64 {
