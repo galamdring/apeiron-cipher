@@ -1442,6 +1442,45 @@ fn default_fallback_biome_key() -> String {
     "mineral_steppe".to_string()
 }
 
+/// Reasonable default material palette for the hardcoded neutral fallback biome.
+///
+/// This mirrors the `mineral_steppe` palette from `biomes.toml` — a balanced
+/// generalist selection so that even when the TOML is missing or misconfigured,
+/// the player still encounters materials during exploration. The seeds here are
+/// well-known values from the original 10-material catalog.
+fn default_fallback_material_palette() -> Vec<PaletteMaterial> {
+    vec![
+        PaletteMaterial {
+            material_seed: 1002,
+            selection_weight: 2.0,
+        }, // Calcium
+        PaletteMaterial {
+            material_seed: 1005,
+            selection_weight: 2.5,
+        }, // Verdant
+        PaletteMaterial {
+            material_seed: 1008,
+            selection_weight: 2.0,
+        }, // Cobaltine
+        PaletteMaterial {
+            material_seed: 1009,
+            selection_weight: 1.5,
+        }, // Silite
+        PaletteMaterial {
+            material_seed: 1001,
+            selection_weight: 1.0,
+        }, // Ferrite
+        PaletteMaterial {
+            material_seed: 1003,
+            selection_weight: 0.5,
+        }, // Sulfurite
+        PaletteMaterial {
+            material_seed: 1010,
+            selection_weight: 0.8,
+        }, // Phosphite
+    ]
+}
+
 impl Default for BiomeRegistry {
     fn default() -> Self {
         Self {
@@ -1548,7 +1587,32 @@ fn default_biome_definitions() -> Vec<BiomeDefinition> {
                 ("silite".to_string(), 0.8),
                 ("prismate".to_string(), 0.2),
             ]),
-            material_palette: Vec::new(),
+            material_palette: vec![
+                PaletteMaterial {
+                    material_seed: 1001,
+                    selection_weight: 3.0,
+                }, // Ferrite
+                PaletteMaterial {
+                    material_seed: 1003,
+                    selection_weight: 2.5,
+                }, // Sulfurite
+                PaletteMaterial {
+                    material_seed: 1006,
+                    selection_weight: 2.0,
+                }, // Osmium
+                PaletteMaterial {
+                    material_seed: 1007,
+                    selection_weight: 1.5,
+                }, // Volatite
+                PaletteMaterial {
+                    material_seed: 1002,
+                    selection_weight: 0.5,
+                }, // Calcium
+                PaletteMaterial {
+                    material_seed: 1009,
+                    selection_weight: 0.3,
+                }, // Silite
+            ],
         },
         BiomeDefinition {
             key: "mineral_steppe".to_string(),
@@ -1559,7 +1623,7 @@ fn default_biome_definitions() -> Vec<BiomeDefinition> {
             ground_color: [0.26, 0.3, 0.22],
             density_modifier: 1.0,
             deposit_weight_modifiers: HashMap::new(),
-            material_palette: Vec::new(),
+            material_palette: default_fallback_material_palette(),
         },
         BiomeDefinition {
             key: "frost_shelf".to_string(),
@@ -1574,7 +1638,32 @@ fn default_biome_definitions() -> Vec<BiomeDefinition> {
                 ("silite".to_string(), 1.0),
                 ("prismate".to_string(), 3.0),
             ]),
-            material_palette: Vec::new(),
+            material_palette: vec![
+                PaletteMaterial {
+                    material_seed: 1004,
+                    selection_weight: 3.0,
+                }, // Prismate
+                PaletteMaterial {
+                    material_seed: 1009,
+                    selection_weight: 2.0,
+                }, // Silite
+                PaletteMaterial {
+                    material_seed: 1010,
+                    selection_weight: 2.5,
+                }, // Phosphite
+                PaletteMaterial {
+                    material_seed: 1008,
+                    selection_weight: 1.0,
+                }, // Cobaltine
+                PaletteMaterial {
+                    material_seed: 1005,
+                    selection_weight: 0.3,
+                }, // Verdant
+                PaletteMaterial {
+                    material_seed: 1006,
+                    selection_weight: 0.5,
+                }, // Osmium
+            ],
         },
     ]
 }
@@ -1702,7 +1791,7 @@ pub fn derive_chunk_biome(
         ground_color: [0.26, 0.3, 0.22],
         density_modifier: 1.0,
         deposit_weight_modifiers: HashMap::new(),
-        material_palette: Vec::new(),
+        material_palette: default_fallback_material_palette(),
     }
 }
 
@@ -2827,9 +2916,10 @@ mod tests {
     }
 
     #[test]
-    fn chunk_biome_hardcoded_default_has_empty_palette() {
+    fn chunk_biome_hardcoded_default_has_reasonable_palette() {
         // When the fallback key itself is missing from the registry, the
-        // hardcoded neutral default must have an empty material palette.
+        // hardcoded neutral default must still provide a non-empty material
+        // palette so that deposits can be generated even without biomes.toml.
         let profile = WorldProfile::from_config(&sample_config());
         let registry = BiomeRegistry {
             fallback_biome_key: "does_not_exist".to_string(),
@@ -2841,9 +2931,18 @@ mod tests {
 
         let biome = derive_chunk_biome(&profile, &registry, ChunkCoord::new(5, 5));
         assert!(
-            biome.material_palette.is_empty(),
-            "hardcoded neutral default must have an empty material palette"
+            !biome.material_palette.is_empty(),
+            "hardcoded neutral default must have a non-empty material palette"
         );
+        // All weights must be positive.
+        for entry in &biome.material_palette {
+            assert!(
+                entry.selection_weight > 0.0,
+                "palette entry seed {} has non-positive weight {}",
+                entry.material_seed,
+                entry.selection_weight
+            );
+        }
     }
 
     // ── PlanetSurface multi-octave noise tests ──────────────────────────
