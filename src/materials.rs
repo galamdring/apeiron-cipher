@@ -922,6 +922,100 @@ visibility = "Hidden"
         assert_eq!(a, b);
     }
 
+    /// Verifies that the 10 well-known material seeds each produce a material
+    /// with reasonable, non-degenerate properties.  The derived values will NOT
+    /// match the old hand-authored TOML values — that's expected.  What matters
+    /// is that every property falls in `[0.0, 1.0]`, that no two well-known
+    /// seeds collide on all properties, and that names are non-empty.
+    #[test]
+    fn well_known_seeds_produce_reasonable_materials() {
+        let materials: Vec<GameMaterial> = WELL_KNOWN_MATERIAL_SEEDS
+            .iter()
+            .map(|&(_label, seed)| derive_material_from_seed(seed))
+            .collect();
+
+        for (i, (label, seed)) in WELL_KNOWN_MATERIAL_SEEDS.iter().enumerate() {
+            let mat = &materials[i];
+
+            // Seed round-trips.
+            assert_eq!(
+                mat.seed, *seed,
+                "{label}: seed not preserved (expected {seed}, got {})",
+                mat.seed
+            );
+
+            // Name is non-empty.
+            assert!(
+                !mat.name.is_empty(),
+                "{label} (seed {seed}): derived name is empty"
+            );
+
+            // Every scalar property is in the valid unit interval [0, 1].
+            let props = [
+                ("density", mat.density.value),
+                ("thermal_resistance", mat.thermal_resistance.value),
+                ("reactivity", mat.reactivity.value),
+                ("conductivity", mat.conductivity.value),
+                ("toxicity", mat.toxicity.value),
+            ];
+            for (prop_name, val) in &props {
+                assert!(
+                    (0.0..=1.0).contains(val),
+                    "{label} (seed {seed}): {prop_name} out of range: {val}"
+                );
+            }
+
+            // Color channels in [0, 1].
+            for (ch, &val) in ["R", "G", "B"].iter().zip(mat.color.iter()) {
+                assert!(
+                    (0.0..=1.0).contains(&val),
+                    "{label} (seed {seed}): color {ch} out of range: {val}"
+                );
+            }
+
+            // All properties start hidden.
+            assert_eq!(mat.density.visibility, PropertyVisibility::Hidden);
+            assert_eq!(
+                mat.thermal_resistance.visibility,
+                PropertyVisibility::Hidden
+            );
+            assert_eq!(mat.reactivity.visibility, PropertyVisibility::Hidden);
+            assert_eq!(mat.conductivity.visibility, PropertyVisibility::Hidden);
+            assert_eq!(mat.toxicity.visibility, PropertyVisibility::Hidden);
+        }
+
+        // No two well-known materials share every property (uniqueness).
+        for i in 0..materials.len() {
+            for j in (i + 1)..materials.len() {
+                let a = &materials[i];
+                let b = &materials[j];
+                let all_same = a.density.value.to_bits() == b.density.value.to_bits()
+                    && a.thermal_resistance.value.to_bits() == b.thermal_resistance.value.to_bits()
+                    && a.reactivity.value.to_bits() == b.reactivity.value.to_bits()
+                    && a.conductivity.value.to_bits() == b.conductivity.value.to_bits()
+                    && a.toxicity.value.to_bits() == b.toxicity.value.to_bits();
+                assert!(
+                    !all_same,
+                    "well-known seeds {} ({}) and {} ({}) produced identical properties",
+                    a.seed, WELL_KNOWN_MATERIAL_SEEDS[i].0, b.seed, WELL_KNOWN_MATERIAL_SEEDS[j].0,
+                );
+            }
+        }
+
+        // Spot-check: across 10 materials we expect meaningful spread.  At
+        // least 5 distinct density values among 10 materials ensures the mixer
+        // is not collapsing small sequential seeds into the same bucket.
+        let unique_densities: std::collections::HashSet<u32> = materials
+            .iter()
+            .map(|m| m.density.value.to_bits())
+            .collect();
+        assert!(
+            unique_densities.len() >= 5,
+            "density spread too narrow: only {} distinct values among 10 well-known seeds",
+            unique_densities.len()
+        );
+    }
+
     /// Verifies that `load_material_catalog` inserts an empty [`MaterialCatalog`]
     /// during startup, before any chunk-generation systems have a chance to run.
     /// This mirrors the real plugin's `PreStartup` registration and confirms the
