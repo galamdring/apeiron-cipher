@@ -614,6 +614,106 @@ visibility = "Hidden"
     }
 
     #[test]
+    fn derive_material_non_degenerate_across_100_seeds() {
+        use std::collections::HashSet;
+
+        let count: usize = 128;
+        // Use seeds spread across the u64 range so every bit window in the
+        // mixer and naming function gets exercised.  Sequential small integers
+        // share low-order bits which would under-test higher bit windows.
+        let materials: Vec<GameMaterial> = (0..count as u64)
+            .map(|i| {
+                let seed = i.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(1);
+                derive_material_from_seed(seed)
+            })
+            .collect();
+
+        // Collect unique values per property to verify the mixer spreads well.
+        let mut unique_density = HashSet::new();
+        let mut unique_thermal = HashSet::new();
+        let mut unique_reactivity = HashSet::new();
+        let mut unique_conductivity = HashSet::new();
+        let mut unique_toxicity = HashSet::new();
+        let mut unique_names = HashSet::new();
+        let mut unique_colors = HashSet::new();
+
+        for mat in &materials {
+            unique_density.insert(mat.density.value.to_bits());
+            unique_thermal.insert(mat.thermal_resistance.value.to_bits());
+            unique_reactivity.insert(mat.reactivity.value.to_bits());
+            unique_conductivity.insert(mat.conductivity.value.to_bits());
+            unique_toxicity.insert(mat.toxicity.value.to_bits());
+            unique_names.insert(mat.name.clone());
+            unique_colors.insert((
+                mat.color[0].to_bits(),
+                mat.color[1].to_bits(),
+                mat.color[2].to_bits(),
+            ));
+        }
+
+        // With 128 seeds and a good mixer, every property should have many
+        // distinct values — at least 10 unique values out of 128.  A degenerate
+        // mixer that collapses to a handful of buckets will fail this.
+        let threshold = 10;
+        assert!(
+            unique_density.len() >= threshold,
+            "density collapsed: only {} unique values out of {count}",
+            unique_density.len()
+        );
+        assert!(
+            unique_thermal.len() >= threshold,
+            "thermal_resistance collapsed: only {} unique values out of {count}",
+            unique_thermal.len()
+        );
+        assert!(
+            unique_reactivity.len() >= threshold,
+            "reactivity collapsed: only {} unique values out of {count}",
+            unique_reactivity.len()
+        );
+        assert!(
+            unique_conductivity.len() >= threshold,
+            "conductivity collapsed: only {} unique values out of {count}",
+            unique_conductivity.len()
+        );
+        assert!(
+            unique_toxicity.len() >= threshold,
+            "toxicity collapsed: only {} unique values out of {count}",
+            unique_toxicity.len()
+        );
+        assert!(
+            unique_names.len() >= threshold,
+            "names collapsed: only {} unique values out of {count}",
+            unique_names.len()
+        );
+        assert!(
+            unique_colors.len() >= threshold,
+            "colors collapsed: only {} unique values out of {count}",
+            unique_colors.len()
+        );
+
+        // Additionally verify no two materials are fully identical (all properties match).
+        for i in 0..materials.len() {
+            for j in (i + 1)..materials.len() {
+                let a = &materials[i];
+                let b = &materials[j];
+                let all_same = a.density.value.to_bits() == b.density.value.to_bits()
+                    && a.thermal_resistance.value.to_bits() == b.thermal_resistance.value.to_bits()
+                    && a.reactivity.value.to_bits() == b.reactivity.value.to_bits()
+                    && a.conductivity.value.to_bits() == b.conductivity.value.to_bits()
+                    && a.toxicity.value.to_bits() == b.toxicity.value.to_bits()
+                    && a.color[0].to_bits() == b.color[0].to_bits()
+                    && a.color[1].to_bits() == b.color[1].to_bits()
+                    && a.color[2].to_bits() == b.color[2].to_bits();
+                assert!(
+                    !all_same,
+                    "seeds {} and {} produced identical materials",
+                    a.seed, b.seed
+                );
+            }
+        }
+    }
+
+    #[test]
     fn mix_seed_deterministic() {
         let a = mix_seed(100, 200);
         let b = mix_seed(100, 200);
