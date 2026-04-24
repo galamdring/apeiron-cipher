@@ -26,6 +26,31 @@ pub struct MaterialPlugin;
 
 pub const MATERIAL_SURFACE_GAP: f32 = 0.01;
 
+// ── Seed-derived material property channels ──────────────────────────────
+//
+// Each channel constant is mixed with a material seed via `mix_seed` to
+// deterministically derive a single property value. The 0xA7E1_0001 prefix
+// groups all material-property channels; the low word distinguishes each
+// property. These must never change once shipped — doing so would alter
+// every seed-derived material in every saved world.
+
+/// Channel for deriving material density from a seed.
+pub const MAT_DENSITY_CHANNEL: u64 = 0xA7E1_0001_0000_0001;
+/// Channel for deriving material thermal resistance from a seed.
+pub const MAT_THERMAL_RESISTANCE_CHANNEL: u64 = 0xA7E1_0001_0000_0002;
+/// Channel for deriving material reactivity from a seed.
+pub const MAT_REACTIVITY_CHANNEL: u64 = 0xA7E1_0001_0000_0003;
+/// Channel for deriving material conductivity from a seed.
+pub const MAT_CONDUCTIVITY_CHANNEL: u64 = 0xA7E1_0001_0000_0004;
+/// Channel for deriving material toxicity from a seed.
+pub const MAT_TOXICITY_CHANNEL: u64 = 0xA7E1_0001_0000_0005;
+/// Channel for deriving the red component of material color from a seed.
+pub const MAT_COLOR_R_CHANNEL: u64 = 0xA7E1_0001_0000_0006;
+/// Channel for deriving the green component of material color from a seed.
+pub const MAT_COLOR_G_CHANNEL: u64 = 0xA7E1_0001_0000_0007;
+/// Channel for deriving the blue component of material color from a seed.
+pub const MAT_COLOR_B_CHANNEL: u64 = 0xA7E1_0001_0000_0008;
+
 impl Plugin for MaterialPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(PreStartup, load_material_catalog)
