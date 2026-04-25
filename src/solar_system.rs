@@ -2140,4 +2140,71 @@ weight = 7.0
             }
         }
     }
+
+    /// All orbital distances must fall within [inner_orbit_au, outer_orbit_au]
+    /// when min-separation enforcement cannot push planets beyond the outer
+    /// bound.
+    ///
+    /// With a single planet (min==max==1), no separation enforcement occurs,
+    /// so the raw distance draw must land within [inner, outer]. With
+    /// multiple planets we use a generous range (0.3–500 AU, 0.5 AU sep)
+    /// where pushing is negligible, confirming the base draws respect bounds.
+    #[test]
+    fn orbital_layout_distances_within_inner_outer_range() {
+        // Single-planet config: no separation enforcement, pure draw check.
+        let config_single = OrbitalConfig {
+            planet_count_min: 1,
+            planet_count_max: 1,
+            inner_orbit_au: 0.3,
+            outer_orbit_au: 50.0,
+            min_separation_au: 0.5,
+        };
+
+        for i in 0..1_000_u64 {
+            let layout = derive_orbital_layout(SolarSystemSeed(i), &config_single);
+            for slot in &layout.planets {
+                assert!(
+                    slot.orbital_distance_au >= config_single.inner_orbit_au,
+                    "seed {i}: distance {} AU < inner bound {} AU",
+                    slot.orbital_distance_au,
+                    config_single.inner_orbit_au,
+                );
+                assert!(
+                    slot.orbital_distance_au <= config_single.outer_orbit_au,
+                    "seed {i}: distance {} AU > outer bound {} AU",
+                    slot.orbital_distance_au,
+                    config_single.outer_orbit_au,
+                );
+            }
+        }
+
+        // Multi-planet config with a wide range so separation won't push
+        // past outer. 8 planets × 0.5 AU separation = 3.5 AU worst case,
+        // well within the 500 AU range.
+        let config = OrbitalConfig {
+            planet_count_min: 2,
+            planet_count_max: 8,
+            inner_orbit_au: 0.3,
+            outer_orbit_au: 500.0,
+            min_separation_au: 0.5,
+        };
+
+        for i in 0..1_000_u64 {
+            let layout = derive_orbital_layout(SolarSystemSeed(i), &config);
+            for slot in &layout.planets {
+                assert!(
+                    slot.orbital_distance_au >= config.inner_orbit_au,
+                    "seed {i}: distance {} AU < inner bound {} AU",
+                    slot.orbital_distance_au,
+                    config.inner_orbit_au,
+                );
+                assert!(
+                    slot.orbital_distance_au <= config.outer_orbit_au,
+                    "seed {i}: distance {} AU > outer bound {} AU",
+                    slot.orbital_distance_au,
+                    config.outer_orbit_au,
+                );
+            }
+        }
+    }
 }
