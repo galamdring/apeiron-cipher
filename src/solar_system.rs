@@ -1208,12 +1208,16 @@ pub fn derive_planet_environment(
     planet_seed: PlanetSeed,
     config: &PlanetEnvironmentConfig,
 ) -> PlanetEnvironment {
+    // Clamp distance to a tiny positive floor to avoid division-by-zero
+    // at 0 AU. This produces extreme but finite values for degenerate orbits.
+    let safe_distance = orbital_distance_au.max(1e-6);
+
     // ── Step 1: Temperature ──────────────────────────────────────────
     // Inverse-square law: flux ∝ luminosity / distance². Temperature
     // scales as the fourth root of flux, but for game coherence we use
     // sqrt(luminosity) / distance which gives a stronger distance gradient
     // that feels more dramatic to the player.
-    let base_temp = config.temp_base_k * star.luminosity.sqrt() / orbital_distance_au;
+    let base_temp = config.temp_base_k * star.luminosity.sqrt() / safe_distance;
 
     // Seed-based variation: map planet seed to [-variation, +variation].
     let temp_var_raw = mix_seed(planet_seed.0, PLANET_TEMP_VARIATION_CHANNEL);
@@ -1250,7 +1254,7 @@ pub fn derive_planet_environment(
     // ── Step 3: Radiation level ──────────────────────────────────────
     // Raw radiation from inverse-square law, normalized so 1.0 luminosity
     // at 1.0 AU = 1.0 radiation before atmosphere attenuation.
-    let raw_radiation = (star.luminosity / (orbital_distance_au * orbital_distance_au)).min(1.0);
+    let raw_radiation = (star.luminosity / (safe_distance * safe_distance)).min(1.0);
     // Atmosphere attenuates radiation: thicker atmosphere blocks more.
     // At atmosphere_density=1.0 (Earth-like), 50% attenuation.
     let atmo_attenuation = (1.0 - 0.5 * atmosphere_density.min(2.0)).max(0.0);
@@ -3758,5 +3762,84 @@ weight = 7.0
             inner_sum / count as f64,
             outer_sum / count as f64,
         );
+    }
+
+    /// A planet at 0 AU (degenerate input) must not panic and must produce
+    /// extreme but finite, valid values across all fields.
+    #[test]
+    fn planet_environment_zero_distance_no_panic() {
+        let star = test_star();
+        let config = PlanetEnvironmentConfig::default();
+
+        for i in 0..100_u64 {
+            let env = derive_planet_environment(&star, 0.0, PlanetSeed(i), &config);
+
+            // All fields must be finite (no inf, no NaN).
+            assert!(
+                env.surface_temp_min_k.is_finite(),
+                "temp_min not finite at seed {i}"
+            );
+            assert!(
+                env.surface_temp_max_k.is_finite(),
+                "temp_max not finite at seed {i}"
+            );
+            assert!(
+                env.atmosphere_density.is_finite(),
+                "atmosphere not finite at seed {i}"
+            );
+            assert!(
+                env.radiation_level.is_finite(),
+                "radiation not finite at seed {i}"
+            );
+            assert!(
+                env.surface_gravity_g.is_finite(),
+                "gravity not finite at seed {i}"
+            );
+
+            // Temperature ordering invariant still holds.
+            assert!(
+                env.surface_temp_min_k < env.surface_temp_max_k,
+                "seed {i}: temp_min ({}) >= temp_max ({})",
+                env.surface_temp_min_k,
+                env.surface_temp_max_k,
+            );
+
+            // Extreme heat: a planet at the star's surface should be very hot.
+            assert!(
+                env.surface_temp_min_k > 1_000.0,
+                "seed {i}: expected extreme temperature at 0 AU, got {}",
+                env.surface_temp_min_k,
+            );
+
+            // Radiation should be at maximum (clamped to 1.0).
+            assert!(
+                (env.radiation_level - 1.0).abs() < f32::EPSILON || env.radiation_level <= 1.0,
+                "seed {i}: radiation {} exceeds 1.0",
+                env.radiation_level,
+            );
+
+            // Atmosphere near zero — stellar wind strips everything at 0 AU.
+            assert!(
+                env.atmosphere_density < 0.01,
+                "seed {i}: expected negligible atmosphere at 0 AU, got {}",
+                env.atmosphere_density,
+            );
+
+            // Gravity within configured range.
+            assert!(
+                env.surface_gravity_g >= config.gravity_min
+                    && env.surface_gravity_g <= config.gravity_max,
+                "seed {i}: gravity {} outside [{}, {}]",
+                env.surface_gravity_g,
+                config.gravity_min,
+                config.gravity_max,
+            );
+
+            // Not in habitable zone (0 AU is inside inner boundary).
+            assert!(
+                !env.in_habitable_zone,
+                "seed {i}: 0 AU should not be in habitable zone",
+            );
+        }
     }
 }
