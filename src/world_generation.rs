@@ -4236,6 +4236,98 @@ mod tests {
         assert!(config.validate().is_err());
     }
 
+    // ── Config TOML parsing tests ─────────────────────────────────────
+
+    #[test]
+    fn config_with_solar_system_seed_parses_system_derived_mode() {
+        let toml_str = r#"
+solar_system_seed = 42
+planet_index = 2
+"#;
+        let config: WorldGenerationConfig =
+            toml::from_str(toml_str).expect("system-derived TOML must parse");
+        assert_eq!(config.solar_system_seed, 42);
+        assert_eq!(config.planet_index, 2);
+        assert_eq!(
+            config.planet_seed, None,
+            "planet_seed must be None when omitted"
+        );
+        assert_eq!(config.seed_mode(), SeedMode::SystemDerived);
+        config
+            .validate()
+            .expect("system-derived config must pass validation");
+    }
+
+    #[test]
+    fn config_with_solar_system_seed_only_defaults_planet_index_to_zero() {
+        let toml_str = r#"
+solar_system_seed = 99
+"#;
+        let config: WorldGenerationConfig =
+            toml::from_str(toml_str).expect("solar_system_seed-only TOML must parse");
+        assert_eq!(config.solar_system_seed, 99);
+        assert_eq!(config.planet_index, 0);
+        assert_eq!(config.planet_seed, None);
+        assert_eq!(config.seed_mode(), SeedMode::SystemDerived);
+        config
+            .validate()
+            .expect("system-derived config with default planet_index must pass");
+    }
+
+    #[test]
+    fn config_with_legacy_system_seed_alias_parses() {
+        let toml_str = r#"
+system_seed = 77
+"#;
+        let config: WorldGenerationConfig =
+            toml::from_str(toml_str).expect("legacy system_seed alias must parse");
+        assert_eq!(config.solar_system_seed, 77);
+        assert_eq!(config.seed_mode(), SeedMode::SystemDerived);
+    }
+
+    #[test]
+    fn config_with_planet_seed_parses_override_mode() {
+        let toml_str = r#"
+solar_system_seed = 42
+planet_seed = 12345
+"#;
+        let config: WorldGenerationConfig =
+            toml::from_str(toml_str).expect("override mode TOML must parse");
+        assert_eq!(config.solar_system_seed, 42);
+        assert_eq!(config.planet_seed, Some(12345));
+        assert_eq!(config.seed_mode(), SeedMode::Override);
+        config
+            .validate()
+            .expect("override mode config must pass validation");
+    }
+
+    #[test]
+    fn config_solar_system_seed_preserves_all_other_defaults() {
+        let toml_str = r#"
+solar_system_seed = 42
+"#;
+        let config: WorldGenerationConfig =
+            toml::from_str(toml_str).expect("minimal system-derived TOML must parse");
+        let defaults = WorldGenerationConfig::default();
+        assert_eq!(
+            config.chunk_size_world_units,
+            defaults.chunk_size_world_units
+        );
+        assert_eq!(config.active_chunk_radius, defaults.active_chunk_radius);
+        assert_eq!(config.building_cell_size, defaults.building_cell_size);
+        assert_eq!(
+            config.planet_surface_min_radius,
+            defaults.planet_surface_min_radius
+        );
+        assert_eq!(
+            config.planet_surface_max_radius,
+            defaults.planet_surface_max_radius
+        );
+        assert_eq!(config.elevation_amplitude, defaults.elevation_amplitude);
+        assert_eq!(config.elevation_frequency, defaults.elevation_frequency);
+        assert_eq!(config.elevation_octaves, defaults.elevation_octaves);
+    }
+
     #[test]
     fn validate_shipped_toml_passes() {
         let contents =
