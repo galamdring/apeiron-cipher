@@ -4404,6 +4404,65 @@ planet_index = 3
     }
 
     #[test]
+    fn system_mode_is_system_derived_and_all_fields_populated() {
+        let star_registry = StarTypeRegistry::default();
+        let orbital_config = OrbitalConfig::default();
+        let env_config = PlanetEnvironmentConfig::default();
+
+        let config = WorldGenerationConfig {
+            solar_system_seed: 42,
+            planet_seed: None,
+            planet_index: 0,
+            ..Default::default()
+        };
+        assert_eq!(config.seed_mode(), SeedMode::SystemDerived);
+
+        let profile =
+            WorldProfile::from_system_seed(&config, &star_registry, &orbital_config, &env_config)
+                .expect("from_system_seed must succeed for planet_index 0");
+
+        assert!(
+            profile.is_system_derived(),
+            "system-derived mode must report is_system_derived() == true"
+        );
+
+        let ctx = profile
+            .system_context
+            .as_ref()
+            .expect("system_context must be Some in system-derived mode");
+
+        assert_eq!(
+            ctx.system_seed,
+            SolarSystemSeed(42),
+            "system_context must carry the original system seed"
+        );
+        assert_eq!(
+            ctx.planet_orbital_index, 0,
+            "planet_orbital_index must match the configured planet_index"
+        );
+        assert!(
+            !ctx.orbital_layout.planets.is_empty(),
+            "orbital layout must contain at least one planet"
+        );
+
+        // Verify all WorldProfile sub-seeds are populated (non-zero is not
+        // guaranteed by the mixing function, but for seed 42 they are
+        // empirically distinct and non-zero — if any were zero it would
+        // indicate the derivation chain is broken).
+        assert_ne!(profile.placement_density_seed, 0);
+        assert_ne!(profile.placement_variation_seed, 0);
+        assert_ne!(profile.object_identity_seed, 0);
+        assert_ne!(profile.biome_climate_seed, 0);
+        assert_ne!(profile.elevation_seed, 0);
+        assert!(profile.planet_surface_radius > 0);
+        assert!(profile.planet_surface_diameter > 0);
+        assert_eq!(
+            profile.planet_surface_diameter,
+            profile.planet_surface_radius * 2
+        );
+    }
+
+    #[test]
     fn validate_shipped_toml_passes() {
         let contents =
             std::fs::read_to_string(CONFIG_PATH).expect("shipped world_generation.toml must exist");
