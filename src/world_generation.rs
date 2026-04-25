@@ -4759,4 +4759,89 @@ planet_index = 3
             profile.planet_surface_radius * 2
         );
     }
+
+    /// When OrbitalConfig is constrained to produce exactly 2 planets,
+    /// planet_index 1 (the second and last planet) must yield a valid,
+    /// fully-populated WorldProfile in system-derived mode.
+    #[test]
+    fn planet_index_one_valid_in_two_planet_system() {
+        use crate::solar_system::{OrbitalConfig, PlanetEnvironmentConfig, StarTypeRegistry};
+
+        let star_registry = StarTypeRegistry::default();
+        let env_config = PlanetEnvironmentConfig::default();
+
+        // Force exactly 2 planets by setting min == max == 2.
+        let orbital_config = OrbitalConfig {
+            planet_count_min: 2,
+            planet_count_max: 2,
+            ..Default::default()
+        };
+
+        let config = WorldGenerationConfig {
+            solar_system_seed: 42,
+            planet_seed: None,
+            planet_index: 1,
+            ..Default::default()
+        };
+
+        let profile =
+            WorldProfile::from_system_seed(&config, &star_registry, &orbital_config, &env_config)
+                .expect("planet_index 1 must succeed when the system has exactly 2 planets");
+
+        // Must be system-derived.
+        assert!(
+            profile.is_system_derived(),
+            "profile must be in system-derived mode"
+        );
+
+        let ctx = profile
+            .system_context
+            .as_ref()
+            .expect("system_context must be Some");
+
+        // Orbital layout must contain exactly 2 planets.
+        assert_eq!(
+            ctx.orbital_layout.planets.len(),
+            2,
+            "orbital layout must have exactly 2 planets"
+        );
+
+        // Recorded orbital index matches the requested index.
+        assert_eq!(
+            ctx.planet_orbital_index, 1,
+            "planet_orbital_index must be 1"
+        );
+
+        // Planet seed must differ from index 0 (different orbital slot).
+        let index_zero_config = WorldGenerationConfig {
+            solar_system_seed: 42,
+            planet_seed: None,
+            planet_index: 0,
+            ..Default::default()
+        };
+        let index_zero_profile = WorldProfile::from_system_seed(
+            &index_zero_config,
+            &star_registry,
+            &orbital_config,
+            &env_config,
+        )
+        .expect("planet_index 0 must also succeed");
+
+        assert_ne!(
+            profile.planet_seed, index_zero_profile.planet_seed,
+            "planet at index 1 must have a different seed than planet at index 0"
+        );
+
+        // Sub-seeds are populated (derivation chain is intact).
+        assert_ne!(profile.placement_density_seed, 0);
+        assert_ne!(profile.placement_variation_seed, 0);
+        assert_ne!(profile.object_identity_seed, 0);
+        assert_ne!(profile.biome_climate_seed, 0);
+        assert_ne!(profile.elevation_seed, 0);
+        assert!(profile.planet_surface_radius > 0);
+        assert_eq!(
+            profile.planet_surface_diameter,
+            profile.planet_surface_radius * 2
+        );
+    }
 }
