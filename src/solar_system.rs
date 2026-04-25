@@ -3421,6 +3421,39 @@ weight = 7.0
         );
     }
 
+    /// Habitable zone flag is correct at the exact boundaries and ±1% offsets.
+    ///
+    /// Tests six points: inner−1%, inner, inner+1%, outer−1%, outer, outer+1%.
+    /// The boundaries themselves (inner, outer) are inclusive per the `>=`/`<=`
+    /// comparison in `derive_planet_environment`.
+    #[test]
+    fn planet_environment_habitable_zone_boundary() {
+        let star = test_star();
+        let config = PlanetEnvironmentConfig::default();
+        let seed = PlanetSeed(42);
+
+        let inner = star.habitable_zone_inner_au;
+        let outer = star.habitable_zone_outer_au;
+
+        let cases: &[(f32, bool, &str)] = &[
+            (inner * 0.99, false, "inner − 1% (outside)"),
+            (inner, true, "inner boundary (inclusive)"),
+            (inner * 1.01, true, "inner + 1% (inside)"),
+            (outer * 0.99, true, "outer − 1% (inside)"),
+            (outer, true, "outer boundary (inclusive)"),
+            (outer * 1.01, false, "outer + 1% (outside)"),
+        ];
+
+        for &(distance, expected, label) in cases {
+            let env = derive_planet_environment(&star, distance, seed, &config);
+            assert_eq!(
+                env.in_habitable_zone, expected,
+                "at {distance:.6} AU ({label}): expected in_habitable_zone = {expected}, \
+                 HZ = [{inner:.6}, {outer:.6}]",
+            );
+        }
+    }
+
     /// Different planet seeds at the same distance produce different environments.
     ///
     /// We verify across multiple distances that a batch of distinct seeds
