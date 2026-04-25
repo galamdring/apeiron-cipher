@@ -925,19 +925,26 @@ fn derive_and_insert_planet_environment(
     let planet_seed = PlanetSeed(world_config.planet_seed);
 
     // Find the player's planet in the orbital layout by matching planet seed.
-    let orbital_distance_au = layout
+    // When the planet seed is NOT found (override / manual-seed mode), we
+    // intentionally skip inserting a PlanetEnvironment resource so that biome
+    // derivation falls back to normalized-only matching. This preserves the
+    // exact biome distribution that existed before stellar-context integration.
+    let slot = layout
         .planets
         .iter()
-        .find(|slot| slot.planet_seed == planet_seed)
-        .map(|slot| slot.orbital_distance_au)
-        .unwrap_or_else(|| {
-            warn!(
-                "Planet seed {:#018X} not found in orbital layout; \
-                 defaulting to 1.0 AU for environment derivation",
+        .find(|slot| slot.planet_seed == planet_seed);
+
+    let orbital_distance_au = match slot {
+        Some(s) => s.orbital_distance_au,
+        None => {
+            info!(
+                "Planet seed {:#018X} not found in orbital layout (override mode); \
+                 skipping PlanetEnvironment insertion to preserve baseline biome distribution",
                 planet_seed.0,
             );
-            1.0
-        });
+            return;
+        }
+    };
 
     let env = derive_planet_environment(&star, orbital_distance_au, planet_seed, &env_config);
 
