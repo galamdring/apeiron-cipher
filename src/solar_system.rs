@@ -3118,4 +3118,70 @@ weight = 7.0
             }
         }
     }
+
+    /// PlanetEnvironmentConfig must round-trip through TOML without data loss.
+    #[test]
+    fn planet_environment_config_toml_round_trip() {
+        let original = PlanetEnvironmentConfig::default();
+        let serialized =
+            toml::to_string(&original).expect("PlanetEnvironmentConfig should serialize to TOML");
+        let deserialized: PlanetEnvironmentConfig =
+            toml::from_str(&serialized).expect("serialized TOML should deserialize back");
+
+        assert!(
+            (original.temp_base_k - deserialized.temp_base_k).abs() < f32::EPSILON,
+            "round-trip should preserve temp_base_k"
+        );
+        assert!(
+            (original.temp_variation_fraction - deserialized.temp_variation_fraction).abs()
+                < f32::EPSILON,
+            "round-trip should preserve temp_variation_fraction"
+        );
+        assert!(
+            (original.atmosphere_inner_penalty - deserialized.atmosphere_inner_penalty).abs()
+                < f32::EPSILON,
+            "round-trip should preserve atmosphere_inner_penalty"
+        );
+        assert!(
+            (original.gravity_min - deserialized.gravity_min).abs() < f32::EPSILON,
+            "round-trip should preserve gravity_min"
+        );
+        assert!(
+            (original.gravity_max - deserialized.gravity_max).abs() < f32::EPSILON,
+            "round-trip should preserve gravity_max"
+        );
+    }
+
+    /// PlanetEnvironmentConfig must round-trip through serde (JSON) without data loss.
+    #[test]
+    fn planet_environment_config_serde_round_trip() {
+        let original = PlanetEnvironmentConfig::default();
+        let json = serde_json::to_string(&original)
+            .expect("PlanetEnvironmentConfig should serialize to JSON");
+        let deserialized: PlanetEnvironmentConfig = serde_json::from_str(&json)
+            .expect("PlanetEnvironmentConfig should deserialize from JSON");
+
+        assert!(
+            (original.temp_base_k - deserialized.temp_base_k).abs() < f32::EPSILON,
+            "round-trip should preserve temp_base_k"
+        );
+        assert!(
+            (original.temp_variation_fraction - deserialized.temp_variation_fraction).abs()
+                < f32::EPSILON,
+            "round-trip should preserve temp_variation_fraction"
+        );
+        assert!(
+            (original.atmosphere_inner_penalty - deserialized.atmosphere_inner_penalty).abs()
+                < f32::EPSILON,
+            "round-trip should preserve atmosphere_inner_penalty"
+        );
+        assert!(
+            (original.gravity_min - deserialized.gravity_min).abs() < f32::EPSILON,
+            "round-trip should preserve gravity_min"
+        );
+        assert!(
+            (original.gravity_max - deserialized.gravity_max).abs() < f32::EPSILON,
+            "round-trip should preserve gravity_max"
+        );
+    }
 }
