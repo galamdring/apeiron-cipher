@@ -1963,4 +1963,181 @@ weight = 7.0
             );
         }
     }
+
+    /// Same seed + same config = identical orbital layout. This is the
+    /// fundamental determinism guarantee for orbital generation.
+    #[test]
+    fn orbital_layout_deterministic() {
+        let seed = SolarSystemSeed(0xCAFE_BABE_DEAD_BEEF);
+        let config = OrbitalConfig::default();
+
+        let layout_a = derive_orbital_layout(seed, &config);
+        let layout_b = derive_orbital_layout(seed, &config);
+
+        assert_eq!(
+            layout_a, layout_b,
+            "same seed must produce identical orbital layout"
+        );
+    }
+
+    /// Orbital distances must be sorted innermost-first (ascending).
+    #[test]
+    fn orbital_layout_distances_sorted() {
+        let config = OrbitalConfig::default();
+
+        for i in 0..1_000_u64 {
+            let layout = derive_orbital_layout(SolarSystemSeed(i), &config);
+            for window in layout.planets.windows(2) {
+                assert!(
+                    window[0].orbital_distance_au <= window[1].orbital_distance_au,
+                    "seed {i}: distances not sorted — {} > {}",
+                    window[0].orbital_distance_au,
+                    window[1].orbital_distance_au,
+                );
+            }
+        }
+    }
+
+    /// Adjacent orbital distances must respect the configured minimum
+    /// separation. The enforcement pushes overlapping orbits outward.
+    #[test]
+    fn orbital_layout_minimum_separation_enforced() {
+        let config = OrbitalConfig::default();
+
+        for i in 0..1_000_u64 {
+            let layout = derive_orbital_layout(SolarSystemSeed(i), &config);
+            for window in layout.planets.windows(2) {
+                let gap = window[1].orbital_distance_au - window[0].orbital_distance_au;
+                assert!(
+                    gap >= config.min_separation_au - f32::EPSILON,
+                    "seed {i}: separation {gap} AU < minimum {} AU",
+                    config.min_separation_au,
+                );
+            }
+        }
+    }
+
+    /// Planet seeds must differ for different orbital positions within the
+    /// same system. Two planets at different distances must not share a seed.
+    #[test]
+    fn orbital_layout_planet_seeds_differ() {
+        let config = OrbitalConfig {
+            planet_count_min: 4,
+            planet_count_max: 4,
+            ..OrbitalConfig::default()
+        };
+
+        for i in 0..100_u64 {
+            let layout = derive_orbital_layout(SolarSystemSeed(i), &config);
+            for (a_idx, a) in layout.planets.iter().enumerate() {
+                for b in layout.planets.iter().skip(a_idx + 1) {
+                    assert_ne!(
+                        a.planet_seed, b.planet_seed,
+                        "seed {i}: planets at {} AU and {} AU share the same planet seed",
+                        a.orbital_distance_au, b.orbital_distance_au,
+                    );
+                }
+            }
+        }
+    }
+
+    /// Planet seeds are position-based, not index-based. Changing the planet
+    /// count range should not alter the seed of a planet that ends up at the
+    /// same orbital distance. We verify this by comparing a layout where a
+    /// specific planet exists in both a narrow and wide count config — if the
+    /// distance is identical, the seed must be identical.
+    #[test]
+    fn orbital_layout_planet_seeds_position_based() {
+        // Use a seed where we can get a layout with at least 2 planets in
+        // both configs. We use min==max to guarantee exact counts.
+        let seed = SolarSystemSeed(42);
+
+        // Generate a 3-planet layout.
+        let config_3 = OrbitalConfig {
+            planet_count_min: 3,
+            planet_count_max: 3,
+            ..OrbitalConfig::default()
+        };
+        let layout_3 = derive_orbital_layout(seed, &config_3);
+
+        // Generate a 5-planet layout. The first 3 distance draws use the same
+        // sub-seeds (channels 1, 2, 3), so if sorting doesn't interleave new
+        // planets between them, their distances — and therefore seeds — match.
+        let config_5 = OrbitalConfig {
+            planet_count_min: 5,
+            planet_count_max: 5,
+            ..OrbitalConfig::default()
+        };
+        let layout_5 = derive_orbital_layout(seed, &config_5);
+
+        // Find planets that share an orbital distance across the two layouts.
+        // For those planets, the seed must be identical (position-based).
+        for slot_3 in &layout_3.planets {
+            for slot_5 in &layout_5.planets {
+                if (slot_3.orbital_distance_au - slot_5.orbital_distance_au).abs() < f32::EPSILON {
+                    assert_eq!(
+                        slot_3.planet_seed, slot_5.planet_seed,
+                        "planet at {} AU has different seeds across configs",
+                        slot_3.orbital_distance_au,
+                    );
+                }
+            }
+        }
+    }
+
+    /// Orbital indices must be 0-based and sequential from innermost outward.
+    #[test]
+    fn orbital_layout_indices_sequential() {
+        let config = OrbitalConfig::default();
+
+        for i in 0..100_u64 {
+            let layout = derive_orbital_layout(SolarSystemSeed(i), &config);
+            for (expected_idx, slot) in layout.planets.iter().enumerate() {
+                assert_eq!(
+                    slot.orbital_index, expected_idx as u32,
+                    "seed {i}: expected orbital_index {expected_idx}, got {}",
+                    slot.orbital_index,
+                );
+            }
+        }
+    }
+
+    /// Different system seeds should produce varying orbital layouts. With
+    /// 1000 seeds, we expect to see multiple distinct planet counts and
+    /// distance patterns.
+    #[test]
+    fn orbital_layout_varies_across_seeds() {
+        let config = OrbitalConfig::default();
+        let mut distinct_counts = std::collections::HashSet::new();
+
+        for i in 0..1_000_u64 {
+            let layout = derive_orbital_layout(SolarSystemSeed(i), &config);
+            distinct_counts.insert(layout.planets.len());
+        }
+
+        assert!(
+            distinct_counts.len() >= 3,
+            "expected at least 3 distinct planet counts across 1000 seeds, got {:?}",
+            distinct_counts,
+        );
+    }
+
+    /// All orbital distances must fall at or above the inner orbit bound.
+    /// (They may exceed outer_orbit_au due to min-separation pushing.)
+    #[test]
+    fn orbital_layout_distances_at_least_inner_orbit() {
+        let config = OrbitalConfig::default();
+
+        for i in 0..1_000_u64 {
+            let layout = derive_orbital_layout(SolarSystemSeed(i), &config);
+            for slot in &layout.planets {
+                assert!(
+                    slot.orbital_distance_au >= config.inner_orbit_au,
+                    "seed {i}: distance {} AU < inner bound {} AU",
+                    slot.orbital_distance_au,
+                    config.inner_orbit_au,
+                );
+            }
+        }
+    }
 }
