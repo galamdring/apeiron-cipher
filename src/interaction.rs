@@ -390,6 +390,7 @@ fn clear_output_slot_reference(slot: &mut OutputSlot, entity: Entity) {
     }
 }
 
+// Bevy system — parameter count is driven by ECS query requirements, not design smell.
 #[allow(clippy::too_many_arguments)]
 fn process_place(
     mut commands: Commands,

@@ -116,6 +116,7 @@ impl RoomShellCollision {
 #[derive(Resource, Clone, Debug)]
 pub struct ExteriorGroundPatch {
     pub bounds_xz: RectXZ,
+    // Reserved for future terrain-height queries; not yet read but stored at construction.
     #[expect(dead_code)]
     pub surface_y: f32,
 }
@@ -620,6 +621,7 @@ pub fn build_room_shell_collision(
     }
 }
 
+// Bevy system — parameter count is driven by ECS query requirements, not design smell.
 #[allow(clippy::too_many_arguments)]
 fn setup_scene(
     mut commands: Commands,
