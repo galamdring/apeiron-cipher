@@ -3529,6 +3529,53 @@ weight = 7.0
         }
     }
 
+    /// For a sun-like star (luminosity = 1.0), the habitable zone spans roughly
+    /// 0.95–1.37 AU (derived from `sqrt(L/1.1)` to `sqrt(L/0.53)`). Planets
+    /// within this band report `in_habitable_zone: true`; planets closer to the
+    /// star or farther away report `false`.
+    ///
+    /// This test checks representative distances across the range to confirm
+    /// the flag behaves correctly for a Sol-equivalent star.
+    #[test]
+    fn planet_environment_habitable_zone_sun_like_star() {
+        let star = test_star(); // luminosity = 1.0, sun-like
+        let config = PlanetEnvironmentConfig::default();
+        let seed = PlanetSeed(7);
+
+        // Verify computed HZ bounds are in the expected ballpark for a
+        // sun-like star (~0.95 inner, ~1.37 outer).
+        let inner = star.habitable_zone_inner_au;
+        let outer = star.habitable_zone_outer_au;
+        assert!(
+            (0.90..1.00).contains(&inner),
+            "sun-like inner HZ should be ~0.95, got {inner}",
+        );
+        assert!(
+            (1.30..1.45).contains(&outer),
+            "sun-like outer HZ should be ~1.37, got {outer}",
+        );
+
+        // Representative distances and expected results.
+        let cases: &[(f32, bool, &str)] = &[
+            (0.3, false, "Mercury-like, well inside"),
+            (0.7, false, "Venus-like, still inside HZ inner"),
+            (0.9, false, "just below HZ inner (~0.953)"),
+            (1.0, true, "Earth-like, inside HZ"),
+            (1.1, true, "mid HZ"),
+            (1.3, true, "near outer HZ edge"),
+            (1.5, false, "beyond outer HZ (~1.374)"),
+            (5.0, false, "Jupiter-like, far outside"),
+        ];
+
+        for &(distance, expected, label) in cases {
+            let env = derive_planet_environment(&star, distance, seed, &config);
+            assert_eq!(
+                env.in_habitable_zone, expected,
+                "at {distance} AU ({label}): expected {expected}, HZ = [{inner:.4}, {outer:.4}]",
+            );
+        }
+    }
+
     /// Different planet seeds at the same distance produce different environments.
     ///
     /// We verify across multiple distances that a batch of distinct seeds
