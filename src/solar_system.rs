@@ -349,6 +349,27 @@ pub struct PlanetEnvironment {
     pub in_habitable_zone: bool,
 }
 
+impl Default for PlanetEnvironment {
+    /// Earth-like defaults used when no stellar context is available (override
+    /// mode). These values ensure biome definitions with absolute Kelvin
+    /// thresholds still apply a sensible temperature mapping even without a
+    /// system-derived planet environment.
+    ///
+    /// The temperature range (224–336 K) corresponds to
+    /// `PlanetEnvironmentConfig::default()` applied at 1 AU around a solar-
+    /// luminosity star with zero seed variation: base 280 K ± 20% spread.
+    fn default() -> Self {
+        Self {
+            surface_temp_min_k: 224.0,
+            surface_temp_max_k: 336.0,
+            atmosphere_density: 1.0,
+            radiation_level: 0.5,
+            surface_gravity_g: 1.0,
+            in_habitable_zone: true,
+        }
+    }
+}
+
 /// Configuration constraints for orbital generation.
 ///
 /// All tuning values are data-driven — loaded from
@@ -993,9 +1014,10 @@ fn derive_and_insert_planet_environment(
 
     // Find the player's planet in the orbital layout by matching planet seed.
     // When the planet seed is NOT found (override / manual-seed mode), we
-    // intentionally skip inserting a PlanetEnvironment resource so that biome
-    // derivation falls back to normalized-only matching. This preserves the
-    // exact biome distribution that existed before stellar-context integration.
+    // insert a default Earth-like PlanetEnvironment so that biome definitions
+    // with absolute Kelvin thresholds still apply a sensible temperature
+    // mapping. This keeps override mode consistent with system-derived mode
+    // while using a neutral baseline.
     let slot = layout
         .planets
         .iter()
@@ -1004,11 +1026,13 @@ fn derive_and_insert_planet_environment(
     let orbital_distance_au = match slot {
         Some(s) => s.orbital_distance_au,
         None => {
+            let env = PlanetEnvironment::default();
             info!(
                 "Planet seed {:#018X} not found in orbital layout (override mode); \
-                 skipping PlanetEnvironment insertion to preserve baseline biome distribution",
-                planet_seed.0,
+                 using default Earth-like PlanetEnvironment: temp=[{:.0}, {:.0}]K",
+                planet_seed.0, env.surface_temp_min_k, env.surface_temp_max_k,
             );
+            commands.insert_resource(env);
             return;
         }
     };
