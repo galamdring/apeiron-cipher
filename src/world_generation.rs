@@ -3196,6 +3196,97 @@ mod tests {
         );
     }
 
+    #[test]
+    fn hot_planet_skews_toward_scorched_flats_over_frost_shelf() {
+        // Using the production biome registry, a planet close to the star
+        // (surface_temp 400–700 K) should produce predominantly scorched_flats
+        // and zero frost_shelf. The absolute temperature thresholds in
+        // biomes.toml (scorched_flats: 350–600 K, frost_shelf: 50–220 K)
+        // make it impossible for a 400+ K planet to match frost_shelf.
+        let toml_content =
+            std::fs::read_to_string(BIOME_CONFIG_PATH).expect("shipped biomes.toml must exist");
+        let registry: BiomeRegistry =
+            toml::from_str(&toml_content).expect("shipped biomes.toml must parse");
+        let profile = WorldProfile::from_config(&sample_config());
+
+        let hot_env = PlanetEnvironment {
+            surface_temp_min_k: 400.0,
+            surface_temp_max_k: 700.0,
+            atmosphere_density: 0.3,
+            radiation_level: 0.9,
+            surface_gravity_g: 1.5,
+            in_habitable_zone: false,
+        };
+
+        let cold_env = PlanetEnvironment {
+            surface_temp_min_k: 30.0,
+            surface_temp_max_k: 100.0,
+            atmosphere_density: 0.1,
+            radiation_level: 0.05,
+            surface_gravity_g: 0.3,
+            in_habitable_zone: false,
+        };
+
+        let mut hot_scorched = 0u32;
+        let mut hot_frost = 0u32;
+        let mut cold_scorched = 0u32;
+        let mut cold_frost = 0u32;
+        let sample_count = 200;
+
+        for x in 0..sample_count {
+            let coord = ChunkCoord::new(x, x * 7 + 3);
+
+            let hot_biome =
+                derive_chunk_biome(&profile, &registry, coord, Some(&hot_env)).biome_key;
+            if hot_biome == "scorched_flats" {
+                hot_scorched += 1;
+            } else if hot_biome == "frost_shelf" {
+                hot_frost += 1;
+            }
+
+            let cold_biome =
+                derive_chunk_biome(&profile, &registry, coord, Some(&cold_env)).biome_key;
+            if cold_biome == "scorched_flats" {
+                cold_scorched += 1;
+            } else if cold_biome == "frost_shelf" {
+                cold_frost += 1;
+            }
+        }
+
+        // Hot planet: frost_shelf is physically impossible (abs max 220 K < planet min 400 K).
+        assert_eq!(
+            hot_frost, 0,
+            "frost_shelf must not appear on a 400–700 K planet",
+        );
+        // Hot planet must produce at least some scorched_flats.
+        assert!(
+            hot_scorched > 0,
+            "hot planet (400–700 K) should produce scorched_flats, got none in {sample_count} samples",
+        );
+
+        // Cold planet: scorched_flats is physically impossible (abs min 350 K > planet max 100 K).
+        assert_eq!(
+            cold_scorched, 0,
+            "scorched_flats must not appear on a 30–100 K planet",
+        );
+        // Cold planet must produce at least some frost_shelf.
+        assert!(
+            cold_frost > 0,
+            "cold planet (30–100 K) should produce frost_shelf, got none in {sample_count} samples",
+        );
+
+        // The hot planet must have more scorched_flats than the cold planet (which has zero).
+        assert!(
+            hot_scorched > cold_scorched,
+            "hot planet should have more scorched_flats ({hot_scorched}) than cold planet ({cold_scorched})",
+        );
+        // The cold planet must have more frost_shelf than the hot planet (which has zero).
+        assert!(
+            cold_frost > hot_frost,
+            "cold planet should have more frost_shelf ({cold_frost}) than hot planet ({hot_frost})",
+        );
+    }
+
     // ── PlanetSurface multi-octave noise tests ──────────────────────────
 
     /// Helper: build a `PlanetSurface` with known parameters for testing.
