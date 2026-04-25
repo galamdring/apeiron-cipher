@@ -1,14 +1,17 @@
-//! Solar system generation — deterministic star derivation from a system seed.
+//! Solar system generation — deterministic star and orbital layout derivation from a system seed.
 //!
 //! This module provides the data types and derivation logic for generating
-//! star profiles from a solar system seed. Every parameter is derived via
-//! `mix_seed(system_seed, channel_constant)` — one mix per parameter, no
-//! shared draw order — so the same seed always produces the same star
-//! regardless of call site or future parameter additions.
+//! star profiles and orbital layouts from a solar system seed. Every parameter
+//! is derived via `mix_seed(system_seed, channel_constant)` — one mix per
+//! parameter, no shared draw order — so the same seed always produces the
+//! same star and orbital layout regardless of call site or future parameter
+//! additions.
 //!
 //! Star type definitions are data-driven, loaded from
-//! `assets/config/star_types.toml` at startup. The derivation is pure data —
-//! no rendering, no ECS components, no visual representation.
+//! `assets/config/star_types.toml` at startup. Orbital constraints are
+//! data-driven, loaded from `assets/config/orbital_config.toml` at startup.
+//! All derivation is pure data — no rendering, no ECS components, no visual
+//! representation.
 
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -38,11 +41,9 @@ const STAR_TEMPERATURE_CHANNEL: u64 = 0x57A2_0001_0000_0003;
 const STAR_MASS_CHANNEL: u64 = 0x57A2_0001_0000_0004;
 
 /// Channel for deriving planet count from a system seed.
-#[allow(dead_code)]
 const PLANET_COUNT_CHANNEL: u64 = 0x02B1_0001_0000_0001;
 
 /// Channel for seeding the orbital distance RNG.
-#[allow(dead_code)]
 const ORBITAL_LAYOUT_CHANNEL: u64 = 0x02B1_0001_0000_0002;
 
 /// Path to the star type definitions TOML file.
@@ -139,7 +140,6 @@ pub struct StarTypeRegistry {
 /// (not the index), so inserting a planet between two existing ones in a
 /// future story will not change their seeds.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[allow(dead_code)]
 pub struct OrbitalSlot {
     /// Deterministic seed for this planet, derived from system seed and orbital distance.
     pub planet_seed: PlanetSeed,
@@ -155,7 +155,6 @@ pub struct OrbitalSlot {
 /// the star outward. Deterministically derived from a `SolarSystemSeed`
 /// and an `OrbitalConfig`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[allow(dead_code)]
 pub struct OrbitalLayout {
     /// Planets sorted by orbital distance, innermost first.
     pub planets: Vec<OrbitalSlot>,
@@ -501,19 +500,21 @@ fn load_orbital_config(mut commands: Commands) {
     commands.insert_resource(config);
 }
 
-/// Derive and log the star profile for the current solar system on startup.
+/// Derive and log the star profile and orbital layout on startup.
 ///
-/// Runs in `Startup` (after `PreStartup` has loaded both the
-/// `WorldGenerationConfig` and `StarTypeRegistry`). Reads the `system_seed`
-/// from the world generation config, derives a `StarProfile`, and logs every
-/// parameter at `info!` level so developers can verify the values look
-/// physically plausible (e.g., red dwarf → low luminosity, blue giant → high
-/// temperature).
+/// Runs in `Startup` (after `PreStartup` has loaded the
+/// `WorldGenerationConfig`, `StarTypeRegistry`, and `OrbitalConfig`).
+/// Reads the `system_seed` from the world generation config, derives a
+/// `StarProfile` and `OrbitalLayout`, and logs every parameter at `info!`
+/// level so developers can verify the values look physically plausible
+/// (e.g., red dwarf → low luminosity, blue giant → high temperature,
+/// planets spaced with minimum separation).
 ///
 /// This system is read-only — it does not insert or mutate any resources.
 fn log_star_profile_on_startup(
     world_config: Res<WorldGenerationConfig>,
     star_registry: Res<StarTypeRegistry>,
+    orbital_config: Res<OrbitalConfig>,
 ) {
     let seed = SolarSystemSeed(world_config.system_seed);
     let profile = derive_star_profile(seed, &star_registry);
@@ -530,6 +531,21 @@ fn log_star_profile_on_startup(
         profile.habitable_zone_inner_au,
         profile.habitable_zone_outer_au,
     );
+
+    let layout = derive_orbital_layout(seed, &orbital_config);
+
+    info!(
+        "Orbital layout derived from system seed {}: {} planets",
+        seed.0,
+        layout.planets.len(),
+    );
+
+    for slot in &layout.planets {
+        info!(
+            "  Planet {}: distance={:.4} AU, seed={:#018X}",
+            slot.orbital_index, slot.orbital_distance_au, slot.planet_seed.0,
+        );
+    }
 }
 
 // ── Seed Derivation ──────────────────────────────────────────────────────
@@ -714,7 +730,6 @@ pub fn derive_star_profile(
 /// close to 1.0 producing a value above `planet_count_max` after the `+ 1`
 /// trick). The clamp is a safety net — under normal operation, the lerp +
 /// floor already produces values in range.
-#[allow(dead_code)]
 pub fn derive_planet_count(system_seed: SolarSystemSeed, config: &OrbitalConfig) -> u32 {
     let raw = mix_seed(system_seed.0, PLANET_COUNT_CHANNEL);
     let t = seed_to_unit_f32(raw);
@@ -753,7 +768,6 @@ pub fn derive_planet_count(system_seed: SolarSystemSeed, config: &OrbitalConfig)
 /// Does not panic. If minimum separation enforcement pushes a planet past
 /// `outer_orbit_au`, it keeps the pushed distance — the alternative (dropping
 /// the planet) would change the count derived from the seed.
-#[allow(dead_code)]
 pub fn derive_orbital_layout(
     system_seed: SolarSystemSeed,
     config: &OrbitalConfig,
