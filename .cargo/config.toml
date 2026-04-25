@@ -1,6 +1,9 @@
 [build]
 # Shared build cache across all worktrees of this repo.
 # Keeps compiled Bevy deps from being rebuilt from scratch every time you
-# switch worktrees. The path lives outside any worktree so it is never
-# accidentally staged or committed.
-target-dir = "/Users/lmckechn/projects/opensky-target"
+# switch worktrees. For local development with multiple worktrees, set the
+# CARGO_TARGET_DIR environment variable to point to a shared target directory:
+#
+#   export CARGO_TARGET_DIR="$HOME/projects/opensky-target"
+#
+# In CI and without the environment variable, this defaults to ./target
