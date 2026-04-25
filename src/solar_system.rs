@@ -661,6 +661,43 @@ pub fn derive_star_profile(
     }
 }
 
+/// Derive the number of planets for a solar system from its seed and config.
+///
+/// ## Derivation
+///
+/// 1. Mix the system seed with `PLANET_COUNT_CHANNEL` to produce a raw `u64`.
+/// 2. Convert to a `[0, 1)` fraction via `seed_to_unit_f32`.
+/// 3. Lerp into the range `[planet_count_min, planet_count_max + 1)` and
+///    floor to produce an integer uniformly distributed in
+///    `[planet_count_min, planet_count_max]`.
+///
+/// The `+ 1` in the lerp upper bound ensures that `planet_count_max` is
+/// reachable: without it, `seed_to_unit_f32` returning values in `[0, 1)`
+/// would make `planet_count_max` unreachable after flooring.
+///
+/// ## Clamping
+///
+/// A final clamp guards against floating-point edge cases (e.g., `t` very
+/// close to 1.0 producing a value above `planet_count_max` after the `+ 1`
+/// trick). The clamp is a safety net — under normal operation, the lerp +
+/// floor already produces values in range.
+#[allow(dead_code)]
+pub fn derive_planet_count(system_seed: SolarSystemSeed, config: &OrbitalConfig) -> u32 {
+    let raw = mix_seed(system_seed.0, PLANET_COUNT_CHANNEL);
+    let t = seed_to_unit_f32(raw);
+
+    // Lerp into [min, max + 1) so that flooring produces [min, max].
+    let count_f = lerp(
+        config.planet_count_min as f32,
+        (config.planet_count_max + 1) as f32,
+        t,
+    );
+    let count = count_f as u32;
+
+    // Safety clamp against float edge cases.
+    count.clamp(config.planet_count_min, config.planet_count_max)
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1691,5 +1728,123 @@ weight = 7.0
             PLANET_COUNT_CHANNEL, ORBITAL_LAYOUT_CHANNEL,
             "PLANET_COUNT_CHANNEL and ORBITAL_LAYOUT_CHANNEL must differ"
         );
+    }
+
+    // ── Planet Count Derivation Tests ────────────────────────────────
+
+    /// Same seed + same config = same planet count. Fundamental determinism.
+    #[test]
+    fn planet_count_deterministic() {
+        let seed = SolarSystemSeed(0xDEAD_BEEF_CAFE_BABE);
+        let config = OrbitalConfig::default();
+
+        let count_a = derive_planet_count(seed, &config);
+        let count_b = derive_planet_count(seed, &config);
+
+        assert_eq!(count_a, count_b, "same seed must produce same planet count");
+    }
+
+    /// Planet count must always be within [min, max] for a range of seeds.
+    #[test]
+    fn planet_count_within_configured_range() {
+        let config = OrbitalConfig::default();
+
+        for i in 0..10_000_u64 {
+            let count = derive_planet_count(SolarSystemSeed(i), &config);
+            assert!(
+                count >= config.planet_count_min && count <= config.planet_count_max,
+                "seed {i}: planet count {count} outside [{}, {}]",
+                config.planet_count_min,
+                config.planet_count_max,
+            );
+        }
+    }
+
+    /// When min == max, every seed must produce exactly that count.
+    #[test]
+    fn planet_count_fixed_when_min_equals_max() {
+        let config = OrbitalConfig {
+            planet_count_min: 5,
+            planet_count_max: 5,
+            ..OrbitalConfig::default()
+        };
+
+        for i in 0..1_000_u64 {
+            let count = derive_planet_count(SolarSystemSeed(i), &config);
+            assert_eq!(
+                count, 5,
+                "seed {i}: expected exactly 5 planets when min==max, got {count}"
+            );
+        }
+    }
+
+    /// Different seeds should produce varying planet counts — not all the
+    /// same value. With default range [2, 8] and 10,000 seeds, we expect
+    /// at least 3 distinct counts.
+    #[test]
+    fn planet_count_varies_across_seeds() {
+        let config = OrbitalConfig::default();
+        let mut seen = std::collections::HashSet::new();
+
+        for i in 0..10_000_u64 {
+            seen.insert(derive_planet_count(SolarSystemSeed(i), &config));
+        }
+
+        assert!(
+            seen.len() >= 3,
+            "expected at least 3 distinct planet counts from 10,000 seeds, got {}",
+            seen.len()
+        );
+    }
+
+    /// Both min and max planet counts must be reachable. With 10,000 seeds
+    /// and a well-mixed derivation, both endpoints should appear.
+    #[test]
+    fn planet_count_reaches_min_and_max() {
+        let config = OrbitalConfig::default();
+        let mut min_seen = false;
+        let mut max_seen = false;
+
+        for i in 0..10_000_u64 {
+            let count = derive_planet_count(SolarSystemSeed(i), &config);
+            if count == config.planet_count_min {
+                min_seen = true;
+            }
+            if count == config.planet_count_max {
+                max_seen = true;
+            }
+            if min_seen && max_seen {
+                break;
+            }
+        }
+
+        assert!(
+            min_seen,
+            "planet_count_min ({}) was never produced in 10,000 seeds",
+            config.planet_count_min
+        );
+        assert!(
+            max_seen,
+            "planet_count_max ({}) was never produced in 10,000 seeds",
+            config.planet_count_max
+        );
+    }
+
+    /// Planet count respects a custom narrower range.
+    #[test]
+    fn planet_count_respects_custom_range() {
+        let config = OrbitalConfig {
+            planet_count_min: 4,
+            planet_count_max: 6,
+            ..OrbitalConfig::default()
+        };
+
+        for i in 0..10_000_u64 {
+            let count = derive_planet_count(SolarSystemSeed(i), &config);
+            assert!(
+                count >= 4 && count <= 6,
+                "seed {i}: planet count {count} outside custom range [4, 6]"
+            );
+        }
     }
 }
