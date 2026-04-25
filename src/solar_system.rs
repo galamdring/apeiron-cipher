@@ -19,20 +19,12 @@ use std::fs;
 use std::path::Path;
 
 use crate::seed_util::{
-    ORBITAL_LAYOUT_CHANNEL, PLANET_COUNT_CHANNEL, STAR_LUMINOSITY_CHANNEL, STAR_MASS_CHANNEL,
-    STAR_TEMPERATURE_CHANNEL, STAR_TYPE_CHANNEL, f32_next_up, f32_to_u64_bits, lerp, mix_seed,
-    seed_to_unit_f32,
+    ORBITAL_LAYOUT_CHANNEL, PLANET_ATMOSPHERE_CHANNEL, PLANET_COUNT_CHANNEL,
+    PLANET_GRAVITY_CHANNEL, PLANET_TEMP_VARIATION_CHANNEL, STAR_LUMINOSITY_CHANNEL,
+    STAR_MASS_CHANNEL, STAR_TEMPERATURE_CHANNEL, STAR_TYPE_CHANNEL, f32_next_up, f32_to_u64_bits,
+    lerp, mix_seed, seed_to_unit_f32,
 };
 use crate::world_generation::{PlanetSeed, WorldGenerationConfig};
-
-/// Channel for deriving planet surface temperature variation from planet seed.
-const PLANET_TEMP_VARIATION_CHANNEL: u64 = 0xE1E7_0001_0000_0001;
-
-/// Channel for deriving planet atmosphere density variation from planet seed.
-const PLANET_ATMOSPHERE_CHANNEL: u64 = 0xE1E7_0001_0000_0002;
-
-/// Channel for deriving planet surface gravity from planet seed.
-const PLANET_GRAVITY_CHANNEL: u64 = 0xE1E7_0001_0000_0003;
 
 /// Path to the star type definitions TOML file.
 const STAR_TYPES_CONFIG_PATH: &str = "assets/config/star_types.toml";
@@ -136,6 +128,56 @@ impl std::fmt::Display for OrbitalConfigError {
 }
 
 impl std::error::Error for OrbitalConfigError {}
+
+/// Errors produced by [`PlanetEnvironmentConfig::validate`].
+#[derive(Clone, Debug, PartialEq)]
+pub enum PlanetEnvConfigError {
+    /// `temp_base_k` is not positive or not finite.
+    InvalidTempBase { value: f32 },
+    /// `temp_variation_fraction` is outside `[0.0, 1.0)` or not finite.
+    InvalidTempVariation { value: f32 },
+    /// `atmosphere_inner_penalty` is outside `(0.0, 1.0]` or not finite.
+    InvalidAtmospherePenalty { value: f32 },
+    /// `gravity_min` is not positive or not finite.
+    InvalidGravityMin { value: f32 },
+    /// `gravity_max` is not finite.
+    InvalidGravityMax { value: f32 },
+    /// `gravity_min >= gravity_max`.
+    GravityRangeInverted { min: f32, max: f32 },
+}
+
+impl std::fmt::Display for PlanetEnvConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidTempBase { value } => {
+                write!(f, "temp_base_k must be positive and finite, got {value}")
+            }
+            Self::InvalidTempVariation { value } => {
+                write!(
+                    f,
+                    "temp_variation_fraction must be in [0.0, 1.0) and finite, got {value}"
+                )
+            }
+            Self::InvalidAtmospherePenalty { value } => {
+                write!(
+                    f,
+                    "atmosphere_inner_penalty must be in (0.0, 1.0] and finite, got {value}"
+                )
+            }
+            Self::InvalidGravityMin { value } => {
+                write!(f, "gravity_min must be positive and finite, got {value}")
+            }
+            Self::InvalidGravityMax { value } => {
+                write!(f, "gravity_max must be finite, got {value}")
+            }
+            Self::GravityRangeInverted { min, max } => {
+                write!(f, "gravity_min ({min}) must be < gravity_max ({max})")
+            }
+        }
+    }
+}
+
+impl std::error::Error for PlanetEnvConfigError {}
 
 /// Path to the planet environment configuration TOML file.
 const PLANET_ENVIRONMENT_CONFIG_PATH: &str = "assets/config/planet_environment.toml";
@@ -451,48 +493,43 @@ impl PlanetEnvironmentConfig {
     /// 4. `gravity_min > 0.0` and finite — must be a positive gravity.
     /// 5. `gravity_min < gravity_max` — range must not be inverted.
     /// 6. `gravity_max` is finite.
-    pub fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self) -> Result<(), PlanetEnvConfigError> {
         if !self.temp_base_k.is_finite() || self.temp_base_k <= 0.0 {
-            return Err(format!(
-                "temp_base_k must be positive and finite, got {}",
-                self.temp_base_k
-            ));
+            return Err(PlanetEnvConfigError::InvalidTempBase {
+                value: self.temp_base_k,
+            });
         }
         if !self.temp_variation_fraction.is_finite()
             || self.temp_variation_fraction < 0.0
             || self.temp_variation_fraction >= 1.0
         {
-            return Err(format!(
-                "temp_variation_fraction must be in [0.0, 1.0) and finite, got {}",
-                self.temp_variation_fraction
-            ));
+            return Err(PlanetEnvConfigError::InvalidTempVariation {
+                value: self.temp_variation_fraction,
+            });
         }
         if !self.atmosphere_inner_penalty.is_finite()
             || self.atmosphere_inner_penalty <= 0.0
             || self.atmosphere_inner_penalty > 1.0
         {
-            return Err(format!(
-                "atmosphere_inner_penalty must be in (0.0, 1.0] and finite, got {}",
-                self.atmosphere_inner_penalty
-            ));
+            return Err(PlanetEnvConfigError::InvalidAtmospherePenalty {
+                value: self.atmosphere_inner_penalty,
+            });
         }
         if !self.gravity_min.is_finite() || self.gravity_min <= 0.0 {
-            return Err(format!(
-                "gravity_min must be positive and finite, got {}",
-                self.gravity_min
-            ));
+            return Err(PlanetEnvConfigError::InvalidGravityMin {
+                value: self.gravity_min,
+            });
         }
         if !self.gravity_max.is_finite() {
-            return Err(format!(
-                "gravity_max must be finite, got {}",
-                self.gravity_max
-            ));
+            return Err(PlanetEnvConfigError::InvalidGravityMax {
+                value: self.gravity_max,
+            });
         }
         if self.gravity_min >= self.gravity_max {
-            return Err(format!(
-                "gravity_min ({}) must be < gravity_max ({})",
-                self.gravity_min, self.gravity_max
-            ));
+            return Err(PlanetEnvConfigError::GravityRangeInverted {
+                min: self.gravity_min,
+                max: self.gravity_max,
+            });
         }
         Ok(())
     }
@@ -3394,6 +3431,116 @@ weight = 7.0
         );
     }
 
+    // ── PlanetEnvironmentConfig Validation Rejection Tests ───────────────
+
+    #[test]
+    fn planet_env_config_rejects_negative_temp_base() {
+        let mut cfg = PlanetEnvironmentConfig::default();
+        cfg.temp_base_k = -1.0;
+        assert_eq!(
+            cfg.validate().unwrap_err(),
+            PlanetEnvConfigError::InvalidTempBase { value: -1.0 }
+        );
+    }
+
+    #[test]
+    fn planet_env_config_rejects_zero_temp_base() {
+        let mut cfg = PlanetEnvironmentConfig::default();
+        cfg.temp_base_k = 0.0;
+        assert_eq!(
+            cfg.validate().unwrap_err(),
+            PlanetEnvConfigError::InvalidTempBase { value: 0.0 }
+        );
+    }
+
+    #[test]
+    fn planet_env_config_rejects_nan_temp_base() {
+        let mut cfg = PlanetEnvironmentConfig::default();
+        cfg.temp_base_k = f32::NAN;
+        assert!(matches!(
+            cfg.validate().unwrap_err(),
+            PlanetEnvConfigError::InvalidTempBase { .. }
+        ));
+    }
+
+    #[test]
+    fn planet_env_config_rejects_variation_at_one() {
+        let mut cfg = PlanetEnvironmentConfig::default();
+        cfg.temp_variation_fraction = 1.0;
+        assert_eq!(
+            cfg.validate().unwrap_err(),
+            PlanetEnvConfigError::InvalidTempVariation { value: 1.0 }
+        );
+    }
+
+    #[test]
+    fn planet_env_config_rejects_negative_variation() {
+        let mut cfg = PlanetEnvironmentConfig::default();
+        cfg.temp_variation_fraction = -0.1;
+        assert_eq!(
+            cfg.validate().unwrap_err(),
+            PlanetEnvConfigError::InvalidTempVariation { value: -0.1 }
+        );
+    }
+
+    #[test]
+    fn planet_env_config_rejects_zero_atmosphere_penalty() {
+        let mut cfg = PlanetEnvironmentConfig::default();
+        cfg.atmosphere_inner_penalty = 0.0;
+        assert_eq!(
+            cfg.validate().unwrap_err(),
+            PlanetEnvConfigError::InvalidAtmospherePenalty { value: 0.0 }
+        );
+    }
+
+    #[test]
+    fn planet_env_config_rejects_atmosphere_penalty_above_one() {
+        let mut cfg = PlanetEnvironmentConfig::default();
+        cfg.atmosphere_inner_penalty = 1.5;
+        assert_eq!(
+            cfg.validate().unwrap_err(),
+            PlanetEnvConfigError::InvalidAtmospherePenalty { value: 1.5 }
+        );
+    }
+
+    #[test]
+    fn planet_env_config_rejects_inverted_gravity_range() {
+        let mut cfg = PlanetEnvironmentConfig::default();
+        cfg.gravity_min = 5.0;
+        cfg.gravity_max = 2.0;
+        assert_eq!(
+            cfg.validate().unwrap_err(),
+            PlanetEnvConfigError::GravityRangeInverted { min: 5.0, max: 2.0 }
+        );
+    }
+
+    #[test]
+    fn planet_env_config_rejects_zero_gravity_min() {
+        let mut cfg = PlanetEnvironmentConfig::default();
+        cfg.gravity_min = 0.0;
+        assert_eq!(
+            cfg.validate().unwrap_err(),
+            PlanetEnvConfigError::InvalidGravityMin { value: 0.0 }
+        );
+    }
+
+    #[test]
+    fn planet_env_config_rejects_nan_gravity_max() {
+        let mut cfg = PlanetEnvironmentConfig::default();
+        cfg.gravity_max = f32::NAN;
+        assert!(matches!(
+            cfg.validate().unwrap_err(),
+            PlanetEnvConfigError::InvalidGravityMax { .. }
+        ));
+    }
+
+    #[test]
+    fn planet_env_config_default_validates() {
+        PlanetEnvironmentConfig::default()
+            .validate()
+            .expect("default config should be valid");
+    }
+
     // ── Planet Environment Derivation Tests ──────────────────────────────
 
     /// Helper: a Sol-like star for planet environment tests.
@@ -3730,33 +3877,6 @@ weight = 7.0
                     env.surface_temp_min_k,
                     env.surface_temp_max_k,
                 );
-            }
-        }
-    }
-
-    /// Planet environment channel constants must not collide with existing channels.
-    #[test]
-    fn planet_environment_channel_constants_unique() {
-        let all_channels = [
-            STAR_TYPE_CHANNEL,
-            STAR_LUMINOSITY_CHANNEL,
-            STAR_TEMPERATURE_CHANNEL,
-            STAR_MASS_CHANNEL,
-            PLANET_COUNT_CHANNEL,
-            ORBITAL_LAYOUT_CHANNEL,
-            PLANET_TEMP_VARIATION_CHANNEL,
-            PLANET_ATMOSPHERE_CHANNEL,
-            PLANET_GRAVITY_CHANNEL,
-        ];
-
-        for (i, &a) in all_channels.iter().enumerate() {
-            for (j, &b) in all_channels.iter().enumerate() {
-                if i != j {
-                    assert_ne!(
-                        a, b,
-                        "channel {i} ({a:#018X}) collides with channel {j} ({b:#018X})"
-                    );
-                }
             }
         }
     }

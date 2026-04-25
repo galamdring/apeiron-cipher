@@ -14,6 +14,7 @@
 //!   - `0xD3E5_17A1` — world generation (placement, biome, surface)
 //!   - `0xE1EF_0001` — elevation
 //!   - `0xA7E1_0001` — material properties
+//!   - `0xE1E7_0001` — planet environment
 //! - Adding a new channel? Add it here, not in the consuming module.
 //! - The uniqueness test at the bottom of this file catches collisions at compile time.
 
@@ -162,6 +163,15 @@ pub const MAT_COLOR_G_CHANNEL: u64 = 0xA7E1_0001_0000_0007;
 /// Channel for deriving the blue component of material color from a seed.
 pub const MAT_COLOR_B_CHANNEL: u64 = 0xA7E1_0001_0000_0008;
 
+// ── Planet Environment Channels (prefix 0xE1E7_0001) ───────────────────
+
+/// Channel for deriving planet surface temperature variation from planet seed.
+pub const PLANET_TEMP_VARIATION_CHANNEL: u64 = 0xE1E7_0001_0000_0001;
+/// Channel for deriving planet atmosphere density variation from planet seed.
+pub const PLANET_ATMOSPHERE_CHANNEL: u64 = 0xE1E7_0001_0000_0002;
+/// Channel for deriving planet surface gravity from planet seed.
+pub const PLANET_GRAVITY_CHANNEL: u64 = 0xE1E7_0001_0000_0003;
+
 // ── Tests ────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -206,6 +216,13 @@ mod tests {
             ("MAT_COLOR_R_CHANNEL", MAT_COLOR_R_CHANNEL),
             ("MAT_COLOR_G_CHANNEL", MAT_COLOR_G_CHANNEL),
             ("MAT_COLOR_B_CHANNEL", MAT_COLOR_B_CHANNEL),
+            // Planet environment
+            (
+                "PLANET_TEMP_VARIATION_CHANNEL",
+                PLANET_TEMP_VARIATION_CHANNEL,
+            ),
+            ("PLANET_ATMOSPHERE_CHANNEL", PLANET_ATMOSPHERE_CHANNEL),
+            ("PLANET_GRAVITY_CHANNEL", PLANET_GRAVITY_CHANNEL),
         ];
 
         for (i, (name_a, val_a)) in channels.iter().enumerate() {
