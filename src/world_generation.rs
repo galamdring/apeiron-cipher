@@ -1491,29 +1491,36 @@ fn load_world_generation_config(mut commands: Commands) {
 ///
 /// On success, it overwrites the default `WorldProfile` resource with the
 /// fully resolved profile including `SystemContext`. On failure (e.g.,
-/// `planet_index` out of range), it panics with a descriptive message
-/// because an invalid planet index is a configuration error that must be
-/// fixed before the game can run.
+/// `planet_index` out of range), it logs a clear error message and
+/// requests a graceful application exit via [`AppExit`], rather than
+/// panicking, so the user sees an actionable diagnostic instead of a
+/// crash backtrace.
 pub fn resolve_system_derived_profile(
     mut commands: Commands,
     config: Res<WorldGenerationConfig>,
     star_registry: Res<StarTypeRegistry>,
     orbital_config: Res<OrbitalConfig>,
     env_config: Res<PlanetEnvironmentConfig>,
+    mut app_exit: bevy::ecs::message::MessageWriter<AppExit>,
 ) {
     if config.seed_mode() != SeedMode::SystemDerived {
         return;
     }
 
     let profile =
-        WorldProfile::from_system_seed(&config, &star_registry, &orbital_config, &env_config)
-            .unwrap_or_else(|err| {
-                panic!(
+        match WorldProfile::from_system_seed(&config, &star_registry, &orbital_config, &env_config)
+        {
+            Ok(p) => p,
+            Err(err) => {
+                error!(
                     "Failed to resolve system-derived WorldProfile: {err}. \
-             Fix solar_system_seed / planet_index in {CONFIG_PATH} \
-             or switch to override mode by setting planet_seed directly.",
+                     Fix solar_system_seed / planet_index in {CONFIG_PATH} \
+                     or switch to override mode by setting planet_seed directly."
                 );
-            });
+                app_exit.write(AppExit::error());
+                return;
+            }
+        };
 
     info!(
         "Resolved system-derived WorldProfile: planet_seed={:#018X}, \
