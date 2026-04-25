@@ -5643,4 +5643,147 @@ cluster_compactness = 0.75
             );
         }
     }
+
+    // ── Deposit density and palette coverage regression ──────────────────
+
+    /// Build a biome with a real material palette for deposit tests.
+    fn sample_biome_with_palette() -> ChunkBiome {
+        ChunkBiome {
+            biome_key: "test_biome".to_string(),
+            ground_color: [0.5, 0.5, 0.5],
+            density_modifier: 1.0,
+            deposit_weight_modifiers: HashMap::new(),
+            material_palette: vec![
+                PaletteMaterial {
+                    material_seed: 0xFE00_0000_0000_0001,
+                    selection_weight: 3.0,
+                },
+                PaletteMaterial {
+                    material_seed: 0xFE00_0000_0000_0002,
+                    selection_weight: 1.0,
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn deposit_count_per_chunk_is_in_reasonable_range() {
+        let profile = sample_profile();
+        let catalog = sample_catalog();
+        let surface = sample_flat_surface();
+        let biome = sample_biome_with_palette();
+
+        let mut total_placements = 0;
+        let chunk_count = 25;
+
+        for x in -2..3 {
+            for z in -2..3 {
+                let placements = generate_surface_mineral_chunk_baseline(
+                    &profile,
+                    &catalog,
+                    &surface,
+                    ChunkCoord::new(x, z),
+                    &biome,
+                );
+                total_placements += placements.len();
+            }
+        }
+
+        let avg = total_placements as f32 / chunk_count as f32;
+
+        // With default config and a flat surface, we expect a non-trivial
+        // number of deposits.  The exact count depends on noise thresholds
+        // and spawn parameters.  We assert a generous range to catch
+        // catastrophic regressions (zero deposits, or explosion).
+        assert!(
+            avg >= 1.0,
+            "average deposits per chunk ({avg:.1}) is too low — \
+             deposit generation may be broken"
+        );
+        assert!(
+            avg <= 200.0,
+            "average deposits per chunk ({avg:.1}) is suspiciously high — \
+             deposit generation may be misconfigured"
+        );
+    }
+
+    #[test]
+    fn both_palette_materials_appear_in_deposits_across_chunks() {
+        let profile = sample_profile();
+        let catalog = sample_catalog();
+        let surface = sample_flat_surface();
+        let biome = sample_biome_with_palette();
+
+        let mut seen_seeds: HashSet<u64> = HashSet::new();
+
+        // Generate deposits across many chunks.
+        for x in -5..5 {
+            for z in -5..5 {
+                let placements = generate_surface_mineral_chunk_baseline(
+                    &profile,
+                    &catalog,
+                    &surface,
+                    ChunkCoord::new(x, z),
+                    &biome,
+                );
+                for p in &placements {
+                    seen_seeds.insert(p.material_seed);
+                }
+            }
+        }
+
+        // Both palette seeds should appear.
+        for pm in &biome.material_palette {
+            assert!(
+                seen_seeds.contains(&pm.material_seed),
+                "palette seed {:#x} never appeared in deposits \
+                 across 100 chunks",
+                pm.material_seed,
+            );
+        }
+    }
+
+    #[test]
+    fn higher_weight_palette_entry_appears_more_often() {
+        let profile = sample_profile();
+        let catalog = sample_catalog();
+        let surface = sample_flat_surface();
+        let biome = sample_biome_with_palette(); // seed_1 weight=3, seed_2 weight=1
+
+        let mut count_seed_1 = 0_u32;
+        let mut count_seed_2 = 0_u32;
+
+        for x in -10..10 {
+            for z in -10..10 {
+                let placements = generate_surface_mineral_chunk_baseline(
+                    &profile,
+                    &catalog,
+                    &surface,
+                    ChunkCoord::new(x, z),
+                    &biome,
+                );
+                for p in &placements {
+                    if p.material_seed == 0xFE00_0000_0000_0001 {
+                        count_seed_1 += 1;
+                    } else if p.material_seed == 0xFE00_0000_0000_0002 {
+                        count_seed_2 += 1;
+                    }
+                }
+            }
+        }
+
+        let total = count_seed_1 + count_seed_2;
+        if total > 10 {
+            // With 3:1 weighting, seed_1 should appear significantly more
+            // often.  We check that it's at least 50% of deposits (generous
+            // floor — expected ~75%).
+            let ratio = count_seed_1 as f32 / total as f32;
+            assert!(
+                ratio > 0.5,
+                "seed_1 (weight=3) appeared {count_seed_1} times vs \
+                 seed_2 (weight=1) {count_seed_2} times — ratio {ratio:.2} \
+                 is too low for 3:1 weighting"
+            );
+        }
+    }
 }

@@ -1,5 +1,5 @@
 [[star_types]]
-key = "red_dwarf"
+star_type = "red_dwarf"
 luminosity_min = 0.01
 luminosity_max = 0.08
 temperature_min = 2500
@@ -9,7 +9,7 @@ mass_max = 0.45
 weight = 7.0
 
 [[star_types]]
-key = "sun_like"
+star_type = "sun_like"
 luminosity_min = 0.6
 luminosity_max = 1.5
 temperature_min = 5000
@@ -19,7 +19,7 @@ mass_max = 1.2
 weight = 2.0
 
 [[star_types]]
-key = "blue_giant"
+star_type = "blue_giant"
 luminosity_min = 10.0
 luminosity_max = 100.0
 temperature_min = 10000

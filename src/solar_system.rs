@@ -41,10 +41,8 @@ const ORBITAL_CONFIG_PATH: &str = "assets/config/orbital_config.toml";
 pub enum StarRegistryError {
     /// Registry contains no star types.
     Empty,
-    /// A star type definition has an empty key. `index` is 0-based.
-    EmptyKey { index: usize },
-    /// Two star types share the same key.
-    DuplicateKey { index: usize, key: String },
+    /// Two star types share the same `StarType` variant.
+    DuplicateType { index: usize, star_type: StarType },
     /// Weight is not positive and finite.
     InvalidWeight { label: String, value: f32 },
     /// Luminosity bounds are invalid (non-finite, non-positive min, or inverted).
@@ -59,9 +57,8 @@ impl std::fmt::Display for StarRegistryError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Empty => write!(f, "StarTypeRegistry must contain at least one star type"),
-            Self::EmptyKey { index } => write!(f, "star_types[{index}]: key must not be empty"),
-            Self::DuplicateKey { index, key } => {
-                write!(f, "star_types[{index}] ('{key}'): duplicate key '{key}'")
+            Self::DuplicateType { index, star_type } => {
+                write!(f, "star_types[{index}]: duplicate star type '{star_type}'")
             }
             Self::InvalidWeight { label, value } => {
                 write!(
@@ -194,6 +191,40 @@ const PLANET_ENVIRONMENT_CONFIG_PATH: &str = "assets/config/planet_environment.t
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SolarSystemSeed(pub u64);
 
+/// Enumeration of star spectral classes.
+///
+/// This is the exhaustive set of star types the game recognizes. Downstream
+/// systems can `match` on this enum to vary behavior per star type (e.g.,
+/// ambient lighting hue, skybox selection, planet temperature curves).
+///
+/// The parameter ranges (luminosity, mass, temperature, weight) for each
+/// type are data-driven via `StarTypeDefinition` in TOML — the enum only
+/// identifies the type. Adding a new star type requires both a new variant
+/// here and a corresponding TOML entry in `star_types.toml`.
+///
+/// Serializes as a snake_case string (e.g., `"red_dwarf"`) for TOML/JSON
+/// compatibility.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StarType {
+    /// Low-mass, dim, long-lived. The most common star type in the universe.
+    RedDwarf,
+    /// Medium-mass, moderate luminosity. Earth orbits one of these.
+    SunLike,
+    /// High-mass, extremely luminous, short-lived. Rare but dramatic.
+    BlueGiant,
+}
+
+impl std::fmt::Display for StarType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StarType::RedDwarf => write!(f, "red_dwarf"),
+            StarType::SunLike => write!(f, "sun_like"),
+            StarType::BlueGiant => write!(f, "blue_giant"),
+        }
+    }
+}
+
 /// Derived star parameters for a solar system.
 ///
 /// Every field is deterministically derived from a `SolarSystemSeed` and
@@ -211,8 +242,8 @@ pub struct SolarSystemSeed(pub u64);
 /// not intended as astrophysics research.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct StarProfile {
-    /// Key identifying which star type was selected (e.g., `"red_dwarf"`).
-    pub star_type_key: String,
+    /// Which star type was selected for this system.
+    pub star_type: StarType,
     /// Luminosity relative to Sol. Red dwarfs are ~0.01–0.08; blue giants 10–100+.
     pub luminosity: f32,
     /// Surface temperature in Kelvin.
@@ -232,8 +263,8 @@ pub struct StarProfile {
 /// the universe. Higher weight → more common.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct StarTypeDefinition {
-    /// Unique key identifying this star type (e.g., `"red_dwarf"`).
-    pub key: String,
+    /// Which star type this definition describes.
+    pub star_type: StarType,
     /// Minimum luminosity relative to Sol.
     pub luminosity_min: f32,
     /// Maximum luminosity relative to Sol.
@@ -310,7 +341,7 @@ impl std::fmt::Display for StarProfile {
         write!(
             f,
             "type={}, L={:.4} sol, T={}K, M={:.4} Msol, HZ=[{:.2}, {:.2}] AU",
-            self.star_type_key,
+            self.star_type,
             self.luminosity,
             self.surface_temperature_k,
             self.mass_solar,
@@ -565,34 +596,26 @@ impl StarTypeRegistry {
     /// of the first violation found. Checks performed:
     ///
     /// 1. **Non-empty** — at least one star type must be defined.
-    /// 2. **No empty keys** — every definition must have a non-empty `key`.
-    /// 3. **No duplicate keys** — each `key` must be unique across the registry.
-    /// 4. **Positive weight** — `weight` must be > 0.0 and finite.
-    /// 5. **Valid luminosity range** — `luminosity_min` must be > 0.0, `luminosity_min < luminosity_max`, both finite.
-    /// 6. **Valid temperature range** — `temperature_min` must be > 0, `temperature_min < temperature_max`.
-    /// 7. **Valid mass range** — `mass_min` must be > 0.0, `mass_min < mass_max`, both finite.
+    /// 2. **No duplicate types** — each `StarType` variant must appear at most once.
+    /// 3. **Positive weight** — `weight` must be > 0.0 and finite.
+    /// 4. **Valid luminosity range** — `luminosity_min` must be > 0.0, `luminosity_min < luminosity_max`, both finite.
+    /// 5. **Valid temperature range** — `temperature_min` must be > 0, `temperature_min < temperature_max`.
+    /// 6. **Valid mass range** — `mass_min` must be > 0.0, `mass_min < mass_max`, both finite.
     pub fn validate(&self) -> Result<(), StarRegistryError> {
         if self.star_types.is_empty() {
             return Err(StarRegistryError::Empty);
         }
 
-        let mut seen_keys = std::collections::HashSet::new();
+        let mut seen_types = std::collections::HashSet::new();
 
         for (i, def) in self.star_types.iter().enumerate() {
-            let label = if def.key.is_empty() {
-                format!("star_types[{i}]")
-            } else {
-                format!("star_types[{i}] ('{}')", def.key)
-            };
+            let label = format!("star_types[{i}] ('{}')", def.star_type);
 
-            // Key checks.
-            if def.key.is_empty() {
-                return Err(StarRegistryError::EmptyKey { index: i });
-            }
-            if !seen_keys.insert(&def.key) {
-                return Err(StarRegistryError::DuplicateKey {
+            // Duplicate type check.
+            if !seen_types.insert(def.star_type) {
+                return Err(StarRegistryError::DuplicateType {
                     index: i,
-                    key: def.key.clone(),
+                    star_type: def.star_type,
                 });
             }
 
@@ -688,7 +711,7 @@ impl Default for StarTypeRegistry {
         Self {
             star_types: vec![
                 StarTypeDefinition {
-                    key: "red_dwarf".to_string(),
+                    star_type: StarType::RedDwarf,
                     luminosity_min: 0.01,
                     luminosity_max: 0.08,
                     temperature_min: 2500,
@@ -698,7 +721,7 @@ impl Default for StarTypeRegistry {
                     weight: 7.0,
                 },
                 StarTypeDefinition {
-                    key: "sun_like".to_string(),
+                    star_type: StarType::SunLike,
                     luminosity_min: 0.6,
                     luminosity_max: 1.5,
                     temperature_min: 5000,
@@ -708,7 +731,7 @@ impl Default for StarTypeRegistry {
                     weight: 2.0,
                 },
                 StarTypeDefinition {
-                    key: "blue_giant".to_string(),
+                    star_type: StarType::BlueGiant,
                     luminosity_min: 10.0,
                     luminosity_max: 100.0,
                     temperature_min: 10000,
@@ -923,7 +946,7 @@ fn log_star_profile_on_startup(
          type={}, luminosity={:.4} sol, temperature={}K, \
          mass={:.4} solar masses, habitable zone=[{:.4}, {:.4}] AU",
         seed.0,
-        profile.star_type_key,
+        profile.star_type,
         profile.luminosity,
         profile.surface_temperature_k,
         profile.mass_solar,
@@ -1137,7 +1160,7 @@ pub fn derive_star_profile(
     let habitable_zone_outer_au = (luminosity / 0.53_f32).sqrt();
 
     StarProfile {
-        star_type_key: star_type.key.clone(),
+        star_type: star_type.star_type,
         luminosity,
         surface_temperature_k,
         mass_solar,
@@ -1470,7 +1493,7 @@ mod tests {
                 // StarProfile does not implement Hash, so we use a string key.
                 let key = format!(
                     "{}|{:.8}|{}|{:.8}",
-                    p.star_type_key, p.luminosity, p.surface_temperature_k, p.mass_solar
+                    p.star_type, p.luminosity, p.surface_temperature_k, p.mass_solar
                 );
                 seen.insert(key);
             }
@@ -1519,15 +1542,15 @@ mod tests {
     #[test]
     fn different_seeds_produce_different_star_types() {
         let registry = test_registry();
-        let type_keys: std::collections::HashSet<String> = (0..100)
-            .map(|i| derive_star_profile(SolarSystemSeed(i), &registry).star_type_key)
+        let types: std::collections::HashSet<StarType> = (0..100)
+            .map(|i| derive_star_profile(SolarSystemSeed(i), &registry).star_type)
             .collect();
 
         assert!(
-            type_keys.len() >= 2,
-            "expected at least 2 distinct star type keys from 100 seeds, got {}: {:?}",
-            type_keys.len(),
-            type_keys
+            types.len() >= 2,
+            "expected at least 2 distinct star types from 100 seeds, got {}: {:?}",
+            types.len(),
+            types
         );
     }
 
@@ -1562,18 +1585,18 @@ mod tests {
     #[test]
     fn all_star_types_reachable() {
         let registry = test_registry();
-        let mut seen_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut seen_types: std::collections::HashSet<StarType> = std::collections::HashSet::new();
 
         for i in 0..10_000 {
             let profile = derive_star_profile(SolarSystemSeed(i), &registry);
-            seen_keys.insert(profile.star_type_key);
+            seen_types.insert(profile.star_type);
         }
 
         for star_type in &registry.star_types {
             assert!(
-                seen_keys.contains(&star_type.key),
+                seen_types.contains(&star_type.star_type),
                 "star type '{}' was never selected across 10,000 seeds",
-                star_type.key
+                star_type.star_type
             );
         }
     }
@@ -1584,7 +1607,7 @@ mod tests {
     fn habitable_zone_scales_with_luminosity() {
         // Construct two profiles with known luminosity values.
         let dim = StarProfile {
-            star_type_key: "test_dim".to_string(),
+            star_type: StarType::SunLike, // arbitrary for this test
             luminosity: 0.05,
             surface_temperature_k: 3000,
             mass_solar: 0.2,
@@ -1592,7 +1615,7 @@ mod tests {
             habitable_zone_outer_au: (0.05_f32 / 0.53).sqrt(),
         };
         let bright = StarProfile {
-            star_type_key: "test_bright".to_string(),
+            star_type: StarType::BlueGiant, // arbitrary for this test
             luminosity: 50.0,
             surface_temperature_k: 20000,
             mass_solar: 10.0,
@@ -1632,7 +1655,10 @@ mod tests {
             .iter()
             .zip(deserialized.star_types.iter())
         {
-            assert_eq!(orig.key, deser.key, "round-trip should preserve key");
+            assert_eq!(
+                orig.star_type, deser.star_type,
+                "round-trip should preserve star_type"
+            );
             assert!(
                 (orig.luminosity_min - deser.luminosity_min).abs() < f32::EPSILON,
                 "round-trip should preserve luminosity_min"
@@ -1654,7 +1680,7 @@ mod tests {
             let star_type = registry
                 .star_types
                 .iter()
-                .find(|st| st.key == profile.star_type_key)
+                .find(|st| st.star_type == profile.star_type)
                 .expect("profile star_type_key must exist in registry");
 
             assert!(
@@ -1723,27 +1749,38 @@ mod tests {
         );
     }
 
-    /// A star type with an empty key must be rejected.
+    /// An unknown star type string in TOML must fail deserialization.
     #[test]
-    fn validate_rejects_empty_key() {
-        let mut registry = StarTypeRegistry::default();
-        registry.star_types[0].key = String::new();
-        let err = registry.validate().unwrap_err();
+    fn invalid_toml_unknown_star_type_rejected() {
+        let toml_str = r#"
+[[star_types]]
+star_type = "neutron_star"
+luminosity_min = 0.01
+luminosity_max = 0.08
+temperature_min = 2500
+temperature_max = 3700
+mass_min = 0.08
+mass_max = 0.45
+weight = 7.0
+"#;
+        let err = toml::from_str::<StarTypeRegistry>(toml_str)
+            .expect_err("unknown star type variant should fail to deserialize");
+        let msg = err.to_string();
         assert!(
-            matches!(err, StarRegistryError::EmptyKey { .. }),
-            "expected EmptyKey, got: {err}"
+            !msg.is_empty(),
+            "deserialization error should have a non-empty message"
         );
     }
 
-    /// Duplicate keys must be rejected.
+    /// Duplicate star types must be rejected by validation.
     #[test]
-    fn validate_rejects_duplicate_keys() {
+    fn validate_rejects_duplicate_star_types() {
         let mut registry = StarTypeRegistry::default();
-        registry.star_types[1].key = registry.star_types[0].key.clone();
+        registry.star_types[1].star_type = registry.star_types[0].star_type;
         let err = registry.validate().unwrap_err();
         assert!(
-            matches!(err, StarRegistryError::DuplicateKey { .. }),
-            "expected DuplicateKey, got: {err}"
+            matches!(err, StarRegistryError::DuplicateType { .. }),
+            "expected DuplicateType, got: {err}"
         );
     }
 
@@ -1871,7 +1908,7 @@ mod tests {
     fn invalid_toml_missing_field_produces_clear_error() {
         let toml_str = r#"
 [[star_types]]
-key = "red_dwarf"
+star_type = "red_dwarf"
 luminosity_min = 0.01
 luminosity_max = 0.08
 temperature_min = 2500
@@ -1888,10 +1925,10 @@ mass_max = 0.45
         );
     }
 
-    /// TOML missing the `key` field must fail deserialization with a clear
+    /// TOML missing the `star_type` field must fail deserialization with a clear
     /// message identifying which field is absent.
     #[test]
-    fn invalid_toml_missing_key_field_produces_clear_error() {
+    fn invalid_toml_missing_star_type_field_produces_clear_error() {
         let toml_str = r#"
 [[star_types]]
 luminosity_min = 0.01
@@ -1903,11 +1940,11 @@ mass_max = 0.45
 weight = 7.0
 "#;
         let err = toml::from_str::<StarTypeRegistry>(toml_str)
-            .expect_err("TOML missing 'key' field should fail to deserialize");
+            .expect_err("TOML missing 'star_type' field should fail to deserialize");
         let msg = err.to_string();
         assert!(
-            msg.contains("key"),
-            "error should identify the missing 'key' field, got: {msg}"
+            msg.contains("star_type"),
+            "error should identify the missing 'star_type' field, got: {msg}"
         );
     }
 
@@ -1917,7 +1954,7 @@ weight = 7.0
     fn invalid_toml_missing_temperature_max_produces_clear_error() {
         let toml_str = r#"
 [[star_types]]
-key = "red_dwarf"
+star_type = "red_dwarf"
 luminosity_min = 0.01
 luminosity_max = 0.08
 temperature_min = 2500
@@ -1940,7 +1977,7 @@ weight = 7.0
     fn invalid_toml_negative_weight_caught_by_validation() {
         let toml_str = r#"
 [[star_types]]
-key = "red_dwarf"
+star_type = "red_dwarf"
 luminosity_min = 0.01
 luminosity_max = 0.08
 temperature_min = 2500
@@ -1995,7 +2032,7 @@ weight = -3.0
     fn invalid_toml_wrong_type_produces_clear_error() {
         let toml_str = r#"
 [[star_types]]
-key = "red_dwarf"
+star_type = "red_dwarf"
 luminosity_min = 0.01
 luminosity_max = 0.08
 temperature_min = "not_a_number"
@@ -2021,19 +2058,20 @@ weight = 7.0
     fn star_type_weighted_distribution_across_1000_seeds() {
         let registry = test_registry();
         let total_seeds: usize = 1_000;
-        let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        let mut counts: std::collections::HashMap<StarType, usize> =
+            std::collections::HashMap::new();
 
         for i in 0..total_seeds {
             let profile = derive_star_profile(SolarSystemSeed(i as u64), &registry);
-            *counts.entry(profile.star_type_key).or_insert(0) += 1;
+            *counts.entry(profile.star_type).or_insert(0) += 1;
         }
 
         // Every type must appear at least once.
         for star_type in &registry.star_types {
             assert!(
-                counts.contains_key(&star_type.key),
+                counts.contains_key(&star_type.star_type),
                 "star type '{}' was never selected across {total_seeds} seeds",
-                star_type.key
+                star_type.star_type
             );
         }
 
@@ -2042,7 +2080,7 @@ weight = 7.0
 
         for star_type in &registry.star_types {
             let expected_fraction = star_type.weight as f64 / total_weight;
-            let observed_count = *counts.get(&star_type.key).unwrap_or(&0);
+            let observed_count = *counts.get(&star_type.star_type).unwrap_or(&0);
             let observed_fraction = observed_count as f64 / total_seeds as f64;
             let deviation = (observed_fraction - expected_fraction).abs();
 
@@ -2050,7 +2088,7 @@ weight = 7.0
                 deviation < 0.10,
                 "star type '{}': expected ~{:.1}% but got {:.1}% ({} / {}), \
                  deviation {:.1}pp exceeds 10pp tolerance",
-                star_type.key,
+                star_type.star_type,
                 expected_fraction * 100.0,
                 observed_fraction * 100.0,
                 observed_count,
@@ -2093,7 +2131,7 @@ weight = 7.0
     fn single_type_registry_always_selects_that_type() {
         let registry = StarTypeRegistry {
             star_types: vec![StarTypeDefinition {
-                key: "lone_star".to_string(),
+                star_type: StarType::SunLike,
                 luminosity_min: 0.5,
                 luminosity_max: 1.5,
                 temperature_min: 4500,
@@ -2110,16 +2148,18 @@ weight = 7.0
             .validate()
             .expect("single-type registry should be valid");
 
-        // Sweep a variety of seeds — every one must resolve to "lone_star"
+        // Sweep a variety of seeds — every one must resolve to SunLike
         // with parameters within the defined ranges.
         for i in 0..500 {
             let seed = SolarSystemSeed(i * 7_919); // spaced primes to avoid clustering
             let profile = derive_star_profile(seed, &registry);
 
             assert_eq!(
-                profile.star_type_key, "lone_star",
-                "seed {} selected '{}' instead of the only available type",
-                seed.0, profile.star_type_key
+                profile.star_type,
+                StarType::SunLike,
+                "seed {} selected '{:?}' instead of the only available type",
+                seed.0,
+                profile.star_type
             );
 
             assert!(
@@ -2162,11 +2202,11 @@ weight = 7.0
             let star_def = registry
                 .star_types
                 .iter()
-                .find(|st| st.key == profile.star_type_key)
+                .find(|st| st.star_type == profile.star_type)
                 .unwrap_or_else(|| {
                     panic!(
                         "seed {}: star_type_key '{}' not found in registry",
-                        raw, profile.star_type_key
+                        raw, profile.star_type
                     )
                 });
 
@@ -3321,11 +3361,11 @@ weight = 7.0
             let star_type = registry
                 .star_types
                 .iter()
-                .find(|st| st.key == star.star_type_key)
+                .find(|st| st.star_type == star.star_type)
                 .unwrap_or_else(|| {
                     panic!(
-                        "seed {i}: star_type_key '{}' not found in registry",
-                        star.star_type_key
+                        "seed {i}: star type '{:?}' not found in registry",
+                        star.star_type
                     )
                 });
 
@@ -3623,7 +3663,7 @@ weight = 7.0
     /// Helper: a Sol-like star for planet environment tests.
     fn test_star() -> StarProfile {
         StarProfile {
-            star_type_key: "sun_like".to_string(),
+            star_type: StarType::SunLike,
             luminosity: 1.0,
             surface_temperature_k: 5778,
             mass_solar: 1.0,
@@ -4209,7 +4249,7 @@ weight = 7.0
     fn blue_giant_max_luminosity_wide_habitable_zone() {
         let luminosity = 100.0_f32; // blue giant maximum from star_types.toml
         let star = StarProfile {
-            star_type_key: "blue_giant".to_string(),
+            star_type: StarType::BlueGiant,
             luminosity,
             surface_temperature_k: 30000,
             mass_solar: 20.0,
@@ -4327,7 +4367,7 @@ weight = 7.0
     fn red_dwarf_minimum_luminosity_narrow_habitable_zone() {
         let luminosity = 0.01_f32; // red dwarf minimum from star_types.toml
         let star = StarProfile {
-            star_type_key: "red_dwarf".to_string(),
+            star_type: StarType::RedDwarf,
             luminosity,
             surface_temperature_k: 2500,
             mass_solar: 0.08,
