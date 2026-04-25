@@ -4472,4 +4472,117 @@ planet_index = 3
             .validate()
             .expect("shipped world_generation.toml must pass validation");
     }
+
+    /// Full chain determinism: system seed 42 → specific star type → specific
+    /// planet count → specific planet seed → specific biome at chunk (0, 0).
+    ///
+    /// Running the derivation twice with identical inputs must produce
+    /// byte-identical results at every stage. This exercises the entire
+    /// pipeline from `SolarSystemSeed` through `derive_star_profile`,
+    /// `derive_orbital_layout`, `derive_planet_environment`,
+    /// `WorldProfile::from_system_seed`, and `derive_chunk_biome`.
+    #[test]
+    fn full_chain_determinism_system_seed_to_biome_at_origin() {
+        use crate::solar_system::{OrbitalConfig, PlanetEnvironmentConfig, StarTypeRegistry};
+
+        let star_registry = StarTypeRegistry::default();
+        let orbital_config = OrbitalConfig::default();
+        let env_config = PlanetEnvironmentConfig::default();
+
+        let config = WorldGenerationConfig {
+            solar_system_seed: 42,
+            planet_seed: None,
+            planet_index: 0,
+            ..Default::default()
+        };
+
+        let biome_registry = BiomeRegistry::default();
+        let origin = ChunkCoord { x: 0, z: 0 };
+
+        // Run the full derivation chain twice.
+        let profile_a =
+            WorldProfile::from_system_seed(&config, &star_registry, &orbital_config, &env_config)
+                .expect("first derivation must succeed");
+        let profile_b =
+            WorldProfile::from_system_seed(&config, &star_registry, &orbital_config, &env_config)
+                .expect("second derivation must succeed");
+
+        // WorldProfile must be identical across runs.
+        assert_eq!(profile_a, profile_b, "WorldProfile must be deterministic");
+
+        // System context must be present and identical.
+        let ctx_a = profile_a
+            .system_context
+            .as_ref()
+            .expect("system_context must be Some");
+        let ctx_b = profile_b
+            .system_context
+            .as_ref()
+            .expect("system_context must be Some");
+        assert_eq!(ctx_a, ctx_b, "SystemContext must be deterministic");
+
+        // Verify intermediate derivation steps are concrete (not degenerate).
+        assert!(
+            !ctx_a.star.star_type_key.is_empty(),
+            "star must have a star type key"
+        );
+        assert!(
+            !ctx_a.orbital_layout.planets.is_empty(),
+            "orbital layout must contain at least one planet"
+        );
+        assert!(
+            ctx_a.planet_environment.surface_temp_min_k > 0.0,
+            "planet environment must have a positive minimum temperature"
+        );
+        assert!(
+            ctx_a.planet_environment.surface_temp_max_k
+                > ctx_a.planet_environment.surface_temp_min_k,
+            "max temperature must exceed min temperature"
+        );
+
+        // Derive biome at origin using the planet environment from the system
+        // context. Both runs must produce the same biome key.
+        let biome_a = derive_chunk_biome(
+            &profile_a,
+            &biome_registry,
+            origin,
+            Some(&ctx_a.planet_environment),
+        );
+        let biome_b = derive_chunk_biome(
+            &profile_b,
+            &biome_registry,
+            origin,
+            Some(&ctx_b.planet_environment),
+        );
+
+        assert_eq!(
+            biome_a.biome_key, biome_b.biome_key,
+            "biome key at origin must be deterministic"
+        );
+        assert_eq!(
+            biome_a.ground_color, biome_b.ground_color,
+            "biome ground color at origin must be deterministic"
+        );
+        assert_eq!(
+            biome_a.density_modifier, biome_b.density_modifier,
+            "biome density modifier at origin must be deterministic"
+        );
+
+        // Verify the biome key is a non-empty string — a truly exercised
+        // pipeline must resolve to a concrete biome, not silently fall through
+        // to an empty default.
+        assert!(
+            !biome_a.biome_key.is_empty(),
+            "biome at origin must resolve to a named biome"
+        );
+
+        // Verify the chunk generation key is also deterministic through
+        // the full chain.
+        let key_a = derive_chunk_generation_key(&profile_a, origin);
+        let key_b = derive_chunk_generation_key(&profile_b, origin);
+        assert_eq!(
+            key_a, key_b,
+            "chunk generation key at origin must be deterministic"
+        );
+    }
 }
