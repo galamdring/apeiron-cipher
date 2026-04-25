@@ -4392,6 +4392,54 @@ planet_seed = 12345
             .expect("override mode config must pass validation");
     }
 
+    /// A saved config that only has `planet_seed` (no `solar_system_seed`)
+    /// must load without errors. This is the backward-compatibility guarantee
+    /// for configs created before system-derived mode existed.
+    #[test]
+    fn config_with_only_planet_seed_loads_without_errors() {
+        let toml_str = r#"
+planet_seed = 12345
+chunk_size_world_units = 45.0
+active_chunk_radius = 1
+"#;
+        let config: WorldGenerationConfig =
+            toml::from_str(toml_str).expect("planet_seed-only TOML must parse");
+
+        // solar_system_seed falls back to its default — not an error.
+        assert_eq!(config.solar_system_seed, default_solar_system_seed());
+        assert_eq!(config.planet_seed, Some(12345));
+        assert_eq!(config.seed_mode(), SeedMode::Override);
+        config
+            .validate()
+            .expect("planet_seed-only config must pass validation");
+
+        // WorldProfile can be built from this config.
+        let profile = WorldProfile::from_config(&config);
+        assert_eq!(profile.planet_seed, PlanetSeed(12345));
+        assert!(
+            !profile.is_system_derived(),
+            "planet_seed-only config must not be system-derived",
+        );
+    }
+
+    /// A completely minimal config with only `planet_seed` and no other fields
+    /// must also load — every field has a serde default.
+    #[test]
+    fn config_with_bare_planet_seed_loads_without_errors() {
+        let toml_str = "planet_seed = 99999\n";
+        let config: WorldGenerationConfig =
+            toml::from_str(toml_str).expect("bare planet_seed TOML must parse");
+
+        assert_eq!(config.planet_seed, Some(99999));
+        assert_eq!(config.seed_mode(), SeedMode::Override);
+        config
+            .validate()
+            .expect("bare planet_seed config must pass validation");
+
+        let profile = WorldProfile::from_config(&config);
+        assert_eq!(profile.planet_seed, PlanetSeed(99999));
+    }
+
     #[test]
     fn config_solar_system_seed_preserves_all_other_defaults() {
         let toml_str = r#"
