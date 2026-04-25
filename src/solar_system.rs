@@ -2373,6 +2373,135 @@ weight = 7.0
         }
     }
 
+    // ── Position-based stability tests ────────────────────────────────────
+
+    /// Changing `planet_count_max` must not change the seeds of planets whose
+    /// orbital distances remain the same. Because planet seeds are derived from
+    /// `mix_seed(system_seed, f32_to_u64_bits(distance))`, any planet that
+    /// keeps its distance keeps its seed — regardless of how many siblings
+    /// were added or removed.
+    #[test]
+    fn position_based_stability_across_planet_count_max() {
+        let system_seed = SolarSystemSeed(0xBEEF_CAFE_1234_5678);
+
+        // Narrow config: forces exactly 4 planets.
+        let narrow = OrbitalConfig {
+            planet_count_min: 4,
+            planet_count_max: 4,
+            inner_orbit_au: 0.3,
+            outer_orbit_au: 50.0,
+            min_separation_au: 0.5,
+        };
+
+        // Wide config: forces exactly 8 planets.  The first 4 raw distance
+        // draws (layout-seed channels 1–4) are identical to the narrow config;
+        // channels 5–8 are new draws that may interleave after sorting.
+        let wide = OrbitalConfig {
+            planet_count_min: 8,
+            planet_count_max: 8,
+            inner_orbit_au: 0.3,
+            outer_orbit_au: 50.0,
+            min_separation_au: 0.5,
+        };
+
+        let narrow_layout = derive_orbital_layout(system_seed, &narrow);
+        let wide_layout = derive_orbital_layout(system_seed, &wide);
+
+        assert_eq!(narrow_layout.planets.len(), 4);
+        assert_eq!(wide_layout.planets.len(), 8);
+
+        // Build a lookup from orbital_distance_au → planet_seed for the wide
+        // layout. We compare by exact f32 bit equality (same derivation path
+        // means bitwise-identical floats).
+        let wide_seed_by_dist: std::collections::HashMap<u64, u64> = wide_layout
+            .planets
+            .iter()
+            .map(|s| (f32_to_u64_bits(s.orbital_distance_au), s.planet_seed.0))
+            .collect();
+
+        // Every narrow-layout planet whose exact distance also appears in the
+        // wide layout must have the identical seed.
+        let mut matched = 0_u32;
+        for slot in &narrow_layout.planets {
+            let dist_bits = f32_to_u64_bits(slot.orbital_distance_au);
+            if let Some(&wide_seed) = wide_seed_by_dist.get(&dist_bits) {
+                assert_eq!(
+                    slot.planet_seed.0, wide_seed,
+                    "planet at distance {} AU has different seeds across configs \
+                     (narrow={:#018X}, wide={:#018X})",
+                    slot.orbital_distance_au, slot.planet_seed.0, wide_seed,
+                );
+                matched += 1;
+            }
+        }
+
+        // We must have matched at least one planet, otherwise the test is
+        // vacuously true and proves nothing.  With the chosen seed and
+        // generous orbital range the first-drawn distances are very likely to
+        // survive sorting + separation unchanged.
+        assert!(
+            matched > 0,
+            "no narrow-layout distances appeared in the wide layout — \
+             test is vacuous; choose a different seed or relax separation",
+        );
+    }
+
+    /// A stronger variant: when `planet_count_max` increases but the *raw*
+    /// distance draws for the original indices are far enough apart that
+    /// separation enforcement doesn't shift them, every original planet must
+    /// keep its seed.  We use a very large orbital range with tiny separation
+    /// to make collisions virtually impossible.
+    #[test]
+    fn position_based_stability_wide_range_no_push() {
+        let system_seed = SolarSystemSeed(0xDEAD_BEEF_0000_0001);
+
+        let base = OrbitalConfig {
+            planet_count_min: 3,
+            planet_count_max: 3,
+            inner_orbit_au: 0.3,
+            outer_orbit_au: 500.0,
+            min_separation_au: 0.01,
+        };
+
+        let expanded = OrbitalConfig {
+            planet_count_min: 6,
+            planet_count_max: 6,
+            ..base.clone()
+        };
+
+        let base_layout = derive_orbital_layout(system_seed, &base);
+        let expanded_layout = derive_orbital_layout(system_seed, &expanded);
+
+        let expanded_seed_by_dist: std::collections::HashMap<u64, u64> = expanded_layout
+            .planets
+            .iter()
+            .map(|s| (f32_to_u64_bits(s.orbital_distance_au), s.planet_seed.0))
+            .collect();
+
+        let mut matched = 0_u32;
+        for slot in &base_layout.planets {
+            let dist_bits = f32_to_u64_bits(slot.orbital_distance_au);
+            if let Some(&exp_seed) = expanded_seed_by_dist.get(&dist_bits) {
+                assert_eq!(
+                    slot.planet_seed.0, exp_seed,
+                    "planet at {} AU changed seed when planet_count_max increased",
+                    slot.orbital_distance_au,
+                );
+                matched += 1;
+            }
+        }
+
+        // With a 500 AU range and 0.01 AU separation, all 3 base distances
+        // should survive untouched in the 6-planet layout.
+        assert_eq!(
+            matched,
+            base_layout.planets.len() as u32,
+            "expected all {} base planets to retain their distances in the expanded layout, \
+             but only {matched} matched",
+            base_layout.planets.len(),
+        );
+    }
+
     // ── f32_to_u64_bits tests ───────────────────────────────────────────
 
     /// `f32_to_u64_bits` must return the IEEE-754 bit pattern zero-extended
