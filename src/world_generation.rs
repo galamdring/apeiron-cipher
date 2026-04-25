@@ -933,6 +933,150 @@ impl WorldGenerationConfig {
             SeedMode::SystemDerived
         }
     }
+
+    /// Validate config values, particularly seed mode configuration.
+    ///
+    /// The config supports two mutually exclusive seeding modes. This method
+    /// enforces that exactly one mode is clearly specified:
+    ///
+    /// - **Override mode**: `planet_seed` is set. The `solar_system_seed` is
+    ///   still used for star derivation, but the planet seed bypasses orbital
+    ///   derivation. `planet_index` is ignored in this mode — if it was
+    ///   explicitly set alongside `planet_seed`, that is a likely
+    ///   misconfiguration (the user probably meant system-derived mode).
+    ///
+    /// - **System-derived mode**: `planet_seed` is absent. The planet seed
+    ///   is derived from `solar_system_seed` + `planet_index`.
+    ///
+    /// Both modes require `solar_system_seed` (always present via default).
+    /// Numeric field ranges (chunk size, radii, elevation) are also validated.
+    pub fn validate(&self) -> Result<(), String> {
+        // Seed mode: if planet_seed is set alongside a non-default planet_index,
+        // warn — the user likely intended system-derived mode but forgot to
+        // remove planet_seed. This is an error, not silent precedence.
+        if let Some(planet_seed) = self.planet_seed
+            && self.planet_index != 0
+        {
+            return Err(format!(
+                "planet_seed and planet_index are both set. In override mode \
+                 (planet_seed present), planet_index is ignored. Either remove \
+                 planet_seed to use system-derived mode, or remove planet_index \
+                 to use override mode. (planet_seed={planet_seed}, planet_index={})",
+                self.planet_index,
+            ));
+        }
+
+        // Chunk size must be positive and finite.
+        if !self.chunk_size_world_units.is_finite() || self.chunk_size_world_units <= 0.0 {
+            return Err(format!(
+                "chunk_size_world_units must be positive and finite, got {}",
+                self.chunk_size_world_units,
+            ));
+        }
+
+        // Active chunk radius must be non-negative.
+        if self.active_chunk_radius < 0 {
+            return Err(format!(
+                "active_chunk_radius must be >= 0, got {}",
+                self.active_chunk_radius,
+            ));
+        }
+
+        // Building cell size must be positive and finite.
+        if !self.building_cell_size.is_finite() || self.building_cell_size <= 0.0 {
+            return Err(format!(
+                "building_cell_size must be positive and finite, got {}",
+                self.building_cell_size,
+            ));
+        }
+
+        // Planet surface radius bounds.
+        if self.planet_surface_min_radius < 1 {
+            return Err(format!(
+                "planet_surface_min_radius must be >= 1, got {}",
+                self.planet_surface_min_radius,
+            ));
+        }
+        if self.planet_surface_min_radius > self.planet_surface_max_radius {
+            return Err(format!(
+                "planet_surface_min_radius ({}) must be <= planet_surface_max_radius ({})",
+                self.planet_surface_min_radius, self.planet_surface_max_radius,
+            ));
+        }
+
+        // Elevation amplitude must be finite and non-negative.
+        if !self.elevation_amplitude.is_finite() || self.elevation_amplitude < 0.0 {
+            return Err(format!(
+                "elevation_amplitude must be non-negative and finite, got {}",
+                self.elevation_amplitude,
+            ));
+        }
+
+        // Elevation frequency must be positive and finite.
+        if !self.elevation_frequency.is_finite() || self.elevation_frequency <= 0.0 {
+            return Err(format!(
+                "elevation_frequency must be positive and finite, got {}",
+                self.elevation_frequency,
+            ));
+        }
+
+        // Elevation octaves must be >= 1.
+        if self.elevation_octaves < 1 {
+            return Err(format!(
+                "elevation_octaves must be >= 1, got {}",
+                self.elevation_octaves,
+            ));
+        }
+
+        // Detail weight must be finite and in [0, 1].
+        if !self.elevation_detail_weight.is_finite()
+            || self.elevation_detail_weight < 0.0
+            || self.elevation_detail_weight > 1.0
+        {
+            return Err(format!(
+                "elevation_detail_weight must be in [0.0, 1.0], got {}",
+                self.elevation_detail_weight,
+            ));
+        }
+
+        // Detail frequency must be positive and finite (when detail weight > 0).
+        if self.elevation_detail_weight > 0.0
+            && (!self.elevation_detail_frequency.is_finite()
+                || self.elevation_detail_frequency <= 0.0)
+        {
+            return Err(format!(
+                "elevation_detail_frequency must be positive and finite when \
+                 detail weight > 0, got {}",
+                self.elevation_detail_frequency,
+            ));
+        }
+
+        // Detail octaves must be >= 1 (when detail weight > 0).
+        if self.elevation_detail_weight > 0.0 && self.elevation_detail_octaves < 1 {
+            return Err(format!(
+                "elevation_detail_octaves must be >= 1 when detail weight > 0, got {}",
+                self.elevation_detail_octaves,
+            ));
+        }
+
+        // Base Y must be finite.
+        if !self.elevation_base_y.is_finite() {
+            return Err(format!(
+                "elevation_base_y must be finite, got {}",
+                self.elevation_base_y,
+            ));
+        }
+
+        // Subdivisions must be >= 1.
+        if self.elevation_subdivisions < 1 {
+            return Err(format!(
+                "elevation_subdivisions must be >= 1, got {}",
+                self.elevation_subdivisions,
+            ));
+        }
+
+        Ok(())
+    }
 }
 
 fn default_solar_system_seed() -> u64 {
@@ -1285,10 +1429,19 @@ fn load_world_generation_config(mut commands: Commands) {
     let config = if Path::new(CONFIG_PATH).exists() {
         match fs::read_to_string(CONFIG_PATH) {
             Ok(contents) => match toml::from_str::<WorldGenerationConfig>(&contents) {
-                Ok(config) => {
-                    info!("Loaded world-generation config from {CONFIG_PATH}");
-                    config
-                }
+                Ok(config) => match config.validate() {
+                    Ok(()) => {
+                        info!("Loaded world-generation config from {CONFIG_PATH}");
+                        config
+                    }
+                    Err(validation_error) => {
+                        warn!(
+                            "World-generation config from {CONFIG_PATH} failed validation, \
+                             using defaults: {validation_error}"
+                        );
+                        WorldGenerationConfig::default()
+                    }
+                },
                 Err(error) => {
                     warn!("Malformed {CONFIG_PATH}, using defaults: {error}");
                     WorldGenerationConfig::default()
@@ -3972,5 +4125,125 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ── WorldGenerationConfig::validate tests ──────────────────────────
+
+    #[test]
+    fn validate_default_config_passes() {
+        WorldGenerationConfig::default()
+            .validate()
+            .expect("default config must pass validation");
+    }
+
+    #[test]
+    fn validate_override_mode_without_planet_index_passes() {
+        let config = WorldGenerationConfig {
+            planet_seed: Some(42),
+            planet_index: 0,
+            ..Default::default()
+        };
+        config
+            .validate()
+            .expect("override mode with planet_index=0 must pass");
+    }
+
+    #[test]
+    fn validate_system_derived_mode_passes() {
+        let config = WorldGenerationConfig {
+            planet_seed: None,
+            planet_index: 3,
+            ..Default::default()
+        };
+        config.validate().expect("system-derived mode must pass");
+    }
+
+    #[test]
+    fn validate_rejects_both_planet_seed_and_planet_index() {
+        let config = WorldGenerationConfig {
+            planet_seed: Some(42),
+            planet_index: 3,
+            ..Default::default()
+        };
+        let err = config.validate().unwrap_err();
+        assert!(
+            err.contains("planet_seed") && err.contains("planet_index"),
+            "error must mention both fields, got: {err}",
+        );
+    }
+
+    #[test]
+    fn validate_rejects_zero_chunk_size() {
+        let config = WorldGenerationConfig {
+            chunk_size_world_units: 0.0,
+            ..Default::default()
+        };
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_negative_active_chunk_radius() {
+        let config = WorldGenerationConfig {
+            active_chunk_radius: -1,
+            ..Default::default()
+        };
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_inverted_planet_radius_bounds() {
+        let config = WorldGenerationConfig {
+            planet_surface_min_radius: 5000,
+            planet_surface_max_radius: 500,
+            ..Default::default()
+        };
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_nan_elevation_amplitude() {
+        let config = WorldGenerationConfig {
+            elevation_amplitude: f32::NAN,
+            ..Default::default()
+        };
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_zero_elevation_frequency() {
+        let config = WorldGenerationConfig {
+            elevation_frequency: 0.0,
+            ..Default::default()
+        };
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_detail_weight_above_one() {
+        let config = WorldGenerationConfig {
+            elevation_detail_weight: 1.5,
+            ..Default::default()
+        };
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_zero_subdivisions() {
+        let config = WorldGenerationConfig {
+            elevation_subdivisions: 0,
+            ..Default::default()
+        };
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn validate_shipped_toml_passes() {
+        let contents =
+            std::fs::read_to_string(CONFIG_PATH).expect("shipped world_generation.toml must exist");
+        let config: WorldGenerationConfig =
+            toml::from_str(&contents).expect("shipped TOML must parse");
+        config
+            .validate()
+            .expect("shipped world_generation.toml must pass validation");
     }
 }
