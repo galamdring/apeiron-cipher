@@ -2413,6 +2413,40 @@ weight = 7.0
         }
     }
 
+    /// Different system seeds must produce different orbital layouts. We derive
+    /// layouts for 100 consecutive seeds and assert that not all of them are
+    /// identical — the generator must be non-degenerate.
+    #[test]
+    fn different_system_seeds_produce_different_layouts() {
+        let config = OrbitalConfig::default();
+
+        let layouts: Vec<OrbitalLayout> = (0..100_u64)
+            .map(|i| derive_orbital_layout(SolarSystemSeed(i), &config))
+            .collect();
+
+        // At least two layouts must differ (planet count, distances, or seeds).
+        let all_identical = layouts.windows(2).all(|w| w[0] == w[1]);
+        assert!(
+            !all_identical,
+            "100 consecutive seeds all produced identical orbital layouts — generator is degenerate",
+        );
+
+        // Stronger: count distinct layouts. With 100 seeds and a healthy mixer
+        // we expect a large fraction to be unique.
+        let distinct = {
+            let mut seen = std::collections::HashSet::new();
+            for layout in &layouts {
+                // Hash the debug representation as a cheap equality proxy.
+                seen.insert(format!("{layout:?}"));
+            }
+            seen.len()
+        };
+        assert!(
+            distinct >= 10,
+            "only {distinct}/100 distinct layouts — expected at least 10 for non-degeneracy",
+        );
+    }
+
     // ── Position-based stability tests ────────────────────────────────────
 
     /// Changing `planet_count_max` must not change the seeds of planets whose
