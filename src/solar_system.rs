@@ -2017,6 +2017,81 @@ weight = 7.0
         }
     }
 
+    /// Minimum separation must hold even when many planets are packed into a
+    /// narrow orbital range, forcing heavy outward pushing.
+    #[test]
+    fn orbital_layout_minimum_separation_enforced_tight_range() {
+        let config = OrbitalConfig {
+            planet_count_min: 8,
+            planet_count_max: 8,
+            inner_orbit_au: 1.0,
+            outer_orbit_au: 5.0,
+            min_separation_au: 0.5,
+        };
+
+        for i in 0..500_u64 {
+            let layout = derive_orbital_layout(SolarSystemSeed(i), &config);
+            assert_eq!(layout.planets.len(), 8, "seed {i}: expected 8 planets",);
+            for window in layout.planets.windows(2) {
+                let gap = window[1].orbital_distance_au - window[0].orbital_distance_au;
+                assert!(
+                    gap >= config.min_separation_au - 1e-5,
+                    "seed {i}: separation {gap} AU < minimum {} AU (distances: {} AU, {} AU)",
+                    config.min_separation_au,
+                    window[0].orbital_distance_au,
+                    window[1].orbital_distance_au,
+                );
+            }
+        }
+    }
+
+    /// Minimum separation must hold with a custom (large) separation value.
+    #[test]
+    fn orbital_layout_minimum_separation_enforced_custom_separation() {
+        let config = OrbitalConfig {
+            planet_count_min: 4,
+            planet_count_max: 4,
+            inner_orbit_au: 0.3,
+            outer_orbit_au: 100.0,
+            min_separation_au: 5.0,
+        };
+
+        for i in 0..500_u64 {
+            let layout = derive_orbital_layout(SolarSystemSeed(i), &config);
+            for window in layout.planets.windows(2) {
+                let gap = window[1].orbital_distance_au - window[0].orbital_distance_au;
+                assert!(
+                    gap >= config.min_separation_au - 1e-5,
+                    "seed {i}: separation {gap} AU < minimum {} AU (distances: {} AU, {} AU)",
+                    config.min_separation_au,
+                    window[0].orbital_distance_au,
+                    window[1].orbital_distance_au,
+                );
+            }
+        }
+    }
+
+    /// With a single planet, separation enforcement is trivially satisfied
+    /// (no adjacent pair exists).
+    #[test]
+    fn orbital_layout_minimum_separation_single_planet() {
+        let config = OrbitalConfig {
+            planet_count_min: 1,
+            planet_count_max: 1,
+            inner_orbit_au: 0.3,
+            outer_orbit_au: 50.0,
+            min_separation_au: 0.5,
+        };
+
+        for i in 0..100_u64 {
+            let layout = derive_orbital_layout(SolarSystemSeed(i), &config);
+            assert_eq!(layout.planets.len(), 1, "seed {i}: expected 1 planet");
+            // windows(2) yields nothing for a single-element vec — no
+            // separation invariant to violate.
+            assert_eq!(layout.planets.windows(2).count(), 0);
+        }
+    }
+
     /// Planet seeds must differ for different orbital positions within the
     /// same system. Two planets at different distances must not share a seed.
     #[test]
