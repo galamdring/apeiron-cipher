@@ -2600,4 +2600,176 @@ weight = 7.0
             "upper 32 bits must be zero even for negative floats",
         );
     }
+
+    // ── Full Pipeline Tests ─────────────────────────────────────────────
+    //
+    // Phase 5: end-to-end determinism — a single system seed produces a
+    // star profile AND an orbital layout, and the entire result is stable
+    // across repeated invocations.
+
+    /// Full pipeline determinism: same system seed + same configs = identical
+    /// star profile AND identical orbital layout. This is the capstone test
+    /// verifying that the entire generation pipeline — star type selection,
+    /// parameter interpolation, planet count derivation, orbital distance
+    /// placement, separation enforcement, and position-based planet seed
+    /// derivation — is fully deterministic end-to-end.
+    #[test]
+    fn full_pipeline_deterministic() {
+        let seed = SolarSystemSeed(0xF011_0000_DEAD_BEEF);
+        let registry = test_registry();
+        let orbital_config = OrbitalConfig::default();
+
+        // Run the full pipeline twice.
+        let star_a = derive_star_profile(seed, &registry);
+        let layout_a = derive_orbital_layout(seed, &orbital_config);
+
+        let star_b = derive_star_profile(seed, &registry);
+        let layout_b = derive_orbital_layout(seed, &orbital_config);
+
+        assert_eq!(star_a, star_b, "star profile must be deterministic");
+        assert_eq!(layout_a, layout_b, "orbital layout must be deterministic");
+    }
+
+    /// Full pipeline coherence: the star profile and orbital layout derived
+    /// from the same system seed must form a physically coherent system.
+    /// Specifically:
+    /// - Planet count is within the configured range.
+    /// - All orbital distances are sorted and separated.
+    /// - Star parameters are within their type's defined ranges.
+    /// - Planet seeds are all unique within the system.
+    /// - The pipeline produces consistent results across many seeds.
+    #[test]
+    fn full_pipeline_coherence_across_seeds() {
+        let registry = test_registry();
+        let orbital_config = OrbitalConfig::default();
+
+        for i in 0..1_000_u64 {
+            let seed = SolarSystemSeed(i);
+
+            // ── Star derivation ──────────────────────────────────────
+            let star = derive_star_profile(seed, &registry);
+
+            let star_type = registry
+                .star_types
+                .iter()
+                .find(|st| st.key == star.star_type_key)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "seed {i}: star_type_key '{}' not found in registry",
+                        star.star_type_key
+                    )
+                });
+
+            assert!(
+                star.luminosity >= star_type.luminosity_min
+                    && star.luminosity <= star_type.luminosity_max,
+                "seed {i}: luminosity {} outside [{}, {}]",
+                star.luminosity,
+                star_type.luminosity_min,
+                star_type.luminosity_max,
+            );
+            assert!(
+                star.mass_solar >= star_type.mass_min && star.mass_solar <= star_type.mass_max,
+                "seed {i}: mass {} outside [{}, {}]",
+                star.mass_solar,
+                star_type.mass_min,
+                star_type.mass_max,
+            );
+            assert!(
+                star.habitable_zone_inner_au < star.habitable_zone_outer_au,
+                "seed {i}: habitable zone inner ({}) >= outer ({})",
+                star.habitable_zone_inner_au,
+                star.habitable_zone_outer_au,
+            );
+
+            // ── Orbital layout derivation ────────────────────────────
+            let layout = derive_orbital_layout(seed, &orbital_config);
+
+            // Planet count within range.
+            let count = layout.planets.len() as u32;
+            assert!(
+                count >= orbital_config.planet_count_min
+                    && count <= orbital_config.planet_count_max,
+                "seed {i}: planet count {count} outside [{}, {}]",
+                orbital_config.planet_count_min,
+                orbital_config.planet_count_max,
+            );
+
+            // Distances sorted ascending.
+            for pair in layout.planets.windows(2) {
+                assert!(
+                    pair[0].orbital_distance_au <= pair[1].orbital_distance_au,
+                    "seed {i}: distances not sorted: {} > {}",
+                    pair[0].orbital_distance_au,
+                    pair[1].orbital_distance_au,
+                );
+            }
+
+            // Minimum separation enforced.
+            for pair in layout.planets.windows(2) {
+                let gap = pair[1].orbital_distance_au - pair[0].orbital_distance_au;
+                assert!(
+                    gap >= orbital_config.min_separation_au - f32::EPSILON,
+                    "seed {i}: separation {gap} AU < min {} AU",
+                    orbital_config.min_separation_au,
+                );
+            }
+
+            // All planet seeds unique within this system.
+            let mut seen_seeds = std::collections::HashSet::new();
+            for slot in &layout.planets {
+                assert!(
+                    seen_seeds.insert(slot.planet_seed.0),
+                    "seed {i}: duplicate planet seed {:#018X}",
+                    slot.planet_seed.0,
+                );
+            }
+
+            // Orbital indices sequential.
+            for (idx, slot) in layout.planets.iter().enumerate() {
+                assert_eq!(
+                    slot.orbital_index, idx as u32,
+                    "seed {i}: orbital_index mismatch at position {idx}",
+                );
+            }
+        }
+    }
+
+    /// Full pipeline: re-deriving the same system 10 times produces bitwise-
+    /// identical results every time, for multiple distinct seeds. This guards
+    /// against subtle non-determinism (e.g., HashMap iteration order, float
+    /// accumulation drift, or accidental use of thread-local state).
+    #[test]
+    fn full_pipeline_repeated_derivation_stable() {
+        let registry = test_registry();
+        let orbital_config = OrbitalConfig::default();
+        let test_seeds = [
+            SolarSystemSeed(0),
+            SolarSystemSeed(1),
+            SolarSystemSeed(u64::MAX),
+            SolarSystemSeed(0xDEAD_BEEF_CAFE_BABE),
+            SolarSystemSeed(42),
+        ];
+
+        for seed in test_seeds {
+            let star_ref = derive_star_profile(seed, &registry);
+            let layout_ref = derive_orbital_layout(seed, &orbital_config);
+
+            for attempt in 1..=10 {
+                let star = derive_star_profile(seed, &registry);
+                let layout = derive_orbital_layout(seed, &orbital_config);
+
+                assert_eq!(
+                    star_ref, star,
+                    "seed {}: star profile diverged on attempt {attempt}",
+                    seed.0,
+                );
+                assert_eq!(
+                    layout_ref, layout,
+                    "seed {}: orbital layout diverged on attempt {attempt}",
+                    seed.0,
+                );
+            }
+        }
+    }
 }
