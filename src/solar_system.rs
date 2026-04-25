@@ -2282,4 +2282,81 @@ weight = 7.0
             }
         }
     }
+
+    /// When many planets are crammed into a narrow orbital range, the
+    /// min-separation enforcement pushes later planets beyond the nominal
+    /// outer bound. The algorithm must handle this gracefully: no panics,
+    /// distances still sorted, separation still enforced, and all planet
+    /// seeds remain unique.
+    ///
+    /// Config: 8 planets forced (min==max), range [1.0, 3.0] AU with
+    /// 0.5 AU separation. Worst case needs 1.0 + 7×0.5 = 4.5 AU — well
+    /// past the 3.0 AU outer bound.
+    #[test]
+    fn orbital_layout_many_planets_small_range_pushes_gracefully() {
+        let config = OrbitalConfig {
+            planet_count_min: 8,
+            planet_count_max: 8,
+            inner_orbit_au: 1.0,
+            outer_orbit_au: 3.0,
+            min_separation_au: 0.5,
+        };
+
+        for i in 0..500_u64 {
+            let layout = derive_orbital_layout(SolarSystemSeed(i), &config);
+
+            assert_eq!(layout.planets.len(), 8, "seed {i}: expected 8 planets",);
+
+            // Distances must be sorted ascending.
+            for pair in layout.planets.windows(2) {
+                assert!(
+                    pair[0].orbital_distance_au <= pair[1].orbital_distance_au,
+                    "seed {i}: distances not sorted: {} > {}",
+                    pair[0].orbital_distance_au,
+                    pair[1].orbital_distance_au,
+                );
+            }
+
+            // Minimum separation must hold between every consecutive pair.
+            for pair in layout.planets.windows(2) {
+                let gap = pair[1].orbital_distance_au - pair[0].orbital_distance_au;
+                assert!(
+                    gap >= config.min_separation_au - f32::EPSILON,
+                    "seed {i}: separation {gap} AU < min {} AU (distances: {}, {})",
+                    config.min_separation_au,
+                    pair[0].orbital_distance_au,
+                    pair[1].orbital_distance_au,
+                );
+            }
+
+            // Innermost planet must be at or above the inner bound.
+            assert!(
+                layout.planets[0].orbital_distance_au >= config.inner_orbit_au,
+                "seed {i}: innermost distance {} AU < inner bound {} AU",
+                layout.planets[0].orbital_distance_au,
+                config.inner_orbit_au,
+            );
+
+            // Planet seeds must all be unique (position-based derivation).
+            let seeds: Vec<u64> = layout.planets.iter().map(|s| s.planet_seed.0).collect();
+            for (a_idx, a_seed) in seeds.iter().enumerate() {
+                for (b_idx, b_seed) in seeds.iter().enumerate() {
+                    if a_idx != b_idx {
+                        assert_ne!(
+                            a_seed, b_seed,
+                            "seed {i}: planet seeds at indices {a_idx} and {b_idx} collide",
+                        );
+                    }
+                }
+            }
+
+            // Orbital indices must be sequential 0..N.
+            for (idx, slot) in layout.planets.iter().enumerate() {
+                assert_eq!(
+                    slot.orbital_index, idx as u32,
+                    "seed {i}: orbital_index mismatch at position {idx}",
+                );
+            }
+        }
+    }
 }
