@@ -3928,4 +3928,96 @@ weight = 7.0
             );
         }
     }
+
+    /// A red dwarf at minimum luminosity (0.01 L☉) produces a very narrow
+    /// habitable zone. Planets just inside the zone are habitable; planets
+    /// slightly outside are not.
+    ///
+    /// This validates that the habitable zone formulas produce physically
+    /// coherent results even for the dimmest stars in the registry: the zone
+    /// exists, is narrow, and the flag correctly discriminates at fine
+    /// orbital-distance resolution.
+    #[test]
+    fn red_dwarf_minimum_luminosity_narrow_habitable_zone() {
+        let luminosity = 0.01_f32; // red dwarf minimum from star_types.toml
+        let star = StarProfile {
+            star_type_key: "red_dwarf".to_string(),
+            luminosity,
+            surface_temperature_k: 2500,
+            mass_solar: 0.08,
+            habitable_zone_inner_au: (luminosity / 1.1_f32).sqrt(),
+            habitable_zone_outer_au: (luminosity / 0.53_f32).sqrt(),
+        };
+
+        // ── Zone geometry ────────────────────────────────────────────────
+        let hz_width = star.habitable_zone_outer_au - star.habitable_zone_inner_au;
+
+        // The zone must exist and be positive.
+        assert!(
+            hz_width > 0.0,
+            "habitable zone width must be positive, got {hz_width}",
+        );
+
+        // For a 0.01 L☉ star the zone is roughly 0.04 AU wide — far narrower
+        // than Sol's ~0.8 AU zone. Assert it is under 0.1 AU to catch any
+        // formula regression that would widen it unrealistically.
+        assert!(
+            hz_width < 0.1,
+            "red dwarf HZ should be very narrow, got {hz_width:.4} AU",
+        );
+
+        // Inner edge should be very close to the star (< 0.2 AU).
+        assert!(
+            star.habitable_zone_inner_au < 0.2,
+            "inner edge {} AU should be < 0.2 AU for a dim star",
+            star.habitable_zone_inner_au,
+        );
+
+        // ── Habitable zone flag accuracy ─────────────────────────────────
+        let config = PlanetEnvironmentConfig::default();
+        let seed = PlanetSeed(42);
+
+        // Midpoint of the zone → habitable.
+        let hz_mid = (star.habitable_zone_inner_au + star.habitable_zone_outer_au) / 2.0;
+        let env_mid = derive_planet_environment(&star, hz_mid, seed, &config);
+        assert!(
+            env_mid.in_habitable_zone,
+            "planet at midpoint {hz_mid:.6} AU should be in habitable zone",
+        );
+
+        // Just outside inner edge → not habitable.
+        let just_inside_inner = star.habitable_zone_inner_au * 0.95;
+        let env_too_close = derive_planet_environment(&star, just_inside_inner, seed, &config);
+        assert!(
+            !env_too_close.in_habitable_zone,
+            "planet at {just_inside_inner:.6} AU (5% inside inner edge) should NOT be habitable",
+        );
+
+        // Just outside outer edge → not habitable.
+        let just_outside_outer = star.habitable_zone_outer_au * 1.05;
+        let env_too_far = derive_planet_environment(&star, just_outside_outer, seed, &config);
+        assert!(
+            !env_too_far.in_habitable_zone,
+            "planet at {just_outside_outer:.6} AU (5% outside outer edge) should NOT be habitable",
+        );
+
+        // ── Temperature coherence ────────────────────────────────────────
+        // A habitable-zone planet around a dim red dwarf should still have
+        // reasonable temperatures (not extreme). The midpoint planet's max
+        // temp should be well below a hot inner planet around Sol.
+        assert!(
+            env_mid.surface_temp_max_k < 1000.0,
+            "HZ planet around dim red dwarf should not be scorching, got {} K",
+            env_mid.surface_temp_max_k,
+        );
+
+        // ── Comparison with Sol-like star ────────────────────────────────
+        let sol = test_star();
+        let sol_hz_width = sol.habitable_zone_outer_au - sol.habitable_zone_inner_au;
+
+        assert!(
+            hz_width < sol_hz_width,
+            "red dwarf HZ width ({hz_width:.4} AU) should be narrower than Sol's ({sol_hz_width:.4} AU)",
+        );
+    }
 }
