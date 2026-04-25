@@ -1,78 +1,24 @@
-//! Apeiron Cipher — a procedurally generated open universe sandbox
-//! where knowledge is the only progression that matters.
+//! Apeiron Cipher — application entry point.
 //!
-//! This is the application entry point. All game functionality lives in
-//! plugins registered here. No systems are added directly to the App —
-//! every feature arrives through its own plugin's `build()` method.
+//! All game functionality lives in plugins registered via
+//! [`apeiron_cipher::add_game_plugins`]. No systems are added directly
+//! to the App — every feature arrives through its own plugin's `build()`
+//! method.
 
 use bevy::prelude::*;
 
-mod carry;
-mod carry_feedback;
-mod combination;
-mod debug_overlay;
-mod fabricator;
-mod heat;
-mod input;
-mod interaction;
-mod journal;
-mod materials;
-mod naming;
-mod observation;
-mod player;
-mod scene;
-mod seed_util;
-mod solar_system;
-mod surface;
-mod world_generation;
-
 fn main() {
-    App::new()
-        .add_plugins(
-            // DefaultPlugins brings in windowing, rendering, input, asset loading,
-            // and all the standard Bevy infrastructure. We override just the window
-            // title — everything else uses Bevy defaults.
-            DefaultPlugins.set(WindowPlugin {
-                primary_window: Some(Window {
-                    title: "Apeiron Cipher".into(),
-                    ..default()
-                }),
-                ..default()
-            }),
-        )
-        // Scene setup: enclosed room, furniture markers, lighting (see scene.toml).
-        .add_plugins(scene::ScenePlugin)
-        // Surface override registry: walkable surfaces layered on terrain.
-        .init_resource::<surface::SurfaceOverrideRegistry>()
-        // Player: entity hierarchy with camera. Movement comes in Story 1.3.
-        .add_plugins(player::PlayerPlugin)
-        // Carry: config + player carry state foundation for Epic 4.
-        .add_plugins(carry::CarryPlugin)
-        // Carry feedback: subtle bob / audio cues driven by current encumbrance.
-        .add_plugins(carry_feedback::CarryFeedbackPlugin)
-        // Input: loads TOML config, maps raw inputs to named actions via leafwing.
-        .add_plugins(input::InputPlugin)
-        // Materials: data-driven material definitions with observable/hidden properties.
-        .add_plugins(materials::MaterialPlugin)
-        // Exterior generation: deterministic baseline surface mineral deposits per active chunk.
-        .add_plugins(world_generation::exterior::ExteriorGenerationPlugin)
-        // Interaction: raycast, pickup/place, crosshair UI.
-        .add_plugins(interaction::InteractionPlugin)
-        // Heat: burner on workbench, thermal exposure → property revelation.
-        .add_plugins(heat::HeatPlugin)
-        // Fabricator: input/output slots on the workbench for material combination.
-        .add_plugins(fabricator::FabricatorPlugin)
-        // Combination: data-driven rules for material pair outcomes.
-        .add_plugins(combination::CombinationPlugin)
-        // Observation: confidence tracking for player knowledge.
-        .add_plugins(observation::ObservationPlugin)
-        // Journal: player-owned record of observations and fabrication history.
-        .add_plugins(journal::JournalPlugin)
-        // Solar system: deterministic star derivation from system seed.
-        .add_plugins(solar_system::SolarSystemPlugin)
-        // World generation: deterministic planet/chunk identity foundation for exterior systems.
-        .add_plugins(world_generation::WorldGenerationPlugin)
-        // Debug: terrain diagnostic overlay (temporary — remove before shipping).
-        .add_plugins(debug_overlay::DebugOverlayPlugin)
-        .run();
+    let mut app = App::new();
+
+    app.add_plugins(DefaultPlugins.set(WindowPlugin {
+        primary_window: Some(Window {
+            title: "Apeiron Cipher".into(),
+            ..default()
+        }),
+        ..default()
+    }));
+
+    apeiron_cipher::add_game_plugins(&mut app);
+
+    app.run();
 }

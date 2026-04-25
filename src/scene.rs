@@ -116,8 +116,6 @@ impl RoomShellCollision {
 #[derive(Resource, Clone, Debug)]
 pub struct ExteriorGroundPatch {
     pub bounds_xz: RectXZ,
-    // Reserved for future terrain-height queries; not yet read but stored at construction.
-    #[expect(dead_code)]
     pub surface_y: f32,
 }
 

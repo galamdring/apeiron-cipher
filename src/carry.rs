@@ -1702,6 +1702,127 @@ exponent = 1.0
         assert!(late > 0.0);
     }
 
+    /// Parameterized sweep of `evaluate_speed_curve` across the full
+    /// encumbrance range, both curve kinds, and hard-limit on/off.
+    /// Verifies: monotonic degradation, boundary values, and floor behavior.
+    #[test]
+    fn speed_curve_parameterized_sweep() {
+        struct Case {
+            label: &'static str,
+            kind: CarryCurveKind,
+            min_multiplier: f32,
+            exponent: f32,
+            hard_limit: bool,
+        }
+
+        let cases = vec![
+            Case {
+                label: "linear/hard",
+                kind: CarryCurveKind::Linear,
+                min_multiplier: 0.4,
+                exponent: 1.0,
+                hard_limit: true,
+            },
+            Case {
+                label: "linear/soft",
+                kind: CarryCurveKind::Linear,
+                min_multiplier: 0.4,
+                exponent: 1.0,
+                hard_limit: false,
+            },
+            Case {
+                label: "exponential/hard",
+                kind: CarryCurveKind::Exponential,
+                min_multiplier: 0.4,
+                exponent: 2.0,
+                hard_limit: true,
+            },
+            Case {
+                label: "exponential/soft",
+                kind: CarryCurveKind::Exponential,
+                min_multiplier: 0.4,
+                exponent: 2.0,
+                hard_limit: false,
+            },
+        ];
+
+        let ratios = [0.0, 0.25, 0.5, 0.75, 1.0, 1.5];
+
+        for case in &cases {
+            let curve = CarryCurveConfig {
+                kind: case.kind,
+                min_multiplier: case.min_multiplier,
+                exponent: case.exponent,
+            };
+
+            // Zero encumbrance must always yield full speed.
+            let at_zero = evaluate_speed_curve(&curve, 0.0, case.hard_limit);
+            assert!(
+                (at_zero - 1.0).abs() < f32::EPSILON,
+                "{}: zero load must give 1.0, got {}",
+                case.label,
+                at_zero
+            );
+
+            // Monotonic: speed must not increase as encumbrance rises.
+            let mut prev = at_zero;
+            for &ratio in &ratios[1..] {
+                let speed = evaluate_speed_curve(&curve, ratio, case.hard_limit);
+                assert!(
+                    speed <= prev + f32::EPSILON,
+                    "{}: speed must be monotonically non-increasing (ratio {}: {} > prev {})",
+                    case.label,
+                    ratio,
+                    speed,
+                    prev
+                );
+                prev = speed;
+            }
+
+            // Hard-limit: speed at ratio=1.0 must equal min_multiplier.
+            if case.hard_limit {
+                let at_max = evaluate_speed_curve(&curve, 1.0, true);
+                assert!(
+                    at_max >= case.min_multiplier - f32::EPSILON,
+                    "{}: hard-limit speed at 1.0 ({}) must be >= min_multiplier ({})",
+                    case.label,
+                    at_max,
+                    case.min_multiplier
+                );
+
+                // Beyond 1.0 should clamp (same as 1.0) with hard limit.
+                let at_over = evaluate_speed_curve(&curve, 1.5, true);
+                assert!(
+                    (at_over - at_max).abs() < f32::EPSILON,
+                    "{}: hard-limit must clamp beyond 1.0 ({} vs {})",
+                    case.label,
+                    at_over,
+                    at_max
+                );
+            }
+
+            // Soft-limit: speed at 1.5 should be lower than at 1.0.
+            if !case.hard_limit {
+                let at_100 = evaluate_speed_curve(&curve, 1.0, false);
+                let at_150 = evaluate_speed_curve(&curve, 1.5, false);
+                assert!(
+                    at_150 <= at_100 + f32::EPSILON,
+                    "{}: soft-limit speed should keep degrading past 1.0 ({} vs {})",
+                    case.label,
+                    at_150,
+                    at_100
+                );
+                // Global floor of 0.1 in soft mode.
+                assert!(
+                    at_150 >= 0.1 - f32::EPSILON,
+                    "{}: soft-limit must not go below 0.1, got {}",
+                    case.label,
+                    at_150
+                );
+            }
+        }
+    }
+
     #[test]
     fn weight_observation_uses_tentative_language_for_first_carry() {
         let text = describe_weight_observation(
