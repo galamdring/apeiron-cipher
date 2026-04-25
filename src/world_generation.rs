@@ -3135,6 +3135,67 @@ mod tests {
         );
     }
 
+    #[test]
+    fn hot_planet_biomes_differ_from_cold_planet_biomes() {
+        // A hot planet and a cold planet should produce meaningfully different
+        // biome distributions across the same set of chunk coordinates.
+        let profile = WorldProfile::from_config(&sample_config());
+        let registry = abs_temp_registry();
+
+        let hot_env = PlanetEnvironment {
+            surface_temp_min_k: 400.0,
+            surface_temp_max_k: 700.0,
+            atmosphere_density: 0.5,
+            radiation_level: 0.8,
+            surface_gravity_g: 1.2,
+            in_habitable_zone: false,
+        };
+        let cold_env = PlanetEnvironment {
+            surface_temp_min_k: 30.0,
+            surface_temp_max_k: 100.0,
+            atmosphere_density: 0.1,
+            radiation_level: 0.05,
+            surface_gravity_g: 0.3,
+            in_habitable_zone: false,
+        };
+
+        let mut hot_biomes: Vec<String> = Vec::new();
+        let mut cold_biomes: Vec<String> = Vec::new();
+
+        for x in 0..100 {
+            let coord = ChunkCoord::new(x, x * 3);
+            hot_biomes
+                .push(derive_chunk_biome(&profile, &registry, coord, Some(&hot_env)).biome_key);
+            cold_biomes
+                .push(derive_chunk_biome(&profile, &registry, coord, Some(&cold_env)).biome_key);
+        }
+
+        // The hot planet must never produce the cold biome (abs max 220 K)
+        // and the cold planet must never produce the hot biome (abs min 350 K).
+        assert!(
+            !hot_biomes.contains(&"cold_biome".to_string()),
+            "hot planet should not contain cold_biome",
+        );
+        assert!(
+            !cold_biomes.contains(&"hot_biome".to_string()),
+            "cold planet should not contain hot_biome",
+        );
+
+        // The distributions must actually differ — at least one coordinate
+        // must resolve to a different biome key between the two planets.
+        let differ_count = hot_biomes
+            .iter()
+            .zip(cold_biomes.iter())
+            .filter(|(h, c)| h != c)
+            .count();
+        assert!(
+            differ_count > 0,
+            "hot and cold planets should produce different biome distributions, \
+             but all {len} sampled chunks matched",
+            len = hot_biomes.len(),
+        );
+    }
+
     // ── PlanetSurface multi-octave noise tests ──────────────────────────
 
     /// Helper: build a `PlanetSurface` with known parameters for testing.
