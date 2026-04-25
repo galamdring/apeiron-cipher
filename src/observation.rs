@@ -41,6 +41,7 @@ pub enum ConfidenceLevel {
 }
 
 impl ConfidenceLevel {
+    // Will be used when observation-count UI is wired up; keeping the API ready.
     #[allow(dead_code)]
     pub fn from_count(count: u32) -> Self {
         match count {

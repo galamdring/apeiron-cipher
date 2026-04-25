@@ -490,6 +490,7 @@ fn load_surface_mineral_deposit_catalog(mut commands: Commands) {
     commands.insert_resource(catalog);
 }
 
+// Bevy system — parameter count is driven by ECS query requirements, not design smell.
 #[allow(clippy::too_many_arguments)]
 fn sync_active_exterior_chunks(
     mut commands: Commands,
@@ -719,6 +720,7 @@ fn sync_active_exterior_chunks(
     }
 }
 
+// Bevy system — the Query tuple is wide because we need all components for re-parenting.
 #[allow(clippy::type_complexity)]
 fn release_collected_generated_objects(
     mut commands: Commands,
@@ -772,6 +774,7 @@ fn release_collected_generated_objects(
 ///
 /// If the player drops the object again later, `claim_exterior_drops` will
 /// create a fresh record — possibly in a different chunk.
+// Bevy system — same wide-query pattern as release_collected_generated_objects.
 #[allow(clippy::type_complexity)]
 fn release_collected_player_added_objects(
     mut commands: Commands,
@@ -823,6 +826,7 @@ fn release_collected_player_added_objects(
 /// were dropped in a previous frame but not yet claimed (e.g. if claim ran
 /// before process_place). A query-based approach is more robust: it catches
 /// any unclaimed exterior object regardless of when it appeared.
+// Bevy system — query tuple is wide to match any unclaimed exterior object.
 #[allow(clippy::type_complexity)]
 fn claim_exterior_drops(
     mut commands: Commands,
