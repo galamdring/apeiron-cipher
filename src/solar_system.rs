@@ -698,6 +698,83 @@ pub fn derive_planet_count(system_seed: SolarSystemSeed, config: &OrbitalConfig)
     count.clamp(config.planet_count_min, config.planet_count_max)
 }
 
+// ── Orbital Layout Derivation ────────────────────────────────────────────
+
+/// Derive the full orbital layout for a solar system.
+///
+/// ## Derivation Steps
+///
+/// 1. **Planet count** — derived from `mix_seed(system_seed, PLANET_COUNT_CHANNEL)`,
+///    lerped into the configured `[min, max]` range.
+/// 2. **Orbital distances** — a local RNG seeded from
+///    `mix_seed(system_seed, ORBITAL_LAYOUT_CHANNEL)` draws `N` distances in
+///    `[inner_orbit_au, outer_orbit_au]`, sorts them, and enforces
+///    `min_separation_au` by pushing overlapping orbits outward.
+/// 3. **Planet seeds** — for each slot, `PlanetSeed(mix_seed(system_seed,
+///    f32_to_bits_as_u64(distance)))`. This is position-based, not index-based,
+///    so inserting a planet between two existing ones in a future story will
+///    not shift their seeds.
+///
+/// ## Panics
+///
+/// Does not panic. If minimum separation enforcement pushes a planet past
+/// `outer_orbit_au`, it keeps the pushed distance — the alternative (dropping
+/// the planet) would change the count derived from the seed.
+#[allow(dead_code)]
+pub fn derive_orbital_layout(
+    system_seed: SolarSystemSeed,
+    config: &OrbitalConfig,
+) -> OrbitalLayout {
+    let planet_count = derive_planet_count(system_seed, config);
+
+    if planet_count == 0 {
+        return OrbitalLayout {
+            planets: Vec::new(),
+        };
+    }
+
+    // Seed a deterministic sequence for orbital distances.
+    let layout_seed = mix_seed(system_seed.0, ORBITAL_LAYOUT_CHANNEL);
+
+    // Draw N raw distances in [inner, outer] using successive mixes of the
+    // layout seed. Each planet gets its own channel (its 1-based index) so
+    // that adding more planets never changes earlier draws.
+    let mut distances: Vec<f32> = (0..planet_count)
+        .map(|i| {
+            let raw = mix_seed(layout_seed, i as u64 + 1);
+            let t = seed_to_unit_f32(raw);
+            lerp(config.inner_orbit_au, config.outer_orbit_au, t)
+        })
+        .collect();
+
+    // Sort innermost-first.
+    distances.sort_by(|a, b| a.partial_cmp(b).expect("orbital distances must not be NaN"));
+
+    // Enforce minimum separation by pushing outward.
+    for i in 1..distances.len() {
+        let required = distances[i - 1] + config.min_separation_au;
+        if distances[i] < required {
+            distances[i] = required;
+        }
+    }
+
+    // Build slots with position-based planet seeds.
+    let planets = distances
+        .into_iter()
+        .enumerate()
+        .map(|(i, dist)| {
+            let planet_seed_raw = mix_seed(system_seed.0, dist.to_bits() as u64);
+            OrbitalSlot {
+                planet_seed: PlanetSeed(planet_seed_raw),
+                orbital_distance_au: dist,
+                orbital_index: i as u32,
+            }
+        })
+        .collect();
+
+    OrbitalLayout { planets }
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1857,6 +1934,32 @@ weight = 7.0
             assert!(
                 count >= 4 && count <= 6,
                 "seed {i}: planet count {count} outside custom range [4, 6]"
+            );
+        }
+    }
+
+    // ── Orbital Layout Tests ────────────────────────────────────────────
+
+    /// When planet_count_min == planet_count_max, every seed must produce
+    /// a layout with exactly that many planets. This exercises the edge
+    /// case where the lerp range collapses to a single value, ensuring
+    /// both `derive_planet_count` and `derive_orbital_layout` handle it
+    /// without off-by-one or float rounding surprises.
+    #[test]
+    fn orbital_layout_fixed_count_when_min_equals_max() {
+        let config = OrbitalConfig {
+            planet_count_min: 3,
+            planet_count_max: 3,
+            ..OrbitalConfig::default()
+        };
+
+        for i in 0..1_000_u64 {
+            let layout = derive_orbital_layout(SolarSystemSeed(i), &config);
+            assert_eq!(
+                layout.planets.len(),
+                3,
+                "seed {i}: expected exactly 3 planets when min==max==3, got {}",
+                layout.planets.len()
             );
         }
     }
