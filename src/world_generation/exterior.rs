@@ -507,6 +507,7 @@ fn sync_active_exterior_chunks(
     removal_deltas: Res<ChunkRemovalDeltas>,
     player_additions: Res<ChunkPlayerAdditions>,
     surface_registry: Res<crate::surface::SurfaceOverrideRegistry>,
+    planet_env: Option<Res<crate::solar_system::PlanetEnvironment>>,
 ) {
     let active_chunk_set: HashSet<ChunkCoord> = active_chunks.chunks.iter().copied().collect();
     let inactive_chunks: Vec<ChunkCoord> = spawned_chunks
@@ -547,7 +548,12 @@ fn sync_active_exterior_chunks(
         // the ground tile color, deposit density modifier, and per-deposit
         // weight multipliers. All three feed into the generation pipeline
         // below so that different biomes produce visibly different exteriors.
-        let chunk_biome = derive_chunk_biome(&world_profile, &biome_registry, chunk);
+        let chunk_biome = derive_chunk_biome(
+            &world_profile,
+            &biome_registry,
+            chunk,
+            planet_env.as_deref(),
+        );
         trace!(
             chunk = ?chunk,
             biome = %chunk_biome.biome_key,
@@ -4693,7 +4699,7 @@ cluster_compactness = 0.75
         let mut total_deposits = 0_usize;
 
         for &chunk in &chunks {
-            let biome = derive_chunk_biome(&profile, &biome_registry, chunk);
+            let biome = derive_chunk_biome(&profile, &biome_registry, chunk, None);
             observed_biome_keys.insert(biome.biome_key.clone());
 
             let palette_seeds: HashSet<u64> = biome
