@@ -1656,6 +1656,7 @@ mod tests {
             planet_surface_max_radius: 5000,
             ..Default::default()
         })
+        .unwrap()
     }
 
     fn sample_catalog() -> SurfaceMineralDepositCatalog {
@@ -3748,8 +3749,8 @@ cluster_compactness = 0.75
         // Run the full pipeline twice from scratch.
         for _run in 0..2 {
             // ── Stage 1: WorldProfile derivation ─────────────────────
-            let profile_a = WorldProfile::from_config(&config);
-            let profile_b = WorldProfile::from_config(&config);
+            let profile_a = WorldProfile::from_config(&config).unwrap();
+            let profile_b = WorldProfile::from_config(&config).unwrap();
             assert_eq!(profile_a, profile_b, "WorldProfile must be deterministic");
 
             // ── Stage 2: PlanetSurface construction ──────────────────
@@ -3851,7 +3852,7 @@ cluster_compactness = 0.75
             planet_surface_max_radius: 5000,
             ..Default::default()
         };
-        let profile = WorldProfile::from_config(&config);
+        let profile = WorldProfile::from_config(&config).unwrap();
         let surface = PlanetSurface::new_from_profile(&profile, &config);
         let catalog = sample_catalog();
         let biome = sample_biome();
@@ -4661,7 +4662,7 @@ cluster_compactness = 0.75
             planet_surface_max_radius: 5000,
             ..Default::default()
         };
-        let profile = WorldProfile::from_config(&config);
+        let profile = WorldProfile::from_config(&config).unwrap();
         let surface = PlanetSurface::new_from_profile(&profile, &config);
         let catalog = sample_catalog();
         let biome_registry = BiomeRegistry::default();
@@ -5054,7 +5055,7 @@ cluster_compactness = 0.75
             planet_surface_max_radius: 5000,
             ..Default::default()
         };
-        let profile = WorldProfile::from_config(&config);
+        let profile = WorldProfile::from_config(&config).unwrap();
         let catalog = sample_catalog();
         let surface = PlanetSurface::new_from_profile(&profile, &config);
 
@@ -5243,7 +5244,7 @@ cluster_compactness = 0.75
             biomes: &[ChunkBiome],
             chunks: &[ChunkCoord],
         ) -> MaterialCatalog {
-            let profile = WorldProfile::from_config(config);
+            let profile = WorldProfile::from_config(config).unwrap();
             let surface = PlanetSurface::new_from_profile(&profile, config);
             let deposit_catalog = SurfaceMineralDepositCatalog {
                 site_spawn_threshold: 0.0,

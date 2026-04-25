@@ -1266,6 +1266,7 @@ pub struct WorldProfile {
 impl Default for WorldProfile {
     fn default() -> Self {
         Self::from_config(&WorldGenerationConfig::default())
+            .expect("default WorldGenerationConfig always has planet_seed")
     }
 }
 
@@ -1275,12 +1276,15 @@ impl WorldProfile {
     ///
     /// This is the constructor used when `planet_seed` is present in the
     /// config. The `system_context` field is `None`.
-    pub fn from_config(config: &WorldGenerationConfig) -> Self {
-        let raw_seed = config
-            .planet_seed
-            .expect("from_config requires planet_seed to be Some (override mode)");
+    ///
+    /// Returns `Err` if `planet_seed` is `None` in the config (caller should
+    /// check `seed_mode()` first or use `from_system_seed` for system-derived mode).
+    pub fn from_config(config: &WorldGenerationConfig) -> Result<Self, String> {
+        let raw_seed = config.planet_seed.ok_or_else(|| {
+            "from_config requires planet_seed to be Some (override mode)".to_string()
+        })?;
         let planet_seed = PlanetSeed(raw_seed);
-        Self::build(planet_seed, config, None)
+        Ok(Self::build(planet_seed, config, None))
     }
 
     /// Build a world profile in system-derived mode — planet seed derived
@@ -1465,7 +1469,8 @@ fn load_world_generation_config(mut commands: Commands) {
                     .planet_seed
                     .expect("override mode requires planet_seed"),
             );
-            let profile = WorldProfile::from_config(&config);
+            let profile = WorldProfile::from_config(&config)
+                .expect("override mode guarantees planet_seed is present");
             commands.insert_resource(profile);
         }
         SeedMode::SystemDerived => {
@@ -2268,8 +2273,8 @@ mod tests {
             ..Default::default()
         };
 
-        let a = WorldProfile::from_config(&config);
-        let b = WorldProfile::from_config(&config);
+        let a = WorldProfile::from_config(&config).unwrap();
+        let b = WorldProfile::from_config(&config).unwrap();
 
         assert_eq!(a, b);
     }
@@ -2281,7 +2286,7 @@ mod tests {
             ..Default::default()
         };
 
-        let profile = WorldProfile::from_config(&config);
+        let profile = WorldProfile::from_config(&config).unwrap();
 
         assert!(
             !profile.is_system_derived(),
@@ -2346,7 +2351,7 @@ mod tests {
             planet_seed: Some(12345),
             ..Default::default()
         };
-        let profile = WorldProfile::from_config(&config);
+        let profile = WorldProfile::from_config(&config).unwrap();
 
         assert!(!profile.is_system_derived());
 
@@ -2367,7 +2372,7 @@ mod tests {
 
     #[test]
     fn world_profile_derives_distinct_sub_seeds() {
-        let profile = WorldProfile::from_config(&WorldGenerationConfig::default());
+        let profile = WorldProfile::from_config(&WorldGenerationConfig::default()).unwrap();
 
         assert_ne!(
             profile.placement_density_seed,
@@ -2440,7 +2445,8 @@ mod tests {
             planet_surface_min_radius: 500,
             planet_surface_max_radius: 5000,
             ..Default::default()
-        });
+        })
+        .unwrap();
         let chunk = ChunkCoord::new(-3, 4);
 
         let a = derive_chunk_generation_key(&profile, chunk);
@@ -2451,7 +2457,7 @@ mod tests {
 
     #[test]
     fn chunk_generation_key_changes_for_different_chunks() {
-        let profile = WorldProfile::from_config(&WorldGenerationConfig::default());
+        let profile = WorldProfile::from_config(&WorldGenerationConfig::default()).unwrap();
         let a = derive_chunk_generation_key(&profile, ChunkCoord::new(0, 0));
         let b = derive_chunk_generation_key(&profile, ChunkCoord::new(1, 0));
 
@@ -2470,7 +2476,8 @@ mod tests {
             planet_surface_min_radius: 500,
             planet_surface_max_radius: 5000,
             ..Default::default()
-        });
+        })
+        .unwrap();
 
         let a =
             derive_generated_object_id(&profile, ChunkCoord::new(-2, 3), "ferrite_surface", 7, 1);
@@ -2791,7 +2798,7 @@ mod tests {
             planet_surface_max_radius: 5000,
             ..Default::default()
         };
-        let profile = WorldProfile::from_config(&config);
+        let profile = WorldProfile::from_config(&config).unwrap();
 
         assert!(
             (500..=5000).contains(&profile.planet_surface_radius),
@@ -2848,7 +2855,7 @@ mod tests {
             planet_surface_max_radius: 50,
             ..Default::default()
         };
-        let profile = WorldProfile::from_config(&config);
+        let profile = WorldProfile::from_config(&config).unwrap();
         let diameter = profile.planet_surface_diameter; // 100
 
         let raw_negative = ChunkCoord::new(-1, -1);
@@ -2872,7 +2879,7 @@ mod tests {
             planet_surface_max_radius: 50,
             ..Default::default()
         };
-        let profile = WorldProfile::from_config(&config);
+        let profile = WorldProfile::from_config(&config).unwrap();
         let diameter = profile.planet_surface_diameter; // 100
 
         let canonical = ChunkCoord::new(5, 10);
@@ -2900,7 +2907,7 @@ mod tests {
     #[test]
     fn biome_derivation_is_deterministic() {
         // Same seed + coord must always produce the same biome.
-        let profile = WorldProfile::from_config(&sample_config());
+        let profile = WorldProfile::from_config(&sample_config()).unwrap();
         let registry = BiomeRegistry::default();
         let coord = ChunkCoord::new(7, 13);
 
@@ -2917,7 +2924,7 @@ mod tests {
         // Scan a large set of coords and verify all three biome keys appear.
         // The noise field is coherent, so with enough samples we should hit
         // all defined ranges.
-        let profile = WorldProfile::from_config(&sample_config());
+        let profile = WorldProfile::from_config(&sample_config()).unwrap();
         let registry = BiomeRegistry::default();
 
         let mut found: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -2952,7 +2959,7 @@ mod tests {
     fn fallback_biome_used_when_no_range_matches() {
         // Create a registry with a single biome that only covers a tiny corner,
         // then sample a coord that lands outside it.
-        let profile = WorldProfile::from_config(&sample_config());
+        let profile = WorldProfile::from_config(&sample_config()).unwrap();
         let registry = BiomeRegistry {
             noise_scale_chunks: 12.0,
             temperature_noise_channel: 0xB10E_0001_0000_0001,
@@ -3013,7 +3020,7 @@ mod tests {
     fn biome_climate_seed_is_distinct_from_other_seeds() {
         // The biome climate seed must not collide with any other sub-seed
         // in WorldProfile to avoid correlated noise fields.
-        let profile = WorldProfile::from_config(&sample_config());
+        let profile = WorldProfile::from_config(&sample_config()).unwrap();
 
         assert_ne!(profile.biome_climate_seed, profile.placement_density_seed);
         assert_ne!(profile.biome_climate_seed, profile.placement_variation_seed);
@@ -3024,7 +3031,7 @@ mod tests {
     fn elevation_seed_is_distinct_from_other_seeds() {
         // The elevation seed must not collide with any other sub-seed
         // in WorldProfile to avoid correlated noise fields.
-        let profile = WorldProfile::from_config(&sample_config());
+        let profile = WorldProfile::from_config(&sample_config()).unwrap();
 
         assert_ne!(profile.elevation_seed, profile.placement_density_seed);
         assert_ne!(profile.elevation_seed, profile.placement_variation_seed);
@@ -3224,7 +3231,7 @@ mod tests {
             planet_surface_max_radius: 50,
             ..Default::default()
         };
-        let profile = WorldProfile::from_config(&config);
+        let profile = WorldProfile::from_config(&config).unwrap();
         let registry = BiomeRegistry::default();
         let diameter = profile.planet_surface_diameter;
 
@@ -3246,7 +3253,7 @@ mod tests {
         // `derive_chunk_biome` must return a hardcoded neutral default
         // rather than panicking.
         let config = sample_config();
-        let profile = WorldProfile::from_config(&config);
+        let profile = WorldProfile::from_config(&config).unwrap();
         let registry = BiomeRegistry {
             biomes: vec![],
             fallback_biome_key: "nonexistent".to_string(),
@@ -3270,7 +3277,7 @@ mod tests {
         // exist in the registry. This exercises the third fallback path
         // (lines ~1206-1214).
         let config = sample_config();
-        let profile = WorldProfile::from_config(&config);
+        let profile = WorldProfile::from_config(&config).unwrap();
 
         // Define biomes that cover an impossibly narrow range so nothing
         // will match any real noise sample.
@@ -3309,7 +3316,7 @@ mod tests {
         // Derive chunks across a large coordinate range, collecting the
         // material palette returned for each biome key. Verify that every
         // biome's palette matches the palette defined in its BiomeDefinition.
-        let profile = WorldProfile::from_config(&sample_config());
+        let profile = WorldProfile::from_config(&sample_config()).unwrap();
         let registry = BiomeRegistry::default();
 
         // Build expected palettes from the registry, keyed by biome key.
@@ -3375,7 +3382,7 @@ mod tests {
     fn chunk_biome_fallback_carries_fallback_palette() {
         // When no biome range matches, the fallback biome's palette must be
         // propagated into the ChunkBiome, not an empty vec.
-        let profile = WorldProfile::from_config(&sample_config());
+        let profile = WorldProfile::from_config(&sample_config()).unwrap();
         let fallback_palette = vec![
             PaletteMaterial {
                 material_seed: 0xAAAA,
@@ -3452,7 +3459,7 @@ mod tests {
         // When the fallback key itself is missing from the registry, the
         // hardcoded neutral default must still provide a non-empty material
         // palette so that deposits can be generated even without biomes.toml.
-        let profile = WorldProfile::from_config(&sample_config());
+        let profile = WorldProfile::from_config(&sample_config()).unwrap();
         let registry = BiomeRegistry {
             fallback_biome_key: "does_not_exist".to_string(),
             biomes: Vec::new(),
@@ -3538,7 +3545,7 @@ mod tests {
     fn planet_env_none_uses_normalized_matching_only() {
         // Without PlanetEnvironment, absolute thresholds are ignored and
         // biomes match purely on normalized temperature/moisture ranges.
-        let profile = WorldProfile::from_config(&sample_config());
+        let profile = WorldProfile::from_config(&sample_config()).unwrap();
         let registry = abs_temp_registry();
 
         // Scan a range of chunks — every result should match one of the two
@@ -3558,7 +3565,7 @@ mod tests {
         // A very hot planet (min 400 K, max 700 K) maps all noise values
         // above the cold biome's absolute max of 220 K, so the cold biome
         // should never match.
-        let profile = WorldProfile::from_config(&sample_config());
+        let profile = WorldProfile::from_config(&sample_config()).unwrap();
         let registry = abs_temp_registry();
         let hot_env = PlanetEnvironment {
             surface_temp_min_k: 400.0,
@@ -3585,7 +3592,7 @@ mod tests {
     fn planet_env_cold_planet_filters_hot_biome() {
         // A very cold planet (min 30 K, max 100 K) maps all noise values
         // below the hot biome's absolute min of 350 K.
-        let profile = WorldProfile::from_config(&sample_config());
+        let profile = WorldProfile::from_config(&sample_config()).unwrap();
         let registry = abs_temp_registry();
         let cold_env = PlanetEnvironment {
             surface_temp_min_k: 30.0,
@@ -3608,7 +3615,7 @@ mod tests {
 
     #[test]
     fn planet_env_deterministic() {
-        let profile = WorldProfile::from_config(&sample_config());
+        let profile = WorldProfile::from_config(&sample_config()).unwrap();
         let registry = abs_temp_registry();
         let env = PlanetEnvironment {
             surface_temp_min_k: 200.0,
@@ -3631,7 +3638,7 @@ mod tests {
     fn hot_planet_biomes_differ_from_cold_planet_biomes() {
         // A hot planet and a cold planet should produce meaningfully different
         // biome distributions across the same set of chunk coordinates.
-        let profile = WorldProfile::from_config(&sample_config());
+        let profile = WorldProfile::from_config(&sample_config()).unwrap();
         let registry = abs_temp_registry();
 
         let hot_env = PlanetEnvironment {
@@ -3699,7 +3706,7 @@ mod tests {
             std::fs::read_to_string(BIOME_CONFIG_PATH).expect("shipped biomes.toml must exist");
         let registry: BiomeRegistry =
             toml::from_str(&toml_content).expect("shipped biomes.toml must parse");
-        let profile = WorldProfile::from_config(&sample_config());
+        let profile = WorldProfile::from_config(&sample_config()).unwrap();
 
         let hot_env = PlanetEnvironment {
             surface_temp_min_k: 400.0,
@@ -4421,7 +4428,7 @@ active_chunk_radius = 1
             .expect("planet_seed-only config must pass validation");
 
         // WorldProfile can be built from this config.
-        let profile = WorldProfile::from_config(&config);
+        let profile = WorldProfile::from_config(&config).unwrap();
         assert_eq!(profile.planet_seed, PlanetSeed(12345));
         assert!(
             !profile.is_system_derived(),
@@ -4443,7 +4450,7 @@ active_chunk_radius = 1
             .validate()
             .expect("bare planet_seed config must pass validation");
 
-        let profile = WorldProfile::from_config(&config);
+        let profile = WorldProfile::from_config(&config).unwrap();
         assert_eq!(profile.planet_seed, PlanetSeed(99999));
     }
 
@@ -5109,8 +5116,8 @@ planet_index = 3
             "sample_config must be in override mode for this test"
         );
 
-        let profile_a = WorldProfile::from_config(&config);
-        let profile_b = WorldProfile::from_config(&config);
+        let profile_a = WorldProfile::from_config(&config).unwrap();
+        let profile_b = WorldProfile::from_config(&config).unwrap();
 
         // Override mode must not carry system context.
         assert!(
