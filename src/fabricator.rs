@@ -16,7 +16,8 @@ use bevy::prelude::*;
 use crate::combination::CombinationRules;
 use crate::journal::RecordFabrication;
 use crate::materials::{
-    GameMaterial, MATERIAL_SURFACE_GAP, MaterialObject, MaterialProperty, PropertyVisibility,
+    GameMaterial, MATERIAL_SURFACE_GAP, MaterialCatalog, MaterialObject, MaterialProperty,
+    PropertyVisibility,
 };
 use crate::scene::{FabricatorSceneConfig, FurnitureConfig, Workbench};
 
@@ -185,6 +186,7 @@ fn tick_processing(
     rules: Res<CombinationRules>,
     _journal_writer: MessageWriter<RecordFabrication>,
     mut state: ResMut<FabricatorState>,
+    mut catalog: ResMut<MaterialCatalog>,
     mut slots: Query<&mut InputSlot>,
     material_query: Query<&GameMaterial, With<MaterialObject>>,
     mut output_slot: Query<(&GlobalTransform, &mut OutputSlot)>,
@@ -222,6 +224,10 @@ fn tick_processing(
 
     // Rule-driven combination.
     let output_mat = rule_combine(&rules, &input_mats[0], &input_mats[1]);
+
+    // Register the fabricated material in the catalog so it is discoverable
+    // by seed/name lookups (e.g. journal, future recipes).
+    let _ = catalog.register_fabricated(output_mat.clone());
 
     // Spawn the output material on the output slot.
     let Ok((output_gtf, mut out_slot)) = output_slot.single_mut() else {
@@ -329,22 +335,11 @@ fn apply_rule_with_perturbation(
 }
 
 // ── Procedural naming ────────────────────────────────────────────────────
+// Vocabulary tables and the `procedural_name` function live in
+// `crate::naming` so both the fabricator and the seed-derived material
+// pipeline can share them without cross-module coupling.
 
-const PREFIXES: &[&str] = &[
-    "Neo", "Aur", "Vex", "Cor", "Nyx", "Zel", "Pyr", "Lux", "Thal", "Kyn", "Ven", "Dra", "Sol",
-    "Mor", "Cyn", "Vir",
-];
-
-const SUFFIXES: &[&str] = &[
-    "ite", "ium", "ite", "ane", "ene", "oid", "ate", "ide", "yne", "ase", "ose", "ine", "ile",
-    "ore", "ux", "al",
-];
-
-fn procedural_name(seed: u64) -> String {
-    let prefix_idx = ((seed >> 8) as usize) % PREFIXES.len();
-    let suffix_idx = ((seed >> 16) as usize) % SUFFIXES.len();
-    format!("{}{}", PREFIXES[prefix_idx], SUFFIXES[suffix_idx])
-}
+pub use crate::naming::procedural_name;
 
 // ── Color blending ───────────────────────────────────────────────────────
 
@@ -767,5 +762,303 @@ mod tests {
             result.conductivity.value > 0.2,
             "expected conductivity to move upward for a thermally conductive result"
         );
+    }
+
+    /// Fabricated materials must produce valid procedural names that register
+    /// cleanly in the `MaterialCatalog` — even after the migration from
+    /// static TOML materials to seed-derived generation.
+    #[test]
+    fn fabricated_materials_register_valid_names_in_catalog() {
+        use crate::materials::MaterialCatalog;
+
+        let rules = default_rules();
+
+        // Simulate a range of fabrication outputs from different seed pairs.
+        let seed_pairs: &[(u64, u64)] = &[
+            (100, 200),
+            (1, 2),
+            (0xDEAD_BEEF, 0xCAFE_BABE),
+            (u64::MAX, 1),
+            (0, 0),
+            (7, 7),
+            (0xFE00_0000_0000_0001, 0xFE00_0000_0000_0002),
+        ];
+
+        let mut catalog = MaterialCatalog::default();
+
+        for &(seed_a, seed_b) in seed_pairs {
+            let a = test_material("InputA", seed_a, 0.5);
+            let b = test_material("InputB", seed_b, 0.5);
+            let output = rule_combine(&rules, &a, &b);
+
+            // Name must be non-empty and follow the three-part procedural pattern
+            // (no dashes — disambiguation only happens at catalog registration).
+            assert!(
+                !output.name.is_empty(),
+                "fabricated name must not be empty for seeds ({seed_a}, {seed_b})"
+            );
+            assert!(
+                output.name.len() >= 6,
+                "procedural names have at least 6 chars (prefix+root+suffix): got '{}' for seeds ({seed_a}, {seed_b})",
+                output.name
+            );
+            assert!(
+                output.name.chars().all(|c| c.is_alphanumeric()),
+                "base procedural name must be alphanumeric: got '{}' for seeds ({seed_a}, {seed_b})",
+                output.name
+            );
+
+            // Name must match what `procedural_name` returns for the combined seed.
+            let expected_name = procedural_name(output.seed);
+            assert_eq!(
+                output.name, expected_name,
+                "fabricated name must equal procedural_name(combined_seed) for seeds ({seed_a}, {seed_b})"
+            );
+
+            // Registration via `register_fabricated` must preserve blended properties.
+            let blended_density = output.density.value;
+            let registered = catalog.register_fabricated(output);
+            assert_eq!(
+                registered.seed,
+                a.seed.wrapping_mul(31).wrapping_add(b.seed),
+                "catalog entry seed must match fabricated seed for seeds ({seed_a}, {seed_b})"
+            );
+            assert!(
+                !registered.name.is_empty(),
+                "registered name must not be empty for seeds ({seed_a}, {seed_b})"
+            );
+            // The catalog must store the actual blended properties, not re-derived ones.
+            assert!(
+                (registered.density.value - blended_density).abs() < f32::EPSILON,
+                "catalog must preserve fabricated (blended) properties, not re-derive from seed for seeds ({seed_a}, {seed_b})"
+            );
+        }
+
+        // All registered entries must have unique names (catalog invariant).
+        let names: Vec<&String> = catalog.names().collect();
+        let unique_count = names.iter().collect::<std::collections::HashSet<_>>().len();
+        assert_eq!(
+            names.len(),
+            unique_count,
+            "catalog must not contain duplicate names"
+        );
+    }
+
+    /// Verify that fabricator `combined_seed` values never collide with biome
+    /// palette seeds.
+    ///
+    /// Biome palettes use well-known seeds in the range 1001–1010. The
+    /// fabricator computes `a.seed.wrapping_mul(31).wrapping_add(b.seed)`.
+    /// Because `wrapping_mul(31)` on any seed ≥ 1 produces a value ≥ 31,
+    /// the minimum fabricator output for palette-range inputs is
+    /// `1001 * 31 + 1001 = 32_032`, which is well above the palette range.
+    ///
+    /// This test exhaustively checks all pairwise combinations of the
+    /// well-known palette seeds and confirms no output lands in that range.
+    /// It also checks multi-generation chains (fabricated seeds fed back in).
+    #[test]
+    fn combined_seed_does_not_collide_with_biome_palette_seeds() {
+        // Well-known biome palette seeds from `assets/config/biomes.toml`.
+        let palette_seeds: Vec<u64> = (1001..=1010).collect();
+        let palette_set: std::collections::HashSet<u64> = palette_seeds.iter().copied().collect();
+
+        // ── Single-step fabrication ──────────────────────────────────────
+        let mut first_gen_seeds: Vec<u64> = Vec::new();
+        for &a in &palette_seeds {
+            for &b in &palette_seeds {
+                let combined = a.wrapping_mul(31).wrapping_add(b);
+                assert!(
+                    !palette_set.contains(&combined),
+                    "single-step fabrication of seeds ({a}, {b}) produced {combined} which collides with a palette seed"
+                );
+                first_gen_seeds.push(combined);
+            }
+        }
+
+        // ── Second-step fabrication (fabricated × palette, palette × fabricated) ─
+        for &fab in &first_gen_seeds {
+            for &p in &palette_seeds {
+                let combined_fp = fab.wrapping_mul(31).wrapping_add(p);
+                assert!(
+                    !palette_set.contains(&combined_fp),
+                    "second-step fabrication (fab={fab}, palette={p}) produced {combined_fp} which collides with a palette seed"
+                );
+                let combined_pf = p.wrapping_mul(31).wrapping_add(fab);
+                assert!(
+                    !palette_set.contains(&combined_pf),
+                    "second-step fabrication (palette={p}, fab={fab}) produced {combined_pf} which collides with a palette seed"
+                );
+            }
+        }
+
+        // ── Structural argument ─────────────────────────────────────────
+        // The minimum single-step output is 1001 * 31 + 1001 = 32_032.
+        // All palette seeds are ≤ 1010. The gap is 31× the input floor.
+        let min_output = palette_seeds
+            .iter()
+            .copied()
+            .min()
+            .expect("palette_seeds is non-empty")
+            .wrapping_mul(31)
+            .wrapping_add(
+                palette_seeds
+                    .iter()
+                    .copied()
+                    .min()
+                    .expect("palette_seeds is non-empty"),
+            );
+        let max_palette = palette_seeds
+            .iter()
+            .copied()
+            .max()
+            .expect("palette_seeds is non-empty");
+        assert!(
+            min_output > max_palette,
+            "minimum fabricator output ({min_output}) must exceed maximum palette seed ({max_palette})"
+        );
+    }
+
+    /// Fabricate two distinct materials from different input pairs and verify
+    /// both outputs are independently retrievable from the catalog by seed.
+    #[test]
+    fn fabricate_two_materials_both_appear_in_catalog() {
+        use crate::materials::MaterialCatalog;
+
+        let rules = default_rules();
+        let mut catalog = MaterialCatalog::default();
+
+        // First fabrication: seeds 1001 + 1002
+        let a1 = test_material("InputA1", 1001, 0.4);
+        let b1 = test_material("InputB1", 1002, 0.6);
+        let output1 = rule_combine(&rules, &a1, &b1);
+        let seed1 = output1.seed;
+        let name1 = output1.name.clone();
+        let density1 = output1.density.value;
+        catalog.register_fabricated(output1);
+
+        // Second fabrication: seeds 1003 + 1004
+        let a2 = test_material("InputA2", 1003, 0.3);
+        let b2 = test_material("InputB2", 1004, 0.7);
+        let output2 = rule_combine(&rules, &a2, &b2);
+        let seed2 = output2.seed;
+        let name2 = output2.name.clone();
+        let density2 = output2.density.value;
+        catalog.register_fabricated(output2);
+
+        // Both seeds must differ (fabrication produces distinct combined seeds).
+        assert_ne!(
+            seed1, seed2,
+            "two fabrications from different inputs must produce different seeds"
+        );
+
+        // Catalog must contain exactly 2 entries.
+        assert_eq!(
+            catalog.len(),
+            2,
+            "catalog must contain both fabricated materials"
+        );
+
+        // First material retrievable by seed with preserved blended properties.
+        let entry1 = catalog
+            .get_by_seed(seed1)
+            .expect("first fabricated material must be in catalog");
+        assert_eq!(entry1.name, name1);
+        assert!(
+            (entry1.density.value - density1).abs() < f32::EPSILON,
+            "catalog must preserve blended density for first material"
+        );
+
+        // Second material retrievable by seed with preserved blended properties.
+        let entry2 = catalog
+            .get_by_seed(seed2)
+            .expect("second fabricated material must be in catalog");
+        assert_eq!(entry2.name, name2);
+        assert!(
+            (entry2.density.value - density2).abs() < f32::EPSILON,
+            "catalog must preserve blended density for second material"
+        );
+
+        // Both materials also retrievable by name.
+        assert!(
+            catalog.get_by_name(&name1).is_some(),
+            "first fabricated material must be retrievable by name"
+        );
+        assert!(
+            catalog.get_by_name(&name2).is_some(),
+            "second fabricated material must be retrievable by name"
+        );
+    }
+
+    /// Fabricated material names must not shadow seed-derived material names.
+    ///
+    /// Both `derive_and_register` (biome palette path) and `register_fabricated`
+    /// (fabricator path) call `procedural_name` on their respective seeds.  If a
+    /// fabricated combined-seed happens to produce the same base name as an
+    /// already-registered biome seed, the `disambiguated_name` logic must kick in
+    /// so that every catalog entry remains independently retrievable by name.
+    ///
+    /// This test registers all well-known biome palette seeds first, then
+    /// fabricates every pairwise combination and registers the results.  After
+    /// all registrations the catalog must contain exactly
+    /// `palette_count + fabrication_count` entries with fully unique names.
+    #[test]
+    fn fabricated_material_name_does_not_collide_with_seed_derived_names() {
+        use crate::materials::MaterialCatalog;
+        use std::collections::HashSet;
+
+        let palette_seeds: Vec<u64> = (1001..=1010).collect();
+        let rules = default_rules();
+
+        let mut catalog = MaterialCatalog::default();
+
+        // ── Phase 1: register all biome palette materials (seed-derived) ─────
+        for &seed in &palette_seeds {
+            catalog.derive_and_register(seed);
+        }
+        assert_eq!(catalog.len(), palette_seeds.len());
+
+        // ── Phase 2: fabricate every pairwise combo and register ─────────────
+        let mut fabricated_seeds: Vec<u64> = Vec::new();
+        for &a_seed in &palette_seeds {
+            for &b_seed in &palette_seeds {
+                let a = test_material("A", a_seed, 0.5);
+                let b = test_material("B", b_seed, 0.5);
+                let output = rule_combine(&rules, &a, &b);
+                let fab_seed = output.seed;
+                fabricated_seeds.push(fab_seed);
+                catalog.register_fabricated(output);
+            }
+        }
+
+        // Deduplicate fabricated seeds (some combos could theoretically collide
+        // at the seed level, though in practice they don't for this range).
+        let unique_fab_seeds: HashSet<u64> = fabricated_seeds.iter().copied().collect();
+        let expected_count = palette_seeds.len() + unique_fab_seeds.len();
+
+        assert_eq!(
+            catalog.len(),
+            expected_count,
+            "catalog must contain every palette material and every unique fabricated material"
+        );
+
+        // ── Phase 3: verify all names are unique ────────────────────────────
+        let names: Vec<String> = catalog.names().cloned().collect();
+        let unique_names: HashSet<&String> = names.iter().collect();
+        assert_eq!(
+            names.len(),
+            unique_names.len(),
+            "every material in the catalog must have a unique name; found {} names for {} entries",
+            unique_names.len(),
+            names.len()
+        );
+
+        // ── Phase 4: every entry retrievable by its own name ────────────────
+        for name in &names {
+            assert!(
+                catalog.get_by_name(name).is_some(),
+                "material '{}' must be retrievable by name",
+                name
+            );
+        }
     }
 }

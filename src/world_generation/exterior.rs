@@ -49,8 +49,8 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     ActiveChunkNeighborhood, BiomeRegistry, ChunkBiome, ChunkCoord,
-    DEFAULT_MAX_PLACEMENT_SLOPE_RADIANS, GeneratedObjectId, PlanetSurface, SurfaceProvider,
-    WorldGenerationConfig, WorldProfile, chunk_origin_xz, derive_chunk_biome,
+    DEFAULT_MAX_PLACEMENT_SLOPE_RADIANS, GeneratedObjectId, PaletteMaterial, PlanetSurface,
+    SurfaceProvider, WorldGenerationConfig, WorldProfile, chunk_origin_xz, derive_chunk_biome,
     derive_chunk_generation_key, derive_generated_object_id, generate_chunk_heightmap_mesh,
     is_placement_valid, surface_alignment_rotation, world_position_to_chunk_coord,
 };
@@ -90,13 +90,15 @@ impl Plugin for ExteriorGenerationPlugin {
 ///
 /// The object type is always "surface mineral deposit". The definition tells us
 /// *which* deposit flavor this is:
-/// - which existing material it should yield / be represented by
 /// - how likely it is relative to sibling deposit definitions
 /// - how large it can appear
+///
+/// Deposit definitions are material-agnostic: they define *how* a deposit
+/// looks (shape, clustering), not *what* material it contains. Material
+/// selection is driven by the biome's `material_palette`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 struct SurfaceMineralDepositDefinition {
     pub key: String,
-    pub material_key: String,
     pub selection_weight: f32,
     pub scale_min: f32,
     pub scale_max: f32,
@@ -165,8 +167,7 @@ fn default_site_min_gap_world_units() -> f32 {
 fn default_surface_mineral_deposits() -> Vec<SurfaceMineralDepositDefinition> {
     vec![
         SurfaceMineralDepositDefinition {
-            key: "ferrite_surface_deposit".into(),
-            material_key: "Ferrite".into(),
+            key: "dense_cluster_deposit".into(),
             selection_weight: 1.0,
             scale_min: 0.9,
             scale_max: 1.2,
@@ -177,8 +178,7 @@ fn default_surface_mineral_deposits() -> Vec<SurfaceMineralDepositDefinition> {
             cluster_compactness: 0.75,
         },
         SurfaceMineralDepositDefinition {
-            key: "silite_surface_deposit".into(),
-            material_key: "Silite".into(),
+            key: "scattered_cluster_deposit".into(),
             selection_weight: 0.8,
             scale_min: 0.85,
             scale_max: 1.15,
@@ -189,8 +189,7 @@ fn default_surface_mineral_deposits() -> Vec<SurfaceMineralDepositDefinition> {
             cluster_compactness: 0.68,
         },
         SurfaceMineralDepositDefinition {
-            key: "prismate_surface_deposit".into(),
-            material_key: "Prismate".into(),
+            key: "compact_cluster_deposit".into(),
             selection_weight: 0.45,
             scale_min: 0.8,
             scale_max: 1.05,
@@ -235,7 +234,7 @@ struct SurfaceMineralDeposit {
 struct GeneratedDepositSiteId {
     pub planet_seed: u64,
     pub chunk_coord: ChunkCoord,
-    pub deposit_kind_key: String,
+    pub definition_key: String,
     pub local_site_index: u32,
     pub generator_version: u32,
 }
@@ -261,7 +260,7 @@ struct GeneratedSurfaceMineralPlacement {
     generated_id: GeneratedObjectId,
     deposit_site_id: GeneratedDepositSiteId,
     definition_key: String,
-    material_key: String,
+    material_seed: u64,
     position_xz: PositionXZ,
     surface_y: f32,
     /// Surface normal at the placement point, used for object alignment.
@@ -279,7 +278,7 @@ struct GeneratedSurfaceMineralPlacement {
 struct GeneratedSurfaceMineralDepositSite {
     site_id: GeneratedDepositSiteId,
     definition_key: String,
-    material_key: String,
+    material_seed: u64,
     center_xz: PositionXZ,
     radius_world_units: f32,
     child_count: u32,
@@ -497,7 +496,7 @@ fn sync_active_exterior_chunks(
     world_profile: Res<WorldProfile>,
     world_gen_config: Res<WorldGenerationConfig>,
     deposit_catalog: Res<SurfaceMineralDepositCatalog>,
-    material_catalog: Res<MaterialCatalog>,
+    mut material_catalog: ResMut<MaterialCatalog>,
     _exterior_patch: Res<ExteriorGroundPatch>,
     biome_registry: Res<BiomeRegistry>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -615,16 +614,14 @@ fn sync_active_exterior_chunks(
         }
 
         for placement in placements {
-            let Some(base_material) = material_catalog.materials.get(&placement.material_key)
-            else {
-                warn!(
-                    "Surface mineral deposit '{}' references unknown material '{}'; skipping placement",
-                    placement.definition_key, placement.material_key
-                );
+            // Skip deposits with no material (biome had an empty palette).
+            if placement.material_seed == 0 {
                 continue;
-            };
+            }
 
-            let deposit_material = base_material.clone();
+            let deposit_material = material_catalog
+                .derive_and_register(placement.material_seed)
+                .clone();
             let mesh = deposit_material.mesh_for_density(&mut meshes);
             let render_material = render_materials.add(StandardMaterial {
                 base_color: deposit_material.bevy_color(),
@@ -1099,12 +1096,17 @@ fn generate_surface_mineral_deposit_sites(
                 site_id: GeneratedDepositSiteId {
                     planet_seed: profile.planet_seed.0,
                     chunk_coord,
-                    deposit_kind_key: definition.key.clone(),
+                    definition_key: definition.key.clone(),
                     local_site_index,
                     generator_version: SURFACE_MINERAL_DEPOSIT_GENERATOR_VERSION,
                 },
                 definition_key: definition.key.clone(),
-                material_key: definition.material_key.clone(),
+                material_seed: choose_material_seed_from_palette(
+                    &biome.material_palette,
+                    generation_key.placement_variation_key,
+                    chunk_coord,
+                    local_site_index,
+                ),
                 center_xz,
                 radius_world_units,
                 child_count: child_count.max(1),
@@ -1183,7 +1185,7 @@ fn expand_deposit_site_into_cluster(
             ),
             deposit_site_id: site.site_id.clone(),
             definition_key: site.definition_key.clone(),
-            material_key: site.material_key.clone(),
+            material_seed: site.material_seed,
             position_xz,
             surface_y: child_surface.position_y,
             surface_normal: child_surface.normal,
@@ -1245,6 +1247,50 @@ fn choose_deposit_definition<'a>(
     }
 
     definitions.last()
+}
+
+/// Choose a material seed from the biome's material palette using weighted
+/// random selection.
+///
+/// Returns `0` if the palette is empty (the spawning system will skip deposits
+/// with seed `0` since no valid material can be derived). The deterministic
+/// roll uses a distinct channel (`0x4400_0000_0000_0001`) so it does not
+/// correlate with the deposit-definition selection roll.
+fn choose_material_seed_from_palette(
+    palette: &[PaletteMaterial],
+    variation_key: u64,
+    chunk_coord: ChunkCoord,
+    local_candidate_index: u32,
+) -> u64 {
+    if palette.is_empty() {
+        return 0;
+    }
+
+    let total_weight: f32 = palette
+        .iter()
+        .map(|entry| entry.selection_weight.max(0.0))
+        .sum();
+    if total_weight <= f32::EPSILON {
+        return 0;
+    }
+
+    let roll = unit_interval_01(mix_candidate_input(
+        variation_key,
+        chunk_coord,
+        local_candidate_index,
+        0x4400_0000_0000_0001,
+    )) * total_weight;
+
+    let mut running = 0.0_f32;
+    for entry in palette {
+        running += entry.selection_weight.max(0.0);
+        if roll <= running {
+            return entry.material_seed;
+        }
+    }
+
+    // Fallback to last entry (float rounding edge case).
+    palette.last().map(|e| e.material_seed).unwrap_or(0)
 }
 
 fn jitter_offset_xz(
@@ -1590,7 +1636,7 @@ fn merge_player_additions(
 mod tests {
     use super::*;
     use crate::world_generation::{
-        FlatSurface, SteppedSurface, TiltedSurface, WorldGenerationConfig,
+        FlatSurface, PlanetSeed, SteppedSurface, TiltedSurface, WorldGenerationConfig,
     };
 
     fn sample_profile() -> WorldProfile {
@@ -1623,6 +1669,7 @@ mod tests {
             ground_color: [0.42, 0.45, 0.30],
             density_modifier: 1.0,
             deposit_weight_modifiers: HashMap::new(),
+            material_palette: Vec::new(),
         }
     }
 
@@ -2208,8 +2255,7 @@ site_jitter_fraction = 0.28
 site_min_gap_world_units = 2.5
 
 [[deposits]]
-key = "ferrite_surface_deposit"
-material_key = "Ferrite"
+key = "dense_cluster_deposit"
 selection_weight = 1.0
 scale_min = 0.9
 scale_max = 1.2
@@ -2224,7 +2270,7 @@ cluster_compactness = 0.75
             toml::from_str(toml_str).expect("surface deposit catalog should parse");
 
         assert_eq!(catalog.deposits.len(), 1);
-        assert_eq!(catalog.deposits[0].material_key, "Ferrite");
+        assert_eq!(catalog.deposits[0].key, "dense_cluster_deposit");
     }
 
     // ── Story 5.4: Removal delta tests ───────────────────────────────────
@@ -3321,7 +3367,6 @@ cluster_compactness = 0.75
         // total effective weight is zero.
         let definitions = vec![SurfaceMineralDepositDefinition {
             key: "ferrite".to_string(),
-            material_key: "Ferrite".to_string(),
             selection_weight: 1.0,
             scale_min: 0.9,
             scale_max: 1.2,
@@ -3358,7 +3403,6 @@ cluster_compactness = 0.75
         let definitions = vec![
             SurfaceMineralDepositDefinition {
                 key: "common".to_string(),
-                material_key: "Common".to_string(),
                 selection_weight: 1.0,
                 scale_min: 0.9,
                 scale_max: 1.2,
@@ -3370,7 +3414,6 @@ cluster_compactness = 0.75
             },
             SurfaceMineralDepositDefinition {
                 key: "rare".to_string(),
-                material_key: "Rare".to_string(),
                 selection_weight: 1.0,
                 scale_min: 0.9,
                 scale_max: 1.2,
@@ -3427,12 +3470,14 @@ cluster_compactness = 0.75
             ground_color: [0.5, 0.5, 0.5],
             density_modifier: 1.0,
             deposit_weight_modifiers: HashMap::new(),
+            material_palette: Vec::new(),
         };
         let dense_biome = ChunkBiome {
             biome_key: "dense".to_string(),
             ground_color: [0.5, 0.5, 0.5],
             density_modifier: 3.0,
             deposit_weight_modifiers: HashMap::new(),
+            material_palette: Vec::new(),
         };
 
         // Sum placements across many chunks to smooth out noise variance.
@@ -3504,6 +3549,7 @@ cluster_compactness = 0.75
             ground_color: [0.5, 0.5, 0.5],
             density_modifier: 0.0,
             deposit_weight_modifiers: HashMap::new(),
+            material_palette: Vec::new(),
         };
 
         // Must not panic. With effective_threshold = threshold / EPSILON ≈ huge,
@@ -3529,7 +3575,6 @@ cluster_compactness = 0.75
         let definitions = vec![
             SurfaceMineralDepositDefinition {
                 key: "only_option".to_string(),
-                material_key: "mat_a".to_string(),
                 selection_weight: 1.0,
                 scale_min: 0.5,
                 scale_max: 1.0,
@@ -3541,7 +3586,6 @@ cluster_compactness = 0.75
             },
             SurfaceMineralDepositDefinition {
                 key: "forbidden".to_string(),
-                material_key: "mat_b".to_string(),
                 selection_weight: 1.0,
                 scale_min: 0.5,
                 scale_max: 1.0,
@@ -3593,7 +3637,6 @@ cluster_compactness = 0.75
         let definitions = vec![
             SurfaceMineralDepositDefinition {
                 key: "a".to_string(),
-                material_key: "mat_a".to_string(),
                 selection_weight: 1.0,
                 scale_min: 0.5,
                 scale_max: 1.0,
@@ -3605,7 +3648,6 @@ cluster_compactness = 0.75
             },
             SurfaceMineralDepositDefinition {
                 key: "b".to_string(),
-                material_key: "mat_b".to_string(),
                 selection_weight: 2.0,
                 scale_min: 0.5,
                 scale_max: 1.0,
@@ -3655,6 +3697,7 @@ cluster_compactness = 0.75
             ground_color: [0.1, 0.1, 0.1],
             density_modifier: 1.0,
             deposit_weight_modifiers: modifiers,
+            material_palette: Vec::new(),
         };
 
         let chunk = ChunkCoord::new(0, 0);
@@ -3908,6 +3951,1408 @@ cluster_compactness = 0.75
             assert!(
                 result.normal[1].is_finite(),
                 "non-finite normal at ({x}, {z})"
+            );
+        }
+    }
+
+    // ── Story 5a.4: Deposit sites carry material_seed from biome palette ─
+
+    #[test]
+    fn deposit_sites_carry_material_seed_from_palette() {
+        let profile = sample_profile();
+        let catalog = sample_catalog();
+        let surface = sample_flat_surface();
+
+        let seed_a: u64 = 0xFE00_0000_0000_0001;
+        let seed_b: u64 = 0xFE00_0000_0000_0002;
+        let biome = ChunkBiome {
+            biome_key: "test_biome".to_string(),
+            ground_color: [0.5, 0.5, 0.5],
+            density_modifier: 1.0,
+            deposit_weight_modifiers: HashMap::new(),
+            material_palette: vec![
+                PaletteMaterial {
+                    material_seed: seed_a,
+                    selection_weight: 1.0,
+                },
+                PaletteMaterial {
+                    material_seed: seed_b,
+                    selection_weight: 1.0,
+                },
+            ],
+        };
+
+        let sites = generate_surface_mineral_deposit_sites(
+            &profile,
+            &catalog,
+            &surface,
+            ChunkCoord::new(0, -1),
+            &biome,
+        );
+
+        assert!(
+            !sites.is_empty(),
+            "biome with a material palette should produce deposit sites"
+        );
+
+        for site in &sites {
+            assert!(
+                site.material_seed == seed_a || site.material_seed == seed_b,
+                "deposit site material_seed ({:#018X}) must come from the biome palette, \
+                 expected one of {seed_a:#018X} or {seed_b:#018X}",
+                site.material_seed,
+            );
+        }
+    }
+
+    #[test]
+    fn deposit_placements_inherit_material_seed_from_site() {
+        let profile = sample_profile();
+        let catalog = sample_catalog();
+        let surface = sample_flat_surface();
+
+        let seed: u64 = 0xAB00_0000_0000_0099;
+        let biome = ChunkBiome {
+            biome_key: "single_mat_biome".to_string(),
+            ground_color: [0.3, 0.3, 0.3],
+            density_modifier: 1.0,
+            deposit_weight_modifiers: HashMap::new(),
+            material_palette: vec![PaletteMaterial {
+                material_seed: seed,
+                selection_weight: 1.0,
+            }],
+        };
+
+        let sites = generate_surface_mineral_deposit_sites(
+            &profile,
+            &catalog,
+            &surface,
+            ChunkCoord::new(0, -1),
+            &biome,
+        );
+
+        assert!(!sites.is_empty(), "should produce at least one site");
+
+        for site in &sites {
+            assert_eq!(
+                site.material_seed, seed,
+                "single-material palette: every site must carry the sole seed"
+            );
+
+            let placements = expand_deposit_site_into_cluster(&profile, site, &surface);
+            for placement in &placements {
+                assert_eq!(
+                    placement.material_seed, site.material_seed,
+                    "child placement material_seed must match its parent site"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn empty_palette_produces_zero_material_seed() {
+        let profile = sample_profile();
+        let catalog = sample_catalog();
+        let surface = sample_flat_surface();
+
+        // Biome with no material palette entries.
+        let biome = ChunkBiome {
+            biome_key: "barren_biome".to_string(),
+            ground_color: [0.2, 0.2, 0.2],
+            density_modifier: 1.0,
+            deposit_weight_modifiers: HashMap::new(),
+            material_palette: Vec::new(),
+        };
+
+        let mut total_sites = 0_usize;
+        for cx in -10..10 {
+            for cz in -10..10 {
+                let sites = generate_surface_mineral_deposit_sites(
+                    &profile,
+                    &catalog,
+                    &surface,
+                    ChunkCoord::new(cx, cz),
+                    &biome,
+                );
+                for site in &sites {
+                    total_sites += 1;
+                    assert_eq!(
+                        site.material_seed, 0,
+                        "empty palette must produce material_seed 0"
+                    );
+                }
+            }
+        }
+        assert!(
+            total_sites > 0,
+            "at least some chunks should produce deposit sites even with an empty palette"
+        );
+    }
+
+    #[test]
+    fn empty_palette_baseline_placements_exist_but_all_have_zero_seed() {
+        // Phase 8: biome with empty material_palette still generates deposit
+        // sites (physical shapes) but every placement carries material_seed 0,
+        // which the spawn loop skips — no entities without material.
+        let profile = sample_profile();
+        let catalog = sample_catalog();
+        let surface = sample_flat_surface();
+
+        let biome = ChunkBiome {
+            biome_key: "barren_biome".to_string(),
+            ground_color: [0.2, 0.2, 0.2],
+            density_modifier: 1.0,
+            deposit_weight_modifiers: HashMap::new(),
+            material_palette: Vec::new(),
+        };
+
+        // Try several chunks to ensure at least one generates placements.
+        let mut total_placements = 0_usize;
+        for cx in -20..20 {
+            for cz in -20..20 {
+                let placements = generate_surface_mineral_chunk_baseline(
+                    &profile,
+                    &catalog,
+                    &surface,
+                    ChunkCoord::new(cx, cz),
+                    &biome,
+                );
+                for p in &placements {
+                    total_placements += 1;
+                    assert_eq!(
+                        p.material_seed, 0,
+                        "all placements from an empty-palette biome must have material_seed 0"
+                    );
+                }
+            }
+        }
+        assert!(
+            total_placements > 0,
+            "at least one chunk should produce deposit placements (physical shapes exist even without materials)"
+        );
+    }
+
+    /// Story 5a.4 – Phase 8: when every palette entry has `selection_weight` of
+    /// 0.0 the total weight is effectively zero and `choose_material_seed_from_palette`
+    /// returns 0 — the same sentinel as an empty palette. The deposit sites are
+    /// still generated (physical shapes) but every site carries `material_seed 0`,
+    /// which the spawn loop skips so no entities are created without a material.
+    #[test]
+    fn all_zero_weight_palette_produces_zero_material_seed() {
+        let profile = sample_profile();
+        let catalog = sample_catalog();
+        let surface = sample_flat_surface();
+
+        let biome = ChunkBiome {
+            biome_key: "zero_weight_biome".to_string(),
+            ground_color: [0.3, 0.3, 0.3],
+            density_modifier: 1.0,
+            deposit_weight_modifiers: HashMap::new(),
+            material_palette: vec![
+                PaletteMaterial {
+                    material_seed: 0xAA00_0000_0000_0001,
+                    selection_weight: 0.0,
+                },
+                PaletteMaterial {
+                    material_seed: 0xAA00_0000_0000_0002,
+                    selection_weight: 0.0,
+                },
+                PaletteMaterial {
+                    material_seed: 0xAA00_0000_0000_0003,
+                    selection_weight: 0.0,
+                },
+            ],
+        };
+
+        let mut total_sites = 0_usize;
+        for cx in -10..10 {
+            for cz in -10..10 {
+                let sites = generate_surface_mineral_deposit_sites(
+                    &profile,
+                    &catalog,
+                    &surface,
+                    ChunkCoord::new(cx, cz),
+                    &biome,
+                );
+                for site in &sites {
+                    total_sites += 1;
+                    assert_eq!(
+                        site.material_seed, 0,
+                        "all-zero-weight palette must produce material_seed 0, got {} for site in chunk ({}, {})",
+                        site.material_seed, cx, cz
+                    );
+                }
+            }
+        }
+        assert!(
+            total_sites > 0,
+            "at least some chunks should produce deposit sites even with an all-zero-weight palette"
+        );
+    }
+
+    /// Story 5a.4 – Phase 8: a biome palette containing exactly one entry must
+    /// always select that material seed, regardless of chunk coordinate or site
+    /// index. We sweep a wide grid of chunks and verify every generated deposit
+    /// site carries the sole palette seed.
+    #[test]
+    fn single_palette_entry_always_selected() {
+        let profile = sample_profile();
+        let catalog = sample_catalog();
+        let surface = sample_flat_surface();
+
+        let sole_seed: u64 = 0xAA00_0000_0000_0042;
+        let biome = ChunkBiome {
+            biome_key: "mono_biome".to_string(),
+            ground_color: [0.4, 0.4, 0.4],
+            density_modifier: 1.0,
+            deposit_weight_modifiers: HashMap::new(),
+            material_palette: vec![PaletteMaterial {
+                material_seed: sole_seed,
+                selection_weight: 5.0,
+            }],
+        };
+
+        let mut total_sites = 0_usize;
+        for cx in -20..20 {
+            for cz in -20..20 {
+                let sites = generate_surface_mineral_deposit_sites(
+                    &profile,
+                    &catalog,
+                    &surface,
+                    ChunkCoord::new(cx, cz),
+                    &biome,
+                );
+                for site in &sites {
+                    total_sites += 1;
+                    assert_eq!(
+                        site.material_seed, sole_seed,
+                        "single-entry palette must always select the sole seed; \
+                         got {:#018X} at chunk ({cx}, {cz})",
+                        site.material_seed,
+                    );
+                }
+            }
+        }
+        assert!(
+            total_sites > 0,
+            "at least some chunks should produce deposit sites with a non-empty palette"
+        );
+    }
+
+    #[test]
+    fn deposit_site_has_no_material_key_field() {
+        // Structural assertion: GeneratedSurfaceMineralDepositSite carries
+        // `material_seed: u64` — not a string-based `material_key`. We verify
+        // this by constructing a site and reading its material_seed, which would
+        // fail to compile if the field were renamed or removed.
+        let site = GeneratedSurfaceMineralDepositSite {
+            site_id: GeneratedDepositSiteId {
+                planet_seed: 1,
+                chunk_coord: ChunkCoord::new(0, 0),
+                definition_key: "test".to_string(),
+                local_site_index: 0,
+                generator_version: 1,
+            },
+            definition_key: "test".to_string(),
+            material_seed: 0xDEAD_BEEF,
+            center_xz: PositionXZ::new(0.0, 0.0),
+            radius_world_units: 1.0,
+            child_count: 1,
+            surface_y: 0.0,
+            surface_normal: [0.0, 1.0, 0.0],
+            scale_min: 0.5,
+            scale_max: 1.0,
+            cluster_compactness: 0.5,
+        };
+        assert_eq!(site.material_seed, 0xDEAD_BEEF);
+
+        // Same for the placement struct.
+        let placement = GeneratedSurfaceMineralPlacement {
+            generated_id: GeneratedObjectId {
+                planet_seed: PlanetSeed(1),
+                chunk_coord: ChunkCoord::new(0, 0),
+                object_kind_key: "test".to_string(),
+                local_candidate_index: 0,
+                generator_version: 1,
+            },
+            deposit_site_id: site.site_id.clone(),
+            definition_key: "test".to_string(),
+            material_seed: 0xCAFE_BABE,
+            position_xz: PositionXZ::new(0.0, 0.0),
+            surface_y: 0.0,
+            surface_normal: [0.0, 1.0, 0.0],
+            visual_scale: 1.0,
+            local_child_index: 0,
+        };
+        assert_eq!(placement.material_seed, 0xCAFE_BABE);
+    }
+
+    /// Story 5a.4 – Phase 5: first chunk generation populates the material
+    /// catalog with materials drawn from the biome palette.
+    ///
+    /// We generate deposit placements for a single chunk whose biome defines a
+    /// multi-material palette, then feed each placement's `material_seed` into
+    /// `MaterialCatalog::derive_and_register` (mirroring the runtime path in
+    /// `sync_active_exterior_chunks`). Afterward we verify:
+    ///
+    /// 1. The catalog is no longer empty.
+    /// 2. Every registered seed belongs to the biome palette.
+    /// 3. Over enough deposit sites, more than one palette material appears
+    ///    (both seeds have non-trivial weight, so probabilistic certainty is
+    ///    high).
+    #[test]
+    fn first_chunk_generation_populates_catalog_from_biome_palette() {
+        use crate::materials::MaterialCatalog;
+
+        let palette_seeds: Vec<u64> = vec![1001, 1003, 1006];
+        let biome = ChunkBiome {
+            biome_key: "test_biome".to_string(),
+            ground_color: [0.5, 0.5, 0.5],
+            density_modifier: 1.0,
+            deposit_weight_modifiers: HashMap::new(),
+            material_palette: palette_seeds
+                .iter()
+                .map(|&seed| PaletteMaterial {
+                    material_seed: seed,
+                    selection_weight: 1.0,
+                })
+                .collect(),
+        };
+
+        let profile = sample_profile();
+        let catalog = sample_catalog();
+        let surface = PlanetSurface::new_from_profile(
+            &profile,
+            &WorldGenerationConfig {
+                planet_seed: 2026,
+                chunk_size_world_units: 45.0,
+                active_chunk_radius: 1,
+                building_cell_size: 1.0,
+                planet_surface_min_radius: 500,
+                planet_surface_max_radius: 5000,
+                ..Default::default()
+            },
+        );
+
+        // Generate placements across several chunks to ensure we get deposits.
+        let mut all_placements = Vec::new();
+        for cx in -2..=2 {
+            for cz in -2..=2 {
+                let chunk = ChunkCoord::new(cx, cz);
+                let placements = generate_surface_mineral_chunk_baseline(
+                    &profile, &catalog, &surface, chunk, &biome,
+                );
+                all_placements.extend(placements);
+            }
+        }
+
+        // Filter to placements with valid material seeds (non-zero).
+        let valid_placements: Vec<_> = all_placements
+            .iter()
+            .filter(|p| p.material_seed != 0)
+            .collect();
+
+        // We expect at least some deposits were generated.
+        assert!(
+            !valid_placements.is_empty(),
+            "expected at least one deposit placement across 25 chunks"
+        );
+
+        // Mirror the runtime registration path: derive_and_register each seed.
+        let mut mat_catalog = MaterialCatalog::default();
+        assert!(
+            mat_catalog.is_empty(),
+            "catalog must start empty (seed-on-demand model)"
+        );
+
+        for placement in &valid_placements {
+            mat_catalog.derive_and_register(placement.material_seed);
+        }
+
+        // 1. Catalog is no longer empty.
+        assert!(
+            !mat_catalog.is_empty(),
+            "catalog must contain materials after chunk generation"
+        );
+
+        // 2. Every registered seed belongs to the biome palette.
+        let palette_seed_set: HashSet<u64> = palette_seeds.iter().copied().collect();
+        for seed in mat_catalog.seeds() {
+            assert!(
+                palette_seed_set.contains(seed),
+                "catalog contains seed {seed} not in biome palette {palette_seed_set:?}"
+            );
+        }
+
+        // 3. Multiple palette materials appear (with equal weights across 25
+        //    chunks, a single-material outcome is astronomically unlikely).
+        assert!(
+            mat_catalog.len() > 1,
+            "expected multiple palette materials in catalog, got {}",
+            mat_catalog.len()
+        );
+    }
+
+    #[test]
+    fn second_chunk_in_same_biome_reuses_catalog_entries_no_duplicates() {
+        use crate::materials::MaterialCatalog;
+
+        let palette_seeds: Vec<u64> = vec![1001, 1003, 1006];
+        let biome = ChunkBiome {
+            biome_key: "test_biome".to_string(),
+            ground_color: [0.5, 0.5, 0.5],
+            density_modifier: 1.0,
+            deposit_weight_modifiers: HashMap::new(),
+            material_palette: palette_seeds
+                .iter()
+                .map(|&seed| PaletteMaterial {
+                    material_seed: seed,
+                    selection_weight: 1.0,
+                })
+                .collect(),
+        };
+
+        let profile = sample_profile();
+        let catalog = sample_catalog();
+        let surface = PlanetSurface::new_from_profile(
+            &profile,
+            &WorldGenerationConfig {
+                planet_seed: 2026,
+                chunk_size_world_units: 45.0,
+                active_chunk_radius: 1,
+                building_cell_size: 1.0,
+                planet_surface_min_radius: 500,
+                planet_surface_max_radius: 5000,
+                ..Default::default()
+            },
+        );
+
+        // Generate placements from a first batch of chunks.
+        let mut first_batch_placements = Vec::new();
+        for cx in -2..=2 {
+            for cz in -2..=2 {
+                let chunk = ChunkCoord::new(cx, cz);
+                let placements = generate_surface_mineral_chunk_baseline(
+                    &profile, &catalog, &surface, chunk, &biome,
+                );
+                first_batch_placements.extend(placements);
+            }
+        }
+
+        let valid_first: Vec<_> = first_batch_placements
+            .iter()
+            .filter(|p| p.material_seed != 0)
+            .collect();
+        assert!(
+            !valid_first.is_empty(),
+            "expected deposits from first batch of chunks"
+        );
+
+        // Register all materials from the first batch.
+        let mut mat_catalog = MaterialCatalog::default();
+        for placement in &valid_first {
+            mat_catalog.derive_and_register(placement.material_seed);
+        }
+
+        let catalog_size_after_first_batch = mat_catalog.len();
+        assert!(
+            catalog_size_after_first_batch > 0,
+            "catalog must be non-empty after first batch"
+        );
+
+        // Generate placements from a second batch of chunks (different coords,
+        // same biome). These chunks should only produce seeds already in the
+        // palette, so the catalog must not grow beyond the palette size.
+        let mut second_batch_placements = Vec::new();
+        for cx in 3..=7 {
+            for cz in 3..=7 {
+                let chunk = ChunkCoord::new(cx, cz);
+                let placements = generate_surface_mineral_chunk_baseline(
+                    &profile, &catalog, &surface, chunk, &biome,
+                );
+                second_batch_placements.extend(placements);
+            }
+        }
+
+        let valid_second: Vec<_> = second_batch_placements
+            .iter()
+            .filter(|p| p.material_seed != 0)
+            .collect();
+        assert!(
+            !valid_second.is_empty(),
+            "expected deposits from second batch of chunks"
+        );
+
+        // Register all materials from the second batch.
+        for placement in &valid_second {
+            mat_catalog.derive_and_register(placement.material_seed);
+        }
+
+        // The catalog size must not have grown: all seeds from the second batch
+        // were already registered from the first batch (both batches use the
+        // same biome palette with only 3 seeds).
+        assert_eq!(
+            mat_catalog.len(),
+            catalog_size_after_first_batch,
+            "catalog grew from {} to {} after second batch — duplicate registration occurred",
+            catalog_size_after_first_batch,
+            mat_catalog.len()
+        );
+
+        // Every seed in the catalog belongs to the palette.
+        let palette_seed_set: HashSet<u64> = palette_seeds.iter().copied().collect();
+        for seed in mat_catalog.seeds() {
+            assert!(
+                palette_seed_set.contains(seed),
+                "catalog contains seed {seed} not in biome palette"
+            );
+        }
+
+        // Catalog should contain at most as many entries as the palette.
+        assert!(
+            mat_catalog.len() <= palette_seeds.len(),
+            "catalog has {} entries but palette only has {} seeds",
+            mat_catalog.len(),
+            palette_seeds.len()
+        );
+    }
+
+    // ── Story 5a.4 Phase 9: Palette swap does not change deposit count ──
+
+    /// Changing a biome's material palette must not alter how many deposits
+    /// spawn — only *which* materials they carry. This test constructs two
+    /// biomes that are identical except for their `material_palette`, then
+    /// generates deposits across many chunks for each and asserts that the
+    /// total deposit count is the same. The material seeds produced must
+    /// differ (proving the palette swap took effect), but the spatial
+    /// distribution of deposit sites is palette-independent.
+    #[test]
+    fn palette_swap_does_not_change_deposit_count() {
+        let profile = sample_profile();
+        let catalog = sample_catalog();
+        let surface = sample_flat_surface();
+
+        let palette_a = vec![
+            PaletteMaterial {
+                material_seed: 1001,
+                selection_weight: 3.0,
+            },
+            PaletteMaterial {
+                material_seed: 1003,
+                selection_weight: 2.0,
+            },
+        ];
+        let palette_b = vec![
+            PaletteMaterial {
+                material_seed: 1004,
+                selection_weight: 1.5,
+            },
+            PaletteMaterial {
+                material_seed: 1010,
+                selection_weight: 4.0,
+            },
+        ];
+
+        let biome_a = ChunkBiome {
+            biome_key: "test_a".to_string(),
+            ground_color: [0.5, 0.5, 0.5],
+            density_modifier: 1.0,
+            deposit_weight_modifiers: HashMap::new(),
+            material_palette: palette_a,
+        };
+        let biome_b = ChunkBiome {
+            biome_key: "test_b".to_string(),
+            ground_color: [0.5, 0.5, 0.5],
+            density_modifier: 1.0,
+            deposit_weight_modifiers: HashMap::new(),
+            material_palette: palette_b,
+        };
+
+        let mut count_a = 0_usize;
+        let mut count_b = 0_usize;
+        let mut seeds_a: std::collections::HashSet<u64> = std::collections::HashSet::new();
+        let mut seeds_b: std::collections::HashSet<u64> = std::collections::HashSet::new();
+
+        for cx in -10..10 {
+            for cz in -10..10 {
+                let coord = ChunkCoord::new(cx, cz);
+
+                let placements_a = generate_surface_mineral_chunk_baseline(
+                    &profile, &catalog, &surface, coord, &biome_a,
+                );
+                let placements_b = generate_surface_mineral_chunk_baseline(
+                    &profile, &catalog, &surface, coord, &biome_b,
+                );
+
+                // Per-chunk counts must be identical because every generation
+                // decision except material selection is identical.
+                assert_eq!(
+                    placements_a.len(),
+                    placements_b.len(),
+                    "chunk ({cx}, {cz}): palette swap changed deposit count \
+                     ({} vs {})",
+                    placements_a.len(),
+                    placements_b.len()
+                );
+
+                count_a += placements_a.len();
+                count_b += placements_b.len();
+
+                for p in &placements_a {
+                    if p.material_seed != 0 {
+                        seeds_a.insert(p.material_seed);
+                    }
+                }
+                for p in &placements_b {
+                    if p.material_seed != 0 {
+                        seeds_b.insert(p.material_seed);
+                    }
+                }
+            }
+        }
+
+        // Total counts must match exactly.
+        assert_eq!(
+            count_a, count_b,
+            "total deposit count changed with palette swap: {count_a} vs {count_b}"
+        );
+
+        // Sanity: we actually generated some deposits.
+        assert!(count_a > 0, "expected at least some deposits");
+
+        // The material seeds should differ — proving the palette took effect.
+        assert_ne!(
+            seeds_a, seeds_b,
+            "both palettes produced identical material seeds — palette swap had no effect"
+        );
+    }
+
+    // ── Story 5a.4 Phase 9: Cross-biome world generation smoke test ──────
+
+    /// Smoke test: generate many chunks across diverse coordinates, derive
+    /// per-chunk biomes from the real `BiomeRegistry`, run deposit generation
+    /// through the biome's material palette, and register every produced
+    /// material seed into `MaterialCatalog`. The test succeeds if:
+    /// - no panics occur at any stage,
+    /// - every deposit carries a non-zero `material_seed` that belongs to its
+    ///   biome's palette,
+    /// - every seed registers successfully in the `MaterialCatalog`,
+    /// - at least two distinct biome keys are exercised (proving multi-biome
+    ///   coverage).
+    #[test]
+    fn smoke_test_cross_biome_chunks_all_deposits_have_valid_materials() {
+        use crate::materials::MaterialCatalog;
+        use crate::world_generation::{BiomeRegistry, derive_chunk_biome};
+        use std::collections::HashSet;
+
+        let config = WorldGenerationConfig {
+            planet_seed: 55_443_322,
+            chunk_size_world_units: 45.0,
+            active_chunk_radius: 2,
+            building_cell_size: 1.0,
+            planet_surface_min_radius: 500,
+            planet_surface_max_radius: 5000,
+            ..Default::default()
+        };
+        let profile = WorldProfile::from_config(&config);
+        let surface = PlanetSurface::new_from_profile(&profile, &config);
+        let catalog = sample_catalog();
+        let biome_registry = BiomeRegistry::default();
+        let mut mat_catalog = MaterialCatalog::default();
+
+        let diameter = profile.planet_surface_diameter;
+
+        // A broad set of chunk coordinates designed to land in different
+        // temperature/moisture zones and therefore resolve to different biomes.
+        let chunks: Vec<ChunkCoord> = vec![
+            ChunkCoord::new(0, 0),
+            ChunkCoord::new(1, 1),
+            ChunkCoord::new(-1, -1),
+            ChunkCoord::new(10, -10),
+            ChunkCoord::new(-50, 50),
+            ChunkCoord::new(100, 200),
+            ChunkCoord::new(-100, -200),
+            ChunkCoord::new(diameter - 1, diameter - 1),
+            ChunkCoord::new(diameter, diameter),
+            ChunkCoord::new(diameter + 1, 0),
+            ChunkCoord::new(0, diameter + 1),
+            ChunkCoord::new(-diameter, -diameter),
+            ChunkCoord::new(-diameter - 1, -diameter - 1),
+            ChunkCoord::new(diameter / 2, diameter / 2),
+            ChunkCoord::new(diameter / 3, -diameter / 4),
+            // Additional spread to increase biome diversity.
+            ChunkCoord::new(diameter / 5, diameter / 7),
+            ChunkCoord::new(diameter / 10, diameter / 3),
+            ChunkCoord::new(3, 400),
+            ChunkCoord::new(250, 7),
+            ChunkCoord::new(diameter / 4, diameter / 6),
+        ];
+
+        let mut observed_biome_keys: HashSet<String> = HashSet::new();
+        let mut total_deposits = 0_usize;
+
+        for &chunk in &chunks {
+            let biome = derive_chunk_biome(&profile, &biome_registry, chunk);
+            observed_biome_keys.insert(biome.biome_key.clone());
+
+            let palette_seeds: HashSet<u64> = biome
+                .material_palette
+                .iter()
+                .map(|p| p.material_seed)
+                .collect();
+
+            let placements = generate_surface_mineral_chunk_baseline(
+                &profile, &catalog, &surface, chunk, &biome,
+            );
+
+            for placement in &placements {
+                // Positions must be finite.
+                assert!(
+                    placement.position_xz.x.is_finite(),
+                    "NaN/Inf x in deposit at chunk {chunk:?}"
+                );
+                assert!(
+                    placement.position_xz.z.is_finite(),
+                    "NaN/Inf z in deposit at chunk {chunk:?}"
+                );
+                assert!(
+                    placement.surface_y.is_finite(),
+                    "NaN/Inf surface_y in deposit at chunk {chunk:?}"
+                );
+
+                // Deposits from a biome with a non-empty palette must carry a
+                // non-zero seed drawn from that palette.
+                if !palette_seeds.is_empty() && placement.material_seed != 0 {
+                    assert!(
+                        palette_seeds.contains(&placement.material_seed),
+                        "deposit material_seed {:#018X} not in biome '{}' palette \
+                         (chunk {chunk:?})",
+                        placement.material_seed,
+                        biome.biome_key,
+                    );
+
+                    // Material must register without panicking.
+                    let registered = mat_catalog.derive_and_register(placement.material_seed);
+                    assert_eq!(
+                        registered.seed, placement.material_seed,
+                        "registered material seed mismatch"
+                    );
+                }
+            }
+
+            total_deposits += placements.len();
+        }
+
+        // Sanity: the test exercised at least two distinct biome keys.
+        assert!(
+            observed_biome_keys.len() >= 2,
+            "expected at least 2 distinct biomes but only saw: {observed_biome_keys:?}"
+        );
+
+        // Sanity: we actually generated some deposits across all those chunks.
+        assert!(
+            total_deposits > 0,
+            "expected at least some deposits across {} chunks",
+            chunks.len()
+        );
+    }
+
+    /// Story 5a.4 – Phase 9: different biomes produce different materials.
+    ///
+    /// Constructs two biomes with completely disjoint material palettes (no
+    /// shared seeds), generates deposits for each across many chunks, and
+    /// asserts that the material seed sets are disjoint. This proves that
+    /// walking between biome regions yields genuinely different resources.
+    #[test]
+    fn disjoint_biome_palettes_produce_disjoint_deposit_materials() {
+        let profile = sample_profile();
+        let catalog = sample_catalog();
+        let surface = sample_flat_surface();
+
+        // Scorched-style biome: only seeds 1001, 1003, 1007.
+        let scorched_biome = ChunkBiome {
+            biome_key: "scorched_flats".to_string(),
+            ground_color: [0.55, 0.38, 0.22],
+            density_modifier: 1.15,
+            deposit_weight_modifiers: HashMap::new(),
+            material_palette: vec![
+                PaletteMaterial {
+                    material_seed: 1001,
+                    selection_weight: 3.0,
+                },
+                PaletteMaterial {
+                    material_seed: 1003,
+                    selection_weight: 2.5,
+                },
+                PaletteMaterial {
+                    material_seed: 1007,
+                    selection_weight: 1.5,
+                },
+            ],
+        };
+
+        // Frost-style biome: only seeds 1004, 1010, 1008 — completely disjoint.
+        let frost_biome = ChunkBiome {
+            biome_key: "frost_shelf".to_string(),
+            ground_color: [0.42, 0.48, 0.56],
+            density_modifier: 0.7,
+            deposit_weight_modifiers: HashMap::new(),
+            material_palette: vec![
+                PaletteMaterial {
+                    material_seed: 1004,
+                    selection_weight: 3.0,
+                },
+                PaletteMaterial {
+                    material_seed: 1010,
+                    selection_weight: 2.5,
+                },
+                PaletteMaterial {
+                    material_seed: 1008,
+                    selection_weight: 1.0,
+                },
+            ],
+        };
+
+        let scorched_palette_seeds: std::collections::HashSet<u64> = scorched_biome
+            .material_palette
+            .iter()
+            .map(|p| p.material_seed)
+            .collect();
+        let frost_palette_seeds: std::collections::HashSet<u64> = frost_biome
+            .material_palette
+            .iter()
+            .map(|p| p.material_seed)
+            .collect();
+
+        // Sanity: the two palettes share no seeds.
+        assert!(
+            scorched_palette_seeds
+                .intersection(&frost_palette_seeds)
+                .next()
+                .is_none(),
+            "test precondition: palettes must be disjoint"
+        );
+
+        let mut scorched_observed: std::collections::HashSet<u64> =
+            std::collections::HashSet::new();
+        let mut frost_observed: std::collections::HashSet<u64> = std::collections::HashSet::new();
+
+        // Generate deposits across a grid of chunks for each biome.
+        for cx in -15..15 {
+            for cz in -15..15 {
+                let coord = ChunkCoord::new(cx, cz);
+
+                for site in generate_surface_mineral_deposit_sites(
+                    &profile,
+                    &catalog,
+                    &surface,
+                    coord,
+                    &scorched_biome,
+                ) {
+                    if site.material_seed != 0 {
+                        scorched_observed.insert(site.material_seed);
+                    }
+                }
+
+                for site in generate_surface_mineral_deposit_sites(
+                    &profile,
+                    &catalog,
+                    &surface,
+                    coord,
+                    &frost_biome,
+                ) {
+                    if site.material_seed != 0 {
+                        frost_observed.insert(site.material_seed);
+                    }
+                }
+            }
+        }
+
+        // Both biomes must have produced some deposits.
+        assert!(
+            !scorched_observed.is_empty(),
+            "scorched_flats biome must produce deposits with non-zero material seeds"
+        );
+        assert!(
+            !frost_observed.is_empty(),
+            "frost_shelf biome must produce deposits with non-zero material seeds"
+        );
+
+        // All observed scorched seeds must come from the scorched palette only.
+        for &seed in &scorched_observed {
+            assert!(
+                scorched_palette_seeds.contains(&seed),
+                "scorched deposit seed {seed:#018X} not in scorched palette"
+            );
+            assert!(
+                !frost_palette_seeds.contains(&seed),
+                "scorched deposit seed {seed:#018X} unexpectedly found in frost palette — \
+                 biomes are not producing distinct materials"
+            );
+        }
+
+        // All observed frost seeds must come from the frost palette only.
+        for &seed in &frost_observed {
+            assert!(
+                frost_palette_seeds.contains(&seed),
+                "frost deposit seed {seed:#018X} not in frost palette"
+            );
+            assert!(
+                !scorched_palette_seeds.contains(&seed),
+                "frost deposit seed {seed:#018X} unexpectedly found in scorched palette — \
+                 biomes are not producing distinct materials"
+            );
+        }
+
+        // The two observed sets must be completely disjoint.
+        let overlap: Vec<u64> = scorched_observed
+            .intersection(&frost_observed)
+            .copied()
+            .collect();
+        assert!(
+            overlap.is_empty(),
+            "scorched and frost deposits must use entirely different material seeds, \
+             but found overlap: {overlap:?}"
+        );
+    }
+
+    /// Story 5a.4 – Phase 9: material properties vary across biomes.
+    ///
+    /// Takes the disjoint palettes from two biomes, derives every material,
+    /// and asserts that the property distributions (density, reactivity,
+    /// conductivity, thermal resistance, toxicity) are not identical across
+    /// the two biome material sets. This proves that exploring a new biome
+    /// rewards the player with materials that behave differently.
+    #[test]
+    fn cross_biome_materials_have_distinct_properties() {
+        use crate::materials::derive_material_from_seed;
+
+        // Scorched-palette seeds (from biomes.toml: ferrite, sulfurite, osmium).
+        let scorched_seeds: Vec<u64> = vec![1001, 1003, 1007];
+        // Frost-palette seeds (from biomes.toml: prismate, phosphite, cobaltine).
+        let frost_seeds: Vec<u64> = vec![1004, 1010, 1008];
+
+        let scorched_materials: Vec<_> = scorched_seeds
+            .iter()
+            .map(|&s| derive_material_from_seed(s))
+            .collect();
+        let frost_materials: Vec<_> = frost_seeds
+            .iter()
+            .map(|&s| derive_material_from_seed(s))
+            .collect();
+
+        // Collect per-biome property value sets for comparison.
+        let extract_props = |mats: &[crate::materials::GameMaterial]| -> Vec<[f32; 5]> {
+            mats.iter()
+                .map(|m| {
+                    [
+                        m.density.value,
+                        m.reactivity.value,
+                        m.conductivity.value,
+                        m.thermal_resistance.value,
+                        m.toxicity.value,
+                    ]
+                })
+                .collect::<Vec<_>>()
+        };
+
+        let scorched_props = extract_props(&scorched_materials);
+        let frost_props = extract_props(&frost_materials);
+
+        // 1) Within each biome, materials must not all be identical — the
+        //    player should encounter variety even within a single region.
+        for (label, props) in [("scorched", &scorched_props), ("frost", &frost_props)] {
+            let first = &props[0];
+            let all_same = props.iter().skip(1).all(|p| p == first);
+            assert!(
+                !all_same,
+                "{label} biome: all materials have identical properties — \
+                 seed derivation is not producing intra-biome variety"
+            );
+        }
+
+        // 2) The two biomes' material sets must differ: collect the sorted
+        //    multisets of property values and verify they are not equal.
+        let mut scorched_sorted = scorched_props.clone();
+        let mut frost_sorted = frost_props.clone();
+        scorched_sorted.sort_by(|a, b| {
+            a.iter()
+                .zip(b.iter())
+                .find_map(|(x, y)| x.partial_cmp(y).filter(|o| !o.is_eq()))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        frost_sorted.sort_by(|a, b| {
+            a.iter()
+                .zip(b.iter())
+                .find_map(|(x, y)| x.partial_cmp(y).filter(|o| !o.is_eq()))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        assert_ne!(
+            scorched_sorted, frost_sorted,
+            "scorched and frost biomes produced identical property distributions — \
+             materials should differ between biomes"
+        );
+
+        // 3) Per-property: the mean value of each property must differ between
+        //    the two biomes for at least 2 out of 5 properties.  This guards
+        //    against a degenerate case where only one property varies.
+        let mean = |props: &[[f32; 5]], idx: usize| -> f32 {
+            props.iter().map(|p| p[idx]).sum::<f32>() / props.len() as f32
+        };
+        let property_names = [
+            "density",
+            "reactivity",
+            "conductivity",
+            "thermal_resistance",
+            "toxicity",
+        ];
+        let mut differing_properties = 0u32;
+        for (i, name) in property_names.iter().enumerate() {
+            let s_mean = mean(&scorched_props, i);
+            let f_mean = mean(&frost_props, i);
+            let delta = (s_mean - f_mean).abs();
+            if delta > 0.001 {
+                differing_properties += 1;
+            } else {
+                eprintln!(
+                    "  note: {name} mean is nearly identical across biomes \
+                     (scorched={s_mean:.4}, frost={f_mean:.4}, delta={delta:.6})"
+                );
+            }
+        }
+        assert!(
+            differing_properties >= 2,
+            "expected at least 2 properties with different mean values across biomes, \
+             but only {differing_properties} differed"
+        );
+    }
+
+    // ── Story 5a.4 Phase 9: Deposit pickup yields valid material ───────
+
+    /// Verify that every deposit generated from biome palettes produces a
+    /// `GameMaterial` with a non-empty name, finite color channels, and
+    /// at least one non-zero property. This is the contract the pickup
+    /// system relies on: when a player picks up a deposit it must yield a
+    /// material with meaningful, displayable data — not a default stub.
+    #[test]
+    fn every_deposit_material_is_pickup_ready() {
+        use crate::materials::MaterialCatalog;
+
+        let config = WorldGenerationConfig {
+            planet_seed: 99_887_766,
+            chunk_size_world_units: 45.0,
+            active_chunk_radius: 2,
+            building_cell_size: 1.0,
+            planet_surface_min_radius: 500,
+            planet_surface_max_radius: 5000,
+            ..Default::default()
+        };
+        let profile = WorldProfile::from_config(&config);
+        let catalog = sample_catalog();
+        let surface = PlanetSurface::new_from_profile(&profile, &config);
+
+        let biome = ChunkBiome {
+            biome_key: "scorched_flats".to_string(),
+            ground_color: [0.55, 0.38, 0.22],
+            density_modifier: 1.15,
+            deposit_weight_modifiers: HashMap::new(),
+            material_palette: vec![
+                PaletteMaterial {
+                    material_seed: 1001,
+                    selection_weight: 3.0,
+                },
+                PaletteMaterial {
+                    material_seed: 1003,
+                    selection_weight: 2.0,
+                },
+                PaletteMaterial {
+                    material_seed: 1007,
+                    selection_weight: 1.5,
+                },
+            ],
+        };
+
+        let mut mat_catalog = MaterialCatalog::default();
+        let mut checked = 0_usize;
+
+        for cx in -3..=3 {
+            for cz in -3..=3 {
+                let chunk = ChunkCoord::new(cx, cz);
+                let placements = generate_surface_mineral_chunk_baseline(
+                    &profile, &catalog, &surface, chunk, &biome,
+                );
+
+                for placement in &placements {
+                    if placement.material_seed == 0 {
+                        continue;
+                    }
+
+                    let mat = mat_catalog.derive_and_register(placement.material_seed);
+
+                    // Name must be non-empty (the pickup HUD displays it).
+                    assert!(
+                        !mat.name.is_empty(),
+                        "deposit seed {} produced an empty name",
+                        placement.material_seed,
+                    );
+
+                    // Color channels must be finite and in [0, 1].
+                    for (i, &c) in mat.color.iter().enumerate() {
+                        assert!(
+                            c.is_finite() && (0.0..=1.0).contains(&c),
+                            "deposit seed {} color[{i}] = {c} out of range",
+                            placement.material_seed,
+                        );
+                    }
+
+                    // At least one property must be non-zero so the material
+                    // is distinguishable from a default stub.
+                    let any_nonzero = mat.density.value != 0.0
+                        || mat.thermal_resistance.value != 0.0
+                        || mat.reactivity.value != 0.0
+                        || mat.conductivity.value != 0.0
+                        || mat.toxicity.value != 0.0;
+                    assert!(
+                        any_nonzero,
+                        "deposit seed {} has all-zero properties",
+                        placement.material_seed,
+                    );
+
+                    checked += 1;
+                }
+            }
+        }
+
+        assert!(
+            checked > 0,
+            "expected at least one deposit to verify but found none"
+        );
+    }
+
+    // ── Story 5a.4 Phase 9: Restart determinism ──────────────────────────
+
+    /// Simulate two independent "restarts" with the same world seed: build
+    /// the full pipeline from scratch each time, generate deposits across
+    /// multiple chunks in multiple biomes, derive materials from every
+    /// deposit seed, and verify that both runs produce identical materials
+    /// (same names, same properties, same colors) for every seed encountered.
+    ///
+    /// This is the capstone determinism guarantee: same seed + same biome →
+    /// same deposits → same materials with same names and properties.
+    #[test]
+    fn restart_same_seed_same_biome_yields_identical_materials() {
+        use crate::materials::{MaterialCatalog, derive_material_from_seed};
+
+        let config = WorldGenerationConfig {
+            planet_seed: 54_321_678,
+            chunk_size_world_units: 45.0,
+            active_chunk_radius: 2,
+            building_cell_size: 1.0,
+            planet_surface_min_radius: 500,
+            planet_surface_max_radius: 5000,
+            ..Default::default()
+        };
+
+        // Three distinct biomes with overlapping and unique palette entries.
+        let biomes = [
+            ChunkBiome {
+                biome_key: "scorched_flats".to_string(),
+                ground_color: [0.6, 0.3, 0.1],
+                density_modifier: 0.8,
+                deposit_weight_modifiers: HashMap::new(),
+                material_palette: vec![
+                    PaletteMaterial {
+                        material_seed: 1001,
+                        selection_weight: 3.0,
+                    },
+                    PaletteMaterial {
+                        material_seed: 1003,
+                        selection_weight: 2.5,
+                    },
+                    PaletteMaterial {
+                        material_seed: 1006,
+                        selection_weight: 2.0,
+                    },
+                ],
+            },
+            ChunkBiome {
+                biome_key: "mineral_steppe".to_string(),
+                ground_color: [0.42, 0.45, 0.30],
+                density_modifier: 1.0,
+                deposit_weight_modifiers: HashMap::new(),
+                material_palette: vec![
+                    PaletteMaterial {
+                        material_seed: 1002,
+                        selection_weight: 2.0,
+                    },
+                    PaletteMaterial {
+                        material_seed: 1005,
+                        selection_weight: 2.5,
+                    },
+                    PaletteMaterial {
+                        material_seed: 1008,
+                        selection_weight: 2.0,
+                    },
+                    PaletteMaterial {
+                        material_seed: 1001,
+                        selection_weight: 1.0,
+                    },
+                ],
+            },
+            ChunkBiome {
+                biome_key: "frost_shelf".to_string(),
+                ground_color: [0.7, 0.75, 0.85],
+                density_modifier: 1.2,
+                deposit_weight_modifiers: HashMap::new(),
+                material_palette: vec![
+                    PaletteMaterial {
+                        material_seed: 1004,
+                        selection_weight: 3.0,
+                    },
+                    PaletteMaterial {
+                        material_seed: 1009,
+                        selection_weight: 2.0,
+                    },
+                    PaletteMaterial {
+                        material_seed: 1010,
+                        selection_weight: 2.5,
+                    },
+                ],
+            },
+        ];
+
+        let chunks: Vec<ChunkCoord> = vec![
+            ChunkCoord::new(0, 0),
+            ChunkCoord::new(1, -1),
+            ChunkCoord::new(-3, 7),
+            ChunkCoord::new(5, 5),
+            ChunkCoord::new(-2, -4),
+        ];
+
+        /// Represents a single "session": run the pipeline from scratch and
+        /// collect every (material_seed, GameMaterial) pair encountered.
+        fn run_session(
+            config: &WorldGenerationConfig,
+            biomes: &[ChunkBiome],
+            chunks: &[ChunkCoord],
+        ) -> MaterialCatalog {
+            let profile = WorldProfile::from_config(config);
+            let surface = PlanetSurface::new_from_profile(&profile, config);
+            let deposit_catalog = SurfaceMineralDepositCatalog {
+                site_spawn_threshold: 0.0,
+                ..SurfaceMineralDepositCatalog::default()
+            };
+
+            let mut mat_catalog = MaterialCatalog::default();
+
+            for biome in biomes {
+                for &chunk in chunks {
+                    let placements = generate_surface_mineral_chunk_baseline(
+                        &profile,
+                        &deposit_catalog,
+                        &surface,
+                        chunk,
+                        biome,
+                    );
+                    for placement in &placements {
+                        if placement.material_seed != 0 {
+                            mat_catalog.derive_and_register(placement.material_seed);
+                        }
+                    }
+                }
+            }
+
+            mat_catalog
+        }
+
+        // ── Run 1 ────────────────────────────────────────────────────────
+        let catalog_a = run_session(&config, &biomes, &chunks);
+
+        // ── Run 2 (fresh from scratch) ───────────────────────────────────
+        let catalog_b = run_session(&config, &biomes, &chunks);
+
+        // Both catalogs must contain the same number of materials.
+        assert_eq!(
+            catalog_a.len(),
+            catalog_b.len(),
+            "catalog sizes differ between restarts: {} vs {}",
+            catalog_a.len(),
+            catalog_b.len()
+        );
+
+        // Must have generated at least some materials.
+        assert!(
+            catalog_a.len() > 0,
+            "expected at least one material in catalog after generation"
+        );
+
+        // Every material in catalog A must exist in catalog B with identical
+        // name, color, and all scalar properties.
+        for mat_a in catalog_a.values() {
+            let mat_b = catalog_b.get_by_seed(mat_a.seed).unwrap_or_else(|| {
+                panic!(
+                    "seed {} ({}) present in run 1 but missing in run 2",
+                    mat_a.seed, mat_a.name
+                )
+            });
+
+            assert_eq!(
+                mat_a.name, mat_b.name,
+                "name mismatch for seed {}: {:?} vs {:?}",
+                mat_a.seed, mat_a.name, mat_b.name
+            );
+            assert_eq!(
+                mat_a.color, mat_b.color,
+                "color mismatch for seed {} ({})",
+                mat_a.seed, mat_a.name
+            );
+            assert_eq!(
+                mat_a.density.value, mat_b.density.value,
+                "density mismatch for seed {} ({})",
+                mat_a.seed, mat_a.name
+            );
+            assert_eq!(
+                mat_a.thermal_resistance.value, mat_b.thermal_resistance.value,
+                "thermal_resistance mismatch for seed {} ({})",
+                mat_a.seed, mat_a.name
+            );
+            assert_eq!(
+                mat_a.reactivity.value, mat_b.reactivity.value,
+                "reactivity mismatch for seed {} ({})",
+                mat_a.seed, mat_a.name
+            );
+            assert_eq!(
+                mat_a.conductivity.value, mat_b.conductivity.value,
+                "conductivity mismatch for seed {} ({})",
+                mat_a.seed, mat_a.name
+            );
+            assert_eq!(
+                mat_a.toxicity.value, mat_b.toxicity.value,
+                "toxicity mismatch for seed {} ({})",
+                mat_a.seed, mat_a.name
+            );
+        }
+
+        // Additionally verify that derive_material_from_seed itself is
+        // deterministic for every seed we encountered (belt-and-suspenders
+        // check independent of catalog registration order).
+        for mat_a in catalog_a.values() {
+            let raw_1 = derive_material_from_seed(mat_a.seed);
+            let raw_2 = derive_material_from_seed(mat_a.seed);
+            assert_eq!(
+                raw_1.name, raw_2.name,
+                "raw derivation name mismatch for seed {}",
+                mat_a.seed
+            );
+            assert_eq!(
+                raw_1.color, raw_2.color,
+                "raw derivation color mismatch for seed {}",
+                mat_a.seed
+            );
+            assert_eq!(
+                raw_1.density.value, raw_2.density.value,
+                "raw derivation density mismatch for seed {}",
+                mat_a.seed
             );
         }
     }

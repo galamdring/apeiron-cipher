@@ -17,6 +17,7 @@ mod input;
 mod interaction;
 mod journal;
 mod materials;
+mod naming;
 mod observation;
 mod player;
 mod scene;
