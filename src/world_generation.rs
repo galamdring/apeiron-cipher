@@ -4328,6 +4328,62 @@ solar_system_seed = 42
         assert_eq!(config.elevation_octaves, defaults.elevation_octaves);
     }
 
+    /// When both `solar_system_seed` and `planet_seed` appear in config,
+    /// `planet_seed` takes precedence (override mode). The `solar_system_seed`
+    /// is still preserved — it drives star derivation — but the orbital
+    /// derivation chain is skipped entirely. This is documented precedence,
+    /// not silent swallowing: `seed_mode()` returns `Override`, validation
+    /// passes, and both seed values are accessible for their respective roles.
+    #[test]
+    fn config_with_both_seeds_uses_planet_seed_precedence() {
+        let toml_str = r#"
+solar_system_seed = 100
+planet_seed = 999
+"#;
+        let config: WorldGenerationConfig =
+            toml::from_str(toml_str).expect("TOML with both seeds must parse");
+
+        // planet_seed is present → override mode, not system-derived.
+        assert_eq!(config.seed_mode(), SeedMode::Override);
+        assert_eq!(
+            config.planet_seed,
+            Some(999),
+            "planet_seed must be preserved as-is",
+        );
+        // solar_system_seed is still available for star derivation.
+        assert_eq!(
+            config.solar_system_seed, 100,
+            "solar_system_seed must be preserved even in override mode",
+        );
+        // planet_index defaults to 0, which is fine — it is ignored in override mode.
+        assert_eq!(config.planet_index, 0);
+
+        // Validation passes: having both seeds (without planet_index) is the
+        // expected override-mode configuration.
+        config
+            .validate()
+            .expect("both seeds without planet_index must pass validation");
+    }
+
+    /// Specifying all three — `solar_system_seed`, `planet_seed`, and
+    /// `planet_index` — is rejected as ambiguous. The user likely intended
+    /// system-derived mode but forgot to remove `planet_seed`.
+    #[test]
+    fn config_with_both_seeds_and_planet_index_is_rejected() {
+        let toml_str = r#"
+solar_system_seed = 100
+planet_seed = 999
+planet_index = 3
+"#;
+        let config: WorldGenerationConfig =
+            toml::from_str(toml_str).expect("TOML with all three must parse");
+        let err = config.validate().unwrap_err();
+        assert!(
+            err.contains("planet_seed") && err.contains("planet_index"),
+            "error must mention the conflicting fields, got: {err}",
+        );
+    }
+
     #[test]
     fn validate_shipped_toml_passes() {
         let contents =
