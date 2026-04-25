@@ -3422,20 +3422,80 @@ weight = 7.0
     }
 
     /// Different planet seeds at the same distance produce different environments.
+    ///
+    /// We verify across multiple distances that a batch of distinct seeds
+    /// yields actual variation in every continuous parameter — not just a
+    /// single `!=` check between two seeds.
     #[test]
     fn planet_environment_seed_variation() {
         let star = test_star();
         let config = PlanetEnvironmentConfig::default();
 
-        let env_a = derive_planet_environment(&star, 1.0, PlanetSeed(1), &config);
-        let env_b = derive_planet_environment(&star, 1.0, PlanetSeed(2), &config);
+        // Test at several representative distances (inner, habitable, outer).
+        for &distance in &[0.5, 1.0, 5.0, 20.0] {
+            let seed_count: u64 = 50;
+            let envs: Vec<PlanetEnvironment> = (0..seed_count)
+                .map(|i| derive_planet_environment(&star, distance, PlanetSeed(i), &config))
+                .collect();
 
-        // At least one parameter should differ.
-        let all_same = env_a == env_b;
-        assert!(
-            !all_same,
-            "different seeds at the same distance should produce different environments",
-        );
+            // Collect the set of unique values for each continuous field.
+            let unique_temps_min: std::collections::HashSet<u64> = envs
+                .iter()
+                .map(|e| e.surface_temp_min_k.to_bits() as u64)
+                .collect();
+            let unique_temps_max: std::collections::HashSet<u64> = envs
+                .iter()
+                .map(|e| e.surface_temp_max_k.to_bits() as u64)
+                .collect();
+            let unique_atmo: std::collections::HashSet<u64> = envs
+                .iter()
+                .map(|e| e.atmosphere_density.to_bits() as u64)
+                .collect();
+            let unique_rad: std::collections::HashSet<u64> = envs
+                .iter()
+                .map(|e| e.radiation_level.to_bits() as u64)
+                .collect();
+            let unique_grav: std::collections::HashSet<u64> = envs
+                .iter()
+                .map(|e| e.surface_gravity_g.to_bits() as u64)
+                .collect();
+
+            // With 50 seeds we expect meaningful variation — at least 2
+            // distinct values per field.
+            assert!(
+                unique_temps_min.len() > 1,
+                "dist {distance}: surface_temp_min_k should vary across seeds, got {} unique",
+                unique_temps_min.len(),
+            );
+            assert!(
+                unique_temps_max.len() > 1,
+                "dist {distance}: surface_temp_max_k should vary across seeds, got {} unique",
+                unique_temps_max.len(),
+            );
+            assert!(
+                unique_atmo.len() > 1,
+                "dist {distance}: atmosphere_density should vary across seeds, got {} unique",
+                unique_atmo.len(),
+            );
+            assert!(
+                unique_rad.len() > 1,
+                "dist {distance}: radiation_level should vary across seeds, got {} unique",
+                unique_rad.len(),
+            );
+            assert!(
+                unique_grav.len() > 1,
+                "dist {distance}: surface_gravity_g should vary across seeds, got {} unique",
+                unique_grav.len(),
+            );
+
+            // Also verify that not all environments are identical overall.
+            let unique_envs: std::collections::HashSet<String> =
+                envs.iter().map(|e| format!("{e:?}")).collect();
+            assert!(
+                unique_envs.len() > 1,
+                "dist {distance}: all {seed_count} seeds produced identical environments",
+            );
+        }
     }
 
     /// Surface gravity must stay within the configured [min, max] range.
