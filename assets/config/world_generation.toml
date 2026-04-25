@@ -21,7 +21,7 @@
 # this seed at startup. In system-derived mode, the planet seed is also
 # derived from this seed.
 # Accepts both `solar_system_seed` (canonical) and `system_seed` (legacy).
-solar_system_seed = 20260501
+solar_system_seed = 20261225
 
 # Override mode: planet seed is used directly, skipping orbital derivation.
 # Uncomment this line and comment out planet_index to switch to override mode.
