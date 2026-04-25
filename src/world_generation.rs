@@ -45,6 +45,7 @@ use crate::seed_util::{
     PLACEMENT_DENSITY_CHANNEL, PLACEMENT_VARIATION_CHANNEL, PLANET_SURFACE_RADIUS_CHANNEL,
     mix_seed,
 };
+use crate::solar_system::PlanetEnvironment;
 
 // ── Surface Query Abstraction (Story 5.3) ────────────────────────────────
 //
@@ -1714,6 +1715,7 @@ pub fn derive_chunk_biome(
     profile: &WorldProfile,
     registry: &BiomeRegistry,
     chunk_coord: ChunkCoord,
+    planet_env: Option<&PlanetEnvironment>,
 ) -> ChunkBiome {
     // Wrap to canonical torus coordinate so equivalent positions on the
     // planet surface always resolve to the same biome.
@@ -1743,22 +1745,49 @@ pub fn derive_chunk_biome(
         registry.noise_scale_chunks,
     );
 
+    // When a PlanetEnvironment is provided, map the 0.0–1.0 temperature
+    // noise into the planet's absolute Kelvin range. This lets biome
+    // definitions with absolute temperature thresholds (temperature_abs_min_k
+    // / temperature_abs_max_k) gate biome selection based on real stellar
+    // context. A hot planet's "cold" noise region still maps to a warm
+    // absolute temperature, so only biomes that tolerate that heat can match.
+    let abs_temp_k: Option<f32> = planet_env.map(|env| {
+        env.surface_temp_min_k + temperature * (env.surface_temp_max_k - env.surface_temp_min_k)
+    });
+
     // Find the first biome whose range contains the sampled values.
     // Order matters — overlapping ranges resolve to the first match.
     for biome_def in &registry.biomes {
-        if temperature >= biome_def.temperature_min
+        let normalized_match = temperature >= biome_def.temperature_min
             && temperature <= biome_def.temperature_max
             && moisture >= biome_def.moisture_min
-            && moisture <= biome_def.moisture_max
-        {
-            return ChunkBiome {
-                biome_key: biome_def.key.clone(),
-                ground_color: biome_def.ground_color,
-                density_modifier: biome_def.density_modifier,
-                deposit_weight_modifiers: biome_def.deposit_weight_modifiers.clone(),
-                material_palette: biome_def.material_palette.clone(),
-            };
+            && moisture <= biome_def.moisture_max;
+
+        if !normalized_match {
+            continue;
         }
+
+        // If the biome defines absolute Kelvin thresholds and we have a
+        // planet environment, enforce the absolute temperature band as an
+        // additional filter. Biomes without absolute thresholds pass
+        // unconditionally (backwards compatible).
+        if let Some(abs_k) = abs_temp_k
+            && let (Some(abs_min), Some(abs_max)) = (
+                biome_def.temperature_abs_min_k,
+                biome_def.temperature_abs_max_k,
+            )
+            && (abs_k < abs_min || abs_k > abs_max)
+        {
+            continue;
+        }
+
+        return ChunkBiome {
+            biome_key: biome_def.key.clone(),
+            ground_color: biome_def.ground_color,
+            density_modifier: biome_def.density_modifier,
+            deposit_weight_modifiers: biome_def.deposit_weight_modifiers.clone(),
+            material_palette: biome_def.material_palette.clone(),
+        };
     }
 
     // No range matched — use the fallback biome.
@@ -2383,8 +2412,8 @@ mod tests {
         let registry = BiomeRegistry::default();
         let coord = ChunkCoord::new(7, 13);
 
-        let a = derive_chunk_biome(&profile, &registry, coord);
-        let b = derive_chunk_biome(&profile, &registry, coord);
+        let a = derive_chunk_biome(&profile, &registry, coord, None);
+        let b = derive_chunk_biome(&profile, &registry, coord, None);
 
         assert_eq!(a.biome_key, b.biome_key);
         assert_eq!(a.ground_color, b.ground_color);
@@ -2402,7 +2431,7 @@ mod tests {
         let mut found: std::collections::HashSet<String> = std::collections::HashSet::new();
         for x in -50..50 {
             for z in -50..50 {
-                let biome = derive_chunk_biome(&profile, &registry, ChunkCoord::new(x, z));
+                let biome = derive_chunk_biome(&profile, &registry, ChunkCoord::new(x, z), None);
                 found.insert(biome.biome_key.clone());
                 if found.len() == 3 {
                     break;
@@ -2472,7 +2501,7 @@ mod tests {
         // Scan coords until we find one that falls back (most will).
         let mut found_fallback = false;
         for x in 0..20 {
-            let biome = derive_chunk_biome(&profile, &registry, ChunkCoord::new(x, 0));
+            let biome = derive_chunk_biome(&profile, &registry, ChunkCoord::new(x, 0), None);
             if biome.biome_key == "fallback_test" {
                 found_fallback = true;
                 assert_eq!(
@@ -2710,8 +2739,8 @@ mod tests {
         let raw = ChunkCoord::new(-3, 7);
         let wrapped = ChunkCoord::new(-3 + diameter, 7);
 
-        let a = derive_chunk_biome(&profile, &registry, raw);
-        let b = derive_chunk_biome(&profile, &registry, wrapped);
+        let a = derive_chunk_biome(&profile, &registry, raw, None);
+        let b = derive_chunk_biome(&profile, &registry, wrapped, None);
 
         assert_eq!(a.biome_key, b.biome_key);
         assert_eq!(a.ground_color, b.ground_color);
@@ -2734,7 +2763,7 @@ mod tests {
             moisture_noise_channel: 0xB10E_0001_0000_0002,
         };
 
-        let result = derive_chunk_biome(&profile, &registry, ChunkCoord::new(0, 0));
+        let result = derive_chunk_biome(&profile, &registry, ChunkCoord::new(0, 0), None);
 
         // Should get the hardcoded neutral default values.
         assert_eq!(result.biome_key, "nonexistent");
@@ -2773,7 +2802,7 @@ mod tests {
             moisture_noise_channel: 0xB10E_0001_0000_0002,
         };
 
-        let result = derive_chunk_biome(&profile, &registry, ChunkCoord::new(5, 5));
+        let result = derive_chunk_biome(&profile, &registry, ChunkCoord::new(5, 5), None);
 
         // Must get the hardcoded neutral, not panic.
         assert_eq!(result.biome_key, "does_not_exist");
@@ -2810,7 +2839,7 @@ mod tests {
 
         for x in -50..50 {
             for z in -50..50 {
-                let biome = derive_chunk_biome(&profile, &registry, ChunkCoord::new(x, z));
+                let biome = derive_chunk_biome(&profile, &registry, ChunkCoord::new(x, z), None);
 
                 let Some(expected_palette) = expected.get(&biome.biome_key) else {
                     panic!(
@@ -2904,7 +2933,7 @@ mod tests {
         // Most coords will miss the narrow biome and hit the fallback.
         let mut found = false;
         for x in 0..20 {
-            let biome = derive_chunk_biome(&profile, &registry, ChunkCoord::new(x, 0));
+            let biome = derive_chunk_biome(&profile, &registry, ChunkCoord::new(x, 0), None);
             if biome.biome_key == "fb" {
                 assert_eq!(
                     biome.material_palette.len(),
@@ -2940,7 +2969,7 @@ mod tests {
             moisture_noise_channel: 0xB10E_0001_0000_0002,
         };
 
-        let biome = derive_chunk_biome(&profile, &registry, ChunkCoord::new(5, 5));
+        let biome = derive_chunk_biome(&profile, &registry, ChunkCoord::new(5, 5), None);
         assert!(
             !biome.material_palette.is_empty(),
             "hardcoded neutral default must have a non-empty material palette"
@@ -2954,6 +2983,156 @@ mod tests {
                 entry.selection_weight
             );
         }
+    }
+
+    // ── PlanetEnvironment temperature scaling tests ─────────────────────
+
+    /// Helper: build a registry with biomes that have absolute Kelvin thresholds
+    /// for testing planet environment integration.
+    fn abs_temp_registry() -> BiomeRegistry {
+        BiomeRegistry {
+            fallback_biome_key: "neutral_biome".to_string(),
+            noise_scale_chunks: 12.0,
+            temperature_noise_channel: 0xB10E_0001_0000_0001,
+            moisture_noise_channel: 0xB10E_0001_0000_0002,
+            biomes: vec![
+                BiomeDefinition {
+                    key: "hot_biome".to_string(),
+                    temperature_min: 0.6,
+                    temperature_max: 1.0,
+                    temperature_abs_min_k: Some(350.0),
+                    temperature_abs_max_k: Some(600.0),
+                    moisture_min: 0.0,
+                    moisture_max: 1.0,
+                    ground_color: [0.8, 0.3, 0.1],
+                    density_modifier: 1.0,
+                    deposit_weight_modifiers: HashMap::new(),
+                    material_palette: Vec::new(),
+                },
+                BiomeDefinition {
+                    key: "cold_biome".to_string(),
+                    temperature_min: 0.0,
+                    temperature_max: 0.5,
+                    temperature_abs_min_k: Some(50.0),
+                    temperature_abs_max_k: Some(220.0),
+                    moisture_min: 0.0,
+                    moisture_max: 1.0,
+                    ground_color: [0.3, 0.3, 0.5],
+                    density_modifier: 1.0,
+                    deposit_weight_modifiers: HashMap::new(),
+                    material_palette: Vec::new(),
+                },
+                // Neutral fallback biome: no absolute thresholds, covers the
+                // full normalized range so it catches anything filtered out by
+                // absolute temperature checks on the other biomes.
+                BiomeDefinition {
+                    key: "neutral_biome".to_string(),
+                    temperature_min: 0.0,
+                    temperature_max: 1.0,
+                    temperature_abs_min_k: None,
+                    temperature_abs_max_k: None,
+                    moisture_min: 0.0,
+                    moisture_max: 1.0,
+                    ground_color: [0.4, 0.4, 0.4],
+                    density_modifier: 1.0,
+                    deposit_weight_modifiers: HashMap::new(),
+                    material_palette: Vec::new(),
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn planet_env_none_uses_normalized_matching_only() {
+        // Without PlanetEnvironment, absolute thresholds are ignored and
+        // biomes match purely on normalized temperature/moisture ranges.
+        let profile = WorldProfile::from_config(&sample_config());
+        let registry = abs_temp_registry();
+
+        // Scan a range of chunks — every result should match one of the two
+        // biomes based on normalized ranges alone, regardless of absolute K.
+        for x in 0..20 {
+            let biome = derive_chunk_biome(&profile, &registry, ChunkCoord::new(x, 0), None);
+            assert!(
+                biome.biome_key == "hot_biome" || biome.biome_key == "cold_biome",
+                "unexpected biome: {}",
+                biome.biome_key,
+            );
+        }
+    }
+
+    #[test]
+    fn planet_env_hot_planet_filters_cold_biome() {
+        // A very hot planet (min 400 K, max 700 K) maps all noise values
+        // above the cold biome's absolute max of 220 K, so the cold biome
+        // should never match.
+        let profile = WorldProfile::from_config(&sample_config());
+        let registry = abs_temp_registry();
+        let hot_env = PlanetEnvironment {
+            surface_temp_min_k: 400.0,
+            surface_temp_max_k: 700.0,
+            atmosphere_density: 0.5,
+            radiation_level: 0.8,
+            surface_gravity_g: 1.2,
+            in_habitable_zone: false,
+        };
+
+        for x in 0..50 {
+            let biome =
+                derive_chunk_biome(&profile, &registry, ChunkCoord::new(x, x), Some(&hot_env));
+            // On a 400–700 K planet, the absolute temp is always >= 400 K.
+            // The cold biome requires abs <= 220 K, so it must never appear.
+            assert_ne!(
+                biome.biome_key, "cold_biome",
+                "cold biome should not appear on a 400–700 K planet (chunk x={x})",
+            );
+        }
+    }
+
+    #[test]
+    fn planet_env_cold_planet_filters_hot_biome() {
+        // A very cold planet (min 30 K, max 100 K) maps all noise values
+        // below the hot biome's absolute min of 350 K.
+        let profile = WorldProfile::from_config(&sample_config());
+        let registry = abs_temp_registry();
+        let cold_env = PlanetEnvironment {
+            surface_temp_min_k: 30.0,
+            surface_temp_max_k: 100.0,
+            atmosphere_density: 0.1,
+            radiation_level: 0.05,
+            surface_gravity_g: 0.3,
+            in_habitable_zone: false,
+        };
+
+        for x in 0..50 {
+            let biome =
+                derive_chunk_biome(&profile, &registry, ChunkCoord::new(x, x), Some(&cold_env));
+            assert_ne!(
+                biome.biome_key, "hot_biome",
+                "hot biome should not appear on a 30–100 K planet (chunk x={x})",
+            );
+        }
+    }
+
+    #[test]
+    fn planet_env_deterministic() {
+        let profile = WorldProfile::from_config(&sample_config());
+        let registry = abs_temp_registry();
+        let env = PlanetEnvironment {
+            surface_temp_min_k: 200.0,
+            surface_temp_max_k: 500.0,
+            atmosphere_density: 1.0,
+            radiation_level: 0.3,
+            surface_gravity_g: 1.0,
+            in_habitable_zone: true,
+        };
+        let coord = ChunkCoord::new(7, 13);
+        let a = derive_chunk_biome(&profile, &registry, coord, Some(&env));
+        let b = derive_chunk_biome(&profile, &registry, coord, Some(&env));
+        assert_eq!(
+            a.biome_key, b.biome_key,
+            "same inputs must produce same biome"
+        );
     }
 
     // ── PlanetSurface multi-octave noise tests ──────────────────────────
