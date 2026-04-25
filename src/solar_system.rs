@@ -1927,6 +1927,37 @@ weight = 7.0
         );
     }
 
+    /// Even a small sample of 10 seeds should produce at least 2 distinct
+    /// planet counts with default config [2, 8]. This validates that the
+    /// derivation feels varied at human-observable scale — a player
+    /// visiting a handful of systems should encounter different planet
+    /// counts, not the same number every time.
+    #[test]
+    fn planet_count_feels_varied_small_sample() {
+        let config = OrbitalConfig::default();
+        let seeds: [u64; 10] = [1, 2, 3, 42, 100, 999, 7777, 123_456, 0xCAFE, 0xBEEF];
+        let mut seen = std::collections::HashSet::new();
+
+        for &s in &seeds {
+            let count = derive_planet_count(SolarSystemSeed(s), &config);
+            // Every count must be in range regardless.
+            assert!(
+                count >= config.planet_count_min && count <= config.planet_count_max,
+                "seed {s}: planet count {count} outside [{}, {}]",
+                config.planet_count_min,
+                config.planet_count_max,
+            );
+            seen.insert(count);
+        }
+
+        assert!(
+            seen.len() >= 2,
+            "expected at least 2 distinct planet counts from 10 seeds, got {}: {:?}",
+            seen.len(),
+            seen,
+        );
+    }
+
     /// Both min and max planet counts must be reachable. With 10,000 seeds
     /// and a well-mixed derivation, both endpoints should appear.
     #[test]
