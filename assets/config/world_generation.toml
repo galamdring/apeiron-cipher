@@ -24,12 +24,12 @@
 solar_system_seed = 20260501
 
 # Override mode: planet seed is used directly, skipping orbital derivation.
-# Comment this line out and set planet_index to switch to system-derived mode.
-planet_seed = 20260408
+# Uncomment this line and comment out planet_index to switch to override mode.
+# planet_seed = 20260408
 
 # System-derived mode: zero-based index selecting which orbital slot to
 # start on. Only used when planet_seed is absent.
-# planet_index = 0
+planet_index = 2
 
 # Exterior chunk size in Bevy world units.
 #
