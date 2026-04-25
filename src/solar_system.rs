@@ -3644,4 +3644,32 @@ weight = 7.0
             "brighter star should produce hotter planet",
         );
     }
+
+    /// Radiation level should decrease with orbital distance on average
+    /// across many seeds, because raw radiation follows inverse-square law
+    /// and atmosphere (which attenuates radiation) increases with distance.
+    #[test]
+    fn planet_environment_radiation_decreases_with_distance() {
+        let star = test_star();
+        let config = PlanetEnvironmentConfig::default();
+
+        let mut inner_sum = 0.0_f64;
+        let mut outer_sum = 0.0_f64;
+        let count = 1_000;
+
+        for i in 0..count {
+            let seed = PlanetSeed(i);
+            let inner = derive_planet_environment(&star, 0.3, seed, &config);
+            let outer = derive_planet_environment(&star, 5.0, seed, &config);
+            inner_sum += inner.radiation_level as f64;
+            outer_sum += outer.radiation_level as f64;
+        }
+
+        assert!(
+            inner_sum > outer_sum,
+            "average inner radiation ({}) should exceed outer radiation ({})",
+            inner_sum / count as f64,
+            outer_sum / count as f64,
+        );
+    }
 }
