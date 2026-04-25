@@ -21,6 +21,7 @@ mod naming;
 mod observation;
 mod player;
 mod scene;
+mod solar_system;
 mod surface;
 mod world_generation;
 
@@ -66,6 +67,8 @@ fn main() {
         .add_plugins(observation::ObservationPlugin)
         // Journal: player-owned record of observations and fabrication history.
         .add_plugins(journal::JournalPlugin)
+        // Solar system: deterministic star derivation from system seed.
+        .add_plugins(solar_system::SolarSystemPlugin)
         // World generation: deterministic planet/chunk identity foundation for exterior systems.
         .add_plugins(world_generation::WorldGenerationPlugin)
         // Debug: terrain diagnostic overlay (temporary — remove before shipping).
