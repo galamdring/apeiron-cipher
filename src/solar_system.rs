@@ -4202,4 +4202,79 @@ weight = 7.0
             "red dwarf HZ width ({hz_width:.4} AU) should be narrower than Sol's ({sol_hz_width:.4} AU)",
         );
     }
+
+    /// Using the full orbital layout pipeline, the innermost planet (index 0)
+    /// should be hotter with less atmosphere than the outermost planet (last
+    /// index) across many system seeds.
+    #[test]
+    fn inner_planet_hotter_and_thinner_than_outer_via_layout() {
+        let star_registry = StarTypeRegistry::default();
+        let orbital_config = OrbitalConfig::default();
+        let env_config = PlanetEnvironmentConfig::default();
+
+        let mut inner_hotter_count = 0u32;
+        let mut inner_thinner_count = 0u32;
+        let seed_count = 200u64;
+        let mut tested = 0u32;
+
+        for i in 0..seed_count {
+            let system_seed = SolarSystemSeed(i);
+            let star = derive_star_profile(system_seed, &star_registry);
+            let layout = derive_orbital_layout(system_seed, &orbital_config);
+
+            // Need at least two planets to compare inner vs outer.
+            if layout.planets.len() < 2 {
+                continue;
+            }
+            tested += 1;
+
+            let inner_slot = &layout.planets[0];
+            let outer_slot = &layout.planets[layout.planets.len() - 1];
+
+            let inner_env = derive_planet_environment(
+                &star,
+                inner_slot.orbital_distance_au,
+                inner_slot.planet_seed,
+                &env_config,
+            );
+            let outer_env = derive_planet_environment(
+                &star,
+                outer_slot.orbital_distance_au,
+                outer_slot.planet_seed,
+                &env_config,
+            );
+
+            if inner_env.surface_temp_max_k > outer_env.surface_temp_max_k {
+                inner_hotter_count += 1;
+            }
+            if inner_env.atmosphere_density < outer_env.atmosphere_density {
+                inner_thinner_count += 1;
+            }
+        }
+
+        // Sanity: we must have tested a meaningful number of systems.
+        assert!(
+            tested >= 50,
+            "expected at least 50 multi-planet systems, got {tested}",
+        );
+
+        // The trend should hold for the vast majority of seeds. Different
+        // planet seeds introduce variation, but the distance-driven formulas
+        // should dominate.
+        let hotter_pct = (inner_hotter_count as f64 / tested as f64) * 100.0;
+        let thinner_pct = (inner_thinner_count as f64 / tested as f64) * 100.0;
+
+        assert!(
+            hotter_pct > 80.0,
+            "inner planet should be hotter than outer in >80% of systems, got {hotter_pct:.1}%",
+        );
+        // Atmosphere has a wider seed-based variation (±30%) than temperature,
+        // so different planet seeds can occasionally override the distance
+        // trend when the orbital spread is modest. We require a clear
+        // statistical majority rather than near-unanimity.
+        assert!(
+            thinner_pct > 60.0,
+            "inner planet should have thinner atmosphere than outer in >60% of systems, got {thinner_pct:.1}%",
+        );
+    }
 }
