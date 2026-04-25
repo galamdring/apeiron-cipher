@@ -24,7 +24,9 @@ use crate::seed_util::{
     STAR_MASS_CHANNEL, STAR_TEMPERATURE_CHANNEL, STAR_TYPE_CHANNEL, f32_next_up, f32_to_u64_bits,
     lerp, mix_seed, seed_to_unit_f32,
 };
-use crate::world_generation::{PlanetSeed, WorldGenerationConfig, WorldProfile};
+use crate::world_generation::{
+    PlanetSeed, WorldGenerationConfig, WorldProfile, resolve_system_derived_profile,
+};
 
 /// Path to the star type definitions TOML file.
 const STAR_TYPES_CONFIG_PATH: &str = "assets/config/star_types.toml";
@@ -745,7 +747,7 @@ impl Plugin for SolarSystemPlugin {
                 Startup,
                 (
                     log_star_profile_on_startup,
-                    derive_and_insert_planet_environment,
+                    derive_and_insert_planet_environment.after(resolve_system_derived_profile),
                 ),
             );
     }

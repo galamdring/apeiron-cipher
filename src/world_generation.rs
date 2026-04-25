@@ -1494,7 +1494,7 @@ fn load_world_generation_config(mut commands: Commands) {
 /// `planet_index` out of range), it panics with a descriptive message
 /// because an invalid planet index is a configuration error that must be
 /// fixed before the game can run.
-fn resolve_system_derived_profile(
+pub fn resolve_system_derived_profile(
     mut commands: Commands,
     config: Res<WorldGenerationConfig>,
     star_registry: Res<StarTypeRegistry>,
