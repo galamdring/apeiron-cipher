@@ -1648,7 +1648,7 @@ mod tests {
 
     fn sample_profile() -> WorldProfile {
         WorldProfile::from_config(&WorldGenerationConfig {
-            planet_seed: 2026,
+            planet_seed: Some(2026),
             chunk_size_world_units: 45.0,
             active_chunk_radius: 1,
             building_cell_size: 1.0,
@@ -1656,6 +1656,7 @@ mod tests {
             planet_surface_max_radius: 5000,
             ..Default::default()
         })
+        .unwrap()
     }
 
     fn sample_catalog() -> SurfaceMineralDepositCatalog {
@@ -3730,7 +3731,7 @@ cluster_compactness = 0.75
     #[test]
     fn full_pipeline_seed_to_elevation_to_mesh_to_deposits_is_deterministic() {
         let config = WorldGenerationConfig {
-            planet_seed: 42_424_242,
+            planet_seed: Some(42_424_242),
             chunk_size_world_units: 45.0,
             active_chunk_radius: 2,
             building_cell_size: 1.0,
@@ -3748,8 +3749,8 @@ cluster_compactness = 0.75
         // Run the full pipeline twice from scratch.
         for _run in 0..2 {
             // ── Stage 1: WorldProfile derivation ─────────────────────
-            let profile_a = WorldProfile::from_config(&config);
-            let profile_b = WorldProfile::from_config(&config);
+            let profile_a = WorldProfile::from_config(&config).unwrap();
+            let profile_b = WorldProfile::from_config(&config).unwrap();
             assert_eq!(profile_a, profile_b, "WorldProfile must be deterministic");
 
             // ── Stage 2: PlanetSurface construction ──────────────────
@@ -3843,7 +3844,7 @@ cluster_compactness = 0.75
     #[test]
     fn smoke_test_generate_multiple_chunks_no_panics() {
         let config = WorldGenerationConfig {
-            planet_seed: 99_887_766,
+            planet_seed: Some(99_887_766),
             chunk_size_world_units: 45.0,
             active_chunk_radius: 2,
             building_cell_size: 1.0,
@@ -3851,7 +3852,7 @@ cluster_compactness = 0.75
             planet_surface_max_radius: 5000,
             ..Default::default()
         };
-        let profile = WorldProfile::from_config(&config);
+        let profile = WorldProfile::from_config(&config).unwrap();
         let surface = PlanetSurface::new_from_profile(&profile, &config);
         let catalog = sample_catalog();
         let biome = sample_biome();
@@ -4331,7 +4332,7 @@ cluster_compactness = 0.75
         let surface = PlanetSurface::new_from_profile(
             &profile,
             &WorldGenerationConfig {
-                planet_seed: 2026,
+                planet_seed: Some(2026),
                 chunk_size_world_units: 45.0,
                 active_chunk_radius: 1,
                 building_cell_size: 1.0,
@@ -4424,7 +4425,7 @@ cluster_compactness = 0.75
         let surface = PlanetSurface::new_from_profile(
             &profile,
             &WorldGenerationConfig {
-                planet_seed: 2026,
+                planet_seed: Some(2026),
                 chunk_size_world_units: 45.0,
                 active_chunk_radius: 1,
                 building_cell_size: 1.0,
@@ -4653,7 +4654,7 @@ cluster_compactness = 0.75
         use std::collections::HashSet;
 
         let config = WorldGenerationConfig {
-            planet_seed: 55_443_322,
+            planet_seed: Some(55_443_322),
             chunk_size_world_units: 45.0,
             active_chunk_radius: 2,
             building_cell_size: 1.0,
@@ -4661,7 +4662,7 @@ cluster_compactness = 0.75
             planet_surface_max_radius: 5000,
             ..Default::default()
         };
-        let profile = WorldProfile::from_config(&config);
+        let profile = WorldProfile::from_config(&config).unwrap();
         let surface = PlanetSurface::new_from_profile(&profile, &config);
         let catalog = sample_catalog();
         let biome_registry = BiomeRegistry::default();
@@ -5046,7 +5047,7 @@ cluster_compactness = 0.75
         use crate::materials::MaterialCatalog;
 
         let config = WorldGenerationConfig {
-            planet_seed: 99_887_766,
+            planet_seed: Some(99_887_766),
             chunk_size_world_units: 45.0,
             active_chunk_radius: 2,
             building_cell_size: 1.0,
@@ -5054,7 +5055,7 @@ cluster_compactness = 0.75
             planet_surface_max_radius: 5000,
             ..Default::default()
         };
-        let profile = WorldProfile::from_config(&config);
+        let profile = WorldProfile::from_config(&config).unwrap();
         let catalog = sample_catalog();
         let surface = PlanetSurface::new_from_profile(&profile, &config);
 
@@ -5151,7 +5152,7 @@ cluster_compactness = 0.75
         use crate::materials::{MaterialCatalog, derive_material_from_seed};
 
         let config = WorldGenerationConfig {
-            planet_seed: 54_321_678,
+            planet_seed: Some(54_321_678),
             chunk_size_world_units: 45.0,
             active_chunk_radius: 2,
             building_cell_size: 1.0,
@@ -5243,7 +5244,7 @@ cluster_compactness = 0.75
             biomes: &[ChunkBiome],
             chunks: &[ChunkCoord],
         ) -> MaterialCatalog {
-            let profile = WorldProfile::from_config(config);
+            let profile = WorldProfile::from_config(config).unwrap();
             let surface = PlanetSurface::new_from_profile(&profile, config);
             let deposit_catalog = SurfaceMineralDepositCatalog {
                 site_spawn_threshold: 0.0,
@@ -5344,6 +5345,285 @@ cluster_compactness = 0.75
         // deterministic for every seed we encountered (belt-and-suspenders
         // check independent of catalog registration order).
         for mat_a in catalog_a.values() {
+            let raw_1 = derive_material_from_seed(mat_a.seed);
+            let raw_2 = derive_material_from_seed(mat_a.seed);
+            assert_eq!(
+                raw_1.name, raw_2.name,
+                "raw derivation name mismatch for seed {}",
+                mat_a.seed
+            );
+            assert_eq!(
+                raw_1.color, raw_2.color,
+                "raw derivation color mismatch for seed {}",
+                mat_a.seed
+            );
+            assert_eq!(
+                raw_1.density.value, raw_2.density.value,
+                "raw derivation density mismatch for seed {}",
+                mat_a.seed
+            );
+        }
+    }
+
+    // ── Story 5b.4 Phase 6: System-seed restart determinism ──────────────
+
+    /// Simulate two independent "restarts" using the **system seed chain**
+    /// (system seed → star → orbital layout → planet → biome → deposits →
+    /// materials) and verify that both runs produce identical terrain, biomes,
+    /// and materials at every sampled location.
+    ///
+    /// This is the capstone guarantee for seed hierarchy integration: same
+    /// `solar_system_seed` + same `planet_index` → identical world, regardless
+    /// of restart. The test exercises the full derivation chain that
+    /// `restart_same_seed_same_biome_yields_identical_materials` covers for
+    /// override mode, but routed through `WorldProfile::from_system_seed`.
+    #[test]
+    fn restart_system_seed_chain_yields_identical_world() {
+        use crate::materials::{MaterialCatalog, derive_material_from_seed};
+        use crate::solar_system::{OrbitalConfig, PlanetEnvironmentConfig, StarTypeRegistry};
+
+        let star_registry = StarTypeRegistry::default();
+        let orbital_config = OrbitalConfig::default();
+        let env_config = PlanetEnvironmentConfig::default();
+
+        let config = WorldGenerationConfig {
+            solar_system_seed: 42,
+            planet_seed: None,
+            planet_index: 2,
+            chunk_size_world_units: 45.0,
+            active_chunk_radius: 2,
+            building_cell_size: 1.0,
+            planet_surface_min_radius: 500,
+            planet_surface_max_radius: 5000,
+            ..Default::default()
+        };
+
+        let biome_registry = BiomeRegistry::default();
+
+        let chunks: Vec<ChunkCoord> = vec![
+            ChunkCoord::new(0, 0),
+            ChunkCoord::new(1, -1),
+            ChunkCoord::new(-3, 7),
+            ChunkCoord::new(5, 5),
+            ChunkCoord::new(-2, -4),
+            ChunkCoord::new(10, 15),
+            ChunkCoord::new(-8, 3),
+        ];
+
+        /// Represents a single "session": derive the full system seed chain
+        /// from scratch, generate terrain elevations, biomes, and deposits
+        /// across multiple chunks, derive materials from every deposit seed.
+        /// Returns the profile, collected biome keys, elevation samples, and
+        /// material catalog — everything needed to compare two restarts.
+        #[derive(Debug)]
+        struct SessionResult {
+            profile: WorldProfile,
+            /// (chunk, biome_key) pairs in insertion order.
+            biome_keys: Vec<(ChunkCoord, String)>,
+            /// (chunk, elevation_at_origin) pairs for terrain comparison.
+            elevations: Vec<(ChunkCoord, f32)>,
+            materials: MaterialCatalog,
+        }
+
+        fn run_session(
+            config: &WorldGenerationConfig,
+            star_registry: &StarTypeRegistry,
+            orbital_config: &OrbitalConfig,
+            env_config: &PlanetEnvironmentConfig,
+            biome_registry: &BiomeRegistry,
+            chunks: &[ChunkCoord],
+        ) -> SessionResult {
+            let profile =
+                WorldProfile::from_system_seed(config, star_registry, orbital_config, env_config)
+                    .expect("system seed derivation must succeed");
+
+            let surface = PlanetSurface::new_from_profile(&profile, config);
+            let deposit_catalog = SurfaceMineralDepositCatalog {
+                site_spawn_threshold: 0.0,
+                ..SurfaceMineralDepositCatalog::default()
+            };
+
+            let planet_env = profile
+                .system_context
+                .as_ref()
+                .map(|ctx| &ctx.planet_environment);
+
+            let mut biome_keys = Vec::new();
+            let mut elevations = Vec::new();
+            let mut mat_catalog = MaterialCatalog::default();
+
+            for &chunk in chunks {
+                // Derive biome using planet environment from the system context.
+                let biome = derive_chunk_biome(&profile, biome_registry, chunk, planet_env);
+                biome_keys.push((chunk, biome.biome_key.clone()));
+
+                // Sample elevation at chunk origin to verify terrain identity.
+                let origin = chunk_origin_xz(chunk, profile.chunk_size_world_units);
+                let elevation = surface.sample_elevation(origin.x, origin.z);
+                elevations.push((chunk, elevation));
+
+                // Generate deposits and derive materials.
+                let placements = generate_surface_mineral_chunk_baseline(
+                    &profile,
+                    &deposit_catalog,
+                    &surface,
+                    chunk,
+                    &biome,
+                );
+                for placement in &placements {
+                    if placement.material_seed != 0 {
+                        mat_catalog.derive_and_register(placement.material_seed);
+                    }
+                }
+            }
+
+            SessionResult {
+                profile,
+                biome_keys,
+                elevations,
+                materials: mat_catalog,
+            }
+        }
+
+        // ── Run 1 ────────────────────────────────────────────────────────
+        let session_a = run_session(
+            &config,
+            &star_registry,
+            &orbital_config,
+            &env_config,
+            &biome_registry,
+            &chunks,
+        );
+
+        // ── Run 2 (fresh from scratch) ───────────────────────────────────
+        let session_b = run_session(
+            &config,
+            &star_registry,
+            &orbital_config,
+            &env_config,
+            &biome_registry,
+            &chunks,
+        );
+
+        // WorldProfile must be bit-identical across restarts.
+        assert_eq!(
+            session_a.profile, session_b.profile,
+            "WorldProfile must be identical across restarts"
+        );
+
+        // System context must be present (system-derived mode).
+        assert!(
+            session_a.profile.is_system_derived(),
+            "profile must be in system-derived mode"
+        );
+
+        // SystemContext must be identical.
+        let ctx_a = session_a
+            .profile
+            .system_context
+            .as_ref()
+            .expect("system_context must be Some");
+        let ctx_b = session_b
+            .profile
+            .system_context
+            .as_ref()
+            .expect("system_context must be Some");
+        assert_eq!(
+            ctx_a, ctx_b,
+            "SystemContext must be identical across restarts"
+        );
+
+        // Biomes must be identical at every chunk.
+        assert_eq!(
+            session_a.biome_keys.len(),
+            session_b.biome_keys.len(),
+            "biome key count must match"
+        );
+        for (a, b) in session_a.biome_keys.iter().zip(session_b.biome_keys.iter()) {
+            assert_eq!(a.0, b.0, "chunk coordinates must be in the same order");
+            assert_eq!(
+                a.1, b.1,
+                "biome key at chunk ({}, {}) must be identical across restarts",
+                a.0.x, a.0.z,
+            );
+        }
+
+        // Terrain elevations must be bit-identical at every sampled point.
+        for (a, b) in session_a.elevations.iter().zip(session_b.elevations.iter()) {
+            assert_eq!(
+                a.1, b.1,
+                "elevation at chunk ({}, {}) must be bit-identical across restarts: {} vs {}",
+                a.0.x, a.0.z, a.1, b.1,
+            );
+        }
+
+        // Material catalogs must contain the same materials.
+        assert_eq!(
+            session_a.materials.len(),
+            session_b.materials.len(),
+            "material catalog sizes differ between restarts: {} vs {}",
+            session_a.materials.len(),
+            session_b.materials.len()
+        );
+
+        // Must have generated at least some materials.
+        assert!(
+            session_a.materials.len() > 0,
+            "expected at least one material in catalog after system-seed generation"
+        );
+
+        // Every material must be identical across restarts.
+        for mat_a in session_a.materials.values() {
+            let mat_b = session_b
+                .materials
+                .get_by_seed(mat_a.seed)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "seed {} ({}) present in run 1 but missing in run 2",
+                        mat_a.seed, mat_a.name
+                    )
+                });
+
+            assert_eq!(
+                mat_a.name, mat_b.name,
+                "name mismatch for seed {}: {:?} vs {:?}",
+                mat_a.seed, mat_a.name, mat_b.name
+            );
+            assert_eq!(
+                mat_a.color, mat_b.color,
+                "color mismatch for seed {} ({})",
+                mat_a.seed, mat_a.name
+            );
+            assert_eq!(
+                mat_a.density.value, mat_b.density.value,
+                "density mismatch for seed {} ({})",
+                mat_a.seed, mat_a.name
+            );
+            assert_eq!(
+                mat_a.thermal_resistance.value, mat_b.thermal_resistance.value,
+                "thermal_resistance mismatch for seed {} ({})",
+                mat_a.seed, mat_a.name
+            );
+            assert_eq!(
+                mat_a.reactivity.value, mat_b.reactivity.value,
+                "reactivity mismatch for seed {} ({})",
+                mat_a.seed, mat_a.name
+            );
+            assert_eq!(
+                mat_a.conductivity.value, mat_b.conductivity.value,
+                "conductivity mismatch for seed {} ({})",
+                mat_a.seed, mat_a.name
+            );
+            assert_eq!(
+                mat_a.toxicity.value, mat_b.toxicity.value,
+                "toxicity mismatch for seed {} ({})",
+                mat_a.seed, mat_a.name
+            );
+        }
+
+        // Belt-and-suspenders: verify raw material derivation is deterministic
+        // for every seed encountered through the system chain.
+        for mat_a in session_a.materials.values() {
             let raw_1 = derive_material_from_seed(mat_a.seed);
             let raw_2 = derive_material_from_seed(mat_a.seed);
             assert_eq!(

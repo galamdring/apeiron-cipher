@@ -45,7 +45,11 @@ use crate::seed_util::{
     PLACEMENT_DENSITY_CHANNEL, PLACEMENT_VARIATION_CHANNEL, PLANET_SURFACE_RADIUS_CHANNEL,
     mix_seed,
 };
-use crate::solar_system::PlanetEnvironment;
+use crate::solar_system::{
+    OrbitalConfig, OrbitalLayout, PlanetEnvironment, PlanetEnvironmentConfig, SolarSystemSeed,
+    StarProfile, StarTypeRegistry, derive_orbital_layout, derive_planet_environment,
+    derive_star_profile,
+};
 
 // ── Surface Query Abstraction (Story 5.3) ────────────────────────────────
 //
@@ -742,6 +746,7 @@ impl Plugin for WorldGenerationPlugin {
                 PreStartup,
                 (load_world_generation_config, load_biome_registry),
             )
+            .add_systems(Startup, resolve_system_derived_profile)
             .add_systems(Update, update_active_chunk_neighborhood);
     }
 }
@@ -774,10 +779,33 @@ impl ChunkCoord {
     }
 }
 
+/// The two modes the config can operate in.
+///
+/// When `planet_seed` is provided in the TOML, the config is in override mode:
+/// the planet seed is used directly and no solar-system derivation chain runs.
+/// When `planet_seed` is absent and `solar_system_seed` is present, the full
+/// chain runs: system seed → star → orbital layout → planet selection by index.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SeedMode {
+    /// Planet seed was provided directly in config (override / testing mode).
+    Override,
+    /// Planet seed is derived from the solar system seed + planet index.
+    SystemDerived,
+}
+
 /// Runtime world-generation config loaded from `assets/config/world_generation.toml`.
 ///
-/// Story 5.1 keeps this intentionally small:
-/// - `planet_seed`: identity for the whole generated world
+/// Supports two mutually exclusive seeding modes:
+///
+/// **Override mode** (current default, for testing): set `planet_seed` directly.
+/// The solar system seed is still used for star derivation and logging, but the
+/// planet seed is taken as-is without running the orbital derivation chain.
+///
+/// **System-derived mode**: omit `planet_seed` and set `solar_system_seed` +
+/// `planet_index`. The full derivation chain runs at startup: system seed →
+/// star profile → orbital layout → planet selection → planet seed.
+///
+/// Other fields:
 /// - `chunk_size_world_units`: how wide/deep one chunk is in Bevy world units
 /// - `active_chunk_radius`: how many chunks around the player's chunk are
 ///   considered logically active
@@ -785,15 +813,33 @@ impl ChunkCoord {
 ///   detection during delta merging (Story 5.6)
 #[derive(Clone, Debug, Resource, PartialEq, Serialize, Deserialize)]
 pub struct WorldGenerationConfig {
-    /// Solar system seed — root of all deterministic star derivation.
+    /// Solar system seed — root of all deterministic star and planet derivation.
     ///
     /// The star profile (type, luminosity, temperature, mass, habitable zone)
-    /// is derived from this seed at startup. Changing this value changes the
-    /// star the player's planet orbits.
-    #[serde(default = "default_system_seed")]
-    pub system_seed: u64,
-    #[serde(default = "default_planet_seed")]
-    pub planet_seed: u64,
+    /// is derived from this seed at startup. In system-derived mode, the
+    /// orbital layout and planet seed are also derived from this seed.
+    ///
+    /// Accepts both `solar_system_seed` (new canonical name) and `system_seed`
+    /// (legacy alias) in the TOML file for backward compatibility.
+    #[serde(
+        default = "default_solar_system_seed",
+        alias = "system_seed",
+        rename = "solar_system_seed"
+    )]
+    pub solar_system_seed: u64,
+    /// Planet seed override. When present, the planet seed is used directly
+    /// and no orbital derivation chain runs (override mode). When absent,
+    /// the planet seed is derived from `solar_system_seed` + `planet_index`
+    /// (system-derived mode).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub planet_seed: Option<u64>,
+    /// Zero-based index selecting which orbital slot to start on when in
+    /// system-derived mode. Ignored in override mode.
+    ///
+    /// If the index is out of range for the derived orbital layout, startup
+    /// fails with a descriptive error rather than silently clamping.
+    #[serde(default)]
+    pub planet_index: u32,
     #[serde(default = "default_chunk_size_world_units")]
     pub chunk_size_world_units: f32,
     #[serde(default = "default_active_chunk_radius")]
@@ -853,8 +899,9 @@ pub struct WorldGenerationConfig {
 impl Default for WorldGenerationConfig {
     fn default() -> Self {
         Self {
-            system_seed: default_system_seed(),
-            planet_seed: default_planet_seed(),
+            solar_system_seed: default_solar_system_seed(),
+            planet_seed: Some(default_planet_seed()),
+            planet_index: 0,
             chunk_size_world_units: default_chunk_size_world_units(),
             active_chunk_radius: default_active_chunk_radius(),
             building_cell_size: default_building_cell_size(),
@@ -872,7 +919,167 @@ impl Default for WorldGenerationConfig {
     }
 }
 
-fn default_system_seed() -> u64 {
+impl WorldGenerationConfig {
+    /// Which seeding mode this config is operating in.
+    ///
+    /// When `planet_seed` is `Some`, the config is in override mode — the
+    /// planet seed is used directly and no orbital derivation runs. When
+    /// `planet_seed` is `None`, the config is in system-derived mode and
+    /// the planet seed will be derived from `solar_system_seed` + `planet_index`.
+    pub fn seed_mode(&self) -> SeedMode {
+        if self.planet_seed.is_some() {
+            SeedMode::Override
+        } else {
+            SeedMode::SystemDerived
+        }
+    }
+
+    /// Validate config values, particularly seed mode configuration.
+    ///
+    /// The config supports two mutually exclusive seeding modes. This method
+    /// enforces that exactly one mode is clearly specified:
+    ///
+    /// - **Override mode**: `planet_seed` is set. The `solar_system_seed` is
+    ///   still used for star derivation, but the planet seed bypasses orbital
+    ///   derivation. `planet_index` is ignored in this mode — if it was
+    ///   explicitly set alongside `planet_seed`, that is a likely
+    ///   misconfiguration (the user probably meant system-derived mode).
+    ///
+    /// - **System-derived mode**: `planet_seed` is absent. The planet seed
+    ///   is derived from `solar_system_seed` + `planet_index`.
+    ///
+    /// Both modes require `solar_system_seed` (always present via default).
+    /// Numeric field ranges (chunk size, radii, elevation) are also validated.
+    pub fn validate(&self) -> Result<(), String> {
+        // Seed mode: if planet_seed is set alongside a non-default planet_index,
+        // warn — the user likely intended system-derived mode but forgot to
+        // remove planet_seed. This is an error, not silent precedence.
+        if let Some(planet_seed) = self.planet_seed
+            && self.planet_index != 0
+        {
+            return Err(format!(
+                "planet_seed and planet_index are both set. In override mode \
+                 (planet_seed present), planet_index is ignored. Either remove \
+                 planet_seed to use system-derived mode, or remove planet_index \
+                 to use override mode. (planet_seed={planet_seed}, planet_index={})",
+                self.planet_index,
+            ));
+        }
+
+        // Chunk size must be positive and finite.
+        if !self.chunk_size_world_units.is_finite() || self.chunk_size_world_units <= 0.0 {
+            return Err(format!(
+                "chunk_size_world_units must be positive and finite, got {}",
+                self.chunk_size_world_units,
+            ));
+        }
+
+        // Active chunk radius must be non-negative.
+        if self.active_chunk_radius < 0 {
+            return Err(format!(
+                "active_chunk_radius must be >= 0, got {}",
+                self.active_chunk_radius,
+            ));
+        }
+
+        // Building cell size must be positive and finite.
+        if !self.building_cell_size.is_finite() || self.building_cell_size <= 0.0 {
+            return Err(format!(
+                "building_cell_size must be positive and finite, got {}",
+                self.building_cell_size,
+            ));
+        }
+
+        // Planet surface radius bounds.
+        if self.planet_surface_min_radius < 1 {
+            return Err(format!(
+                "planet_surface_min_radius must be >= 1, got {}",
+                self.planet_surface_min_radius,
+            ));
+        }
+        if self.planet_surface_min_radius > self.planet_surface_max_radius {
+            return Err(format!(
+                "planet_surface_min_radius ({}) must be <= planet_surface_max_radius ({})",
+                self.planet_surface_min_radius, self.planet_surface_max_radius,
+            ));
+        }
+
+        // Elevation amplitude must be finite and non-negative.
+        if !self.elevation_amplitude.is_finite() || self.elevation_amplitude < 0.0 {
+            return Err(format!(
+                "elevation_amplitude must be non-negative and finite, got {}",
+                self.elevation_amplitude,
+            ));
+        }
+
+        // Elevation frequency must be positive and finite.
+        if !self.elevation_frequency.is_finite() || self.elevation_frequency <= 0.0 {
+            return Err(format!(
+                "elevation_frequency must be positive and finite, got {}",
+                self.elevation_frequency,
+            ));
+        }
+
+        // Elevation octaves must be >= 1.
+        if self.elevation_octaves < 1 {
+            return Err(format!(
+                "elevation_octaves must be >= 1, got {}",
+                self.elevation_octaves,
+            ));
+        }
+
+        // Detail weight must be finite and in [0, 1].
+        if !self.elevation_detail_weight.is_finite()
+            || self.elevation_detail_weight < 0.0
+            || self.elevation_detail_weight > 1.0
+        {
+            return Err(format!(
+                "elevation_detail_weight must be in [0.0, 1.0], got {}",
+                self.elevation_detail_weight,
+            ));
+        }
+
+        // Detail frequency must be positive and finite (when detail weight > 0).
+        if self.elevation_detail_weight > 0.0
+            && (!self.elevation_detail_frequency.is_finite()
+                || self.elevation_detail_frequency <= 0.0)
+        {
+            return Err(format!(
+                "elevation_detail_frequency must be positive and finite when \
+                 detail weight > 0, got {}",
+                self.elevation_detail_frequency,
+            ));
+        }
+
+        // Detail octaves must be >= 1 (when detail weight > 0).
+        if self.elevation_detail_weight > 0.0 && self.elevation_detail_octaves < 1 {
+            return Err(format!(
+                "elevation_detail_octaves must be >= 1 when detail weight > 0, got {}",
+                self.elevation_detail_octaves,
+            ));
+        }
+
+        // Base Y must be finite.
+        if !self.elevation_base_y.is_finite() {
+            return Err(format!(
+                "elevation_base_y must be finite, got {}",
+                self.elevation_base_y,
+            ));
+        }
+
+        // Subdivisions must be >= 1.
+        if self.elevation_subdivisions < 1 {
+            return Err(format!(
+                "elevation_subdivisions must be >= 1, got {}",
+                self.elevation_subdivisions,
+            ));
+        }
+
+        Ok(())
+    }
+}
+
+fn default_solar_system_seed() -> u64 {
     20_260_501
 }
 
@@ -973,6 +1180,29 @@ fn default_elevation_subdivisions() -> u32 {
     8
 }
 
+/// Solar system context carried through the derivation chain.
+///
+/// Present in `WorldProfile` when the planet seed was derived from a solar
+/// system seed (system-derived mode). Absent (`None`) when the planet seed
+/// was provided directly in config (override mode).
+///
+/// Systems that need stellar/orbital context (e.g., biome temperature
+/// scaling) check `WorldProfile::system_context`. When it is `None`, they
+/// fall back to defaults (preserving the pre-stellar-integration behavior).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SystemContext {
+    /// The solar system seed that started the derivation chain.
+    pub system_seed: SolarSystemSeed,
+    /// The star profile derived from the system seed.
+    pub star: StarProfile,
+    /// The full orbital layout derived from the system seed.
+    pub orbital_layout: OrbitalLayout,
+    /// Planet-level environmental parameters derived from stellar context.
+    pub planet_environment: PlanetEnvironment,
+    /// The zero-based orbital index of the selected planet.
+    pub planet_orbital_index: u32,
+}
+
 /// Derived deterministic world profile.
 ///
 /// The profile exists so later stories do not have to keep reverse engineering
@@ -1022,18 +1252,94 @@ pub struct WorldProfile {
     /// `ELEVATION_CHANNEL`. Drives the multi-octave noise field that
     /// produces terrain height variation.
     pub elevation_seed: u64,
+    /// Solar system context when running in system-derived mode.
+    ///
+    /// `Some` when the planet seed was derived from a solar system seed via
+    /// the full derivation chain. `None` when the planet seed was provided
+    /// directly in config (override mode). Systems that need stellar or
+    /// orbital context should check this field and fall back to defaults
+    /// when it is `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_context: Option<SystemContext>,
 }
 
 impl Default for WorldProfile {
     fn default() -> Self {
         Self::from_config(&WorldGenerationConfig::default())
+            .expect("default WorldGenerationConfig always has planet_seed")
     }
 }
 
 impl WorldProfile {
-    pub fn from_config(config: &WorldGenerationConfig) -> Self {
-        let planet_seed = PlanetSeed(config.planet_seed);
+    /// Build a world profile in override mode — planet seed taken directly
+    /// from config, no system derivation chain.
+    ///
+    /// This is the constructor used when `planet_seed` is present in the
+    /// config. The `system_context` field is `None`.
+    ///
+    /// Returns `Err` if `planet_seed` is `None` in the config (caller should
+    /// check `seed_mode()` first or use `from_system_seed` for system-derived mode).
+    pub fn from_config(config: &WorldGenerationConfig) -> Result<Self, String> {
+        let raw_seed = config.planet_seed.ok_or_else(|| {
+            "from_config requires planet_seed to be Some (override mode)".to_string()
+        })?;
+        let planet_seed = PlanetSeed(raw_seed);
+        Ok(Self::build(planet_seed, config, None))
+    }
 
+    /// Build a world profile in system-derived mode — planet seed derived
+    /// from the full solar system chain.
+    ///
+    /// Runs: system seed → star profile → orbital layout → select planet
+    /// by index → derive planet environment → build profile.
+    ///
+    /// Returns `Err` with a human-readable message if the `planet_index`
+    /// is out of range for the derived orbital layout.
+    pub fn from_system_seed(
+        config: &WorldGenerationConfig,
+        star_registry: &StarTypeRegistry,
+        orbital_config: &OrbitalConfig,
+        env_config: &PlanetEnvironmentConfig,
+    ) -> Result<Self, String> {
+        let system_seed = SolarSystemSeed(config.solar_system_seed);
+        let star = derive_star_profile(system_seed, star_registry);
+        let orbital_layout = derive_orbital_layout(system_seed, orbital_config);
+
+        let planet_count = orbital_layout.planets.len();
+        let index = config.planet_index as usize;
+        if index >= planet_count {
+            return Err(format!(
+                "planet_index {} is out of range: solar system seed {} produced \
+                 {} planets (valid indices: 0..{})",
+                config.planet_index,
+                config.solar_system_seed,
+                planet_count,
+                planet_count.saturating_sub(1),
+            ));
+        }
+
+        let slot = &orbital_layout.planets[index];
+        let planet_seed = slot.planet_seed;
+        let planet_environment =
+            derive_planet_environment(&star, slot.orbital_distance_au, planet_seed, env_config);
+
+        let context = SystemContext {
+            system_seed,
+            star,
+            orbital_layout,
+            planet_environment,
+            planet_orbital_index: config.planet_index,
+        };
+
+        Ok(Self::build(planet_seed, config, Some(context)))
+    }
+
+    /// Shared builder used by both `from_config` and `from_system_seed`.
+    fn build(
+        planet_seed: PlanetSeed,
+        config: &WorldGenerationConfig,
+        system_context: Option<SystemContext>,
+    ) -> Self {
         // Derive the planet surface radius from the planet seed. We mix the
         // seed with a dedicated channel constant so this derivation is
         // independent of all other seed-derived values (placement density,
@@ -1061,7 +1367,21 @@ impl WorldProfile {
             planet_surface_radius,
             planet_surface_diameter,
             elevation_seed: mix_seed(planet_seed.0, ELEVATION_CHANNEL),
+            system_context,
         }
+    }
+
+    /// Whether this profile was derived from a solar system seed.
+    ///
+    /// Returns `true` when operating in system-derived mode (the full chain
+    /// ran: system seed → star → orbital layout → planet seed). Returns
+    /// `false` in override mode (planet seed was provided directly).
+    ///
+    /// Not yet consumed by any system — provided for story 5b.4 integration
+    /// tests and downstream biome systems that will branch on mode.
+    #[allow(dead_code)]
+    pub fn is_system_derived(&self) -> bool {
+        self.system_context.is_some()
     }
 }
 
@@ -1113,10 +1433,19 @@ fn load_world_generation_config(mut commands: Commands) {
     let config = if Path::new(CONFIG_PATH).exists() {
         match fs::read_to_string(CONFIG_PATH) {
             Ok(contents) => match toml::from_str::<WorldGenerationConfig>(&contents) {
-                Ok(config) => {
-                    info!("Loaded world-generation config from {CONFIG_PATH}");
-                    config
-                }
+                Ok(config) => match config.validate() {
+                    Ok(()) => {
+                        info!("Loaded world-generation config from {CONFIG_PATH}");
+                        config
+                    }
+                    Err(validation_error) => {
+                        warn!(
+                            "World-generation config from {CONFIG_PATH} failed validation, \
+                             using defaults: {validation_error}"
+                        );
+                        WorldGenerationConfig::default()
+                    }
+                },
                 Err(error) => {
                     warn!("Malformed {CONFIG_PATH}, using defaults: {error}");
                     WorldGenerationConfig::default()
@@ -1132,8 +1461,85 @@ fn load_world_generation_config(mut commands: Commands) {
         WorldGenerationConfig::default()
     };
 
-    let profile = WorldProfile::from_config(&config);
+    match config.seed_mode() {
+        SeedMode::Override => {
+            info!(
+                "Seed mode: override (planet_seed={:#018X})",
+                config
+                    .planet_seed
+                    .expect("override mode requires planet_seed"),
+            );
+            let profile = WorldProfile::from_config(&config)
+                .expect("override mode guarantees planet_seed is present");
+            commands.insert_resource(profile);
+        }
+        SeedMode::SystemDerived => {
+            info!(
+                "Seed mode: system-derived (solar_system_seed={}, planet_index={}); \
+                 WorldProfile will be resolved in Startup after registries are loaded",
+                config.solar_system_seed, config.planet_index,
+            );
+            // WorldProfile will be built by resolve_system_derived_profile in Startup.
+            // The init_resource default is a placeholder that gets overwritten.
+        }
+    }
+
     commands.insert_resource(config);
+}
+
+/// Resolve the `WorldProfile` from the full solar system derivation chain.
+///
+/// This system runs in `Startup` (after all `PreStartup` registry loaders
+/// have completed). It only does work when the config is in system-derived
+/// mode — when `planet_seed` is absent and the planet seed must be derived
+/// from `solar_system_seed` + `planet_index`.
+///
+/// On success, it overwrites the default `WorldProfile` resource with the
+/// fully resolved profile including `SystemContext`. On failure (e.g.,
+/// `planet_index` out of range), it logs a clear error message and
+/// requests a graceful application exit via [`AppExit`], rather than
+/// panicking, so the user sees an actionable diagnostic instead of a
+/// crash backtrace.
+pub fn resolve_system_derived_profile(
+    mut commands: Commands,
+    config: Res<WorldGenerationConfig>,
+    star_registry: Res<StarTypeRegistry>,
+    orbital_config: Res<OrbitalConfig>,
+    env_config: Res<PlanetEnvironmentConfig>,
+    mut app_exit: bevy::ecs::message::MessageWriter<AppExit>,
+) {
+    if config.seed_mode() != SeedMode::SystemDerived {
+        return;
+    }
+
+    let profile =
+        match WorldProfile::from_system_seed(&config, &star_registry, &orbital_config, &env_config)
+        {
+            Ok(p) => p,
+            Err(err) => {
+                error!(
+                    "Failed to resolve system-derived WorldProfile: {err}. \
+                     Fix solar_system_seed / planet_index in {CONFIG_PATH} \
+                     or switch to override mode by setting planet_seed directly."
+                );
+                app_exit.write(AppExit::error());
+                return;
+            }
+        };
+
+    info!(
+        "Resolved system-derived WorldProfile: planet_seed={:#018X}, \
+         star_type={}, planet_index={}",
+        profile.planet_seed.0,
+        profile
+            .system_context
+            .as_ref()
+            .expect("system-derived profile must have system_context")
+            .star
+            .star_type_key,
+        config.planet_index,
+    );
+
     commands.insert_resource(profile);
 }
 
@@ -1858,7 +2264,7 @@ mod tests {
     #[test]
     fn world_profile_derivation_is_deterministic() {
         let config = WorldGenerationConfig {
-            planet_seed: 123_456,
+            planet_seed: Some(123_456),
             chunk_size_world_units: 45.0,
             active_chunk_radius: 2,
             building_cell_size: 1.0,
@@ -1867,15 +2273,106 @@ mod tests {
             ..Default::default()
         };
 
-        let a = WorldProfile::from_config(&config);
-        let b = WorldProfile::from_config(&config);
+        let a = WorldProfile::from_config(&config).unwrap();
+        let b = WorldProfile::from_config(&config).unwrap();
 
         assert_eq!(a, b);
     }
 
     #[test]
+    fn override_mode_is_not_system_derived_and_has_no_system_context() {
+        let config = WorldGenerationConfig {
+            planet_seed: Some(42),
+            ..Default::default()
+        };
+
+        let profile = WorldProfile::from_config(&config).unwrap();
+
+        assert!(
+            !profile.is_system_derived(),
+            "override mode must report is_system_derived() == false"
+        );
+        assert!(
+            profile.system_context.is_none(),
+            "override mode must have system_context == None"
+        );
+    }
+
+    #[test]
+    fn world_profile_with_system_context_survives_serde_round_trip() {
+        use crate::solar_system::{
+            OrbitalConfig, PlanetEnvironmentConfig, SolarSystemSeed, StarTypeRegistry,
+        };
+
+        // Build a WorldProfile via the full system-seed derivation chain so
+        // every field is populated with realistic, derived values.
+        let star_registry = StarTypeRegistry::default();
+        let orbital_config = OrbitalConfig::default();
+        let env_config = PlanetEnvironmentConfig::default();
+        let config = WorldGenerationConfig {
+            solar_system_seed: 42,
+            planet_index: 0,
+            planet_seed: None,
+            ..Default::default()
+        };
+
+        let profile =
+            WorldProfile::from_system_seed(&config, &star_registry, &orbital_config, &env_config)
+                .expect("system-seed derivation must succeed for index 0");
+
+        assert!(
+            profile.is_system_derived(),
+            "profile must be in system-derived mode"
+        );
+
+        // JSON round-trip
+        let json =
+            serde_json::to_string_pretty(&profile).expect("WorldProfile must serialize to JSON");
+        let deserialized: WorldProfile =
+            serde_json::from_str(&json).expect("WorldProfile must deserialize from JSON");
+
+        assert_eq!(
+            profile, deserialized,
+            "WorldProfile with SystemContext must survive JSON round-trip"
+        );
+
+        // Verify the SystemContext fields are actually present after round-trip
+        let ctx = deserialized
+            .system_context
+            .as_ref()
+            .expect("system_context must survive round-trip");
+        assert_eq!(ctx.system_seed, SolarSystemSeed(42));
+        assert_eq!(ctx.planet_orbital_index, 0);
+    }
+
+    #[test]
+    fn world_profile_override_mode_survives_serde_round_trip() {
+        let config = WorldGenerationConfig {
+            planet_seed: Some(12345),
+            ..Default::default()
+        };
+        let profile = WorldProfile::from_config(&config).unwrap();
+
+        assert!(!profile.is_system_derived());
+
+        let json =
+            serde_json::to_string_pretty(&profile).expect("WorldProfile must serialize to JSON");
+        let deserialized: WorldProfile =
+            serde_json::from_str(&json).expect("WorldProfile must deserialize from JSON");
+
+        assert_eq!(
+            profile, deserialized,
+            "WorldProfile in override mode must survive JSON round-trip"
+        );
+        assert!(
+            deserialized.system_context.is_none(),
+            "override mode must have no system_context after round-trip"
+        );
+    }
+
+    #[test]
     fn world_profile_derives_distinct_sub_seeds() {
-        let profile = WorldProfile::from_config(&WorldGenerationConfig::default());
+        let profile = WorldProfile::from_config(&WorldGenerationConfig::default()).unwrap();
 
         assert_ne!(
             profile.placement_density_seed,
@@ -1941,14 +2438,15 @@ mod tests {
     #[test]
     fn chunk_generation_key_is_deterministic_for_same_inputs() {
         let profile = WorldProfile::from_config(&WorldGenerationConfig {
-            planet_seed: 777,
+            planet_seed: Some(777),
             chunk_size_world_units: 45.0,
             active_chunk_radius: 1,
             building_cell_size: 1.0,
             planet_surface_min_radius: 500,
             planet_surface_max_radius: 5000,
             ..Default::default()
-        });
+        })
+        .unwrap();
         let chunk = ChunkCoord::new(-3, 4);
 
         let a = derive_chunk_generation_key(&profile, chunk);
@@ -1959,7 +2457,7 @@ mod tests {
 
     #[test]
     fn chunk_generation_key_changes_for_different_chunks() {
-        let profile = WorldProfile::from_config(&WorldGenerationConfig::default());
+        let profile = WorldProfile::from_config(&WorldGenerationConfig::default()).unwrap();
         let a = derive_chunk_generation_key(&profile, ChunkCoord::new(0, 0));
         let b = derive_chunk_generation_key(&profile, ChunkCoord::new(1, 0));
 
@@ -1971,14 +2469,15 @@ mod tests {
     #[test]
     fn generated_object_id_is_stable_from_explicit_inputs() {
         let profile = WorldProfile::from_config(&WorldGenerationConfig {
-            planet_seed: 42,
+            planet_seed: Some(42),
             chunk_size_world_units: 45.0,
             active_chunk_radius: 1,
             building_cell_size: 1.0,
             planet_surface_min_radius: 500,
             planet_surface_max_radius: 5000,
             ..Default::default()
-        });
+        })
+        .unwrap();
 
         let a =
             derive_generated_object_id(&profile, ChunkCoord::new(-2, 3), "ferrite_surface", 7, 1);
@@ -2291,7 +2790,7 @@ mod tests {
     #[test]
     fn world_profile_includes_planet_surface_fields() {
         let config = WorldGenerationConfig {
-            planet_seed: 42,
+            planet_seed: Some(42),
             chunk_size_world_units: 45.0,
             active_chunk_radius: 1,
             building_cell_size: 1.0,
@@ -2299,7 +2798,7 @@ mod tests {
             planet_surface_max_radius: 5000,
             ..Default::default()
         };
-        let profile = WorldProfile::from_config(&config);
+        let profile = WorldProfile::from_config(&config).unwrap();
 
         assert!(
             (500..=5000).contains(&profile.planet_surface_radius),
@@ -2348,7 +2847,7 @@ mod tests {
         // makes the torus seamless — chunk (-1, 0) on a diameter-100 planet
         // generates the same content as chunk (99, 0).
         let config = WorldGenerationConfig {
-            planet_seed: 42,
+            planet_seed: Some(42),
             chunk_size_world_units: 45.0,
             active_chunk_radius: 1,
             building_cell_size: 1.0,
@@ -2356,7 +2855,7 @@ mod tests {
             planet_surface_max_radius: 50,
             ..Default::default()
         };
-        let profile = WorldProfile::from_config(&config);
+        let profile = WorldProfile::from_config(&config).unwrap();
         let diameter = profile.planet_surface_diameter; // 100
 
         let raw_negative = ChunkCoord::new(-1, -1);
@@ -2372,7 +2871,7 @@ mod tests {
         // A coordinate beyond the diameter should produce the same key as
         // the equivalent in-range coordinate.
         let config = WorldGenerationConfig {
-            planet_seed: 42,
+            planet_seed: Some(42),
             chunk_size_world_units: 45.0,
             active_chunk_radius: 1,
             building_cell_size: 1.0,
@@ -2380,7 +2879,7 @@ mod tests {
             planet_surface_max_radius: 50,
             ..Default::default()
         };
-        let profile = WorldProfile::from_config(&config);
+        let profile = WorldProfile::from_config(&config).unwrap();
         let diameter = profile.planet_surface_diameter; // 100
 
         let canonical = ChunkCoord::new(5, 10);
@@ -2395,7 +2894,7 @@ mod tests {
 
     fn sample_config() -> WorldGenerationConfig {
         WorldGenerationConfig {
-            planet_seed: 2026,
+            planet_seed: Some(2026),
             chunk_size_world_units: 45.0,
             active_chunk_radius: 1,
             building_cell_size: 1.0,
@@ -2408,7 +2907,7 @@ mod tests {
     #[test]
     fn biome_derivation_is_deterministic() {
         // Same seed + coord must always produce the same biome.
-        let profile = WorldProfile::from_config(&sample_config());
+        let profile = WorldProfile::from_config(&sample_config()).unwrap();
         let registry = BiomeRegistry::default();
         let coord = ChunkCoord::new(7, 13);
 
@@ -2425,7 +2924,7 @@ mod tests {
         // Scan a large set of coords and verify all three biome keys appear.
         // The noise field is coherent, so with enough samples we should hit
         // all defined ranges.
-        let profile = WorldProfile::from_config(&sample_config());
+        let profile = WorldProfile::from_config(&sample_config()).unwrap();
         let registry = BiomeRegistry::default();
 
         let mut found: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -2460,7 +2959,7 @@ mod tests {
     fn fallback_biome_used_when_no_range_matches() {
         // Create a registry with a single biome that only covers a tiny corner,
         // then sample a coord that lands outside it.
-        let profile = WorldProfile::from_config(&sample_config());
+        let profile = WorldProfile::from_config(&sample_config()).unwrap();
         let registry = BiomeRegistry {
             noise_scale_chunks: 12.0,
             temperature_noise_channel: 0xB10E_0001_0000_0001,
@@ -2521,7 +3020,7 @@ mod tests {
     fn biome_climate_seed_is_distinct_from_other_seeds() {
         // The biome climate seed must not collide with any other sub-seed
         // in WorldProfile to avoid correlated noise fields.
-        let profile = WorldProfile::from_config(&sample_config());
+        let profile = WorldProfile::from_config(&sample_config()).unwrap();
 
         assert_ne!(profile.biome_climate_seed, profile.placement_density_seed);
         assert_ne!(profile.biome_climate_seed, profile.placement_variation_seed);
@@ -2532,7 +3031,7 @@ mod tests {
     fn elevation_seed_is_distinct_from_other_seeds() {
         // The elevation seed must not collide with any other sub-seed
         // in WorldProfile to avoid correlated noise fields.
-        let profile = WorldProfile::from_config(&sample_config());
+        let profile = WorldProfile::from_config(&sample_config()).unwrap();
 
         assert_ne!(profile.elevation_seed, profile.placement_density_seed);
         assert_ne!(profile.elevation_seed, profile.placement_variation_seed);
@@ -2724,7 +3223,7 @@ mod tests {
     fn biome_derivation_wraps_torus_correctly() {
         // Equivalent torus coordinates must produce the same biome.
         let config = WorldGenerationConfig {
-            planet_seed: 42,
+            planet_seed: Some(42),
             chunk_size_world_units: 45.0,
             active_chunk_radius: 1,
             building_cell_size: 1.0,
@@ -2732,7 +3231,7 @@ mod tests {
             planet_surface_max_radius: 50,
             ..Default::default()
         };
-        let profile = WorldProfile::from_config(&config);
+        let profile = WorldProfile::from_config(&config).unwrap();
         let registry = BiomeRegistry::default();
         let diameter = profile.planet_surface_diameter;
 
@@ -2754,7 +3253,7 @@ mod tests {
         // `derive_chunk_biome` must return a hardcoded neutral default
         // rather than panicking.
         let config = sample_config();
-        let profile = WorldProfile::from_config(&config);
+        let profile = WorldProfile::from_config(&config).unwrap();
         let registry = BiomeRegistry {
             biomes: vec![],
             fallback_biome_key: "nonexistent".to_string(),
@@ -2778,7 +3277,7 @@ mod tests {
         // exist in the registry. This exercises the third fallback path
         // (lines ~1206-1214).
         let config = sample_config();
-        let profile = WorldProfile::from_config(&config);
+        let profile = WorldProfile::from_config(&config).unwrap();
 
         // Define biomes that cover an impossibly narrow range so nothing
         // will match any real noise sample.
@@ -2817,7 +3316,7 @@ mod tests {
         // Derive chunks across a large coordinate range, collecting the
         // material palette returned for each biome key. Verify that every
         // biome's palette matches the palette defined in its BiomeDefinition.
-        let profile = WorldProfile::from_config(&sample_config());
+        let profile = WorldProfile::from_config(&sample_config()).unwrap();
         let registry = BiomeRegistry::default();
 
         // Build expected palettes from the registry, keyed by biome key.
@@ -2883,7 +3382,7 @@ mod tests {
     fn chunk_biome_fallback_carries_fallback_palette() {
         // When no biome range matches, the fallback biome's palette must be
         // propagated into the ChunkBiome, not an empty vec.
-        let profile = WorldProfile::from_config(&sample_config());
+        let profile = WorldProfile::from_config(&sample_config()).unwrap();
         let fallback_palette = vec![
             PaletteMaterial {
                 material_seed: 0xAAAA,
@@ -2960,7 +3459,7 @@ mod tests {
         // When the fallback key itself is missing from the registry, the
         // hardcoded neutral default must still provide a non-empty material
         // palette so that deposits can be generated even without biomes.toml.
-        let profile = WorldProfile::from_config(&sample_config());
+        let profile = WorldProfile::from_config(&sample_config()).unwrap();
         let registry = BiomeRegistry {
             fallback_biome_key: "does_not_exist".to_string(),
             biomes: Vec::new(),
@@ -3046,7 +3545,7 @@ mod tests {
     fn planet_env_none_uses_normalized_matching_only() {
         // Without PlanetEnvironment, absolute thresholds are ignored and
         // biomes match purely on normalized temperature/moisture ranges.
-        let profile = WorldProfile::from_config(&sample_config());
+        let profile = WorldProfile::from_config(&sample_config()).unwrap();
         let registry = abs_temp_registry();
 
         // Scan a range of chunks — every result should match one of the two
@@ -3066,7 +3565,7 @@ mod tests {
         // A very hot planet (min 400 K, max 700 K) maps all noise values
         // above the cold biome's absolute max of 220 K, so the cold biome
         // should never match.
-        let profile = WorldProfile::from_config(&sample_config());
+        let profile = WorldProfile::from_config(&sample_config()).unwrap();
         let registry = abs_temp_registry();
         let hot_env = PlanetEnvironment {
             surface_temp_min_k: 400.0,
@@ -3093,7 +3592,7 @@ mod tests {
     fn planet_env_cold_planet_filters_hot_biome() {
         // A very cold planet (min 30 K, max 100 K) maps all noise values
         // below the hot biome's absolute min of 350 K.
-        let profile = WorldProfile::from_config(&sample_config());
+        let profile = WorldProfile::from_config(&sample_config()).unwrap();
         let registry = abs_temp_registry();
         let cold_env = PlanetEnvironment {
             surface_temp_min_k: 30.0,
@@ -3116,7 +3615,7 @@ mod tests {
 
     #[test]
     fn planet_env_deterministic() {
-        let profile = WorldProfile::from_config(&sample_config());
+        let profile = WorldProfile::from_config(&sample_config()).unwrap();
         let registry = abs_temp_registry();
         let env = PlanetEnvironment {
             surface_temp_min_k: 200.0,
@@ -3139,7 +3638,7 @@ mod tests {
     fn hot_planet_biomes_differ_from_cold_planet_biomes() {
         // A hot planet and a cold planet should produce meaningfully different
         // biome distributions across the same set of chunk coordinates.
-        let profile = WorldProfile::from_config(&sample_config());
+        let profile = WorldProfile::from_config(&sample_config()).unwrap();
         let registry = abs_temp_registry();
 
         let hot_env = PlanetEnvironment {
@@ -3207,7 +3706,7 @@ mod tests {
             std::fs::read_to_string(BIOME_CONFIG_PATH).expect("shipped biomes.toml must exist");
         let registry: BiomeRegistry =
             toml::from_str(&toml_content).expect("shipped biomes.toml must parse");
-        let profile = WorldProfile::from_config(&sample_config());
+        let profile = WorldProfile::from_config(&sample_config()).unwrap();
 
         let hot_env = PlanetEnvironment {
             surface_temp_min_k: 400.0,
@@ -3731,5 +4230,971 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ── WorldGenerationConfig::validate tests ──────────────────────────
+
+    #[test]
+    fn validate_default_config_passes() {
+        WorldGenerationConfig::default()
+            .validate()
+            .expect("default config must pass validation");
+    }
+
+    #[test]
+    fn validate_override_mode_without_planet_index_passes() {
+        let config = WorldGenerationConfig {
+            planet_seed: Some(42),
+            planet_index: 0,
+            ..Default::default()
+        };
+        config
+            .validate()
+            .expect("override mode with planet_index=0 must pass");
+    }
+
+    #[test]
+    fn validate_system_derived_mode_passes() {
+        let config = WorldGenerationConfig {
+            planet_seed: None,
+            planet_index: 3,
+            ..Default::default()
+        };
+        config.validate().expect("system-derived mode must pass");
+    }
+
+    #[test]
+    fn validate_rejects_both_planet_seed_and_planet_index() {
+        let config = WorldGenerationConfig {
+            planet_seed: Some(42),
+            planet_index: 3,
+            ..Default::default()
+        };
+        let err = config.validate().unwrap_err();
+        assert!(
+            err.contains("planet_seed") && err.contains("planet_index"),
+            "error must mention both fields, got: {err}",
+        );
+    }
+
+    #[test]
+    fn validate_rejects_zero_chunk_size() {
+        let config = WorldGenerationConfig {
+            chunk_size_world_units: 0.0,
+            ..Default::default()
+        };
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_negative_active_chunk_radius() {
+        let config = WorldGenerationConfig {
+            active_chunk_radius: -1,
+            ..Default::default()
+        };
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_inverted_planet_radius_bounds() {
+        let config = WorldGenerationConfig {
+            planet_surface_min_radius: 5000,
+            planet_surface_max_radius: 500,
+            ..Default::default()
+        };
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_nan_elevation_amplitude() {
+        let config = WorldGenerationConfig {
+            elevation_amplitude: f32::NAN,
+            ..Default::default()
+        };
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_zero_elevation_frequency() {
+        let config = WorldGenerationConfig {
+            elevation_frequency: 0.0,
+            ..Default::default()
+        };
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_detail_weight_above_one() {
+        let config = WorldGenerationConfig {
+            elevation_detail_weight: 1.5,
+            ..Default::default()
+        };
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_zero_subdivisions() {
+        let config = WorldGenerationConfig {
+            elevation_subdivisions: 0,
+            ..Default::default()
+        };
+        assert!(config.validate().is_err());
+    }
+
+    // ── Config TOML parsing tests ─────────────────────────────────────
+
+    #[test]
+    fn config_with_solar_system_seed_parses_system_derived_mode() {
+        let toml_str = r#"
+solar_system_seed = 42
+planet_index = 2
+"#;
+        let config: WorldGenerationConfig =
+            toml::from_str(toml_str).expect("system-derived TOML must parse");
+        assert_eq!(config.solar_system_seed, 42);
+        assert_eq!(config.planet_index, 2);
+        assert_eq!(
+            config.planet_seed, None,
+            "planet_seed must be None when omitted"
+        );
+        assert_eq!(config.seed_mode(), SeedMode::SystemDerived);
+        config
+            .validate()
+            .expect("system-derived config must pass validation");
+    }
+
+    #[test]
+    fn config_with_solar_system_seed_only_defaults_planet_index_to_zero() {
+        let toml_str = r#"
+solar_system_seed = 99
+"#;
+        let config: WorldGenerationConfig =
+            toml::from_str(toml_str).expect("solar_system_seed-only TOML must parse");
+        assert_eq!(config.solar_system_seed, 99);
+        assert_eq!(config.planet_index, 0);
+        assert_eq!(config.planet_seed, None);
+        assert_eq!(config.seed_mode(), SeedMode::SystemDerived);
+        config
+            .validate()
+            .expect("system-derived config with default planet_index must pass");
+    }
+
+    #[test]
+    fn config_with_legacy_system_seed_alias_parses() {
+        let toml_str = r#"
+system_seed = 77
+"#;
+        let config: WorldGenerationConfig =
+            toml::from_str(toml_str).expect("legacy system_seed alias must parse");
+        assert_eq!(config.solar_system_seed, 77);
+        assert_eq!(config.seed_mode(), SeedMode::SystemDerived);
+    }
+
+    #[test]
+    fn config_with_planet_seed_parses_override_mode() {
+        let toml_str = r#"
+solar_system_seed = 42
+planet_seed = 12345
+"#;
+        let config: WorldGenerationConfig =
+            toml::from_str(toml_str).expect("override mode TOML must parse");
+        assert_eq!(config.solar_system_seed, 42);
+        assert_eq!(config.planet_seed, Some(12345));
+        assert_eq!(config.seed_mode(), SeedMode::Override);
+        config
+            .validate()
+            .expect("override mode config must pass validation");
+    }
+
+    /// A saved config that only has `planet_seed` (no `solar_system_seed`)
+    /// must load without errors. This is the backward-compatibility guarantee
+    /// for configs created before system-derived mode existed.
+    #[test]
+    fn config_with_only_planet_seed_loads_without_errors() {
+        let toml_str = r#"
+planet_seed = 12345
+chunk_size_world_units = 45.0
+active_chunk_radius = 1
+"#;
+        let config: WorldGenerationConfig =
+            toml::from_str(toml_str).expect("planet_seed-only TOML must parse");
+
+        // solar_system_seed falls back to its default — not an error.
+        assert_eq!(config.solar_system_seed, default_solar_system_seed());
+        assert_eq!(config.planet_seed, Some(12345));
+        assert_eq!(config.seed_mode(), SeedMode::Override);
+        config
+            .validate()
+            .expect("planet_seed-only config must pass validation");
+
+        // WorldProfile can be built from this config.
+        let profile = WorldProfile::from_config(&config).unwrap();
+        assert_eq!(profile.planet_seed, PlanetSeed(12345));
+        assert!(
+            !profile.is_system_derived(),
+            "planet_seed-only config must not be system-derived",
+        );
+    }
+
+    /// A completely minimal config with only `planet_seed` and no other fields
+    /// must also load — every field has a serde default.
+    #[test]
+    fn config_with_bare_planet_seed_loads_without_errors() {
+        let toml_str = "planet_seed = 99999\n";
+        let config: WorldGenerationConfig =
+            toml::from_str(toml_str).expect("bare planet_seed TOML must parse");
+
+        assert_eq!(config.planet_seed, Some(99999));
+        assert_eq!(config.seed_mode(), SeedMode::Override);
+        config
+            .validate()
+            .expect("bare planet_seed config must pass validation");
+
+        let profile = WorldProfile::from_config(&config).unwrap();
+        assert_eq!(profile.planet_seed, PlanetSeed(99999));
+    }
+
+    #[test]
+    fn config_solar_system_seed_preserves_all_other_defaults() {
+        let toml_str = r#"
+solar_system_seed = 42
+"#;
+        let config: WorldGenerationConfig =
+            toml::from_str(toml_str).expect("minimal system-derived TOML must parse");
+        let defaults = WorldGenerationConfig::default();
+        assert_eq!(
+            config.chunk_size_world_units,
+            defaults.chunk_size_world_units
+        );
+        assert_eq!(config.active_chunk_radius, defaults.active_chunk_radius);
+        assert_eq!(config.building_cell_size, defaults.building_cell_size);
+        assert_eq!(
+            config.planet_surface_min_radius,
+            defaults.planet_surface_min_radius
+        );
+        assert_eq!(
+            config.planet_surface_max_radius,
+            defaults.planet_surface_max_radius
+        );
+        assert_eq!(config.elevation_amplitude, defaults.elevation_amplitude);
+        assert_eq!(config.elevation_frequency, defaults.elevation_frequency);
+        assert_eq!(config.elevation_octaves, defaults.elevation_octaves);
+    }
+
+    /// When both `solar_system_seed` and `planet_seed` appear in config,
+    /// `planet_seed` takes precedence (override mode). The `solar_system_seed`
+    /// is still preserved — it drives star derivation — but the orbital
+    /// derivation chain is skipped entirely. This is documented precedence,
+    /// not silent swallowing: `seed_mode()` returns `Override`, validation
+    /// passes, and both seed values are accessible for their respective roles.
+    #[test]
+    fn config_with_both_seeds_uses_planet_seed_precedence() {
+        let toml_str = r#"
+solar_system_seed = 100
+planet_seed = 999
+"#;
+        let config: WorldGenerationConfig =
+            toml::from_str(toml_str).expect("TOML with both seeds must parse");
+
+        // planet_seed is present → override mode, not system-derived.
+        assert_eq!(config.seed_mode(), SeedMode::Override);
+        assert_eq!(
+            config.planet_seed,
+            Some(999),
+            "planet_seed must be preserved as-is",
+        );
+        // solar_system_seed is still available for star derivation.
+        assert_eq!(
+            config.solar_system_seed, 100,
+            "solar_system_seed must be preserved even in override mode",
+        );
+        // planet_index defaults to 0, which is fine — it is ignored in override mode.
+        assert_eq!(config.planet_index, 0);
+
+        // Validation passes: having both seeds (without planet_index) is the
+        // expected override-mode configuration.
+        config
+            .validate()
+            .expect("both seeds without planet_index must pass validation");
+    }
+
+    /// Specifying all three — `solar_system_seed`, `planet_seed`, and
+    /// `planet_index` — is rejected as ambiguous. The user likely intended
+    /// system-derived mode but forgot to remove `planet_seed`.
+    #[test]
+    fn config_with_both_seeds_and_planet_index_is_rejected() {
+        let toml_str = r#"
+solar_system_seed = 100
+planet_seed = 999
+planet_index = 3
+"#;
+        let config: WorldGenerationConfig =
+            toml::from_str(toml_str).expect("TOML with all three must parse");
+        let err = config.validate().unwrap_err();
+        assert!(
+            err.contains("planet_seed") && err.contains("planet_index"),
+            "error must mention the conflicting fields, got: {err}",
+        );
+    }
+
+    #[test]
+    fn system_mode_is_system_derived_and_all_fields_populated() {
+        let star_registry = StarTypeRegistry::default();
+        let orbital_config = OrbitalConfig::default();
+        let env_config = PlanetEnvironmentConfig::default();
+
+        let config = WorldGenerationConfig {
+            solar_system_seed: 42,
+            planet_seed: None,
+            planet_index: 0,
+            ..Default::default()
+        };
+        assert_eq!(config.seed_mode(), SeedMode::SystemDerived);
+
+        let profile =
+            WorldProfile::from_system_seed(&config, &star_registry, &orbital_config, &env_config)
+                .expect("from_system_seed must succeed for planet_index 0");
+
+        assert!(
+            profile.is_system_derived(),
+            "system-derived mode must report is_system_derived() == true"
+        );
+
+        let ctx = profile
+            .system_context
+            .as_ref()
+            .expect("system_context must be Some in system-derived mode");
+
+        assert_eq!(
+            ctx.system_seed,
+            SolarSystemSeed(42),
+            "system_context must carry the original system seed"
+        );
+        assert_eq!(
+            ctx.planet_orbital_index, 0,
+            "planet_orbital_index must match the configured planet_index"
+        );
+        assert!(
+            !ctx.orbital_layout.planets.is_empty(),
+            "orbital layout must contain at least one planet"
+        );
+
+        // Verify all WorldProfile sub-seeds are populated (non-zero is not
+        // guaranteed by the mixing function, but for seed 42 they are
+        // empirically distinct and non-zero — if any were zero it would
+        // indicate the derivation chain is broken).
+        assert_ne!(profile.placement_density_seed, 0);
+        assert_ne!(profile.placement_variation_seed, 0);
+        assert_ne!(profile.object_identity_seed, 0);
+        assert_ne!(profile.biome_climate_seed, 0);
+        assert_ne!(profile.elevation_seed, 0);
+        assert!(profile.planet_surface_radius > 0);
+        assert!(profile.planet_surface_diameter > 0);
+        assert_eq!(
+            profile.planet_surface_diameter,
+            profile.planet_surface_radius * 2
+        );
+    }
+
+    #[test]
+    fn validate_shipped_toml_passes() {
+        let contents =
+            std::fs::read_to_string(CONFIG_PATH).expect("shipped world_generation.toml must exist");
+        let config: WorldGenerationConfig =
+            toml::from_str(&contents).expect("shipped TOML must parse");
+        config
+            .validate()
+            .expect("shipped world_generation.toml must pass validation");
+    }
+
+    /// Full chain determinism: system seed 42 → specific star type → specific
+    /// planet count → specific planet seed → specific biome at chunk (0, 0).
+    ///
+    /// Running the derivation twice with identical inputs must produce
+    /// byte-identical results at every stage. This exercises the entire
+    /// pipeline from `SolarSystemSeed` through `derive_star_profile`,
+    /// `derive_orbital_layout`, `derive_planet_environment`,
+    /// `WorldProfile::from_system_seed`, and `derive_chunk_biome`.
+    #[test]
+    fn full_chain_determinism_system_seed_to_biome_at_origin() {
+        use crate::solar_system::{OrbitalConfig, PlanetEnvironmentConfig, StarTypeRegistry};
+
+        let star_registry = StarTypeRegistry::default();
+        let orbital_config = OrbitalConfig::default();
+        let env_config = PlanetEnvironmentConfig::default();
+
+        let config = WorldGenerationConfig {
+            solar_system_seed: 42,
+            planet_seed: None,
+            planet_index: 0,
+            ..Default::default()
+        };
+
+        let biome_registry = BiomeRegistry::default();
+        let origin = ChunkCoord { x: 0, z: 0 };
+
+        // Run the full derivation chain twice.
+        let profile_a =
+            WorldProfile::from_system_seed(&config, &star_registry, &orbital_config, &env_config)
+                .expect("first derivation must succeed");
+        let profile_b =
+            WorldProfile::from_system_seed(&config, &star_registry, &orbital_config, &env_config)
+                .expect("second derivation must succeed");
+
+        // WorldProfile must be identical across runs.
+        assert_eq!(profile_a, profile_b, "WorldProfile must be deterministic");
+
+        // System context must be present and identical.
+        let ctx_a = profile_a
+            .system_context
+            .as_ref()
+            .expect("system_context must be Some");
+        let ctx_b = profile_b
+            .system_context
+            .as_ref()
+            .expect("system_context must be Some");
+        assert_eq!(ctx_a, ctx_b, "SystemContext must be deterministic");
+
+        // Verify intermediate derivation steps are concrete (not degenerate).
+        assert!(
+            !ctx_a.star.star_type_key.is_empty(),
+            "star must have a star type key"
+        );
+        assert!(
+            !ctx_a.orbital_layout.planets.is_empty(),
+            "orbital layout must contain at least one planet"
+        );
+        assert!(
+            ctx_a.planet_environment.surface_temp_min_k > 0.0,
+            "planet environment must have a positive minimum temperature"
+        );
+        assert!(
+            ctx_a.planet_environment.surface_temp_max_k
+                > ctx_a.planet_environment.surface_temp_min_k,
+            "max temperature must exceed min temperature"
+        );
+
+        // Derive biome at origin using the planet environment from the system
+        // context. Both runs must produce the same biome key.
+        let biome_a = derive_chunk_biome(
+            &profile_a,
+            &biome_registry,
+            origin,
+            Some(&ctx_a.planet_environment),
+        );
+        let biome_b = derive_chunk_biome(
+            &profile_b,
+            &biome_registry,
+            origin,
+            Some(&ctx_b.planet_environment),
+        );
+
+        assert_eq!(
+            biome_a.biome_key, biome_b.biome_key,
+            "biome key at origin must be deterministic"
+        );
+        assert_eq!(
+            biome_a.ground_color, biome_b.ground_color,
+            "biome ground color at origin must be deterministic"
+        );
+        assert_eq!(
+            biome_a.density_modifier, biome_b.density_modifier,
+            "biome density modifier at origin must be deterministic"
+        );
+
+        // Verify the biome key is a non-empty string — a truly exercised
+        // pipeline must resolve to a concrete biome, not silently fall through
+        // to an empty default.
+        assert!(
+            !biome_a.biome_key.is_empty(),
+            "biome at origin must resolve to a named biome"
+        );
+
+        // Verify the chunk generation key is also deterministic through
+        // the full chain.
+        let key_a = derive_chunk_generation_key(&profile_a, origin);
+        let key_b = derive_chunk_generation_key(&profile_b, origin);
+        assert_eq!(
+            key_a, key_b,
+            "chunk generation key at origin must be deterministic"
+        );
+    }
+
+    /// Planet index out of range must return a clear `Err`, not panic.
+    #[test]
+    fn planet_index_out_of_range_returns_error() {
+        use crate::solar_system::{OrbitalConfig, PlanetEnvironmentConfig, StarTypeRegistry};
+
+        let star_registry = StarTypeRegistry::default();
+        let orbital_config = OrbitalConfig::default();
+        let env_config = PlanetEnvironmentConfig::default();
+
+        // First, determine how many planets seed 42 actually produces so we
+        // can request an index that is guaranteed to be out of range.
+        let baseline_config = WorldGenerationConfig {
+            solar_system_seed: 42,
+            planet_seed: None,
+            planet_index: 0,
+            ..Default::default()
+        };
+        let baseline = WorldProfile::from_system_seed(
+            &baseline_config,
+            &star_registry,
+            &orbital_config,
+            &env_config,
+        )
+        .expect("baseline derivation must succeed");
+        let planet_count = baseline
+            .system_context
+            .as_ref()
+            .expect("system_context must be Some")
+            .orbital_layout
+            .planets
+            .len() as u32;
+
+        // Request an index equal to planet_count (one past the last valid index).
+        let bad_config = WorldGenerationConfig {
+            solar_system_seed: 42,
+            planet_seed: None,
+            planet_index: planet_count,
+            ..Default::default()
+        };
+
+        let result = WorldProfile::from_system_seed(
+            &bad_config,
+            &star_registry,
+            &orbital_config,
+            &env_config,
+        );
+        let err =
+            result.expect_err("planet_index equal to planet count must return Err, not panic");
+        assert!(
+            err.contains("out of range"),
+            "error message must mention 'out of range', got: {err}"
+        );
+        assert!(
+            err.contains(&planet_count.to_string()),
+            "error message must mention the invalid index, got: {err}"
+        );
+
+        // Also verify a very large index fails gracefully.
+        let huge_config = WorldGenerationConfig {
+            solar_system_seed: 42,
+            planet_seed: None,
+            planet_index: u32::MAX,
+            ..Default::default()
+        };
+        let huge_result = WorldProfile::from_system_seed(
+            &huge_config,
+            &star_registry,
+            &orbital_config,
+            &env_config,
+        );
+        assert!(
+            huge_result.is_err(),
+            "u32::MAX planet_index must return Err, not panic"
+        );
+    }
+
+    /// Selecting the last planet (index = planet_count - 1) must succeed and
+    /// produce a valid, fully-populated `WorldProfile` with the correct
+    /// orbital index recorded in `SystemContext`.
+    #[test]
+    fn planet_index_last_planet_succeeds() {
+        use crate::solar_system::{OrbitalConfig, PlanetEnvironmentConfig, StarTypeRegistry};
+
+        let star_registry = StarTypeRegistry::default();
+        let orbital_config = OrbitalConfig::default();
+        let env_config = PlanetEnvironmentConfig::default();
+
+        // First, derive with index 0 to discover how many planets exist.
+        let baseline_config = WorldGenerationConfig {
+            solar_system_seed: 42,
+            planet_seed: None,
+            planet_index: 0,
+            ..Default::default()
+        };
+        let baseline = WorldProfile::from_system_seed(
+            &baseline_config,
+            &star_registry,
+            &orbital_config,
+            &env_config,
+        )
+        .expect("baseline derivation must succeed");
+        let planet_count = baseline
+            .system_context
+            .as_ref()
+            .expect("system_context must be Some")
+            .orbital_layout
+            .planets
+            .len() as u32;
+
+        assert!(
+            planet_count >= 2,
+            "need at least 2 planets to meaningfully test last-index selection, got {planet_count}"
+        );
+
+        let last_index = planet_count - 1;
+
+        // Derive using the last valid planet index.
+        let last_config = WorldGenerationConfig {
+            solar_system_seed: 42,
+            planet_seed: None,
+            planet_index: last_index,
+            ..Default::default()
+        };
+        let profile = WorldProfile::from_system_seed(
+            &last_config,
+            &star_registry,
+            &orbital_config,
+            &env_config,
+        )
+        .expect("from_system_seed must succeed for the last valid planet index");
+
+        // Verify system-derived mode.
+        assert!(
+            profile.is_system_derived(),
+            "last-planet profile must be system-derived"
+        );
+
+        let ctx = profile
+            .system_context
+            .as_ref()
+            .expect("system_context must be Some");
+
+        // Orbital index matches what we requested.
+        assert_eq!(
+            ctx.planet_orbital_index, last_index,
+            "planet_orbital_index must equal the last valid index ({last_index})"
+        );
+
+        // The orbital layout is identical regardless of which planet we select.
+        assert_eq!(
+            ctx.orbital_layout.planets.len() as u32,
+            planet_count,
+            "orbital layout planet count must be consistent across planet index selections"
+        );
+
+        // The planet seed must differ from index-0 (different orbital slot).
+        assert_ne!(
+            profile.planet_seed, baseline.planet_seed,
+            "last planet must have a different seed than planet 0"
+        );
+
+        // Sub-seeds are populated (derivation chain is intact).
+        assert_ne!(profile.placement_density_seed, 0);
+        assert_ne!(profile.placement_variation_seed, 0);
+        assert_ne!(profile.object_identity_seed, 0);
+        assert_ne!(profile.biome_climate_seed, 0);
+        assert_ne!(profile.elevation_seed, 0);
+        assert!(profile.planet_surface_radius > 0);
+        assert_eq!(
+            profile.planet_surface_diameter,
+            profile.planet_surface_radius * 2
+        );
+    }
+
+    /// When OrbitalConfig is constrained to produce exactly 2 planets,
+    /// planet_index 1 (the second and last planet) must yield a valid,
+    /// fully-populated WorldProfile in system-derived mode.
+    #[test]
+    fn planet_index_one_valid_in_two_planet_system() {
+        use crate::solar_system::{OrbitalConfig, PlanetEnvironmentConfig, StarTypeRegistry};
+
+        let star_registry = StarTypeRegistry::default();
+        let env_config = PlanetEnvironmentConfig::default();
+
+        // Force exactly 2 planets by setting min == max == 2.
+        let orbital_config = OrbitalConfig {
+            planet_count_min: 2,
+            planet_count_max: 2,
+            ..Default::default()
+        };
+
+        let config = WorldGenerationConfig {
+            solar_system_seed: 42,
+            planet_seed: None,
+            planet_index: 1,
+            ..Default::default()
+        };
+
+        let profile =
+            WorldProfile::from_system_seed(&config, &star_registry, &orbital_config, &env_config)
+                .expect("planet_index 1 must succeed when the system has exactly 2 planets");
+
+        // Must be system-derived.
+        assert!(
+            profile.is_system_derived(),
+            "profile must be in system-derived mode"
+        );
+
+        let ctx = profile
+            .system_context
+            .as_ref()
+            .expect("system_context must be Some");
+
+        // Orbital layout must contain exactly 2 planets.
+        assert_eq!(
+            ctx.orbital_layout.planets.len(),
+            2,
+            "orbital layout must have exactly 2 planets"
+        );
+
+        // Recorded orbital index matches the requested index.
+        assert_eq!(
+            ctx.planet_orbital_index, 1,
+            "planet_orbital_index must be 1"
+        );
+
+        // Planet seed must differ from index 0 (different orbital slot).
+        let index_zero_config = WorldGenerationConfig {
+            solar_system_seed: 42,
+            planet_seed: None,
+            planet_index: 0,
+            ..Default::default()
+        };
+        let index_zero_profile = WorldProfile::from_system_seed(
+            &index_zero_config,
+            &star_registry,
+            &orbital_config,
+            &env_config,
+        )
+        .expect("planet_index 0 must also succeed");
+
+        assert_ne!(
+            profile.planet_seed, index_zero_profile.planet_seed,
+            "planet at index 1 must have a different seed than planet at index 0"
+        );
+
+        // Sub-seeds are populated (derivation chain is intact).
+        assert_ne!(profile.placement_density_seed, 0);
+        assert_ne!(profile.placement_variation_seed, 0);
+        assert_ne!(profile.object_identity_seed, 0);
+        assert_ne!(profile.biome_climate_seed, 0);
+        assert_ne!(profile.elevation_seed, 0);
+        assert!(profile.planet_surface_radius > 0);
+        assert_eq!(
+            profile.planet_surface_diameter,
+            profile.planet_surface_radius * 2
+        );
+    }
+
+    /// System-derived world generates biomes influenced by planet temperature.
+    ///
+    /// Exercises the full chain: system seed → star → orbital layout → planet
+    /// environment → biome selection, and verifies that the derived planet
+    /// temperature actually gates biome assignment. The same profile is used
+    /// with vs without its planet environment; absolute-temperature-aware
+    /// biome definitions must produce different distributions when the planet
+    /// environment is present.
+    #[test]
+    fn system_derived_world_generates_biomes_influenced_by_planet_temperature() {
+        use crate::solar_system::{OrbitalConfig, PlanetEnvironmentConfig, StarTypeRegistry};
+
+        let star_registry = StarTypeRegistry::default();
+        let orbital_config = OrbitalConfig::default();
+        let env_config = PlanetEnvironmentConfig::default();
+
+        let config = WorldGenerationConfig {
+            solar_system_seed: 42,
+            planet_seed: None,
+            planet_index: 0,
+            ..Default::default()
+        };
+
+        let profile =
+            WorldProfile::from_system_seed(&config, &star_registry, &orbital_config, &env_config)
+                .expect("system seed derivation must succeed");
+
+        let ctx = profile
+            .system_context
+            .as_ref()
+            .expect("system_context must be Some in system-derived mode");
+
+        // Sanity: the derived planet environment has a meaningful temperature
+        // range (not degenerate zero-width).
+        let env = &ctx.planet_environment;
+        assert!(
+            env.surface_temp_max_k > env.surface_temp_min_k,
+            "planet must have a non-degenerate temperature range: {}-{} K",
+            env.surface_temp_min_k,
+            env.surface_temp_max_k,
+        );
+
+        // Use the absolute-temperature-aware biome registry so the planet's
+        // temperature band can actually influence which biomes are selected.
+        let registry = abs_temp_registry();
+
+        // Collect biome keys across a grid of chunks using the system-derived
+        // planet environment (the full-chain path).
+        let mut biomes_with_env: Vec<String> = Vec::new();
+        for x in 0..100_i32 {
+            let coord = ChunkCoord::new(x, x.wrapping_mul(7));
+            let biome = derive_chunk_biome(&profile, &registry, coord, Some(env));
+            biomes_with_env.push(biome.biome_key);
+        }
+
+        // Collect biome keys for the same chunks without a planet environment
+        // (override / no-context mode). Without absolute Kelvin filtering,
+        // all biomes that match normalized ranges can appear.
+        let mut biomes_without_env: Vec<String> = Vec::new();
+        for x in 0..100_i32 {
+            let coord = ChunkCoord::new(x, x.wrapping_mul(7));
+            let biome = derive_chunk_biome(&profile, &registry, coord, None);
+            biomes_without_env.push(biome.biome_key);
+        }
+
+        // The planet temperature must actually influence biome selection:
+        // at least one chunk must resolve to a different biome when the
+        // planet environment is applied vs when it is absent.
+        let differing_count = biomes_with_env
+            .iter()
+            .zip(biomes_without_env.iter())
+            .filter(|(a, b)| a != b)
+            .count();
+
+        assert!(
+            differing_count > 0,
+            "planet temperature from the full derivation chain must influence biome selection; \
+             all {} chunks produced identical biomes with and without planet environment \
+             (temp range {:.0}-{:.0} K)",
+            biomes_with_env.len(),
+            env.surface_temp_min_k,
+            env.surface_temp_max_k,
+        );
+
+        // Verify determinism: running the same derivation again must produce
+        // identical results.
+        let profile_again =
+            WorldProfile::from_system_seed(&config, &star_registry, &orbital_config, &env_config)
+                .expect("repeated derivation must succeed");
+        let ctx_again = profile_again
+            .system_context
+            .as_ref()
+            .expect("system_context must be Some");
+
+        for x in 0..100_i32 {
+            let coord = ChunkCoord::new(x, x.wrapping_mul(7));
+            let biome_a =
+                derive_chunk_biome(&profile, &registry, coord, Some(&ctx.planet_environment));
+            let biome_b = derive_chunk_biome(
+                &profile_again,
+                &registry,
+                coord,
+                Some(&ctx_again.planet_environment),
+            );
+            assert_eq!(
+                biome_a.biome_key, biome_b.biome_key,
+                "biome at chunk ({}, {}) must be deterministic across identical derivations",
+                coord.x, coord.z,
+            );
+        }
+    }
+
+    /// Override-mode world generates biomes identically to before (no regression).
+    ///
+    /// Verifies that building a `WorldProfile` via `from_config` (planet seed
+    /// override) produces the exact same biome assignments as a second
+    /// identically-configured profile. This guards against regressions where
+    /// system-derived plumbing accidentally alters the override path.
+    ///
+    /// Checks:
+    /// - `system_context` is `None` (override mode, no system derivation).
+    /// - `is_system_derived()` returns `false`.
+    /// - Sub-seeds are deterministic across two independent `from_config` calls.
+    /// - Biome key, ground color, and density modifier are identical for every
+    ///   chunk in a representative grid, with `planet_env` = `None` (the
+    ///   override-mode call convention).
+    /// - All three default biomes are still reachable (the noise field was not
+    ///   inadvertently shifted).
+    #[test]
+    fn override_mode_biome_generation_no_regression() {
+        let config = sample_config();
+        assert_eq!(
+            config.seed_mode(),
+            SeedMode::Override,
+            "sample_config must be in override mode for this test"
+        );
+
+        let profile_a = WorldProfile::from_config(&config).unwrap();
+        let profile_b = WorldProfile::from_config(&config).unwrap();
+
+        // Override mode must not carry system context.
+        assert!(
+            profile_a.system_context.is_none(),
+            "override-mode WorldProfile must have system_context = None"
+        );
+        assert!(
+            !profile_a.is_system_derived(),
+            "override-mode WorldProfile must report is_system_derived() == false"
+        );
+
+        // Sub-seeds must be identical across independent constructions.
+        assert_eq!(
+            profile_a.biome_climate_seed, profile_b.biome_climate_seed,
+            "biome_climate_seed must be deterministic"
+        );
+        assert_eq!(
+            profile_a.elevation_seed, profile_b.elevation_seed,
+            "elevation_seed must be deterministic"
+        );
+        assert_eq!(
+            profile_a.placement_density_seed, profile_b.placement_density_seed,
+            "placement_density_seed must be deterministic"
+        );
+        assert_eq!(
+            profile_a.placement_variation_seed, profile_b.placement_variation_seed,
+            "placement_variation_seed must be deterministic"
+        );
+        assert_eq!(
+            profile_a.object_identity_seed, profile_b.object_identity_seed,
+            "object_identity_seed must be deterministic"
+        );
+
+        let registry = BiomeRegistry::default();
+        let mut found_biomes: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+        // Scan a wide grid and assert byte-identical biome results between
+        // the two independently-constructed profiles.
+        for x in -50..50_i32 {
+            for z in -50..50_i32 {
+                let coord = ChunkCoord::new(x, z);
+
+                // Override mode always passes None for planet_env — no
+                // absolute-temperature filtering.
+                let biome_a = derive_chunk_biome(&profile_a, &registry, coord, None);
+                let biome_b = derive_chunk_biome(&profile_b, &registry, coord, None);
+
+                assert_eq!(
+                    biome_a.biome_key, biome_b.biome_key,
+                    "biome key mismatch at chunk ({x}, {z})"
+                );
+                assert_eq!(
+                    biome_a.ground_color, biome_b.ground_color,
+                    "ground_color mismatch at chunk ({x}, {z})"
+                );
+                assert_eq!(
+                    biome_a.density_modifier, biome_b.density_modifier,
+                    "density_modifier mismatch at chunk ({x}, {z})"
+                );
+
+                found_biomes.insert(biome_a.biome_key);
+            }
+        }
+
+        // All three default biomes must still be reachable — a regression
+        // that silently shifted noise offsets would collapse biome variety.
+        assert!(
+            found_biomes.contains("scorched_flats"),
+            "scorched_flats must be reachable in override mode, found: {found_biomes:?}"
+        );
+        assert!(
+            found_biomes.contains("mineral_steppe"),
+            "mineral_steppe must be reachable in override mode, found: {found_biomes:?}"
+        );
+        assert!(
+            found_biomes.contains("frost_shelf"),
+            "frost_shelf must be reachable in override mode, found: {found_biomes:?}"
+        );
     }
 }

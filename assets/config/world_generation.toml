@@ -1,15 +1,35 @@
 # World-generation foundation for Epic 5.
 #
-# The POC deliberately loads the planet seed from config instead of generating
-# it at runtime. That keeps the first deterministic exterior stories easy to
-# inspect and easy to reproduce.
+# Two seeding modes are supported:
+#
+# **Override mode** (current default): set `planet_seed` directly. The solar
+# system seed is used for star derivation and logging, but the planet seed
+# is taken as-is without running the orbital derivation chain. This is the
+# recommended mode for testing — reproducible without needing the full chain.
+#
+# **System-derived mode**: omit `planet_seed` and set `solar_system_seed` +
+# `planet_index`. The full derivation chain runs at startup:
+#   system seed → star profile → orbital layout → planet selection → planet seed
+#
+# To switch to system-derived mode: comment out `planet_seed` and uncomment
+# `planet_index`.
+
+# ── Seed Configuration ──────────────────────────────────────────────────
 
 # Stable identity for the solar system this planet belongs to.
-# The star profile is deterministically derived from this seed at startup.
-system_seed = 20260501
+# The star profile and orbital layout are deterministically derived from
+# this seed at startup. In system-derived mode, the planet seed is also
+# derived from this seed.
+# Accepts both `solar_system_seed` (canonical) and `system_seed` (legacy).
+# solar_system_seed = 20261225
 
-# Stable identity for this world / planet.
+# Override mode: planet seed is used directly, skipping orbital derivation.
+# Comment this line out and set planet_index to switch to system-derived mode.
 planet_seed = 20260408
+
+# System-derived mode: zero-based index selecting which orbital slot to
+# start on. Only used when planet_seed is absent.
+# planet_index = 2
 
 # Exterior chunk size in Bevy world units.
 #

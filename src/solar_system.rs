@@ -24,7 +24,9 @@ use crate::seed_util::{
     STAR_MASS_CHANNEL, STAR_TEMPERATURE_CHANNEL, STAR_TYPE_CHANNEL, f32_next_up, f32_to_u64_bits,
     lerp, mix_seed, seed_to_unit_f32,
 };
-use crate::world_generation::{PlanetSeed, WorldGenerationConfig};
+use crate::world_generation::{
+    PlanetSeed, WorldGenerationConfig, WorldProfile, resolve_system_derived_profile,
+};
 
 /// Path to the star type definitions TOML file.
 const STAR_TYPES_CONFIG_PATH: &str = "assets/config/star_types.toml";
@@ -347,6 +349,27 @@ pub struct PlanetEnvironment {
     /// Whether this planet's orbital distance falls within the parent star's
     /// habitable zone.
     pub in_habitable_zone: bool,
+}
+
+impl Default for PlanetEnvironment {
+    /// Earth-like defaults used when no stellar context is available (override
+    /// mode). These values ensure biome definitions with absolute Kelvin
+    /// thresholds still apply a sensible temperature mapping even without a
+    /// system-derived planet environment.
+    ///
+    /// The temperature range (224–336 K) corresponds to
+    /// `PlanetEnvironmentConfig::default()` applied at 1 AU around a solar-
+    /// luminosity star with zero seed variation: base 280 K ± 20% spread.
+    fn default() -> Self {
+        Self {
+            surface_temp_min_k: 224.0,
+            surface_temp_max_k: 336.0,
+            atmosphere_density: 1.0,
+            radiation_level: 0.5,
+            surface_gravity_g: 1.0,
+            in_habitable_zone: true,
+        }
+    }
 }
 
 /// Configuration constraints for orbital generation.
@@ -724,7 +747,7 @@ impl Plugin for SolarSystemPlugin {
                 Startup,
                 (
                     log_star_profile_on_startup,
-                    derive_and_insert_planet_environment,
+                    derive_and_insert_planet_environment.after(resolve_system_derived_profile),
                 ),
             );
     }
@@ -892,7 +915,7 @@ fn log_star_profile_on_startup(
     orbital_config: Res<OrbitalConfig>,
     env_config: Res<PlanetEnvironmentConfig>,
 ) {
-    let seed = SolarSystemSeed(world_config.system_seed);
+    let seed = SolarSystemSeed(world_config.solar_system_seed);
     let profile = derive_star_profile(seed, &star_registry);
 
     info!(
@@ -948,24 +971,55 @@ fn log_star_profile_on_startup(
 /// is not found in the layout (configuration error or the player is on a
 /// manually-seeded test planet), we fall back to a 1 AU orbital distance so
 /// that biome derivation still produces reasonable results.
+///
+/// In system-derived mode (planet_seed is None), the PlanetEnvironment is
+/// already available via `WorldProfile::system_context`, so this system
+/// extracts it from there and inserts it as a standalone resource for
+/// backward compatibility with systems that read `Res<PlanetEnvironment>`.
 fn derive_and_insert_planet_environment(
     mut commands: Commands,
     world_config: Res<WorldGenerationConfig>,
+    world_profile: Res<WorldProfile>,
     star_registry: Res<StarTypeRegistry>,
     orbital_config: Res<OrbitalConfig>,
     env_config: Res<PlanetEnvironmentConfig>,
 ) {
-    let seed = SolarSystemSeed(world_config.system_seed);
+    // In system-derived mode, the WorldProfile already contains the full
+    // SystemContext with the PlanetEnvironment. Extract and insert it as
+    // a standalone resource for backward compatibility.
+    if let Some(ref ctx) = world_profile.system_context {
+        let env = ctx.planet_environment.clone();
+        info!(
+            "Planet environment (system-derived): temp=[{:.0}, {:.0}]K, atmo={:.3}, \
+             radiation={:.3}, gravity={:.3}g, habitable={}",
+            env.surface_temp_min_k,
+            env.surface_temp_max_k,
+            env.atmosphere_density,
+            env.radiation_level,
+            env.surface_gravity_g,
+            env.in_habitable_zone,
+        );
+        commands.insert_resource(env);
+        return;
+    }
+
+    // Override mode: derive from the orbital layout by matching planet seed.
+    let seed = SolarSystemSeed(world_config.solar_system_seed);
     let star = derive_star_profile(seed, &star_registry);
     let layout = derive_orbital_layout(seed, &orbital_config);
 
-    let planet_seed = PlanetSeed(world_config.planet_seed);
+    let planet_seed = PlanetSeed(
+        world_config
+            .planet_seed
+            .expect("override mode requires planet_seed"),
+    );
 
     // Find the player's planet in the orbital layout by matching planet seed.
     // When the planet seed is NOT found (override / manual-seed mode), we
-    // intentionally skip inserting a PlanetEnvironment resource so that biome
-    // derivation falls back to normalized-only matching. This preserves the
-    // exact biome distribution that existed before stellar-context integration.
+    // insert a default Earth-like PlanetEnvironment so that biome definitions
+    // with absolute Kelvin thresholds still apply a sensible temperature
+    // mapping. This keeps override mode consistent with system-derived mode
+    // while using a neutral baseline.
     let slot = layout
         .planets
         .iter()
@@ -974,11 +1028,13 @@ fn derive_and_insert_planet_environment(
     let orbital_distance_au = match slot {
         Some(s) => s.orbital_distance_au,
         None => {
+            let env = PlanetEnvironment::default();
             info!(
                 "Planet seed {:#018X} not found in orbital layout (override mode); \
-                 skipping PlanetEnvironment insertion to preserve baseline biome distribution",
-                planet_seed.0,
+                 using default Earth-like PlanetEnvironment: temp=[{:.0}, {:.0}]K",
+                planet_seed.0, env.surface_temp_min_k, env.surface_temp_max_k,
             );
+            commands.insert_resource(env);
             return;
         }
     };
@@ -1451,6 +1507,27 @@ mod tests {
         assert!(
             (mass_max - mass_min) > 0.001,
             "mass should vary across 100 seeds, got range [{mass_min}, {mass_max}]"
+        );
+    }
+
+    /// Different system seeds must produce different star *types*, not just
+    /// different numeric parameters within the same type. With the default
+    /// registry weights (red_dwarf:7, yellow_dwarf:2, blue_giant:1) and
+    /// 100 seeds, we expect at least 2 distinct star type keys to appear.
+    /// A broken type-selection path that always picks the same bucket would
+    /// fail this check even if luminosity/mass varied.
+    #[test]
+    fn different_seeds_produce_different_star_types() {
+        let registry = test_registry();
+        let type_keys: std::collections::HashSet<String> = (0..100)
+            .map(|i| derive_star_profile(SolarSystemSeed(i), &registry).star_type_key)
+            .collect();
+
+        assert!(
+            type_keys.len() >= 2,
+            "expected at least 2 distinct star type keys from 100 seeds, got {}: {:?}",
+            type_keys.len(),
+            type_keys
         );
     }
 
