@@ -4661,4 +4661,102 @@ planet_index = 3
             "u32::MAX planet_index must return Err, not panic"
         );
     }
+
+    /// Selecting the last planet (index = planet_count - 1) must succeed and
+    /// produce a valid, fully-populated `WorldProfile` with the correct
+    /// orbital index recorded in `SystemContext`.
+    #[test]
+    fn planet_index_last_planet_succeeds() {
+        use crate::solar_system::{OrbitalConfig, PlanetEnvironmentConfig, StarTypeRegistry};
+
+        let star_registry = StarTypeRegistry::default();
+        let orbital_config = OrbitalConfig::default();
+        let env_config = PlanetEnvironmentConfig::default();
+
+        // First, derive with index 0 to discover how many planets exist.
+        let baseline_config = WorldGenerationConfig {
+            solar_system_seed: 42,
+            planet_seed: None,
+            planet_index: 0,
+            ..Default::default()
+        };
+        let baseline = WorldProfile::from_system_seed(
+            &baseline_config,
+            &star_registry,
+            &orbital_config,
+            &env_config,
+        )
+        .expect("baseline derivation must succeed");
+        let planet_count = baseline
+            .system_context
+            .as_ref()
+            .expect("system_context must be Some")
+            .orbital_layout
+            .planets
+            .len() as u32;
+
+        assert!(
+            planet_count >= 2,
+            "need at least 2 planets to meaningfully test last-index selection, got {planet_count}"
+        );
+
+        let last_index = planet_count - 1;
+
+        // Derive using the last valid planet index.
+        let last_config = WorldGenerationConfig {
+            solar_system_seed: 42,
+            planet_seed: None,
+            planet_index: last_index,
+            ..Default::default()
+        };
+        let profile = WorldProfile::from_system_seed(
+            &last_config,
+            &star_registry,
+            &orbital_config,
+            &env_config,
+        )
+        .expect("from_system_seed must succeed for the last valid planet index");
+
+        // Verify system-derived mode.
+        assert!(
+            profile.is_system_derived(),
+            "last-planet profile must be system-derived"
+        );
+
+        let ctx = profile
+            .system_context
+            .as_ref()
+            .expect("system_context must be Some");
+
+        // Orbital index matches what we requested.
+        assert_eq!(
+            ctx.planet_orbital_index, last_index,
+            "planet_orbital_index must equal the last valid index ({last_index})"
+        );
+
+        // The orbital layout is identical regardless of which planet we select.
+        assert_eq!(
+            ctx.orbital_layout.planets.len() as u32,
+            planet_count,
+            "orbital layout planet count must be consistent across planet index selections"
+        );
+
+        // The planet seed must differ from index-0 (different orbital slot).
+        assert_ne!(
+            profile.planet_seed, baseline.planet_seed,
+            "last planet must have a different seed than planet 0"
+        );
+
+        // Sub-seeds are populated (derivation chain is intact).
+        assert_ne!(profile.placement_density_seed, 0);
+        assert_ne!(profile.placement_variation_seed, 0);
+        assert_ne!(profile.object_identity_seed, 0);
+        assert_ne!(profile.biome_climate_seed, 0);
+        assert_ne!(profile.elevation_seed, 0);
+        assert!(profile.planet_surface_radius > 0);
+        assert_eq!(
+            profile.planet_surface_diameter,
+            profile.planet_surface_radius * 2
+        );
+    }
 }
