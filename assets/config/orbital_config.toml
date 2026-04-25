@@ -1,0 +1,11 @@
+# Orbital layout generation constraints.
+#
+# These values control how many planets a solar system can have and
+# where they can orbit. The generation algorithm draws planet count
+# and orbital distances from seeded RNG, then enforces these bounds.
+
+planet_count_min = 2
+planet_count_max = 8
+inner_orbit_au = 0.3
+outer_orbit_au = 50.0
+min_separation_au = 0.5

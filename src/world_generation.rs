@@ -40,6 +40,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::player::Player;
 use crate::scene::PositionXZ;
+use crate::seed_util::{
+    BIOME_CLIMATE_CHANNEL, ELEVATION_CHANNEL, ELEVATION_DETAIL_CHANNEL, OBJECT_IDENTITY_CHANNEL,
+    PLACEMENT_DENSITY_CHANNEL, PLACEMENT_VARIATION_CHANNEL, PLANET_SURFACE_RADIUS_CHANNEL,
+    mix_seed,
+};
 
 // ── Surface Query Abstraction (Story 5.3) ────────────────────────────────
 //
@@ -723,30 +728,6 @@ pub fn generate_chunk_heightmap_mesh(
 }
 
 const CONFIG_PATH: &str = "assets/config/world_generation.toml";
-const PLACEMENT_DENSITY_CHANNEL: u64 = 0xD3E5_17A1_0000_0001;
-const PLACEMENT_VARIATION_CHANNEL: u64 = 0xD3E5_17A1_0000_0002;
-const OBJECT_IDENTITY_CHANNEL: u64 = 0xD3E5_17A1_0000_0003;
-/// Channel constant for deriving the planet surface radius from the planet seed.
-///
-/// The planet surface radius (measured in chunks) determines how large the
-/// planet is. It is derived deterministically from the planet seed so that
-/// each planet has a consistent, reproducible size.
-const PLANET_SURFACE_RADIUS_CHANNEL: u64 = 0xD3E5_17A1_0000_0004;
-/// Channel constant for deriving the biome climate seed from the planet seed.
-///
-/// The biome climate seed is mixed with sub-channel constants (temperature and
-/// moisture) to produce two independent coherent noise fields that together
-/// determine the biome at each chunk position.
-const BIOME_CLIMATE_CHANNEL: u64 = 0xD3E5_17A1_0000_0005;
-/// Channel constant for deriving the elevation seed from the planet seed.
-///
-/// The elevation seed drives multi-octave value noise that produces terrain
-/// height variation across the planet surface.
-const ELEVATION_CHANNEL: u64 = 0xE1EF_0001_0000_0001;
-/// Sub-channel for chunk-level detail noise layered on top of the base
-/// elevation field. Derived from the elevation seed (not the planet seed)
-/// so it is guaranteed independent of the base octaves.
-const ELEVATION_DETAIL_CHANNEL: u64 = 0xE1EF_0001_0000_0002;
 
 pub struct WorldGenerationPlugin;
 
@@ -1285,20 +1266,6 @@ pub fn derive_chunk_generation_key(
         placement_variation_key: mix_seed(profile.placement_variation_seed, chunk_mixer),
         object_identity_key: mix_seed(profile.object_identity_seed, chunk_mixer),
     }
-}
-
-/// Deterministically mix a base seed and a channel into a new 64-bit value.
-///
-/// This is a SplitMix64-style bit mixer. The algorithm is deterministic, cheap,
-/// and requires no external crate. We are not using it as a cryptographic hash.
-/// We are using it to avalanche nearby integer inputs into well-mixed outputs
-/// so that later generation systems do not accidentally treat "similar number"
-/// as "similar world feature."
-fn mix_seed(base: u64, channel: u64) -> u64 {
-    let mut z = base.wrapping_add(channel.wrapping_mul(0x9E37_79B9_7F4A_7C15));
-    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-    z ^ (z >> 31)
 }
 
 /// Pack the signed chunk coordinate into a deterministic mixer input.

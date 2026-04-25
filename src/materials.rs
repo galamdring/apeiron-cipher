@@ -23,34 +23,14 @@ use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::scene::Shelf;
+use crate::seed_util::{
+    MAT_COLOR_B_CHANNEL, MAT_COLOR_G_CHANNEL, MAT_COLOR_R_CHANNEL, MAT_CONDUCTIVITY_CHANNEL,
+    MAT_DENSITY_CHANNEL, MAT_REACTIVITY_CHANNEL, MAT_THERMAL_RESISTANCE_CHANNEL,
+    MAT_TOXICITY_CHANNEL, mix_seed,
+};
 pub struct MaterialPlugin;
 
 pub const MATERIAL_SURFACE_GAP: f32 = 0.01;
-
-// ── Seed-derived material property channels ──────────────────────────────
-//
-// Each channel constant is mixed with a material seed via `mix_seed` to
-// deterministically derive a single property value. The 0xA7E1_0001 prefix
-// groups all material-property channels; the low word distinguishes each
-// property. These must never change once shipped — doing so would alter
-// every seed-derived material in every saved world.
-
-/// Channel for deriving material density from a seed.
-pub const MAT_DENSITY_CHANNEL: u64 = 0xA7E1_0001_0000_0001;
-/// Channel for deriving material thermal resistance from a seed.
-pub const MAT_THERMAL_RESISTANCE_CHANNEL: u64 = 0xA7E1_0001_0000_0002;
-/// Channel for deriving material reactivity from a seed.
-pub const MAT_REACTIVITY_CHANNEL: u64 = 0xA7E1_0001_0000_0003;
-/// Channel for deriving material conductivity from a seed.
-pub const MAT_CONDUCTIVITY_CHANNEL: u64 = 0xA7E1_0001_0000_0004;
-/// Channel for deriving material toxicity from a seed.
-pub const MAT_TOXICITY_CHANNEL: u64 = 0xA7E1_0001_0000_0005;
-/// Channel for deriving the red component of material color from a seed.
-pub const MAT_COLOR_R_CHANNEL: u64 = 0xA7E1_0001_0000_0006;
-/// Channel for deriving the green component of material color from a seed.
-pub const MAT_COLOR_G_CHANNEL: u64 = 0xA7E1_0001_0000_0007;
-/// Channel for deriving the blue component of material color from a seed.
-pub const MAT_COLOR_B_CHANNEL: u64 = 0xA7E1_0001_0000_0008;
 
 // ── Well-known material seeds ────────────────────────────────────────────
 //
@@ -179,18 +159,6 @@ impl GameMaterial {
 }
 
 // ── Seed-derived helpers ─────────────────────────────────────────────────
-
-/// Deterministically mix a base seed and a channel into a new 64-bit value.
-///
-/// SplitMix64-style bit mixer — cheap, deterministic, no external crate.
-/// Identical to the mixer in `world_generation`; duplicated here so the
-/// material module has no coupling to world-gen internals.
-fn mix_seed(base: u64, channel: u64) -> u64 {
-    let mut z = base.wrapping_add(channel.wrapping_mul(0x9E37_79B9_7F4A_7C15));
-    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-    z ^ (z >> 31)
-}
 
 /// Map a `u64` into the closed unit interval \[0.0, 1.0\].
 fn unit_interval_01(value: u64) -> f32 {

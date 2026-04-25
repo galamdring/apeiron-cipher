@@ -21,6 +21,7 @@ mod naming;
 mod observation;
 mod player;
 mod scene;
+mod seed_util;
 mod solar_system;
 mod surface;
 mod world_generation;
