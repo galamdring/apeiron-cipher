@@ -564,6 +564,19 @@ fn seed_to_unit_f32(mixed: u64) -> f32 {
     (mixed as u32) as f32 / (u32::MAX as f32 + 1.0)
 }
 
+/// Convert an `f32` to a `u64` suitable for seed mixing.
+///
+/// Uses `f32::to_bits` to get the IEEE-754 bit pattern as a `u32`, then
+/// zero-extends to `u64`. This is deterministic and platform-independent for
+/// non-NaN values — the same float always produces the same bits.
+///
+/// Used by orbital layout generation to derive position-based planet seeds:
+/// each planet's seed depends on its orbital distance rather than its index,
+/// so inserting a planet between two existing ones won't change their seeds.
+fn f32_to_u64_bits(value: f32) -> u64 {
+    value.to_bits() as u64
+}
+
 /// Linearly interpolate between `min` and `max` using a `[0, 1)` fraction.
 ///
 /// Returns exactly `min` when `t == 0.0` and approaches `max` as `t → 1.0`.
@@ -763,7 +776,7 @@ pub fn derive_orbital_layout(
         .into_iter()
         .enumerate()
         .map(|(i, dist)| {
-            let planet_seed_raw = mix_seed(system_seed.0, dist.to_bits() as u64);
+            let planet_seed_raw = mix_seed(system_seed.0, f32_to_u64_bits(dist));
             OrbitalSlot {
                 planet_seed: PlanetSeed(planet_seed_raw),
                 orbital_distance_au: dist,
@@ -2358,5 +2371,64 @@ weight = 7.0
                 );
             }
         }
+    }
+
+    // ── f32_to_u64_bits tests ───────────────────────────────────────────
+
+    /// `f32_to_u64_bits` must return the IEEE-754 bit pattern zero-extended
+    /// to `u64`. We verify against known bit patterns.
+    #[test]
+    fn f32_to_u64_bits_known_values() {
+        // 0.0f32 is all-zero bits.
+        assert_eq!(f32_to_u64_bits(0.0_f32), 0x0000_0000_u64);
+
+        // 1.0f32 = 0x3F80_0000 in IEEE-754.
+        assert_eq!(f32_to_u64_bits(1.0_f32), 0x3F80_0000_u64);
+
+        // -1.0f32 = 0xBF80_0000 in IEEE-754.
+        assert_eq!(f32_to_u64_bits(-1.0_f32), 0xBF80_0000_u64);
+
+        // A typical orbital distance value.
+        let dist = 3.5_f32;
+        assert_eq!(f32_to_u64_bits(dist), dist.to_bits() as u64);
+    }
+
+    /// Determinism: same float always produces the same u64.
+    #[test]
+    fn f32_to_u64_bits_deterministic() {
+        let values = [
+            0.3_f32,
+            1.0,
+            50.0,
+            0.123_456_78,
+            f32::MAX,
+            f32::MIN_POSITIVE,
+        ];
+        for v in values {
+            assert_eq!(
+                f32_to_u64_bits(v),
+                f32_to_u64_bits(v),
+                "f32_to_u64_bits must be deterministic for {v}",
+            );
+        }
+    }
+
+    /// Different floats produce different bit patterns (non-degeneracy).
+    #[test]
+    fn f32_to_u64_bits_different_inputs_differ() {
+        let a = f32_to_u64_bits(1.0_f32);
+        let b = f32_to_u64_bits(2.0_f32);
+        assert_ne!(a, b, "different floats must produce different bit patterns");
+    }
+
+    /// The upper 32 bits must always be zero (zero-extension, not sign-extension).
+    #[test]
+    fn f32_to_u64_bits_upper_bits_zero() {
+        let negative = f32_to_u64_bits(-42.0_f32);
+        assert_eq!(
+            negative >> 32,
+            0,
+            "upper 32 bits must be zero even for negative floats",
+        );
     }
 }
