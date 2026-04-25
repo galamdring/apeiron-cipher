@@ -1536,7 +1536,7 @@ pub fn resolve_system_derived_profile(
             .as_ref()
             .expect("system-derived profile must have system_context")
             .star
-            .star_type_key,
+            .star_type,
         config.planet_index,
     );
 
@@ -4656,10 +4656,8 @@ planet_index = 3
         assert_eq!(ctx_a, ctx_b, "SystemContext must be deterministic");
 
         // Verify intermediate derivation steps are concrete (not degenerate).
-        assert!(
-            !ctx_a.star.star_type_key.is_empty(),
-            "star must have a star type key"
-        );
+        // star_type is an enum — its mere presence confirms derivation ran.
+        let _ = ctx_a.star.star_type; // would fail to compile if field were removed
         assert!(
             !ctx_a.orbital_layout.planets.is_empty(),
             "orbital layout must contain at least one planet"

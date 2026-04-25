@@ -170,7 +170,7 @@ fn no_duplicate_names_in_catalog_across_many_seeds() {
 #[test]
 fn different_biomes_produce_different_material_sets() {
     let config = WorldGenerationConfig::default();
-    let profile = WorldProfile::from_config(&config);
+    let profile = WorldProfile::from_config(&config).unwrap();
     let registry = BiomeRegistry::default();
 
     // Sample many chunks and collect material palettes per biome.
@@ -220,7 +220,7 @@ fn different_biomes_produce_different_material_sets() {
 #[test]
 fn all_palette_entries_appear_across_many_chunks() {
     let config = WorldGenerationConfig::default();
-    let profile = WorldProfile::from_config(&config);
+    let profile = WorldProfile::from_config(&config).unwrap();
     let registry = BiomeRegistry::default();
 
     // For each biome, track which palette seeds we actually see.
@@ -344,10 +344,10 @@ fn different_system_seeds_produce_different_world_profiles() {
 
     // System contexts must all be present and at least some star types should
     // differ across 5 very different seeds.
-    let unique_star_types: HashSet<String> = profiles
+    let unique_star_types: HashSet<apeiron_cipher::solar_system::StarType> = profiles
         .iter()
         .filter_map(|p| p.system_context.as_ref())
-        .map(|ctx| ctx.star.star_type_key.clone())
+        .map(|ctx| ctx.star.star_type)
         .collect();
     assert!(
         !unique_star_types.is_empty(),
@@ -367,7 +367,7 @@ fn biome_ground_colors_are_valid_and_distinct_across_biome_types() {
         planet_seed: Some(42),
         ..Default::default()
     };
-    let profile = WorldProfile::from_config(&config);
+    let profile = WorldProfile::from_config(&config).unwrap();
     let registry = BiomeRegistry::default();
 
     // Sample a large grid of chunks to collect biome→color mappings.
