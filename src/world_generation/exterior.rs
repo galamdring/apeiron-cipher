@@ -1648,7 +1648,7 @@ mod tests {
 
     fn sample_profile() -> WorldProfile {
         WorldProfile::from_config(&WorldGenerationConfig {
-            planet_seed: 2026,
+            planet_seed: Some(2026),
             chunk_size_world_units: 45.0,
             active_chunk_radius: 1,
             building_cell_size: 1.0,
@@ -3730,7 +3730,7 @@ cluster_compactness = 0.75
     #[test]
     fn full_pipeline_seed_to_elevation_to_mesh_to_deposits_is_deterministic() {
         let config = WorldGenerationConfig {
-            planet_seed: 42_424_242,
+            planet_seed: Some(42_424_242),
             chunk_size_world_units: 45.0,
             active_chunk_radius: 2,
             building_cell_size: 1.0,
@@ -3843,7 +3843,7 @@ cluster_compactness = 0.75
     #[test]
     fn smoke_test_generate_multiple_chunks_no_panics() {
         let config = WorldGenerationConfig {
-            planet_seed: 99_887_766,
+            planet_seed: Some(99_887_766),
             chunk_size_world_units: 45.0,
             active_chunk_radius: 2,
             building_cell_size: 1.0,
@@ -4331,7 +4331,7 @@ cluster_compactness = 0.75
         let surface = PlanetSurface::new_from_profile(
             &profile,
             &WorldGenerationConfig {
-                planet_seed: 2026,
+                planet_seed: Some(2026),
                 chunk_size_world_units: 45.0,
                 active_chunk_radius: 1,
                 building_cell_size: 1.0,
@@ -4424,7 +4424,7 @@ cluster_compactness = 0.75
         let surface = PlanetSurface::new_from_profile(
             &profile,
             &WorldGenerationConfig {
-                planet_seed: 2026,
+                planet_seed: Some(2026),
                 chunk_size_world_units: 45.0,
                 active_chunk_radius: 1,
                 building_cell_size: 1.0,
@@ -4653,7 +4653,7 @@ cluster_compactness = 0.75
         use std::collections::HashSet;
 
         let config = WorldGenerationConfig {
-            planet_seed: 55_443_322,
+            planet_seed: Some(55_443_322),
             chunk_size_world_units: 45.0,
             active_chunk_radius: 2,
             building_cell_size: 1.0,
@@ -5046,7 +5046,7 @@ cluster_compactness = 0.75
         use crate::materials::MaterialCatalog;
 
         let config = WorldGenerationConfig {
-            planet_seed: 99_887_766,
+            planet_seed: Some(99_887_766),
             chunk_size_world_units: 45.0,
             active_chunk_radius: 2,
             building_cell_size: 1.0,
@@ -5151,7 +5151,7 @@ cluster_compactness = 0.75
         use crate::materials::{MaterialCatalog, derive_material_from_seed};
 
         let config = WorldGenerationConfig {
-            planet_seed: 54_321_678,
+            planet_seed: Some(54_321_678),
             chunk_size_world_units: 45.0,
             active_chunk_radius: 2,
             building_cell_size: 1.0,

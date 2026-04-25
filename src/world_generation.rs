@@ -45,7 +45,11 @@ use crate::seed_util::{
     PLACEMENT_DENSITY_CHANNEL, PLACEMENT_VARIATION_CHANNEL, PLANET_SURFACE_RADIUS_CHANNEL,
     mix_seed,
 };
-use crate::solar_system::PlanetEnvironment;
+use crate::solar_system::{
+    OrbitalConfig, OrbitalLayout, PlanetEnvironment, PlanetEnvironmentConfig, SolarSystemSeed,
+    StarProfile, StarTypeRegistry, derive_orbital_layout, derive_planet_environment,
+    derive_star_profile,
+};
 
 // ── Surface Query Abstraction (Story 5.3) ────────────────────────────────
 //
@@ -742,6 +746,7 @@ impl Plugin for WorldGenerationPlugin {
                 PreStartup,
                 (load_world_generation_config, load_biome_registry),
             )
+            .add_systems(Startup, resolve_system_derived_profile)
             .add_systems(Update, update_active_chunk_neighborhood);
     }
 }
@@ -774,10 +779,33 @@ impl ChunkCoord {
     }
 }
 
+/// The two modes the config can operate in.
+///
+/// When `planet_seed` is provided in the TOML, the config is in override mode:
+/// the planet seed is used directly and no solar-system derivation chain runs.
+/// When `planet_seed` is absent and `solar_system_seed` is present, the full
+/// chain runs: system seed → star → orbital layout → planet selection by index.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SeedMode {
+    /// Planet seed was provided directly in config (override / testing mode).
+    Override,
+    /// Planet seed is derived from the solar system seed + planet index.
+    SystemDerived,
+}
+
 /// Runtime world-generation config loaded from `assets/config/world_generation.toml`.
 ///
-/// Story 5.1 keeps this intentionally small:
-/// - `planet_seed`: identity for the whole generated world
+/// Supports two mutually exclusive seeding modes:
+///
+/// **Override mode** (current default, for testing): set `planet_seed` directly.
+/// The solar system seed is still used for star derivation and logging, but the
+/// planet seed is taken as-is without running the orbital derivation chain.
+///
+/// **System-derived mode**: omit `planet_seed` and set `solar_system_seed` +
+/// `planet_index`. The full derivation chain runs at startup: system seed →
+/// star profile → orbital layout → planet selection → planet seed.
+///
+/// Other fields:
 /// - `chunk_size_world_units`: how wide/deep one chunk is in Bevy world units
 /// - `active_chunk_radius`: how many chunks around the player's chunk are
 ///   considered logically active
@@ -785,15 +813,33 @@ impl ChunkCoord {
 ///   detection during delta merging (Story 5.6)
 #[derive(Clone, Debug, Resource, PartialEq, Serialize, Deserialize)]
 pub struct WorldGenerationConfig {
-    /// Solar system seed — root of all deterministic star derivation.
+    /// Solar system seed — root of all deterministic star and planet derivation.
     ///
     /// The star profile (type, luminosity, temperature, mass, habitable zone)
-    /// is derived from this seed at startup. Changing this value changes the
-    /// star the player's planet orbits.
-    #[serde(default = "default_system_seed")]
-    pub system_seed: u64,
-    #[serde(default = "default_planet_seed")]
-    pub planet_seed: u64,
+    /// is derived from this seed at startup. In system-derived mode, the
+    /// orbital layout and planet seed are also derived from this seed.
+    ///
+    /// Accepts both `solar_system_seed` (new canonical name) and `system_seed`
+    /// (legacy alias) in the TOML file for backward compatibility.
+    #[serde(
+        default = "default_solar_system_seed",
+        alias = "system_seed",
+        rename = "solar_system_seed"
+    )]
+    pub solar_system_seed: u64,
+    /// Planet seed override. When present, the planet seed is used directly
+    /// and no orbital derivation chain runs (override mode). When absent,
+    /// the planet seed is derived from `solar_system_seed` + `planet_index`
+    /// (system-derived mode).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub planet_seed: Option<u64>,
+    /// Zero-based index selecting which orbital slot to start on when in
+    /// system-derived mode. Ignored in override mode.
+    ///
+    /// If the index is out of range for the derived orbital layout, startup
+    /// fails with a descriptive error rather than silently clamping.
+    #[serde(default)]
+    pub planet_index: u32,
     #[serde(default = "default_chunk_size_world_units")]
     pub chunk_size_world_units: f32,
     #[serde(default = "default_active_chunk_radius")]
@@ -853,8 +899,9 @@ pub struct WorldGenerationConfig {
 impl Default for WorldGenerationConfig {
     fn default() -> Self {
         Self {
-            system_seed: default_system_seed(),
-            planet_seed: default_planet_seed(),
+            solar_system_seed: default_solar_system_seed(),
+            planet_seed: Some(default_planet_seed()),
+            planet_index: 0,
             chunk_size_world_units: default_chunk_size_world_units(),
             active_chunk_radius: default_active_chunk_radius(),
             building_cell_size: default_building_cell_size(),
@@ -872,7 +919,23 @@ impl Default for WorldGenerationConfig {
     }
 }
 
-fn default_system_seed() -> u64 {
+impl WorldGenerationConfig {
+    /// Which seeding mode this config is operating in.
+    ///
+    /// When `planet_seed` is `Some`, the config is in override mode — the
+    /// planet seed is used directly and no orbital derivation runs. When
+    /// `planet_seed` is `None`, the config is in system-derived mode and
+    /// the planet seed will be derived from `solar_system_seed` + `planet_index`.
+    pub fn seed_mode(&self) -> SeedMode {
+        if self.planet_seed.is_some() {
+            SeedMode::Override
+        } else {
+            SeedMode::SystemDerived
+        }
+    }
+}
+
+fn default_solar_system_seed() -> u64 {
     20_260_501
 }
 
@@ -973,6 +1036,29 @@ fn default_elevation_subdivisions() -> u32 {
     8
 }
 
+/// Solar system context carried through the derivation chain.
+///
+/// Present in `WorldProfile` when the planet seed was derived from a solar
+/// system seed (system-derived mode). Absent (`None`) when the planet seed
+/// was provided directly in config (override mode).
+///
+/// Systems that need stellar/orbital context (e.g., biome temperature
+/// scaling) check `WorldProfile::system_context`. When it is `None`, they
+/// fall back to defaults (preserving the pre-stellar-integration behavior).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SystemContext {
+    /// The solar system seed that started the derivation chain.
+    pub system_seed: SolarSystemSeed,
+    /// The star profile derived from the system seed.
+    pub star: StarProfile,
+    /// The full orbital layout derived from the system seed.
+    pub orbital_layout: OrbitalLayout,
+    /// Planet-level environmental parameters derived from stellar context.
+    pub planet_environment: PlanetEnvironment,
+    /// The zero-based orbital index of the selected planet.
+    pub planet_orbital_index: u32,
+}
+
 /// Derived deterministic world profile.
 ///
 /// The profile exists so later stories do not have to keep reverse engineering
@@ -1022,6 +1108,15 @@ pub struct WorldProfile {
     /// `ELEVATION_CHANNEL`. Drives the multi-octave noise field that
     /// produces terrain height variation.
     pub elevation_seed: u64,
+    /// Solar system context when running in system-derived mode.
+    ///
+    /// `Some` when the planet seed was derived from a solar system seed via
+    /// the full derivation chain. `None` when the planet seed was provided
+    /// directly in config (override mode). Systems that need stellar or
+    /// orbital context should check this field and fall back to defaults
+    /// when it is `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_context: Option<SystemContext>,
 }
 
 impl Default for WorldProfile {
@@ -1031,9 +1126,72 @@ impl Default for WorldProfile {
 }
 
 impl WorldProfile {
+    /// Build a world profile in override mode — planet seed taken directly
+    /// from config, no system derivation chain.
+    ///
+    /// This is the constructor used when `planet_seed` is present in the
+    /// config. The `system_context` field is `None`.
     pub fn from_config(config: &WorldGenerationConfig) -> Self {
-        let planet_seed = PlanetSeed(config.planet_seed);
+        let raw_seed = config
+            .planet_seed
+            .expect("from_config requires planet_seed to be Some (override mode)");
+        let planet_seed = PlanetSeed(raw_seed);
+        Self::build(planet_seed, config, None)
+    }
 
+    /// Build a world profile in system-derived mode — planet seed derived
+    /// from the full solar system chain.
+    ///
+    /// Runs: system seed → star profile → orbital layout → select planet
+    /// by index → derive planet environment → build profile.
+    ///
+    /// Returns `Err` with a human-readable message if the `planet_index`
+    /// is out of range for the derived orbital layout.
+    pub fn from_system_seed(
+        config: &WorldGenerationConfig,
+        star_registry: &StarTypeRegistry,
+        orbital_config: &OrbitalConfig,
+        env_config: &PlanetEnvironmentConfig,
+    ) -> Result<Self, String> {
+        let system_seed = SolarSystemSeed(config.solar_system_seed);
+        let star = derive_star_profile(system_seed, star_registry);
+        let orbital_layout = derive_orbital_layout(system_seed, orbital_config);
+
+        let planet_count = orbital_layout.planets.len();
+        let index = config.planet_index as usize;
+        if index >= planet_count {
+            return Err(format!(
+                "planet_index {} is out of range: solar system seed {} produced \
+                 {} planets (valid indices: 0..{})",
+                config.planet_index,
+                config.solar_system_seed,
+                planet_count,
+                planet_count.saturating_sub(1),
+            ));
+        }
+
+        let slot = &orbital_layout.planets[index];
+        let planet_seed = slot.planet_seed;
+        let planet_environment =
+            derive_planet_environment(&star, slot.orbital_distance_au, planet_seed, env_config);
+
+        let context = SystemContext {
+            system_seed,
+            star,
+            orbital_layout,
+            planet_environment,
+            planet_orbital_index: config.planet_index,
+        };
+
+        Ok(Self::build(planet_seed, config, Some(context)))
+    }
+
+    /// Shared builder used by both `from_config` and `from_system_seed`.
+    fn build(
+        planet_seed: PlanetSeed,
+        config: &WorldGenerationConfig,
+        system_context: Option<SystemContext>,
+    ) -> Self {
         // Derive the planet surface radius from the planet seed. We mix the
         // seed with a dedicated channel constant so this derivation is
         // independent of all other seed-derived values (placement density,
@@ -1061,7 +1219,21 @@ impl WorldProfile {
             planet_surface_radius,
             planet_surface_diameter,
             elevation_seed: mix_seed(planet_seed.0, ELEVATION_CHANNEL),
+            system_context,
         }
+    }
+
+    /// Whether this profile was derived from a solar system seed.
+    ///
+    /// Returns `true` when operating in system-derived mode (the full chain
+    /// ran: system seed → star → orbital layout → planet seed). Returns
+    /// `false` in override mode (planet seed was provided directly).
+    ///
+    /// Not yet consumed by any system — provided for story 5b.4 integration
+    /// tests and downstream biome systems that will branch on mode.
+    #[allow(dead_code)]
+    pub fn is_system_derived(&self) -> bool {
+        self.system_context.is_some()
     }
 }
 
@@ -1132,8 +1304,77 @@ fn load_world_generation_config(mut commands: Commands) {
         WorldGenerationConfig::default()
     };
 
-    let profile = WorldProfile::from_config(&config);
+    match config.seed_mode() {
+        SeedMode::Override => {
+            info!(
+                "Seed mode: override (planet_seed={:#018X})",
+                config
+                    .planet_seed
+                    .expect("override mode requires planet_seed"),
+            );
+            let profile = WorldProfile::from_config(&config);
+            commands.insert_resource(profile);
+        }
+        SeedMode::SystemDerived => {
+            info!(
+                "Seed mode: system-derived (solar_system_seed={}, planet_index={}); \
+                 WorldProfile will be resolved in Startup after registries are loaded",
+                config.solar_system_seed, config.planet_index,
+            );
+            // WorldProfile will be built by resolve_system_derived_profile in Startup.
+            // The init_resource default is a placeholder that gets overwritten.
+        }
+    }
+
     commands.insert_resource(config);
+}
+
+/// Resolve the `WorldProfile` from the full solar system derivation chain.
+///
+/// This system runs in `Startup` (after all `PreStartup` registry loaders
+/// have completed). It only does work when the config is in system-derived
+/// mode — when `planet_seed` is absent and the planet seed must be derived
+/// from `solar_system_seed` + `planet_index`.
+///
+/// On success, it overwrites the default `WorldProfile` resource with the
+/// fully resolved profile including `SystemContext`. On failure (e.g.,
+/// `planet_index` out of range), it panics with a descriptive message
+/// because an invalid planet index is a configuration error that must be
+/// fixed before the game can run.
+fn resolve_system_derived_profile(
+    mut commands: Commands,
+    config: Res<WorldGenerationConfig>,
+    star_registry: Res<StarTypeRegistry>,
+    orbital_config: Res<OrbitalConfig>,
+    env_config: Res<PlanetEnvironmentConfig>,
+) {
+    if config.seed_mode() != SeedMode::SystemDerived {
+        return;
+    }
+
+    let profile =
+        WorldProfile::from_system_seed(&config, &star_registry, &orbital_config, &env_config)
+            .unwrap_or_else(|err| {
+                panic!(
+                    "Failed to resolve system-derived WorldProfile: {err}. \
+             Fix solar_system_seed / planet_index in {CONFIG_PATH} \
+             or switch to override mode by setting planet_seed directly.",
+                );
+            });
+
+    info!(
+        "Resolved system-derived WorldProfile: planet_seed={:#018X}, \
+         star_type={}, planet_index={}",
+        profile.planet_seed.0,
+        profile
+            .system_context
+            .as_ref()
+            .expect("system-derived profile must have system_context")
+            .star
+            .star_type_key,
+        config.planet_index,
+    );
+
     commands.insert_resource(profile);
 }
 
@@ -1858,7 +2099,7 @@ mod tests {
     #[test]
     fn world_profile_derivation_is_deterministic() {
         let config = WorldGenerationConfig {
-            planet_seed: 123_456,
+            planet_seed: Some(123_456),
             chunk_size_world_units: 45.0,
             active_chunk_radius: 2,
             building_cell_size: 1.0,
@@ -1941,7 +2182,7 @@ mod tests {
     #[test]
     fn chunk_generation_key_is_deterministic_for_same_inputs() {
         let profile = WorldProfile::from_config(&WorldGenerationConfig {
-            planet_seed: 777,
+            planet_seed: Some(777),
             chunk_size_world_units: 45.0,
             active_chunk_radius: 1,
             building_cell_size: 1.0,
@@ -1971,7 +2212,7 @@ mod tests {
     #[test]
     fn generated_object_id_is_stable_from_explicit_inputs() {
         let profile = WorldProfile::from_config(&WorldGenerationConfig {
-            planet_seed: 42,
+            planet_seed: Some(42),
             chunk_size_world_units: 45.0,
             active_chunk_radius: 1,
             building_cell_size: 1.0,
@@ -2291,7 +2532,7 @@ mod tests {
     #[test]
     fn world_profile_includes_planet_surface_fields() {
         let config = WorldGenerationConfig {
-            planet_seed: 42,
+            planet_seed: Some(42),
             chunk_size_world_units: 45.0,
             active_chunk_radius: 1,
             building_cell_size: 1.0,
@@ -2348,7 +2589,7 @@ mod tests {
         // makes the torus seamless — chunk (-1, 0) on a diameter-100 planet
         // generates the same content as chunk (99, 0).
         let config = WorldGenerationConfig {
-            planet_seed: 42,
+            planet_seed: Some(42),
             chunk_size_world_units: 45.0,
             active_chunk_radius: 1,
             building_cell_size: 1.0,
@@ -2372,7 +2613,7 @@ mod tests {
         // A coordinate beyond the diameter should produce the same key as
         // the equivalent in-range coordinate.
         let config = WorldGenerationConfig {
-            planet_seed: 42,
+            planet_seed: Some(42),
             chunk_size_world_units: 45.0,
             active_chunk_radius: 1,
             building_cell_size: 1.0,
@@ -2395,7 +2636,7 @@ mod tests {
 
     fn sample_config() -> WorldGenerationConfig {
         WorldGenerationConfig {
-            planet_seed: 2026,
+            planet_seed: Some(2026),
             chunk_size_world_units: 45.0,
             active_chunk_radius: 1,
             building_cell_size: 1.0,
@@ -2724,7 +2965,7 @@ mod tests {
     fn biome_derivation_wraps_torus_correctly() {
         // Equivalent torus coordinates must produce the same biome.
         let config = WorldGenerationConfig {
-            planet_seed: 42,
+            planet_seed: Some(42),
             chunk_size_world_units: 45.0,
             active_chunk_radius: 1,
             building_cell_size: 1.0,

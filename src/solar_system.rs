@@ -24,7 +24,7 @@ use crate::seed_util::{
     STAR_MASS_CHANNEL, STAR_TEMPERATURE_CHANNEL, STAR_TYPE_CHANNEL, f32_next_up, f32_to_u64_bits,
     lerp, mix_seed, seed_to_unit_f32,
 };
-use crate::world_generation::{PlanetSeed, WorldGenerationConfig};
+use crate::world_generation::{PlanetSeed, WorldGenerationConfig, WorldProfile};
 
 /// Path to the star type definitions TOML file.
 const STAR_TYPES_CONFIG_PATH: &str = "assets/config/star_types.toml";
@@ -892,7 +892,7 @@ fn log_star_profile_on_startup(
     orbital_config: Res<OrbitalConfig>,
     env_config: Res<PlanetEnvironmentConfig>,
 ) {
-    let seed = SolarSystemSeed(world_config.system_seed);
+    let seed = SolarSystemSeed(world_config.solar_system_seed);
     let profile = derive_star_profile(seed, &star_registry);
 
     info!(
@@ -948,18 +948,48 @@ fn log_star_profile_on_startup(
 /// is not found in the layout (configuration error or the player is on a
 /// manually-seeded test planet), we fall back to a 1 AU orbital distance so
 /// that biome derivation still produces reasonable results.
+///
+/// In system-derived mode (planet_seed is None), the PlanetEnvironment is
+/// already available via `WorldProfile::system_context`, so this system
+/// extracts it from there and inserts it as a standalone resource for
+/// backward compatibility with systems that read `Res<PlanetEnvironment>`.
 fn derive_and_insert_planet_environment(
     mut commands: Commands,
     world_config: Res<WorldGenerationConfig>,
+    world_profile: Res<WorldProfile>,
     star_registry: Res<StarTypeRegistry>,
     orbital_config: Res<OrbitalConfig>,
     env_config: Res<PlanetEnvironmentConfig>,
 ) {
-    let seed = SolarSystemSeed(world_config.system_seed);
+    // In system-derived mode, the WorldProfile already contains the full
+    // SystemContext with the PlanetEnvironment. Extract and insert it as
+    // a standalone resource for backward compatibility.
+    if let Some(ref ctx) = world_profile.system_context {
+        let env = ctx.planet_environment.clone();
+        info!(
+            "Planet environment (system-derived): temp=[{:.0}, {:.0}]K, atmo={:.3}, \
+             radiation={:.3}, gravity={:.3}g, habitable={}",
+            env.surface_temp_min_k,
+            env.surface_temp_max_k,
+            env.atmosphere_density,
+            env.radiation_level,
+            env.surface_gravity_g,
+            env.in_habitable_zone,
+        );
+        commands.insert_resource(env);
+        return;
+    }
+
+    // Override mode: derive from the orbital layout by matching planet seed.
+    let seed = SolarSystemSeed(world_config.solar_system_seed);
     let star = derive_star_profile(seed, &star_registry);
     let layout = derive_orbital_layout(seed, &orbital_config);
 
-    let planet_seed = PlanetSeed(world_config.planet_seed);
+    let planet_seed = PlanetSeed(
+        world_config
+            .planet_seed
+            .expect("override mode requires planet_seed"),
+    );
 
     // Find the player's planet in the orbital layout by matching planet seed.
     // When the planet seed is NOT found (override / manual-seed mode), we
