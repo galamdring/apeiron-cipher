@@ -264,6 +264,37 @@ impl std::fmt::Display for StarProfile {
     }
 }
 
+// ── Planet Environment Types ────────────────────────────────────────────
+
+/// Planet-level environmental parameters derived from stellar context.
+///
+/// Each planet's environment is deterministically derived from the parent
+/// star's profile, the planet's orbital distance, and its seed. These
+/// parameters feed into biome derivation — temperature range maps the
+/// biome noise field to physical Kelvin values, atmosphere density
+/// attenuates radiation, and gravity influences density of materials.
+///
+/// All derivation formulas reference [`PlanetEnvironmentConfig`] values
+/// rather than hardcoded constants.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PlanetEnvironment {
+    /// Lower bound of the surface temperature range in Kelvin.
+    pub surface_temp_min_k: f32,
+    /// Upper bound of the surface temperature range in Kelvin.
+    pub surface_temp_max_k: f32,
+    /// Atmosphere density relative to Earth. 0.0 = vacuum, 1.0 = Earth-like,
+    /// 2.0+ = dense (e.g., Venus-like).
+    pub atmosphere_density: f32,
+    /// Radiation level at the surface, normalized 0.0–1.0. Derived from
+    /// stellar luminosity via inverse-square law, attenuated by atmosphere.
+    pub radiation_level: f32,
+    /// Surface gravity in Earth-g units. Earth = 1.0.
+    pub surface_gravity_g: f32,
+    /// Whether this planet's orbital distance falls within the parent star's
+    /// habitable zone.
+    pub in_habitable_zone: bool,
+}
+
 /// Configuration constraints for orbital generation.
 ///
 /// All tuning values are data-driven — loaded from
