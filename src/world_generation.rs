@@ -4844,4 +4844,116 @@ planet_index = 3
             profile.planet_surface_radius * 2
         );
     }
+
+    /// System-derived world generates biomes influenced by planet temperature.
+    ///
+    /// Exercises the full chain: system seed → star → orbital layout → planet
+    /// environment → biome selection, and verifies that the derived planet
+    /// temperature actually gates biome assignment. The same profile is used
+    /// with vs without its planet environment; absolute-temperature-aware
+    /// biome definitions must produce different distributions when the planet
+    /// environment is present.
+    #[test]
+    fn system_derived_world_generates_biomes_influenced_by_planet_temperature() {
+        use crate::solar_system::{OrbitalConfig, PlanetEnvironmentConfig, StarTypeRegistry};
+
+        let star_registry = StarTypeRegistry::default();
+        let orbital_config = OrbitalConfig::default();
+        let env_config = PlanetEnvironmentConfig::default();
+
+        let config = WorldGenerationConfig {
+            solar_system_seed: 42,
+            planet_seed: None,
+            planet_index: 0,
+            ..Default::default()
+        };
+
+        let profile =
+            WorldProfile::from_system_seed(&config, &star_registry, &orbital_config, &env_config)
+                .expect("system seed derivation must succeed");
+
+        let ctx = profile
+            .system_context
+            .as_ref()
+            .expect("system_context must be Some in system-derived mode");
+
+        // Sanity: the derived planet environment has a meaningful temperature
+        // range (not degenerate zero-width).
+        let env = &ctx.planet_environment;
+        assert!(
+            env.surface_temp_max_k > env.surface_temp_min_k,
+            "planet must have a non-degenerate temperature range: {}-{} K",
+            env.surface_temp_min_k,
+            env.surface_temp_max_k,
+        );
+
+        // Use the absolute-temperature-aware biome registry so the planet's
+        // temperature band can actually influence which biomes are selected.
+        let registry = abs_temp_registry();
+
+        // Collect biome keys across a grid of chunks using the system-derived
+        // planet environment (the full-chain path).
+        let mut biomes_with_env: Vec<String> = Vec::new();
+        for x in 0..100_i32 {
+            let coord = ChunkCoord::new(x, x.wrapping_mul(7));
+            let biome = derive_chunk_biome(&profile, &registry, coord, Some(env));
+            biomes_with_env.push(biome.biome_key);
+        }
+
+        // Collect biome keys for the same chunks without a planet environment
+        // (override / no-context mode). Without absolute Kelvin filtering,
+        // all biomes that match normalized ranges can appear.
+        let mut biomes_without_env: Vec<String> = Vec::new();
+        for x in 0..100_i32 {
+            let coord = ChunkCoord::new(x, x.wrapping_mul(7));
+            let biome = derive_chunk_biome(&profile, &registry, coord, None);
+            biomes_without_env.push(biome.biome_key);
+        }
+
+        // The planet temperature must actually influence biome selection:
+        // at least one chunk must resolve to a different biome when the
+        // planet environment is applied vs when it is absent.
+        let differing_count = biomes_with_env
+            .iter()
+            .zip(biomes_without_env.iter())
+            .filter(|(a, b)| a != b)
+            .count();
+
+        assert!(
+            differing_count > 0,
+            "planet temperature from the full derivation chain must influence biome selection; \
+             all {} chunks produced identical biomes with and without planet environment \
+             (temp range {:.0}-{:.0} K)",
+            biomes_with_env.len(),
+            env.surface_temp_min_k,
+            env.surface_temp_max_k,
+        );
+
+        // Verify determinism: running the same derivation again must produce
+        // identical results.
+        let profile_again =
+            WorldProfile::from_system_seed(&config, &star_registry, &orbital_config, &env_config)
+                .expect("repeated derivation must succeed");
+        let ctx_again = profile_again
+            .system_context
+            .as_ref()
+            .expect("system_context must be Some");
+
+        for x in 0..100_i32 {
+            let coord = ChunkCoord::new(x, x.wrapping_mul(7));
+            let biome_a =
+                derive_chunk_biome(&profile, &registry, coord, Some(&ctx.planet_environment));
+            let biome_b = derive_chunk_biome(
+                &profile_again,
+                &registry,
+                coord,
+                Some(&ctx_again.planet_environment),
+            );
+            assert_eq!(
+                biome_a.biome_key, biome_b.biome_key,
+                "biome at chunk ({}, {}) must be deterministic across identical derivations",
+                coord.x, coord.z,
+            );
+        }
+    }
 }
