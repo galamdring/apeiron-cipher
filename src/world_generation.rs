@@ -2268,6 +2268,25 @@ mod tests {
     }
 
     #[test]
+    fn override_mode_is_not_system_derived_and_has_no_system_context() {
+        let config = WorldGenerationConfig {
+            planet_seed: Some(42),
+            ..Default::default()
+        };
+
+        let profile = WorldProfile::from_config(&config);
+
+        assert!(
+            !profile.is_system_derived(),
+            "override mode must report is_system_derived() == false"
+        );
+        assert!(
+            profile.system_context.is_none(),
+            "override mode must have system_context == None"
+        );
+    }
+
+    #[test]
     fn world_profile_derives_distinct_sub_seeds() {
         let profile = WorldProfile::from_config(&WorldGenerationConfig::default());
 
