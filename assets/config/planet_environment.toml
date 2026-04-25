@@ -1,0 +1,25 @@
+# Planet environment derivation parameters.
+#
+# These values control how planetary surface conditions are derived from
+# the parent star's profile and the planet's orbital distance. All
+# derivation formulas reference these values rather than hardcoded
+# constants.
+
+# Earth-equivalent surface temperature in Kelvin at 1 AU from a Sol-like
+# star. The inverse-square law scales this for other distances and
+# luminosities.
+temp_base_k = 280.0
+
+# Fractional seed-based variation applied to the base temperature.
+# 0.2 means ±20% around the computed baseline.
+temp_variation_fraction = 0.2
+
+# Multiplicative penalty applied to atmosphere density for inner planets
+# (those closer to the star than 1 AU). 0.7 means the atmosphere is
+# reduced to 70% of the distance-derived baseline for the innermost
+# planets.
+atmosphere_inner_penalty = 0.7
+
+# Surface gravity range in Earth-g units.
+gravity_min = 0.1
+gravity_max = 3.0

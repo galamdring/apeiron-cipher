@@ -128,6 +128,9 @@ impl std::fmt::Display for OrbitalConfigError {
 
 impl std::error::Error for OrbitalConfigError {}
 
+/// Path to the planet environment configuration TOML file.
+const PLANET_ENVIRONMENT_CONFIG_PATH: &str = "assets/config/planet_environment.toml";
+
 // ── Data Types ───────────────────────────────────────────────────────────
 
 /// Newtype wrapping the solar system seed.
@@ -277,6 +280,10 @@ impl std::fmt::Display for StarProfile {
 /// All derivation formulas reference [`PlanetEnvironmentConfig`] values
 /// rather than hardcoded constants.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[expect(
+    dead_code,
+    reason = "Used by derive_planet_environment in a later story phase"
+)]
 pub struct PlanetEnvironment {
     /// Lower bound of the surface temperature range in Kelvin.
     pub surface_temp_min_k: f32,
@@ -374,6 +381,113 @@ impl OrbitalConfig {
             return Err(OrbitalConfigError::InvalidSeparation {
                 value: self.min_separation_au,
             });
+        }
+        Ok(())
+    }
+}
+
+/// Configuration for deriving planet-level environmental parameters from
+/// stellar context.
+///
+/// All tuning values are data-driven — loaded from
+/// `assets/config/planet_environment.toml` at startup. The defaults here
+/// serve as a hardcoded fallback matching the shipped config file.
+///
+/// These values parameterise the formulas in `derive_planet_environment`:
+/// temperature base and variation, atmosphere loss near the star, and the
+/// gravity range that seeds can produce.
+#[derive(Clone, Debug, Resource, Serialize, Deserialize)]
+pub struct PlanetEnvironmentConfig {
+    /// Earth-equivalent surface temperature in Kelvin at 1 AU from a
+    /// Sol-like star. The inverse-square law scales this for other
+    /// distances and luminosities.
+    pub temp_base_k: f32,
+    /// Fractional seed-based variation applied to the base temperature.
+    /// A value of 0.2 means ±20% around the computed baseline.
+    pub temp_variation_fraction: f32,
+    /// Multiplicative penalty applied to atmosphere density for inner
+    /// planets (those closer to the star than 1 AU). A value of 0.7
+    /// means the atmosphere is reduced to 70% of the distance-derived
+    /// baseline for the innermost planets.
+    pub atmosphere_inner_penalty: f32,
+    /// Minimum surface gravity (in Earth-g) that any planet can have.
+    pub gravity_min: f32,
+    /// Maximum surface gravity (in Earth-g) that any planet can have.
+    pub gravity_max: f32,
+}
+
+impl Default for PlanetEnvironmentConfig {
+    /// Hardcoded fallback matching the shipped `planet_environment.toml`.
+    ///
+    /// The TOML file is the source of truth for tuning; these values
+    /// ensure the game is playable even when the file is missing.
+    fn default() -> Self {
+        Self {
+            temp_base_k: 280.0,
+            temp_variation_fraction: 0.2,
+            atmosphere_inner_penalty: 0.7,
+            gravity_min: 0.1,
+            gravity_max: 3.0,
+        }
+    }
+}
+
+impl PlanetEnvironmentConfig {
+    /// Validate every structural invariant the config must uphold.
+    ///
+    /// Returns `Ok(())` when valid, or `Err` with a human-readable description
+    /// of the first violation found. Checks performed:
+    ///
+    /// 1. `temp_base_k > 0.0` and finite — must be a positive temperature.
+    /// 2. `temp_variation_fraction >= 0.0`, `< 1.0`, and finite — variation
+    ///    must not exceed 100% (which would allow negative temperatures).
+    /// 3. `atmosphere_inner_penalty > 0.0`, `<= 1.0`, and finite — a
+    ///    multiplicative factor between total loss and no penalty.
+    /// 4. `gravity_min > 0.0` and finite — must be a positive gravity.
+    /// 5. `gravity_min < gravity_max` — range must not be inverted.
+    /// 6. `gravity_max` is finite.
+    pub fn validate(&self) -> Result<(), String> {
+        if !self.temp_base_k.is_finite() || self.temp_base_k <= 0.0 {
+            return Err(format!(
+                "temp_base_k must be positive and finite, got {}",
+                self.temp_base_k
+            ));
+        }
+        if !self.temp_variation_fraction.is_finite()
+            || self.temp_variation_fraction < 0.0
+            || self.temp_variation_fraction >= 1.0
+        {
+            return Err(format!(
+                "temp_variation_fraction must be in [0.0, 1.0) and finite, got {}",
+                self.temp_variation_fraction
+            ));
+        }
+        if !self.atmosphere_inner_penalty.is_finite()
+            || self.atmosphere_inner_penalty <= 0.0
+            || self.atmosphere_inner_penalty > 1.0
+        {
+            return Err(format!(
+                "atmosphere_inner_penalty must be in (0.0, 1.0] and finite, got {}",
+                self.atmosphere_inner_penalty
+            ));
+        }
+        if !self.gravity_min.is_finite() || self.gravity_min <= 0.0 {
+            return Err(format!(
+                "gravity_min must be positive and finite, got {}",
+                self.gravity_min
+            ));
+        }
+        if !self.gravity_max.is_finite() {
+            return Err(format!(
+                "gravity_max must be finite, got {}",
+                self.gravity_max
+            ));
+        }
+        if self.gravity_min >= self.gravity_max {
+            return Err(format!(
+                "gravity_min ({}) must be < gravity_max ({})",
+                self.gravity_min, self.gravity_max
+            ));
         }
         Ok(())
     }
@@ -555,7 +669,15 @@ impl Plugin for SolarSystemPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<StarTypeRegistry>()
             .init_resource::<OrbitalConfig>()
-            .add_systems(PreStartup, (load_star_type_registry, load_orbital_config))
+            .init_resource::<PlanetEnvironmentConfig>()
+            .add_systems(
+                PreStartup,
+                (
+                    load_star_type_registry,
+                    load_orbital_config,
+                    load_planet_environment_config,
+                ),
+            )
             .add_systems(Startup, log_star_profile_on_startup);
     }
 }
@@ -644,6 +766,62 @@ fn load_orbital_config(mut commands: Commands) {
     } else {
         warn!("{ORBITAL_CONFIG_PATH} not found, using defaults");
         OrbitalConfig::default()
+    };
+
+    commands.insert_resource(config);
+}
+
+/// Load the planet environment configuration from TOML, falling back to
+/// hardcoded defaults.
+///
+/// Follows the same pattern as `load_orbital_config`: check existence →
+/// read → parse → validate → fallback on any error.
+fn load_planet_environment_config(mut commands: Commands) {
+    let config = if Path::new(PLANET_ENVIRONMENT_CONFIG_PATH).exists() {
+        match fs::read_to_string(PLANET_ENVIRONMENT_CONFIG_PATH) {
+            Ok(contents) => match toml::from_str::<PlanetEnvironmentConfig>(&contents) {
+                Ok(config) => match config.validate() {
+                    Ok(()) => {
+                        info!(
+                            "Loaded planet environment config from \
+                             {PLANET_ENVIRONMENT_CONFIG_PATH}: temp_base={}K, \
+                             variation={}%, atmosphere_penalty={}, gravity=[{}, {}]g",
+                            config.temp_base_k,
+                            config.temp_variation_fraction * 100.0,
+                            config.atmosphere_inner_penalty,
+                            config.gravity_min,
+                            config.gravity_max,
+                        );
+                        config
+                    }
+                    Err(validation_error) => {
+                        warn!(
+                            "Planet environment config from \
+                             {PLANET_ENVIRONMENT_CONFIG_PATH} failed validation, \
+                             using defaults: {validation_error}"
+                        );
+                        PlanetEnvironmentConfig::default()
+                    }
+                },
+                Err(error) => {
+                    warn!(
+                        "Could not parse {PLANET_ENVIRONMENT_CONFIG_PATH}, \
+                         using defaults: {error}"
+                    );
+                    PlanetEnvironmentConfig::default()
+                }
+            },
+            Err(error) => {
+                warn!(
+                    "Could not read {PLANET_ENVIRONMENT_CONFIG_PATH}, \
+                     using defaults: {error}"
+                );
+                PlanetEnvironmentConfig::default()
+            }
+        }
+    } else {
+        warn!("{PLANET_ENVIRONMENT_CONFIG_PATH} not found, using defaults");
+        PlanetEnvironmentConfig::default()
     };
 
     commands.insert_resource(config);
