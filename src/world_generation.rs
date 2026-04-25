@@ -2287,6 +2287,78 @@ mod tests {
     }
 
     #[test]
+    fn world_profile_with_system_context_survives_serde_round_trip() {
+        use crate::solar_system::{
+            OrbitalConfig, PlanetEnvironmentConfig, SolarSystemSeed, StarTypeRegistry,
+        };
+
+        // Build a WorldProfile via the full system-seed derivation chain so
+        // every field is populated with realistic, derived values.
+        let star_registry = StarTypeRegistry::default();
+        let orbital_config = OrbitalConfig::default();
+        let env_config = PlanetEnvironmentConfig::default();
+        let config = WorldGenerationConfig {
+            solar_system_seed: 42,
+            planet_index: 0,
+            planet_seed: None,
+            ..Default::default()
+        };
+
+        let profile =
+            WorldProfile::from_system_seed(&config, &star_registry, &orbital_config, &env_config)
+                .expect("system-seed derivation must succeed for index 0");
+
+        assert!(
+            profile.is_system_derived(),
+            "profile must be in system-derived mode"
+        );
+
+        // JSON round-trip
+        let json =
+            serde_json::to_string_pretty(&profile).expect("WorldProfile must serialize to JSON");
+        let deserialized: WorldProfile =
+            serde_json::from_str(&json).expect("WorldProfile must deserialize from JSON");
+
+        assert_eq!(
+            profile, deserialized,
+            "WorldProfile with SystemContext must survive JSON round-trip"
+        );
+
+        // Verify the SystemContext fields are actually present after round-trip
+        let ctx = deserialized
+            .system_context
+            .as_ref()
+            .expect("system_context must survive round-trip");
+        assert_eq!(ctx.system_seed, SolarSystemSeed(42));
+        assert_eq!(ctx.planet_orbital_index, 0);
+    }
+
+    #[test]
+    fn world_profile_override_mode_survives_serde_round_trip() {
+        let config = WorldGenerationConfig {
+            planet_seed: Some(12345),
+            ..Default::default()
+        };
+        let profile = WorldProfile::from_config(&config);
+
+        assert!(!profile.is_system_derived());
+
+        let json =
+            serde_json::to_string_pretty(&profile).expect("WorldProfile must serialize to JSON");
+        let deserialized: WorldProfile =
+            serde_json::from_str(&json).expect("WorldProfile must deserialize from JSON");
+
+        assert_eq!(
+            profile, deserialized,
+            "WorldProfile in override mode must survive JSON round-trip"
+        );
+        assert!(
+            deserialized.system_context.is_none(),
+            "override mode must have no system_context after round-trip"
+        );
+    }
+
+    #[test]
     fn world_profile_derives_distinct_sub_seeds() {
         let profile = WorldProfile::from_config(&WorldGenerationConfig::default());
 
