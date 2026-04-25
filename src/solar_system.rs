@@ -288,7 +288,7 @@ impl std::fmt::Display for StarProfile {
 ///
 /// All derivation formulas reference [`PlanetEnvironmentConfig`] values
 /// rather than hardcoded constants.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Resource, Serialize, Deserialize)]
 pub struct PlanetEnvironment {
     /// Lower bound of the surface temperature range in Kelvin.
     pub surface_temp_min_k: f32,
@@ -683,7 +683,13 @@ impl Plugin for SolarSystemPlugin {
                     load_planet_environment_config,
                 ),
             )
-            .add_systems(Startup, log_star_profile_on_startup);
+            .add_systems(
+                Startup,
+                (
+                    log_star_profile_on_startup,
+                    derive_and_insert_planet_environment,
+                ),
+            );
     }
 }
 
@@ -878,6 +884,58 @@ fn log_star_profile_on_startup(
             slot.orbital_index, slot.orbital_distance_au, slot.planet_seed.0,
         );
     }
+}
+
+/// Derive the `PlanetEnvironment` for the player's current planet and insert
+/// it as a resource.
+///
+/// The player's planet is identified by matching `WorldGenerationConfig::planet_seed`
+/// against the orbital layout derived from the system seed. If the planet seed
+/// is not found in the layout (configuration error or the player is on a
+/// manually-seeded test planet), we fall back to a 1 AU orbital distance so
+/// that biome derivation still produces reasonable results.
+fn derive_and_insert_planet_environment(
+    mut commands: Commands,
+    world_config: Res<WorldGenerationConfig>,
+    star_registry: Res<StarTypeRegistry>,
+    orbital_config: Res<OrbitalConfig>,
+    env_config: Res<PlanetEnvironmentConfig>,
+) {
+    let seed = SolarSystemSeed(world_config.system_seed);
+    let star = derive_star_profile(seed, &star_registry);
+    let layout = derive_orbital_layout(seed, &orbital_config);
+
+    let planet_seed = PlanetSeed(world_config.planet_seed);
+
+    // Find the player's planet in the orbital layout by matching planet seed.
+    let orbital_distance_au = layout
+        .planets
+        .iter()
+        .find(|slot| slot.planet_seed == planet_seed)
+        .map(|slot| slot.orbital_distance_au)
+        .unwrap_or_else(|| {
+            warn!(
+                "Planet seed {:#018X} not found in orbital layout; \
+                 defaulting to 1.0 AU for environment derivation",
+                planet_seed.0,
+            );
+            1.0
+        });
+
+    let env = derive_planet_environment(&star, orbital_distance_au, planet_seed, &env_config);
+
+    info!(
+        "Planet environment derived: temp=[{:.0}, {:.0}]K, atmo={:.3}, \
+         radiation={:.3}, gravity={:.3}g, habitable={}",
+        env.surface_temp_min_k,
+        env.surface_temp_max_k,
+        env.atmosphere_density,
+        env.radiation_level,
+        env.surface_gravity_g,
+        env.in_habitable_zone,
+    );
+
+    commands.insert_resource(env);
 }
 
 // ── Seed Derivation ──────────────────────────────────────────────────────
@@ -1144,10 +1202,6 @@ pub fn derive_orbital_layout(
 /// Same inputs always produce the same output. Each derived parameter uses a
 /// unique seed channel mixed from the planet seed, so adding or removing a
 /// parameter never shifts any other.
-#[expect(
-    dead_code,
-    reason = "Wired into biome system in story 5b.4; tested below"
-)]
 pub fn derive_planet_environment(
     star: &StarProfile,
     orbital_distance_au: f32,
