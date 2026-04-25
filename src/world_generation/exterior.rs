@@ -58,6 +58,7 @@ use crate::carry::InCarry;
 use crate::interaction::HeldItem;
 use crate::materials::{GameMaterial, MaterialCatalog, MaterialObject};
 use crate::scene::{ExteriorGroundPatch, PositionXZ, RectXZ};
+use crate::seed_util::lerp;
 
 const DEPOSIT_CONFIG_PATH: &str = "assets/exterior/surface_mineral_deposits.toml";
 const SURFACE_MINERAL_DEPOSIT_GENERATOR_VERSION: u32 = 1;
@@ -1406,10 +1407,6 @@ fn signed_unit_interval(value: u64) -> f32 {
 
 fn smoothstep(t: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
-}
-
-fn lerp(a: f32, b: f32, t: f32) -> f32 {
-    a + (b - a) * t
 }
 
 // ── Story 5.6: Delta-Sync Architecture Validation ───────────────────────

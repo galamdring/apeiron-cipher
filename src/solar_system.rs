@@ -18,39 +18,115 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 
+use crate::seed_util::{
+    ORBITAL_LAYOUT_CHANNEL, PLANET_COUNT_CHANNEL, STAR_LUMINOSITY_CHANNEL, STAR_MASS_CHANNEL,
+    STAR_TEMPERATURE_CHANNEL, STAR_TYPE_CHANNEL, f32_next_up, f32_to_u64_bits, lerp, mix_seed,
+    seed_to_unit_f32,
+};
 use crate::world_generation::{PlanetSeed, WorldGenerationConfig};
-
-// ── Seed Channel Constants ───────────────────────────────────────────────
-//
-// Each constant occupies a unique 64-bit value in the `0x57A2_0001` prefix
-// space. The prefix is arbitrary but distinct from all other channel families
-// in the codebase (world_generation uses `0xD3E5_17A1`, biomes use
-// `0xB10E_0001`, etc.). One channel per derived parameter ensures that
-// adding or removing a parameter never shifts the derivation of any other.
-
-/// Channel for selecting the star type via weighted random.
-const STAR_TYPE_CHANNEL: u64 = 0x57A2_0001_0000_0001;
-
-/// Channel for interpolating luminosity within the selected type's range.
-const STAR_LUMINOSITY_CHANNEL: u64 = 0x57A2_0001_0000_0002;
-
-/// Channel for interpolating surface temperature within the selected type's range.
-const STAR_TEMPERATURE_CHANNEL: u64 = 0x57A2_0001_0000_0003;
-
-/// Channel for interpolating stellar mass within the selected type's range.
-const STAR_MASS_CHANNEL: u64 = 0x57A2_0001_0000_0004;
-
-/// Channel for deriving planet count from a system seed.
-const PLANET_COUNT_CHANNEL: u64 = 0x02B1_0001_0000_0001;
-
-/// Channel for seeding the orbital distance RNG.
-const ORBITAL_LAYOUT_CHANNEL: u64 = 0x02B1_0001_0000_0002;
 
 /// Path to the star type definitions TOML file.
 const STAR_TYPES_CONFIG_PATH: &str = "assets/config/star_types.toml";
 
 /// Path to the orbital configuration TOML file.
 const ORBITAL_CONFIG_PATH: &str = "assets/config/orbital_config.toml";
+
+// ── Validation Errors ────────────────────────────────────────────────────
+
+/// Errors produced by [`StarTypeRegistry::validate`].
+#[derive(Clone, Debug, PartialEq)]
+pub enum StarRegistryError {
+    /// Registry contains no star types.
+    Empty,
+    /// A star type definition has an empty key. `index` is 0-based.
+    EmptyKey { index: usize },
+    /// Two star types share the same key.
+    DuplicateKey { index: usize, key: String },
+    /// Weight is not positive and finite.
+    InvalidWeight { label: String, value: f32 },
+    /// Luminosity bounds are invalid (non-finite, non-positive min, or inverted).
+    InvalidLuminosity { label: String, detail: String },
+    /// Temperature bounds are invalid (zero min or inverted).
+    InvalidTemperature { label: String, detail: String },
+    /// Mass bounds are invalid (non-finite, non-positive min, or inverted).
+    InvalidMass { label: String, detail: String },
+}
+
+impl std::fmt::Display for StarRegistryError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Empty => write!(f, "StarTypeRegistry must contain at least one star type"),
+            Self::EmptyKey { index } => write!(f, "star_types[{index}]: key must not be empty"),
+            Self::DuplicateKey { index, key } => {
+                write!(f, "star_types[{index}] ('{key}'): duplicate key '{key}'")
+            }
+            Self::InvalidWeight { label, value } => {
+                write!(
+                    f,
+                    "{label}: weight must be positive and finite, got {value}"
+                )
+            }
+            Self::InvalidLuminosity { label, detail } => write!(f, "{label}: {detail}"),
+            Self::InvalidTemperature { label, detail } => write!(f, "{label}: {detail}"),
+            Self::InvalidMass { label, detail } => write!(f, "{label}: {detail}"),
+        }
+    }
+}
+
+impl std::error::Error for StarRegistryError {}
+
+/// Errors produced by [`OrbitalConfig::validate`].
+#[derive(Clone, Debug, PartialEq)]
+pub enum OrbitalConfigError {
+    /// `planet_count_min` is less than 1.
+    PlanetCountMinTooLow { value: u32 },
+    /// `planet_count_min` exceeds `planet_count_max`.
+    PlanetCountRangeInverted { min: u32, max: u32 },
+    /// `inner_orbit_au` is not positive or not finite.
+    InvalidInnerOrbit { value: f32 },
+    /// `outer_orbit_au` is not finite.
+    InvalidOuterOrbit { value: f32 },
+    /// `inner_orbit_au >= outer_orbit_au`.
+    OrbitRangeInverted { inner: f32, outer: f32 },
+    /// `min_separation_au` is not positive or not finite.
+    InvalidSeparation { value: f32 },
+}
+
+impl std::fmt::Display for OrbitalConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::PlanetCountMinTooLow { value } => {
+                write!(f, "planet_count_min must be >= 1, got {value}")
+            }
+            Self::PlanetCountRangeInverted { min, max } => {
+                write!(
+                    f,
+                    "planet_count_min ({min}) must be <= planet_count_max ({max})"
+                )
+            }
+            Self::InvalidInnerOrbit { value } => {
+                write!(f, "inner_orbit_au must be positive and finite, got {value}")
+            }
+            Self::InvalidOuterOrbit { value } => {
+                write!(f, "outer_orbit_au must be finite, got {value}")
+            }
+            Self::OrbitRangeInverted { inner, outer } => {
+                write!(
+                    f,
+                    "inner_orbit_au ({inner}) must be < outer_orbit_au ({outer})"
+                )
+            }
+            Self::InvalidSeparation { value } => {
+                write!(
+                    f,
+                    "min_separation_au must be positive and finite, got {value}"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for OrbitalConfigError {}
 
 // ── Data Types ───────────────────────────────────────────────────────────
 
@@ -160,6 +236,34 @@ pub struct OrbitalLayout {
     pub planets: Vec<OrbitalSlot>,
 }
 
+impl std::fmt::Display for OrbitalLayout {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} planets [", self.planets.len())?;
+        for (i, slot) in self.planets.iter().enumerate() {
+            if i > 0 {
+                write!(f, ", ")?;
+            }
+            write!(f, "{:.2} AU", slot.orbital_distance_au)?;
+        }
+        write!(f, "]")
+    }
+}
+
+impl std::fmt::Display for StarProfile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "type={}, L={:.4} sol, T={}K, M={:.4} Msol, HZ=[{:.2}, {:.2}] AU",
+            self.star_type_key,
+            self.luminosity,
+            self.surface_temperature_k,
+            self.mass_solar,
+            self.habitable_zone_inner_au,
+            self.habitable_zone_outer_au,
+        )
+    }
+}
+
 /// Configuration constraints for orbital generation.
 ///
 /// All tuning values are data-driven — loaded from
@@ -207,42 +311,38 @@ impl OrbitalConfig {
     /// 4. `inner_orbit_au < outer_orbit_au` — range must not be inverted.
     /// 5. `outer_orbit_au` is finite.
     /// 6. `min_separation_au > 0.0` and finite — must be a positive distance.
-    pub fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self) -> Result<(), OrbitalConfigError> {
         if self.planet_count_min < 1 {
-            return Err(format!(
-                "planet_count_min must be >= 1, got {}",
-                self.planet_count_min
-            ));
+            return Err(OrbitalConfigError::PlanetCountMinTooLow {
+                value: self.planet_count_min,
+            });
         }
         if self.planet_count_min > self.planet_count_max {
-            return Err(format!(
-                "planet_count_min ({}) must be <= planet_count_max ({})",
-                self.planet_count_min, self.planet_count_max
-            ));
+            return Err(OrbitalConfigError::PlanetCountRangeInverted {
+                min: self.planet_count_min,
+                max: self.planet_count_max,
+            });
         }
         if !self.inner_orbit_au.is_finite() || self.inner_orbit_au <= 0.0 {
-            return Err(format!(
-                "inner_orbit_au must be positive and finite, got {}",
-                self.inner_orbit_au
-            ));
+            return Err(OrbitalConfigError::InvalidInnerOrbit {
+                value: self.inner_orbit_au,
+            });
         }
         if !self.outer_orbit_au.is_finite() {
-            return Err(format!(
-                "outer_orbit_au must be finite, got {}",
-                self.outer_orbit_au
-            ));
+            return Err(OrbitalConfigError::InvalidOuterOrbit {
+                value: self.outer_orbit_au,
+            });
         }
         if self.inner_orbit_au >= self.outer_orbit_au {
-            return Err(format!(
-                "inner_orbit_au ({}) must be < outer_orbit_au ({})",
-                self.inner_orbit_au, self.outer_orbit_au
-            ));
+            return Err(OrbitalConfigError::OrbitRangeInverted {
+                inner: self.inner_orbit_au,
+                outer: self.outer_orbit_au,
+            });
         }
         if !self.min_separation_au.is_finite() || self.min_separation_au <= 0.0 {
-            return Err(format!(
-                "min_separation_au must be positive and finite, got {}",
-                self.min_separation_au
-            ));
+            return Err(OrbitalConfigError::InvalidSeparation {
+                value: self.min_separation_au,
+            });
         }
         Ok(())
     }
@@ -261,9 +361,9 @@ impl StarTypeRegistry {
     /// 5. **Valid luminosity range** — `luminosity_min` must be > 0.0, `luminosity_min < luminosity_max`, both finite.
     /// 6. **Valid temperature range** — `temperature_min` must be > 0, `temperature_min < temperature_max`.
     /// 7. **Valid mass range** — `mass_min` must be > 0.0, `mass_min < mass_max`, both finite.
-    pub fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self) -> Result<(), StarRegistryError> {
         if self.star_types.is_empty() {
-            return Err("StarTypeRegistry must contain at least one star type".to_string());
+            return Err(StarRegistryError::Empty);
         }
 
         let mut seen_keys = std::collections::HashSet::new();
@@ -277,72 +377,90 @@ impl StarTypeRegistry {
 
             // Key checks.
             if def.key.is_empty() {
-                return Err(format!("{label}: key must not be empty"));
+                return Err(StarRegistryError::EmptyKey { index: i });
             }
             if !seen_keys.insert(&def.key) {
-                return Err(format!("{label}: duplicate key '{}'", def.key));
+                return Err(StarRegistryError::DuplicateKey {
+                    index: i,
+                    key: def.key.clone(),
+                });
             }
 
             // Weight check.
             if !def.weight.is_finite() || def.weight <= 0.0 {
-                return Err(format!(
-                    "{label}: weight must be positive and finite, got {}",
-                    def.weight
-                ));
+                return Err(StarRegistryError::InvalidWeight {
+                    label,
+                    value: def.weight,
+                });
             }
 
             // Luminosity range.
             if !def.luminosity_min.is_finite() || !def.luminosity_max.is_finite() {
-                return Err(format!(
-                    "{label}: luminosity bounds must be finite, got [{}, {}]",
-                    def.luminosity_min, def.luminosity_max
-                ));
+                return Err(StarRegistryError::InvalidLuminosity {
+                    label,
+                    detail: format!(
+                        "luminosity bounds must be finite, got [{}, {}]",
+                        def.luminosity_min, def.luminosity_max
+                    ),
+                });
             }
             if def.luminosity_min <= 0.0 {
-                return Err(format!(
-                    "{label}: luminosity_min must be > 0.0, got {}",
-                    def.luminosity_min
-                ));
+                return Err(StarRegistryError::InvalidLuminosity {
+                    label,
+                    detail: format!("luminosity_min must be > 0.0, got {}", def.luminosity_min),
+                });
             }
             if def.luminosity_min >= def.luminosity_max {
-                return Err(format!(
-                    "{label}: luminosity_min ({}) must be < luminosity_max ({})",
-                    def.luminosity_min, def.luminosity_max
-                ));
+                return Err(StarRegistryError::InvalidLuminosity {
+                    label,
+                    detail: format!(
+                        "luminosity_min ({}) must be < luminosity_max ({})",
+                        def.luminosity_min, def.luminosity_max
+                    ),
+                });
             }
 
             // Temperature range.
             if def.temperature_min == 0 {
-                return Err(format!(
-                    "{label}: temperature_min must be > 0, got {}",
-                    def.temperature_min
-                ));
+                return Err(StarRegistryError::InvalidTemperature {
+                    label,
+                    detail: format!("temperature_min must be > 0, got {}", def.temperature_min),
+                });
             }
             if def.temperature_min >= def.temperature_max {
-                return Err(format!(
-                    "{label}: temperature_min ({}) must be < temperature_max ({})",
-                    def.temperature_min, def.temperature_max
-                ));
+                return Err(StarRegistryError::InvalidTemperature {
+                    label,
+                    detail: format!(
+                        "temperature_min ({}) must be < temperature_max ({})",
+                        def.temperature_min, def.temperature_max
+                    ),
+                });
             }
 
             // Mass range.
             if !def.mass_min.is_finite() || !def.mass_max.is_finite() {
-                return Err(format!(
-                    "{label}: mass bounds must be finite, got [{}, {}]",
-                    def.mass_min, def.mass_max
-                ));
+                return Err(StarRegistryError::InvalidMass {
+                    label,
+                    detail: format!(
+                        "mass bounds must be finite, got [{}, {}]",
+                        def.mass_min, def.mass_max
+                    ),
+                });
             }
             if def.mass_min <= 0.0 {
-                return Err(format!(
-                    "{label}: mass_min must be > 0.0, got {}",
-                    def.mass_min
-                ));
+                return Err(StarRegistryError::InvalidMass {
+                    label,
+                    detail: format!("mass_min must be > 0.0, got {}", def.mass_min),
+                });
             }
             if def.mass_min >= def.mass_max {
-                return Err(format!(
-                    "{label}: mass_min ({}) must be < mass_max ({})",
-                    def.mass_min, def.mass_max
-                ));
+                return Err(StarRegistryError::InvalidMass {
+                    label,
+                    detail: format!(
+                        "mass_min ({}) must be < mass_max ({})",
+                        def.mass_min, def.mass_max
+                    ),
+                });
             }
         }
 
@@ -550,77 +668,6 @@ fn log_star_profile_on_startup(
 
 // ── Seed Derivation ──────────────────────────────────────────────────────
 
-/// Deterministically mix a base seed and a channel into a new 64-bit value.
-///
-/// This is a SplitMix64-style bit mixer. The algorithm is deterministic, cheap,
-/// and requires no external crate. We are not using it as a cryptographic hash.
-/// We are using it to avalanche nearby integer inputs into well-mixed outputs
-/// so that later generation systems do not accidentally treat "similar number"
-/// as "similar world feature."
-///
-/// Note: This is intentionally a local copy of the same function in
-/// `world_generation`. Each module owns its own copy because the function is
-/// a leaf utility with no state, and sharing it would require either a shared
-/// utility module (architectural change) or `pub` visibility (violates the
-/// no-`pub(crate)` rule). When a shared `seed_util` module is warranted,
-/// these copies can be consolidated.
-fn mix_seed(base: u64, channel: u64) -> u64 {
-    let mut z = base.wrapping_add(channel.wrapping_mul(0x9E37_79B9_7F4A_7C15));
-    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-    z ^ (z >> 31)
-}
-
-/// Convert a mixed `u64` into a `f32` in `[0.0, 1.0)`.
-///
-/// Takes the lower 32 bits and divides by `2^32`. This gives ~7 decimal
-/// digits of granularity — more than enough for interpolating physical
-/// parameters that will be displayed to the player as rounded values.
-fn seed_to_unit_f32(mixed: u64) -> f32 {
-    (mixed as u32) as f32 / (u32::MAX as f32 + 1.0)
-}
-
-/// Convert an `f32` to a `u64` suitable for seed mixing.
-///
-/// Uses `f32::to_bits` to get the IEEE-754 bit pattern as a `u32`, then
-/// zero-extends to `u64`. This is deterministic and platform-independent for
-/// non-NaN values — the same float always produces the same bits.
-///
-/// Used by orbital layout generation to derive position-based planet seeds:
-/// each planet's seed depends on its orbital distance rather than its index,
-/// so inserting a planet between two existing ones won't change their seeds.
-fn f32_to_u64_bits(value: f32) -> u64 {
-    value.to_bits() as u64
-}
-
-/// Linearly interpolate between `min` and `max` using a `[0, 1)` fraction.
-///
-/// Returns exactly `min` when `t == 0.0` and approaches `max` as `t → 1.0`.
-/// Does not clamp — callers are responsible for providing `t` in range.
-fn lerp(min: f32, max: f32, t: f32) -> f32 {
-    min + (max - min) * t
-}
-
-/// Return the next representable `f32` above `value`.
-///
-/// Used in the separation enforcement loop to guarantee that the gap between
-/// consecutive orbits is never fractionally below `min_separation_au` due to
-/// floating-point addition rounding down.
-///
-/// For positive, finite values this bumps the IEEE 754 significand by one ULP.
-/// Special cases (infinity, NaN) pass through unchanged.
-fn f32_next_up(value: f32) -> f32 {
-    if value.is_nan() || value == f32::INFINITY {
-        return value;
-    }
-    if value == f32::NEG_INFINITY {
-        return f32::MIN;
-    }
-    let bits = value.to_bits();
-    let next_bits = if value >= 0.0 { bits + 1 } else { bits - 1 };
-    f32::from_bits(next_bits)
-}
-
 /// Derive a complete `StarProfile` from a solar system seed and star registry.
 ///
 /// ## Derivation Steps
@@ -748,16 +795,25 @@ pub fn derive_planet_count(system_seed: SolarSystemSeed, config: &OrbitalConfig)
 
 // ── Orbital Layout Derivation ────────────────────────────────────────────
 
+/// Maximum number of re-draw attempts per planet before giving up.
+///
+/// With a well-sized orbital range this should never be hit. If it is, the
+/// config is pathologically tight (too many planets for the available range)
+/// and the planet gets placed at its last drawn position regardless.
+const MAX_REDRAW_ATTEMPTS: u64 = 100;
+
 /// Derive the full orbital layout for a solar system.
 ///
 /// ## Derivation Steps
 ///
 /// 1. **Planet count** — derived from `mix_seed(system_seed, PLANET_COUNT_CHANNEL)`,
 ///    lerped into the configured `[min, max]` range.
-/// 2. **Orbital distances** — a local RNG seeded from
-///    `mix_seed(system_seed, ORBITAL_LAYOUT_CHANNEL)` draws `N` distances in
-///    `[inner_orbit_au, outer_orbit_au]`, sorts them, and enforces
-///    `min_separation_au` by pushing overlapping orbits outward.
+/// 2. **Orbital distances** — each planet draws a distance from
+///    `[inner_orbit_au, outer_orbit_au]` using a deterministic seed. If the
+///    drawn distance violates `min_separation_au` against any already-placed
+///    planet, a new distance is drawn with a different sub-channel (retry).
+///    This keeps outcomes purely seed-determined without pushing planets to
+///    positions they weren't drawn to.
 /// 3. **Planet seeds** — for each slot, `PlanetSeed(mix_seed(system_seed,
 ///    f32_to_bits_as_u64(distance)))`. This is position-based, not index-based,
 ///    so inserting a planet between two existing ones in a future story will
@@ -765,9 +821,9 @@ pub fn derive_planet_count(system_seed: SolarSystemSeed, config: &OrbitalConfig)
 ///
 /// ## Panics
 ///
-/// Does not panic. If minimum separation enforcement pushes a planet past
-/// `outer_orbit_au`, it keeps the pushed distance — the alternative (dropping
-/// the planet) would change the count derived from the seed.
+/// Does not panic. If all re-draw attempts fail for a planet (pathologically
+/// tight config), the last drawn distance is used. This preserves the planet
+/// count invariant — we never drop a planet.
 pub fn derive_orbital_layout(
     system_seed: SolarSystemSeed,
     config: &OrbitalConfig,
@@ -783,30 +839,46 @@ pub fn derive_orbital_layout(
     // Seed a deterministic sequence for orbital distances.
     let layout_seed = mix_seed(system_seed.0, ORBITAL_LAYOUT_CHANNEL);
 
-    // Draw N raw distances in [inner, outer] using successive mixes of the
-    // layout seed. Each planet gets its own channel (its 1-based index) so
-    // that adding more planets never changes earlier draws.
-    let mut distances: Vec<f32> = (0..planet_count)
-        .map(|i| {
-            let raw = mix_seed(layout_seed, i as u64 + 1);
+    // Place planets one at a time. For each planet, draw a distance and check
+    // it against all already-placed distances. If it violates min separation,
+    // re-draw with a different sub-channel. The sub-channel is computed as
+    // `(planet_index * MAX_REDRAW_ATTEMPTS) + attempt` to ensure every draw
+    // across all planets and attempts uses a unique channel.
+    let mut distances: Vec<f32> = Vec::with_capacity(planet_count as usize);
+
+    for planet_idx in 0..planet_count {
+        let base_channel = (planet_idx as u64 + 1) * (MAX_REDRAW_ATTEMPTS + 1);
+        let mut best_distance = 0.0_f32;
+
+        for attempt in 0..=MAX_REDRAW_ATTEMPTS {
+            let raw = mix_seed(layout_seed, base_channel + attempt);
             let t = seed_to_unit_f32(raw);
-            lerp(config.inner_orbit_au, config.outer_orbit_au, t)
-        })
-        .collect();
+            let candidate = lerp(config.inner_orbit_au, config.outer_orbit_au, t);
+
+            best_distance = candidate;
+
+            let valid = distances
+                .iter()
+                .all(|&placed| (candidate - placed).abs() >= config.min_separation_au);
+
+            if valid {
+                break;
+            }
+        }
+
+        distances.push(best_distance);
+    }
 
     // Sort innermost-first.
     distances.sort_by(|a, b| a.partial_cmp(b).expect("orbital distances must not be NaN"));
 
-    // Enforce minimum separation by pushing outward. After assignment,
-    // re-read the stored value for the next iteration's comparison to avoid
-    // accumulating f32 rounding error across a chain of pushes.
+    // Safety net: if re-draw couldn't find valid positions for all planets
+    // (pathologically tight config), enforce minimum separation by nudging
+    // outward. This is a fallback, not the primary strategy — well-configured
+    // orbital ranges should resolve during re-draw.
     for i in 1..distances.len() {
         let required = distances[i - 1] + config.min_separation_au;
         if distances[i] < required {
-            // Nudge by one ULP above the exact sum to guarantee the gap
-            // is never fractionally below min_separation_au after the
-            // addition's rounding. f32::EPSILON at magnitude ~50 AU is
-            // ~3.8e-6, well below any meaningful distance.
             distances[i] = f32_next_up(required);
         }
     }
@@ -1114,8 +1186,8 @@ mod tests {
         let registry = StarTypeRegistry { star_types: vec![] };
         let err = registry.validate().unwrap_err();
         assert!(
-            err.contains("at least one"),
-            "error should mention 'at least one', got: {err}"
+            matches!(err, StarRegistryError::Empty),
+            "expected Empty, got: {err}"
         );
     }
 
@@ -1126,8 +1198,8 @@ mod tests {
         registry.star_types[0].key = String::new();
         let err = registry.validate().unwrap_err();
         assert!(
-            err.contains("key must not be empty"),
-            "error should mention empty key, got: {err}"
+            matches!(err, StarRegistryError::EmptyKey { .. }),
+            "expected EmptyKey, got: {err}"
         );
     }
 
@@ -1138,8 +1210,8 @@ mod tests {
         registry.star_types[1].key = registry.star_types[0].key.clone();
         let err = registry.validate().unwrap_err();
         assert!(
-            err.contains("duplicate key"),
-            "error should mention duplicate key, got: {err}"
+            matches!(err, StarRegistryError::DuplicateKey { .. }),
+            "expected DuplicateKey, got: {err}"
         );
     }
 
@@ -1150,8 +1222,8 @@ mod tests {
         registry.star_types[0].weight = 0.0;
         let err = registry.validate().unwrap_err();
         assert!(
-            err.contains("weight"),
-            "error should mention weight, got: {err}"
+            matches!(err, StarRegistryError::InvalidWeight { .. }),
+            "expected InvalidWeight, got: {err}"
         );
     }
 
@@ -1162,8 +1234,8 @@ mod tests {
         registry.star_types[0].weight = -1.0;
         let err = registry.validate().unwrap_err();
         assert!(
-            err.contains("weight"),
-            "error should mention weight, got: {err}"
+            matches!(err, StarRegistryError::InvalidWeight { .. }),
+            "expected InvalidWeight, got: {err}"
         );
     }
 
@@ -1174,8 +1246,8 @@ mod tests {
         registry.star_types[0].weight = f32::NAN;
         let err = registry.validate().unwrap_err();
         assert!(
-            err.contains("weight"),
-            "error should mention weight, got: {err}"
+            matches!(err, StarRegistryError::InvalidWeight { .. }),
+            "expected InvalidWeight, got: {err}"
         );
     }
 
@@ -1187,8 +1259,8 @@ mod tests {
         registry.star_types[0].luminosity_max = 1.0;
         let err = registry.validate().unwrap_err();
         assert!(
-            err.contains("luminosity_min"),
-            "error should mention luminosity_min, got: {err}"
+            matches!(err, StarRegistryError::InvalidLuminosity { .. }),
+            "expected InvalidLuminosity, got: {err}"
         );
     }
 
@@ -1199,8 +1271,8 @@ mod tests {
         registry.star_types[0].luminosity_min = 0.0;
         let err = registry.validate().unwrap_err();
         assert!(
-            err.contains("luminosity_min"),
-            "error should mention luminosity_min, got: {err}"
+            matches!(err, StarRegistryError::InvalidLuminosity { .. }),
+            "expected InvalidLuminosity, got: {err}"
         );
     }
 
@@ -1212,8 +1284,8 @@ mod tests {
         registry.star_types[0].temperature_max = 1000;
         let err = registry.validate().unwrap_err();
         assert!(
-            err.contains("temperature_min"),
-            "error should mention temperature_min, got: {err}"
+            matches!(err, StarRegistryError::InvalidTemperature { .. }),
+            "expected InvalidTemperature, got: {err}"
         );
     }
 
@@ -1224,8 +1296,8 @@ mod tests {
         registry.star_types[0].temperature_min = 0;
         let err = registry.validate().unwrap_err();
         assert!(
-            err.contains("temperature_min"),
-            "error should mention temperature_min, got: {err}"
+            matches!(err, StarRegistryError::InvalidTemperature { .. }),
+            "expected InvalidTemperature, got: {err}"
         );
     }
 
@@ -1237,8 +1309,8 @@ mod tests {
         registry.star_types[0].mass_max = 1.0;
         let err = registry.validate().unwrap_err();
         assert!(
-            err.contains("mass_min"),
-            "error should mention mass_min, got: {err}"
+            matches!(err, StarRegistryError::InvalidMass { .. }),
+            "expected InvalidMass, got: {err}"
         );
     }
 
@@ -1249,8 +1321,8 @@ mod tests {
         registry.star_types[0].mass_min = 0.0;
         let err = registry.validate().unwrap_err();
         assert!(
-            err.contains("mass_min"),
-            "error should mention mass_min, got: {err}"
+            matches!(err, StarRegistryError::InvalidMass { .. }),
+            "expected InvalidMass, got: {err}"
         );
     }
 
@@ -1378,8 +1450,8 @@ weight = -3.0
                     .validate()
                     .expect_err("empty registry must fail validation");
                 assert!(
-                    err.contains("at least one"),
-                    "error should mention 'at least one', got: {err}"
+                    matches!(err, StarRegistryError::Empty),
+                    "expected Empty, got: {err}"
                 );
             }
         }
@@ -1649,8 +1721,8 @@ weight = 7.0
         config.planet_count_min = 0;
         let err = config.validate().unwrap_err();
         assert!(
-            err.contains("planet_count_min"),
-            "error should mention planet_count_min, got: {err}"
+            matches!(err, OrbitalConfigError::PlanetCountMinTooLow { .. }),
+            "expected PlanetCountMinTooLow, got: {err}"
         );
     }
 
@@ -1662,8 +1734,8 @@ weight = 7.0
         config.planet_count_max = 3;
         let err = config.validate().unwrap_err();
         assert!(
-            err.contains("planet_count_min"),
-            "error should mention planet_count_min, got: {err}"
+            matches!(err, OrbitalConfigError::PlanetCountRangeInverted { .. }),
+            "expected PlanetCountRangeInverted, got: {err}"
         );
     }
 
@@ -1674,8 +1746,8 @@ weight = 7.0
         config.inner_orbit_au = 0.0;
         let err = config.validate().unwrap_err();
         assert!(
-            err.contains("inner_orbit_au"),
-            "error should mention inner_orbit_au, got: {err}"
+            matches!(err, OrbitalConfigError::InvalidInnerOrbit { .. }),
+            "expected InvalidInnerOrbit, got: {err}"
         );
     }
 
@@ -1687,8 +1759,8 @@ weight = 7.0
         config.outer_orbit_au = 10.0;
         let err = config.validate().unwrap_err();
         assert!(
-            err.contains("inner_orbit_au"),
-            "error should mention inner_orbit_au, got: {err}"
+            matches!(err, OrbitalConfigError::OrbitRangeInverted { .. }),
+            "expected OrbitRangeInverted, got: {err}"
         );
     }
 
@@ -1699,8 +1771,8 @@ weight = 7.0
         config.min_separation_au = 0.0;
         let err = config.validate().unwrap_err();
         assert!(
-            err.contains("min_separation_au"),
-            "error should mention min_separation_au, got: {err}"
+            matches!(err, OrbitalConfigError::InvalidSeparation { .. }),
+            "expected InvalidSeparation, got: {err}"
         );
     }
 
@@ -1711,8 +1783,8 @@ weight = 7.0
         config.outer_orbit_au = f32::NAN;
         let err = config.validate().unwrap_err();
         assert!(
-            err.contains("outer_orbit_au"),
-            "error should mention outer_orbit_au, got: {err}"
+            matches!(err, OrbitalConfigError::InvalidOuterOrbit { .. }),
+            "expected InvalidOuterOrbit, got: {err}"
         );
     }
 
