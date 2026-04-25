@@ -25,6 +25,15 @@ use crate::seed_util::{
 };
 use crate::world_generation::{PlanetSeed, WorldGenerationConfig};
 
+/// Channel for deriving planet surface temperature variation from planet seed.
+const PLANET_TEMP_VARIATION_CHANNEL: u64 = 0xE1E7_0001_0000_0001;
+
+/// Channel for deriving planet atmosphere density variation from planet seed.
+const PLANET_ATMOSPHERE_CHANNEL: u64 = 0xE1E7_0001_0000_0002;
+
+/// Channel for deriving planet surface gravity from planet seed.
+const PLANET_GRAVITY_CHANNEL: u64 = 0xE1E7_0001_0000_0003;
+
 /// Path to the star type definitions TOML file.
 const STAR_TYPES_CONFIG_PATH: &str = "assets/config/star_types.toml";
 
@@ -280,10 +289,6 @@ impl std::fmt::Display for StarProfile {
 /// All derivation formulas reference [`PlanetEnvironmentConfig`] values
 /// rather than hardcoded constants.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[expect(
-    dead_code,
-    reason = "Used by derive_planet_environment in a later story phase"
-)]
 pub struct PlanetEnvironment {
     /// Lower bound of the surface temperature range in Kelvin.
     pub surface_temp_min_k: f32,
@@ -1107,6 +1112,128 @@ pub fn derive_orbital_layout(
         .collect();
 
     OrbitalLayout { planets }
+}
+
+/// Derive planet-level environmental parameters from stellar context.
+///
+/// ## Derivation Steps
+///
+/// 1. **Base temperature** — Inverse-square law: `temp_base_k * sqrt(luminosity) / distance`.
+///    This models equilibrium temperature scaling with stellar flux. Modulated by
+///    a seed-based variation of ±`temp_variation_fraction` around the baseline.
+///    The min/max temperature range is `[base * (1 - variation), base * (1 + variation)]`.
+///
+/// 2. **Atmosphere density** — Base density correlates with orbital distance (outer
+///    planets retain more atmosphere). Inner planets (distance < 1.0 AU) receive a
+///    multiplicative penalty from `atmosphere_inner_penalty` modeling stellar wind
+///    stripping. Planet seed provides ±30% variation.
+///
+/// 3. **Radiation level** — Inverse-square from star luminosity, attenuated by
+///    atmosphere density. `raw_radiation = luminosity / distance²`, clamped to
+///    [0, 1], then attenuated: `radiation = raw * (1 - 0.5 * atmosphere_density)`.
+///
+/// 4. **Surface gravity** — Interpolated within `[gravity_min, gravity_max]` from
+///    planet seed, with an orbital distance bias: inner planets trend denser/heavier,
+///    outer planets trend lighter (for the seed-based component).
+///
+/// 5. **Habitable zone** — Boolean flag: `true` when `orbital_distance_au` falls
+///    between the star's `habitable_zone_inner_au` and `habitable_zone_outer_au`.
+///
+/// ## Determinism
+///
+/// Same inputs always produce the same output. Each derived parameter uses a
+/// unique seed channel mixed from the planet seed, so adding or removing a
+/// parameter never shifts any other.
+#[expect(
+    dead_code,
+    reason = "Wired into biome system in story 5b.4; tested below"
+)]
+pub fn derive_planet_environment(
+    star: &StarProfile,
+    orbital_distance_au: f32,
+    planet_seed: PlanetSeed,
+    config: &PlanetEnvironmentConfig,
+) -> PlanetEnvironment {
+    // ── Step 1: Temperature ──────────────────────────────────────────
+    // Inverse-square law: flux ∝ luminosity / distance². Temperature
+    // scales as the fourth root of flux, but for game coherence we use
+    // sqrt(luminosity) / distance which gives a stronger distance gradient
+    // that feels more dramatic to the player.
+    let base_temp = config.temp_base_k * star.luminosity.sqrt() / orbital_distance_au;
+
+    // Seed-based variation: map planet seed to [-variation, +variation].
+    let temp_var_raw = mix_seed(planet_seed.0, PLANET_TEMP_VARIATION_CHANNEL);
+    let temp_var_t = seed_to_unit_f32(temp_var_raw); // [0, 1)
+    let temp_var_factor = 1.0 + config.temp_variation_fraction * (2.0 * temp_var_t - 1.0);
+
+    let temp_center = base_temp * temp_var_factor;
+    // The min/max spread is the variation fraction applied symmetrically.
+    let temp_spread = base_temp * config.temp_variation_fraction;
+    let surface_temp_min_k = (temp_center - temp_spread).max(2.7); // cosmic microwave background floor
+    let surface_temp_max_k = (temp_center + temp_spread).max(surface_temp_min_k + 0.1);
+
+    // ── Step 2: Atmosphere density ───────────────────────────────────
+    // Base atmosphere scales with distance: farther planets retain more gas.
+    // We use sqrt(distance) to give a gentle curve, clamped to [0, ~2.5].
+    let atmo_var_raw = mix_seed(planet_seed.0, PLANET_ATMOSPHERE_CHANNEL);
+    let atmo_var_t = seed_to_unit_f32(atmo_var_raw); // [0, 1)
+    // Seed variation: 0.7 to 1.3 (±30%).
+    let atmo_seed_factor = 0.7 + 0.6 * atmo_var_t;
+
+    let base_atmosphere = orbital_distance_au.sqrt().min(2.5) * atmo_seed_factor;
+
+    // Inner planet penalty: planets closer than 1 AU lose atmosphere to
+    // stellar wind. The penalty interpolates from `atmosphere_inner_penalty`
+    // at distance=0 to 1.0 at distance>=1.0.
+    let inner_penalty = if orbital_distance_au < 1.0 {
+        lerp(config.atmosphere_inner_penalty, 1.0, orbital_distance_au)
+    } else {
+        1.0
+    };
+
+    let atmosphere_density = (base_atmosphere * inner_penalty).max(0.0);
+
+    // ── Step 3: Radiation level ──────────────────────────────────────
+    // Raw radiation from inverse-square law, normalized so 1.0 luminosity
+    // at 1.0 AU = 1.0 radiation before atmosphere attenuation.
+    let raw_radiation = (star.luminosity / (orbital_distance_au * orbital_distance_au)).min(1.0);
+    // Atmosphere attenuates radiation: thicker atmosphere blocks more.
+    // At atmosphere_density=1.0 (Earth-like), 50% attenuation.
+    let atmo_attenuation = (1.0 - 0.5 * atmosphere_density.min(2.0)).max(0.0);
+    let radiation_level = (raw_radiation * atmo_attenuation).clamp(0.0, 1.0);
+
+    // ── Step 4: Surface gravity ──────────────────────────────────────
+    // Planet seed determines base gravity within the configured range.
+    // Orbital distance biases the result: inner planets trend denser
+    // (higher gravity), outer planets trend lighter.
+    let grav_raw = mix_seed(planet_seed.0, PLANET_GRAVITY_CHANNEL);
+    let grav_t = seed_to_unit_f32(grav_raw); // [0, 1)
+
+    // Distance bias: inner planets (< 1 AU) bias toward upper range,
+    // outer planets (> 5 AU) bias toward lower range. The bias shifts
+    // the seed's t value by up to ±0.2.
+    let distance_bias = if orbital_distance_au < 1.0 {
+        0.2 * (1.0 - orbital_distance_au)
+    } else if orbital_distance_au > 5.0 {
+        -0.2 * ((orbital_distance_au - 5.0) / 45.0).min(1.0)
+    } else {
+        0.0
+    };
+    let biased_t = (grav_t + distance_bias).clamp(0.0, 1.0);
+    let surface_gravity_g = lerp(config.gravity_min, config.gravity_max, biased_t);
+
+    // ── Step 5: Habitable zone ───────────────────────────────────────
+    let in_habitable_zone = orbital_distance_au >= star.habitable_zone_inner_au
+        && orbital_distance_au <= star.habitable_zone_outer_au;
+
+    PlanetEnvironment {
+        surface_temp_min_k,
+        surface_temp_max_k,
+        atmosphere_density,
+        radiation_level,
+        surface_gravity_g,
+        in_habitable_zone,
+    }
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────
@@ -3182,6 +3309,279 @@ weight = 7.0
         assert!(
             (original.gravity_max - deserialized.gravity_max).abs() < f32::EPSILON,
             "round-trip should preserve gravity_max"
+        );
+    }
+
+    // ── Planet Environment Derivation Tests ──────────────────────────────
+
+    /// Helper: a Sol-like star for planet environment tests.
+    fn test_star() -> StarProfile {
+        StarProfile {
+            star_type_key: "sun_like".to_string(),
+            luminosity: 1.0,
+            surface_temperature_k: 5778,
+            mass_solar: 1.0,
+            habitable_zone_inner_au: (1.0_f32 / 1.1).sqrt(),
+            habitable_zone_outer_au: (1.0_f32 / 0.53).sqrt(),
+        }
+    }
+
+    /// Same inputs → same PlanetEnvironment. Fundamental determinism.
+    #[test]
+    fn planet_environment_deterministic() {
+        let star = test_star();
+        let config = PlanetEnvironmentConfig::default();
+        let seed = PlanetSeed(0xDEAD_BEEF);
+
+        let env_a = derive_planet_environment(&star, 1.0, seed, &config);
+        let env_b = derive_planet_environment(&star, 1.0, seed, &config);
+
+        assert_eq!(env_a, env_b, "same inputs must produce same environment");
+    }
+
+    /// Temperature must decrease with distance (controlling for seed).
+    #[test]
+    fn planet_environment_temperature_decreases_with_distance() {
+        let star = test_star();
+        let config = PlanetEnvironmentConfig::default();
+        let seed = PlanetSeed(42);
+
+        let inner = derive_planet_environment(&star, 0.5, seed, &config);
+        let outer = derive_planet_environment(&star, 10.0, seed, &config);
+
+        assert!(
+            inner.surface_temp_min_k > outer.surface_temp_min_k,
+            "inner planet temp_min ({}) should exceed outer planet temp_min ({})",
+            inner.surface_temp_min_k,
+            outer.surface_temp_min_k,
+        );
+        assert!(
+            inner.surface_temp_max_k > outer.surface_temp_max_k,
+            "inner planet temp_max ({}) should exceed outer planet temp_max ({})",
+            inner.surface_temp_max_k,
+            outer.surface_temp_max_k,
+        );
+    }
+
+    /// Inner planets should have less atmosphere than outer planets on
+    /// average across many seeds (stellar wind stripping).
+    #[test]
+    fn planet_environment_inner_atmosphere_less_than_outer() {
+        let star = test_star();
+        let config = PlanetEnvironmentConfig::default();
+
+        let mut inner_sum = 0.0_f64;
+        let mut outer_sum = 0.0_f64;
+        let count = 1_000;
+
+        for i in 0..count {
+            let seed = PlanetSeed(i);
+            let inner = derive_planet_environment(&star, 0.3, seed, &config);
+            let outer = derive_planet_environment(&star, 5.0, seed, &config);
+            inner_sum += inner.atmosphere_density as f64;
+            outer_sum += outer.atmosphere_density as f64;
+        }
+
+        assert!(
+            inner_sum < outer_sum,
+            "average inner atmosphere ({}) should be less than outer ({})",
+            inner_sum / count as f64,
+            outer_sum / count as f64,
+        );
+    }
+
+    /// Habitable zone flag must match the star's zone boundaries.
+    #[test]
+    fn planet_environment_habitable_zone_flag() {
+        let star = test_star();
+        let config = PlanetEnvironmentConfig::default();
+        let seed = PlanetSeed(99);
+
+        // Inside habitable zone.
+        let hz_mid = (star.habitable_zone_inner_au + star.habitable_zone_outer_au) / 2.0;
+        let env_hz = derive_planet_environment(&star, hz_mid, seed, &config);
+        assert!(
+            env_hz.in_habitable_zone,
+            "planet at {hz_mid} AU should be in habitable zone [{}, {}]",
+            star.habitable_zone_inner_au, star.habitable_zone_outer_au,
+        );
+
+        // Well inside the star (too close).
+        let env_inner = derive_planet_environment(&star, 0.1, seed, &config);
+        assert!(
+            !env_inner.in_habitable_zone,
+            "planet at 0.1 AU should NOT be in habitable zone",
+        );
+
+        // Far outside.
+        let env_outer = derive_planet_environment(&star, 50.0, seed, &config);
+        assert!(
+            !env_outer.in_habitable_zone,
+            "planet at 50 AU should NOT be in habitable zone",
+        );
+    }
+
+    /// Different planet seeds at the same distance produce different environments.
+    #[test]
+    fn planet_environment_seed_variation() {
+        let star = test_star();
+        let config = PlanetEnvironmentConfig::default();
+
+        let env_a = derive_planet_environment(&star, 1.0, PlanetSeed(1), &config);
+        let env_b = derive_planet_environment(&star, 1.0, PlanetSeed(2), &config);
+
+        // At least one parameter should differ.
+        let all_same = env_a == env_b;
+        assert!(
+            !all_same,
+            "different seeds at the same distance should produce different environments",
+        );
+    }
+
+    /// Surface gravity must stay within the configured [min, max] range.
+    #[test]
+    fn planet_environment_gravity_within_range() {
+        let star = test_star();
+        let config = PlanetEnvironmentConfig::default();
+
+        for i in 0..1_000_u64 {
+            let env = derive_planet_environment(&star, 1.0, PlanetSeed(i), &config);
+            assert!(
+                env.surface_gravity_g >= config.gravity_min
+                    && env.surface_gravity_g <= config.gravity_max,
+                "seed {i}: gravity {} outside [{}, {}]",
+                env.surface_gravity_g,
+                config.gravity_min,
+                config.gravity_max,
+            );
+        }
+    }
+
+    /// Radiation level must be in [0.0, 1.0].
+    #[test]
+    fn planet_environment_radiation_normalized() {
+        let star = test_star();
+        let config = PlanetEnvironmentConfig::default();
+
+        for i in 0..1_000_u64 {
+            for &dist in &[0.3, 1.0, 5.0, 20.0, 50.0] {
+                let env = derive_planet_environment(&star, dist, PlanetSeed(i), &config);
+                assert!(
+                    env.radiation_level >= 0.0 && env.radiation_level <= 1.0,
+                    "seed {i} dist {dist}: radiation {} outside [0, 1]",
+                    env.radiation_level,
+                );
+            }
+        }
+    }
+
+    /// All float fields must be finite (no NaN, no infinity).
+    #[test]
+    fn planet_environment_all_fields_finite() {
+        let star = test_star();
+        let config = PlanetEnvironmentConfig::default();
+
+        for i in 0..1_000_u64 {
+            for &dist in &[0.3, 1.0, 5.0, 50.0] {
+                let env = derive_planet_environment(&star, dist, PlanetSeed(i), &config);
+                assert!(env.surface_temp_min_k.is_finite(), "temp_min not finite");
+                assert!(env.surface_temp_max_k.is_finite(), "temp_max not finite");
+                assert!(env.atmosphere_density.is_finite(), "atmosphere not finite");
+                assert!(env.radiation_level.is_finite(), "radiation not finite");
+                assert!(env.surface_gravity_g.is_finite(), "gravity not finite");
+            }
+        }
+    }
+
+    /// temp_min must always be less than temp_max.
+    #[test]
+    fn planet_environment_temp_min_less_than_max() {
+        let star = test_star();
+        let config = PlanetEnvironmentConfig::default();
+
+        for i in 0..1_000_u64 {
+            for &dist in &[0.3, 1.0, 5.0, 50.0] {
+                let env = derive_planet_environment(&star, dist, PlanetSeed(i), &config);
+                assert!(
+                    env.surface_temp_min_k < env.surface_temp_max_k,
+                    "seed {i} dist {dist}: temp_min ({}) >= temp_max ({})",
+                    env.surface_temp_min_k,
+                    env.surface_temp_max_k,
+                );
+            }
+        }
+    }
+
+    /// Planet environment channel constants must not collide with existing channels.
+    #[test]
+    fn planet_environment_channel_constants_unique() {
+        let all_channels = [
+            STAR_TYPE_CHANNEL,
+            STAR_LUMINOSITY_CHANNEL,
+            STAR_TEMPERATURE_CHANNEL,
+            STAR_MASS_CHANNEL,
+            PLANET_COUNT_CHANNEL,
+            ORBITAL_LAYOUT_CHANNEL,
+            PLANET_TEMP_VARIATION_CHANNEL,
+            PLANET_ATMOSPHERE_CHANNEL,
+            PLANET_GRAVITY_CHANNEL,
+        ];
+
+        for (i, &a) in all_channels.iter().enumerate() {
+            for (j, &b) in all_channels.iter().enumerate() {
+                if i != j {
+                    assert_ne!(
+                        a, b,
+                        "channel {i} ({a:#018X}) collides with channel {j} ({b:#018X})"
+                    );
+                }
+            }
+        }
+    }
+
+    /// PlanetEnvironment must round-trip through serde (JSON).
+    #[test]
+    fn planet_environment_serde_round_trip() {
+        let env = PlanetEnvironment {
+            surface_temp_min_k: 200.0,
+            surface_temp_max_k: 350.0,
+            atmosphere_density: 1.0,
+            radiation_level: 0.5,
+            surface_gravity_g: 1.0,
+            in_habitable_zone: true,
+        };
+        let json = serde_json::to_string(&env).expect("PlanetEnvironment should serialize to JSON");
+        let deserialized: PlanetEnvironment =
+            serde_json::from_str(&json).expect("PlanetEnvironment should deserialize from JSON");
+        assert_eq!(
+            env, deserialized,
+            "PlanetEnvironment must survive JSON round-trip"
+        );
+    }
+
+    /// Brighter stars produce hotter planets at the same distance.
+    #[test]
+    fn planet_environment_brighter_star_hotter_planet() {
+        let config = PlanetEnvironmentConfig::default();
+        let seed = PlanetSeed(42);
+
+        let dim_star = StarProfile {
+            luminosity: 0.05,
+            ..test_star()
+        };
+        let bright_star = StarProfile {
+            luminosity: 50.0,
+            habitable_zone_inner_au: (50.0_f32 / 1.1).sqrt(),
+            habitable_zone_outer_au: (50.0_f32 / 0.53).sqrt(),
+            ..test_star()
+        };
+
+        let dim_env = derive_planet_environment(&dim_star, 1.0, seed, &config);
+        let bright_env = derive_planet_environment(&bright_star, 1.0, seed, &config);
+
+        assert!(
+            bright_env.surface_temp_min_k > dim_env.surface_temp_min_k,
+            "brighter star should produce hotter planet",
         );
     }
 }
