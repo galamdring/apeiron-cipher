@@ -4585,4 +4585,80 @@ planet_index = 3
             "chunk generation key at origin must be deterministic"
         );
     }
+
+    /// Planet index out of range must return a clear `Err`, not panic.
+    #[test]
+    fn planet_index_out_of_range_returns_error() {
+        use crate::solar_system::{OrbitalConfig, PlanetEnvironmentConfig, StarTypeRegistry};
+
+        let star_registry = StarTypeRegistry::default();
+        let orbital_config = OrbitalConfig::default();
+        let env_config = PlanetEnvironmentConfig::default();
+
+        // First, determine how many planets seed 42 actually produces so we
+        // can request an index that is guaranteed to be out of range.
+        let baseline_config = WorldGenerationConfig {
+            solar_system_seed: 42,
+            planet_seed: None,
+            planet_index: 0,
+            ..Default::default()
+        };
+        let baseline = WorldProfile::from_system_seed(
+            &baseline_config,
+            &star_registry,
+            &orbital_config,
+            &env_config,
+        )
+        .expect("baseline derivation must succeed");
+        let planet_count = baseline
+            .system_context
+            .as_ref()
+            .expect("system_context must be Some")
+            .orbital_layout
+            .planets
+            .len() as u32;
+
+        // Request an index equal to planet_count (one past the last valid index).
+        let bad_config = WorldGenerationConfig {
+            solar_system_seed: 42,
+            planet_seed: None,
+            planet_index: planet_count,
+            ..Default::default()
+        };
+
+        let result = WorldProfile::from_system_seed(
+            &bad_config,
+            &star_registry,
+            &orbital_config,
+            &env_config,
+        );
+        let err =
+            result.expect_err("planet_index equal to planet count must return Err, not panic");
+        assert!(
+            err.contains("out of range"),
+            "error message must mention 'out of range', got: {err}"
+        );
+        assert!(
+            err.contains(&planet_count.to_string()),
+            "error message must mention the invalid index, got: {err}"
+        );
+
+        // Also verify a very large index fails gracefully.
+        let huge_config = WorldGenerationConfig {
+            solar_system_seed: 42,
+            planet_seed: None,
+            planet_index: u32::MAX,
+            ..Default::default()
+        };
+        let huge_result = WorldProfile::from_system_seed(
+            &huge_config,
+            &star_registry,
+            &orbital_config,
+            &env_config,
+        );
+        assert!(
+            huge_result.is_err(),
+            "u32::MAX planet_index must return Err, not panic"
+        );
+    }
 }
