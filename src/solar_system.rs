@@ -3929,6 +3929,124 @@ weight = 7.0
         }
     }
 
+    /// A blue giant at maximum luminosity (100 L☉) produces a very wide
+    /// habitable zone far from the star. Planets in the zone are habitable;
+    /// planets outside are not.
+    ///
+    /// This validates that the habitable zone formulas produce physically
+    /// coherent results even for the brightest stars in the registry: the
+    /// zone exists, is wide, inner planets are scorching, and the flag
+    /// correctly discriminates at the zone boundaries.
+    #[test]
+    fn blue_giant_max_luminosity_wide_habitable_zone() {
+        let luminosity = 100.0_f32; // blue giant maximum from star_types.toml
+        let star = StarProfile {
+            star_type_key: "blue_giant".to_string(),
+            luminosity,
+            surface_temperature_k: 30000,
+            mass_solar: 20.0,
+            habitable_zone_inner_au: (luminosity / 1.1_f32).sqrt(),
+            habitable_zone_outer_au: (luminosity / 0.53_f32).sqrt(),
+        };
+
+        // ── Zone geometry ────────────────────────────────────────────────
+        let hz_width = star.habitable_zone_outer_au - star.habitable_zone_inner_au;
+
+        // The zone must exist and be positive.
+        assert!(
+            hz_width > 0.0,
+            "habitable zone width must be positive, got {hz_width}",
+        );
+
+        // For a 100 L☉ star the zone is roughly 4–14 AU — much wider than
+        // Sol's ~0.8 AU zone. Assert it exceeds 3 AU to catch any formula
+        // regression that would shrink it unrealistically.
+        assert!(
+            hz_width > 3.0,
+            "blue giant HZ should be very wide, got {hz_width:.4} AU",
+        );
+
+        // Inner edge should be well beyond Earth's orbit (> 5 AU).
+        assert!(
+            star.habitable_zone_inner_au > 5.0,
+            "inner edge {} AU should be > 5 AU for a very bright star",
+            star.habitable_zone_inner_au,
+        );
+
+        // ── Habitable zone flag accuracy ─────────────────────────────────
+        let config = PlanetEnvironmentConfig::default();
+        let seed = PlanetSeed(42);
+
+        // Midpoint of the zone → habitable.
+        let hz_mid = (star.habitable_zone_inner_au + star.habitable_zone_outer_au) / 2.0;
+        let env_mid = derive_planet_environment(&star, hz_mid, seed, &config);
+        assert!(
+            env_mid.in_habitable_zone,
+            "planet at midpoint {hz_mid:.6} AU should be in habitable zone",
+        );
+
+        // Just outside inner edge → not habitable.
+        let just_inside_inner = star.habitable_zone_inner_au * 0.95;
+        let env_too_close = derive_planet_environment(&star, just_inside_inner, seed, &config);
+        assert!(
+            !env_too_close.in_habitable_zone,
+            "planet at {just_inside_inner:.6} AU (5% inside inner edge) should NOT be habitable",
+        );
+
+        // Just outside outer edge → not habitable.
+        let just_outside_outer = star.habitable_zone_outer_au * 1.05;
+        let env_too_far = derive_planet_environment(&star, just_outside_outer, seed, &config);
+        assert!(
+            !env_too_far.in_habitable_zone,
+            "planet at {just_outside_outer:.6} AU (5% outside outer edge) should NOT be habitable",
+        );
+
+        // ── Temperature coherence ────────────────────────────────────────
+        // A habitable-zone planet around a very luminous blue giant should
+        // still have moderate temperatures (the HZ is far from the star).
+        // Max temp should stay below 1000 K for a planet in the HZ.
+        assert!(
+            env_mid.surface_temp_max_k < 1000.0,
+            "HZ planet around blue giant should not be scorching, got {} K",
+            env_mid.surface_temp_max_k,
+        );
+
+        // Inner planet (close to star) should be extremely hot.
+        let inner_dist = 1.0_f32; // 1 AU from a 100 L☉ star
+        let env_inner = derive_planet_environment(&star, inner_dist, seed, &config);
+        assert!(
+            env_inner.surface_temp_min_k > 500.0,
+            "inner planet at 1 AU from 100 L☉ star should be very hot, got min {} K",
+            env_inner.surface_temp_min_k,
+        );
+
+        // ── Comparison with Sol-like star ────────────────────────────────
+        let sol = test_star();
+        let sol_hz_width = sol.habitable_zone_outer_au - sol.habitable_zone_inner_au;
+
+        assert!(
+            hz_width > sol_hz_width,
+            "blue giant HZ width ({hz_width:.4} AU) should be wider than Sol's ({sol_hz_width:.4} AU)",
+        );
+
+        // ── Radiation coherence ──────────────────────────────────────────
+        // An inner planet around a blue giant should receive very high
+        // radiation (clamped to 1.0 by the normalization).
+        assert!(
+            env_inner.radiation_level > 0.5,
+            "inner planet around blue giant should have high radiation, got {}",
+            env_inner.radiation_level,
+        );
+
+        // HZ planet should have lower radiation than inner planet.
+        assert!(
+            env_mid.radiation_level < env_inner.radiation_level,
+            "HZ planet radiation ({}) should be less than inner planet radiation ({})",
+            env_mid.radiation_level,
+            env_inner.radiation_level,
+        );
+    }
+
     /// A red dwarf at minimum luminosity (0.01 L☉) produces a very narrow
     /// habitable zone. Planets just inside the zone are habitable; planets
     /// slightly outside are not.
