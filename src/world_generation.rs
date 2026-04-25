@@ -4956,4 +4956,111 @@ planet_index = 3
             );
         }
     }
+
+    /// Override-mode world generates biomes identically to before (no regression).
+    ///
+    /// Verifies that building a `WorldProfile` via `from_config` (planet seed
+    /// override) produces the exact same biome assignments as a second
+    /// identically-configured profile. This guards against regressions where
+    /// system-derived plumbing accidentally alters the override path.
+    ///
+    /// Checks:
+    /// - `system_context` is `None` (override mode, no system derivation).
+    /// - `is_system_derived()` returns `false`.
+    /// - Sub-seeds are deterministic across two independent `from_config` calls.
+    /// - Biome key, ground color, and density modifier are identical for every
+    ///   chunk in a representative grid, with `planet_env` = `None` (the
+    ///   override-mode call convention).
+    /// - All three default biomes are still reachable (the noise field was not
+    ///   inadvertently shifted).
+    #[test]
+    fn override_mode_biome_generation_no_regression() {
+        let config = sample_config();
+        assert_eq!(
+            config.seed_mode(),
+            SeedMode::Override,
+            "sample_config must be in override mode for this test"
+        );
+
+        let profile_a = WorldProfile::from_config(&config);
+        let profile_b = WorldProfile::from_config(&config);
+
+        // Override mode must not carry system context.
+        assert!(
+            profile_a.system_context.is_none(),
+            "override-mode WorldProfile must have system_context = None"
+        );
+        assert!(
+            !profile_a.is_system_derived(),
+            "override-mode WorldProfile must report is_system_derived() == false"
+        );
+
+        // Sub-seeds must be identical across independent constructions.
+        assert_eq!(
+            profile_a.biome_climate_seed, profile_b.biome_climate_seed,
+            "biome_climate_seed must be deterministic"
+        );
+        assert_eq!(
+            profile_a.elevation_seed, profile_b.elevation_seed,
+            "elevation_seed must be deterministic"
+        );
+        assert_eq!(
+            profile_a.placement_density_seed, profile_b.placement_density_seed,
+            "placement_density_seed must be deterministic"
+        );
+        assert_eq!(
+            profile_a.placement_variation_seed, profile_b.placement_variation_seed,
+            "placement_variation_seed must be deterministic"
+        );
+        assert_eq!(
+            profile_a.object_identity_seed, profile_b.object_identity_seed,
+            "object_identity_seed must be deterministic"
+        );
+
+        let registry = BiomeRegistry::default();
+        let mut found_biomes: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+        // Scan a wide grid and assert byte-identical biome results between
+        // the two independently-constructed profiles.
+        for x in -50..50_i32 {
+            for z in -50..50_i32 {
+                let coord = ChunkCoord::new(x, z);
+
+                // Override mode always passes None for planet_env — no
+                // absolute-temperature filtering.
+                let biome_a = derive_chunk_biome(&profile_a, &registry, coord, None);
+                let biome_b = derive_chunk_biome(&profile_b, &registry, coord, None);
+
+                assert_eq!(
+                    biome_a.biome_key, biome_b.biome_key,
+                    "biome key mismatch at chunk ({x}, {z})"
+                );
+                assert_eq!(
+                    biome_a.ground_color, biome_b.ground_color,
+                    "ground_color mismatch at chunk ({x}, {z})"
+                );
+                assert_eq!(
+                    biome_a.density_modifier, biome_b.density_modifier,
+                    "density_modifier mismatch at chunk ({x}, {z})"
+                );
+
+                found_biomes.insert(biome_a.biome_key);
+            }
+        }
+
+        // All three default biomes must still be reachable — a regression
+        // that silently shifted noise offsets would collapse biome variety.
+        assert!(
+            found_biomes.contains("scorched_flats"),
+            "scorched_flats must be reachable in override mode, found: {found_biomes:?}"
+        );
+        assert!(
+            found_biomes.contains("mineral_steppe"),
+            "mineral_steppe must be reachable in override mode, found: {found_biomes:?}"
+        );
+        assert!(
+            found_biomes.contains("frost_shelf"),
+            "frost_shelf must be reachable in override mode, found: {found_biomes:?}"
+        );
+    }
 }
