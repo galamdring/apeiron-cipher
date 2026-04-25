@@ -853,6 +853,7 @@ fn log_star_profile_on_startup(
     world_config: Res<WorldGenerationConfig>,
     star_registry: Res<StarTypeRegistry>,
     orbital_config: Res<OrbitalConfig>,
+    env_config: Res<PlanetEnvironmentConfig>,
 ) {
     let seed = SolarSystemSeed(world_config.system_seed);
     let profile = derive_star_profile(seed, &star_registry);
@@ -879,9 +880,25 @@ fn log_star_profile_on_startup(
     );
 
     for slot in &layout.planets {
+        let env = derive_planet_environment(
+            &profile,
+            slot.orbital_distance_au,
+            slot.planet_seed,
+            &env_config,
+        );
         info!(
-            "  Planet {}: distance={:.4} AU, seed={:#018X}",
-            slot.orbital_index, slot.orbital_distance_au, slot.planet_seed.0,
+            "  Planet {}: distance={:.4} AU, seed={:#018X}, \
+             temp=[{:.0}, {:.0}]K, atmo={:.3}, radiation={:.3}, \
+             gravity={:.3}g, habitable={}",
+            slot.orbital_index,
+            slot.orbital_distance_au,
+            slot.planet_seed.0,
+            env.surface_temp_min_k,
+            env.surface_temp_max_k,
+            env.atmosphere_density,
+            env.radiation_level,
+            env.surface_gravity_g,
+            env.in_habitable_zone,
         );
     }
 }
