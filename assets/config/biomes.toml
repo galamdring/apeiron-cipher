@@ -31,6 +31,8 @@ fallback_biome_key = "mineral_steppe"
 key = "scorched_flats"
 temperature_min = 0.6
 temperature_max = 1.0
+temperature_abs_min_k = 350.0
+temperature_abs_max_k = 600.0
 moisture_min = 0.0
 moisture_max = 0.4
 # Warm ochre — baked, iron-rich desert feel.
@@ -72,6 +74,8 @@ selection_weight = 0.3
 key = "mineral_steppe"
 temperature_min = 0.3
 temperature_max = 0.7
+temperature_abs_min_k = 220.0
+temperature_abs_max_k = 350.0
 moisture_min = 0.3
 moisture_max = 0.7
 # Olive green — the "default" exterior the player already knows.
@@ -115,6 +119,8 @@ selection_weight = 0.8
 key = "frost_shelf"
 temperature_min = 0.0
 temperature_max = 0.4
+temperature_abs_min_k = 50.0
+temperature_abs_max_k = 220.0
 moisture_min = 0.5
 moisture_max = 1.0
 # Blue-grey — cold, crystalline, faintly luminous ice shelf.

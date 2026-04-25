@@ -1510,6 +1510,20 @@ pub struct BiomeDefinition {
     pub temperature_min: f32,
     /// Maximum temperature value (0.0–1.0) for this biome's range.
     pub temperature_max: f32,
+    /// Optional absolute minimum temperature threshold in Kelvin.
+    ///
+    /// When present, planet-level temperature mapping uses this value instead
+    /// of the normalized `temperature_min` to determine biome applicability in
+    /// absolute terms. This allows hot planets to shift biome boundaries so
+    /// that a "cold" biome on a hot world is still warm in absolute Kelvin.
+    #[serde(default)]
+    pub temperature_abs_min_k: Option<f32>,
+    /// Optional absolute maximum temperature threshold in Kelvin.
+    ///
+    /// Counterpart to `temperature_abs_min_k`. When both absolute fields are
+    /// present, they define the biome's valid absolute temperature band.
+    #[serde(default)]
+    pub temperature_abs_max_k: Option<f32>,
     /// Minimum moisture value (0.0–1.0) for this biome's range.
     pub moisture_min: f32,
     /// Maximum moisture value (0.0–1.0) for this biome's range.
@@ -1557,6 +1571,8 @@ fn default_biome_definitions() -> Vec<BiomeDefinition> {
             key: "scorched_flats".to_string(),
             temperature_min: 0.6,
             temperature_max: 1.0,
+            temperature_abs_min_k: Some(350.0),
+            temperature_abs_max_k: Some(600.0),
             moisture_min: 0.0,
             moisture_max: 0.4,
             ground_color: [0.55, 0.38, 0.22],
@@ -1597,6 +1613,8 @@ fn default_biome_definitions() -> Vec<BiomeDefinition> {
             key: "mineral_steppe".to_string(),
             temperature_min: 0.3,
             temperature_max: 0.7,
+            temperature_abs_min_k: Some(220.0),
+            temperature_abs_max_k: Some(350.0),
             moisture_min: 0.3,
             moisture_max: 0.7,
             ground_color: [0.26, 0.3, 0.22],
@@ -1608,6 +1626,8 @@ fn default_biome_definitions() -> Vec<BiomeDefinition> {
             key: "frost_shelf".to_string(),
             temperature_min: 0.0,
             temperature_max: 0.4,
+            temperature_abs_min_k: Some(50.0),
+            temperature_abs_max_k: Some(220.0),
             moisture_min: 0.5,
             moisture_max: 1.0,
             ground_color: [0.42, 0.48, 0.56],
@@ -2423,6 +2443,8 @@ mod tests {
                     key: "narrow".to_string(),
                     temperature_min: 0.999,
                     temperature_max: 1.0,
+                    temperature_abs_min_k: None,
+                    temperature_abs_max_k: None,
                     moisture_min: 0.999,
                     moisture_max: 1.0,
                     ground_color: [1.0, 0.0, 0.0],
@@ -2435,6 +2457,8 @@ mod tests {
                     key: "fallback_test".to_string(),
                     temperature_min: 0.0,
                     temperature_max: 0.0,
+                    temperature_abs_min_k: None,
+                    temperature_abs_max_k: None,
                     moisture_min: 0.0,
                     moisture_max: 0.0,
                     ground_color: [0.5, 0.5, 0.5],
@@ -2525,6 +2549,8 @@ mod tests {
                 key: "test_biome".to_string(),
                 temperature_min: 0.0,
                 temperature_max: 1.0,
+                temperature_abs_min_k: None,
+                temperature_abs_max_k: None,
                 moisture_min: 0.0,
                 moisture_max: 1.0,
                 ground_color: [0.5, 0.5, 0.5],
@@ -2602,6 +2628,8 @@ mod tests {
                 key: format!("synth_biome_{}", registry.biomes.len()),
                 temperature_min: 0.0,
                 temperature_max: 1.0,
+                temperature_abs_min_k: None,
+                temperature_abs_max_k: None,
                 moisture_min: 0.0,
                 moisture_max: 1.0,
                 ground_color: [0.3, 0.3, 0.3],
@@ -2730,6 +2758,8 @@ mod tests {
                 key: "impossible".to_string(),
                 temperature_min: -999.0,
                 temperature_max: -998.0,
+                temperature_abs_min_k: None,
+                temperature_abs_max_k: None,
                 moisture_min: -999.0,
                 moisture_max: -998.0,
                 ground_color: [1.0, 0.0, 0.0],
@@ -2846,6 +2876,8 @@ mod tests {
                     key: "narrow".to_string(),
                     temperature_min: 0.999,
                     temperature_max: 1.0,
+                    temperature_abs_min_k: None,
+                    temperature_abs_max_k: None,
                     moisture_min: 0.999,
                     moisture_max: 1.0,
                     ground_color: [1.0, 0.0, 0.0],
@@ -2857,6 +2889,8 @@ mod tests {
                     key: "fb".to_string(),
                     temperature_min: 0.0,
                     temperature_max: 0.0,
+                    temperature_abs_min_k: None,
+                    temperature_abs_max_k: None,
                     moisture_min: 0.0,
                     moisture_max: 0.0,
                     ground_color: [0.5, 0.5, 0.5],
