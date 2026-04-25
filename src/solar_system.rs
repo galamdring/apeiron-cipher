@@ -585,6 +585,26 @@ fn lerp(min: f32, max: f32, t: f32) -> f32 {
     min + (max - min) * t
 }
 
+/// Return the next representable `f32` above `value`.
+///
+/// Used in the separation enforcement loop to guarantee that the gap between
+/// consecutive orbits is never fractionally below `min_separation_au` due to
+/// floating-point addition rounding down.
+///
+/// For positive, finite values this bumps the IEEE 754 significand by one ULP.
+/// Special cases (infinity, NaN) pass through unchanged.
+fn f32_next_up(value: f32) -> f32 {
+    if value.is_nan() || value == f32::INFINITY {
+        return value;
+    }
+    if value == f32::NEG_INFINITY {
+        return f32::MIN;
+    }
+    let bits = value.to_bits();
+    let next_bits = if value >= 0.0 { bits + 1 } else { bits - 1 };
+    f32::from_bits(next_bits)
+}
+
 /// Derive a complete `StarProfile` from a solar system seed and star registry.
 ///
 /// ## Derivation Steps
@@ -763,11 +783,17 @@ pub fn derive_orbital_layout(
     // Sort innermost-first.
     distances.sort_by(|a, b| a.partial_cmp(b).expect("orbital distances must not be NaN"));
 
-    // Enforce minimum separation by pushing outward.
+    // Enforce minimum separation by pushing outward. After assignment,
+    // re-read the stored value for the next iteration's comparison to avoid
+    // accumulating f32 rounding error across a chain of pushes.
     for i in 1..distances.len() {
         let required = distances[i - 1] + config.min_separation_au;
         if distances[i] < required {
-            distances[i] = required;
+            // Nudge by one ULP above the exact sum to guarantee the gap
+            // is never fractionally below min_separation_au after the
+            // addition's rounding. f32::EPSILON at magnitude ~50 AU is
+            // ~3.8e-6, well below any meaningful distance.
+            distances[i] = f32_next_up(required);
         }
     }
 
