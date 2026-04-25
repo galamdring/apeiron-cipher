@@ -1830,6 +1830,19 @@ weight = 7.0
         );
     }
 
+    /// Same seed + same config = identical planet count. This is the
+    /// fundamental determinism guarantee for orbital layout generation.
+    #[test]
+    fn determinism_same_seed_same_planet_count() {
+        let config = OrbitalConfig::default();
+        let seed = SolarSystemSeed(0xDEAD_BEEF_CAFE_BABE);
+
+        let count_a = derive_planet_count(seed, &config);
+        let count_b = derive_planet_count(seed, &config);
+
+        assert_eq!(count_a, count_b, "same seed must produce same planet count");
+    }
+
     /// Planet count respects a custom narrower range.
     #[test]
     fn planet_count_respects_custom_range() {
