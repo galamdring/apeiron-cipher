@@ -1484,6 +1484,27 @@ mod tests {
         );
     }
 
+    /// Different system seeds must produce different star *types*, not just
+    /// different numeric parameters within the same type. With the default
+    /// registry weights (red_dwarf:7, yellow_dwarf:2, blue_giant:1) and
+    /// 100 seeds, we expect at least 2 distinct star type keys to appear.
+    /// A broken type-selection path that always picks the same bucket would
+    /// fail this check even if luminosity/mass varied.
+    #[test]
+    fn different_seeds_produce_different_star_types() {
+        let registry = test_registry();
+        let type_keys: std::collections::HashSet<String> = (0..100)
+            .map(|i| derive_star_profile(SolarSystemSeed(i), &registry).star_type_key)
+            .collect();
+
+        assert!(
+            type_keys.len() >= 2,
+            "expected at least 2 distinct star type keys from 100 seeds, got {}: {:?}",
+            type_keys.len(),
+            type_keys
+        );
+    }
+
     /// Three deliberately spaced seeds must not all collapse to the same
     /// star profile. At least one pair must differ in some parameter,
     /// confirming the derivation is non-degenerate for a small sample.
