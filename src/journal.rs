@@ -39,6 +39,44 @@ pub enum ObservationCategory {
     // Future: LanguageFragment, CulturalBehavior, TradePrice, etc.
 }
 
+/// Canonical display order for category groups in the detail panel.
+///
+/// This determines the visual ordering of category sections and ensures
+/// new categories are rendered in a predictable position.
+const CATEGORY_DISPLAY_ORDER: &[ObservationCategory] = &[
+    ObservationCategory::SurfaceAppearance,
+    ObservationCategory::ThermalBehavior,
+    ObservationCategory::Weight,
+    ObservationCategory::FabricationResult,
+    ObservationCategory::LocationNote,
+];
+
+impl ObservationCategory {
+    /// Player-facing label used as a group header in the detail panel.
+    fn display_label(&self) -> &'static str {
+        match self {
+            ObservationCategory::SurfaceAppearance => "Surface",
+            ObservationCategory::ThermalBehavior => "Thermal",
+            ObservationCategory::Weight => "Weight",
+            ObservationCategory::FabricationResult => "Fabrication",
+            ObservationCategory::LocationNote => "Location",
+        }
+    }
+
+    /// Whether the detail panel shows only the most recent observation
+    /// for this category rather than the full history.
+    ///
+    /// Thermal and Weight observations converge on a single best reading
+    /// over time, so only the latest is relevant. Other categories
+    /// accumulate distinct observations worth preserving.
+    fn shows_latest_only(&self) -> bool {
+        matches!(
+            self,
+            ObservationCategory::ThermalBehavior | ObservationCategory::Weight
+        )
+    }
+}
+
 /// A single observation about a journal subject, timestamped.
 ///
 /// Observations are the atomic unit of player knowledge. Each one records
@@ -655,8 +693,9 @@ struct EntryListLine {
 enum DetailSpanKind {
     /// Entry name header line (bright highlight).
     Header,
-    /// Category label prefix (e.g. "Surface:", "Heat:") — dimmer accent.
-    CategoryLabel,
+    /// Category group header (e.g. "Surface", "Thermal") — amber accent,
+    /// separates observation groups in the detail panel.
+    CategoryGroupHeader,
     /// Observation description text — normal body color.
     Body,
     /// Placeholder text when the journal is empty.
@@ -796,7 +835,7 @@ fn sync_journal_ui(
     // its kind: header (bright highlight), category label (amber accent),
     // body (normal text), or placeholder (dimmed).
     let header_color = TextColor(Color::srgba(1.0, 0.85, 0.35, 1.0));
-    let category_color = TextColor(Color::srgba(0.75, 0.68, 0.45, 1.0));
+    let category_group_color = TextColor(Color::srgba(0.75, 0.68, 0.45, 1.0));
     let body_color = TextColor(Color::srgba(0.92, 0.92, 0.88, 1.0));
     let placeholder_color = TextColor(Color::srgba(0.55, 0.55, 0.50, 1.0));
 
@@ -815,7 +854,7 @@ fn sync_journal_ui(
             for span in cache.detail_spans.iter() {
                 let color = match span.kind {
                     DetailSpanKind::Header => header_color,
-                    DetailSpanKind::CategoryLabel => category_color,
+                    DetailSpanKind::CategoryGroupHeader => category_group_color,
                     DetailSpanKind::Body => body_color,
                     DetailSpanKind::Placeholder => placeholder_color,
                 };
@@ -901,67 +940,36 @@ fn build_detail_spans(entries: &[&JournalEntry], state: &JournalUiState) -> Vec<
         kind: DetailSpanKind::Header,
     });
 
-    // Append label+description span pairs for each observation in a slice.
-    fn push_observations(spans: &mut Vec<DetailSpan>, label: &str, observations: &[Observation]) {
-        for obs in observations {
+    // Iterate categories in canonical display order, emitting a group
+    // header followed by the observations for each non-empty category.
+    for category in CATEGORY_DISPLAY_ORDER {
+        let observations = entry.observations_by_category(category);
+        if observations.is_empty() {
+            continue;
+        }
+
+        // Category group header (e.g. "\n\nSurface").
+        spans.push(DetailSpan {
+            text: format!("\n\n{}", category.display_label()),
+            kind: DetailSpanKind::CategoryGroupHeader,
+        });
+
+        // For categories that converge on a single reading, show only
+        // the most recent observation. Otherwise show all.
+        let visible: &[Observation] = if category.shows_latest_only() {
+            // Safe: we checked `!is_empty()` above.
+            &observations[observations.len() - 1..]
+        } else {
+            observations
+        };
+
+        for obs in visible {
             spans.push(DetailSpan {
-                text: format!("\n  {label} "),
-                kind: DetailSpanKind::CategoryLabel,
-            });
-            spans.push(DetailSpan {
-                text: obs.description.clone(),
+                text: format!("\n  {}", obs.description),
                 kind: DetailSpanKind::Body,
             });
         }
     }
-
-    push_observations(
-        &mut spans,
-        "Surface:",
-        entry.observations_by_category(&ObservationCategory::SurfaceAppearance),
-    );
-
-    // Show only the most recent thermal observation (matches legacy behavior).
-    if let Some(thermal) = entry
-        .observations_by_category(&ObservationCategory::ThermalBehavior)
-        .last()
-    {
-        spans.push(DetailSpan {
-            text: "\n  Heat: ".to_string(),
-            kind: DetailSpanKind::CategoryLabel,
-        });
-        spans.push(DetailSpan {
-            text: thermal.description.clone(),
-            kind: DetailSpanKind::Body,
-        });
-    }
-
-    // Show only the most recent weight observation (matches legacy behavior).
-    if let Some(weight) = entry
-        .observations_by_category(&ObservationCategory::Weight)
-        .last()
-    {
-        spans.push(DetailSpan {
-            text: "\n  Carried: ".to_string(),
-            kind: DetailSpanKind::CategoryLabel,
-        });
-        spans.push(DetailSpan {
-            text: weight.description.clone(),
-            kind: DetailSpanKind::Body,
-        });
-    }
-
-    push_observations(
-        &mut spans,
-        "Fabrication:",
-        entry.observations_by_category(&ObservationCategory::FabricationResult),
-    );
-
-    push_observations(
-        &mut spans,
-        "Location:",
-        entry.observations_by_category(&ObservationCategory::LocationNote),
-    );
 
     spans
 }
@@ -2794,7 +2802,11 @@ mod tests {
         let detail = detail_spans_to_string(&build_detail_spans(&entries, &state));
         assert!(detail.contains("Ferrite"), "detail should show entry name");
         assert!(
-            detail.contains("Surface: Warm rust tone"),
+            detail.contains("Surface"),
+            "detail should show category group header"
+        );
+        assert!(
+            detail.contains("Warm rust tone"),
             "detail should show observations"
         );
     }
@@ -2849,16 +2861,16 @@ mod tests {
         // First span: header with entry name.
         assert_eq!(spans[0].kind, DetailSpanKind::Header);
         assert_eq!(spans[0].text, "Ferrite");
-        // Surface category label + body.
-        assert_eq!(spans[1].kind, DetailSpanKind::CategoryLabel);
-        assert!(spans[1].text.contains("Surface:"));
+        // Surface category group header + observation body.
+        assert_eq!(spans[1].kind, DetailSpanKind::CategoryGroupHeader);
+        assert!(spans[1].text.contains("Surface"));
         assert_eq!(spans[2].kind, DetailSpanKind::Body);
-        assert_eq!(spans[2].text, "Warm rust tone");
-        // Weight category label + body.
-        assert_eq!(spans[3].kind, DetailSpanKind::CategoryLabel);
-        assert!(spans[3].text.contains("Carried:"));
+        assert!(spans[2].text.contains("Warm rust tone"));
+        // Weight category group header + observation body.
+        assert_eq!(spans[3].kind, DetailSpanKind::CategoryGroupHeader);
+        assert!(spans[3].text.contains("Weight"));
         assert_eq!(spans[4].kind, DetailSpanKind::Body);
-        assert_eq!(spans[4].text, "Heavy but manageable");
+        assert!(spans[4].text.contains("Heavy but manageable"));
     }
 
     #[test]
