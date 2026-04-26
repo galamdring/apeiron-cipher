@@ -1383,15 +1383,12 @@ fn process_cycle_carry_intent(
         // Capture the current held item before mutating carry so LIFO/FIFO
         // selection is based on what was already in carry, not the item currently
         // in the player's hand.
-        let held_item = held_query
-            .iter()
-            .next()
-            .map(|(entity, material)| (entity, material.clone()));
-        if let Some((held_entity, held_material)) = held_item.as_ref() {
+        let held_item = held_query.iter().next();
+        if let Some((held_entity, held_material)) = held_item {
             if !can_stash_material(&carry_state, held_material) {
                 continue;
             }
-            stash_entity_into_carry(&mut commands, &mut carry_state, *held_entity, held_material);
+            stash_entity_into_carry(&mut commands, &mut carry_state, held_entity, held_material);
             record_weight_observation(
                 held_material,
                 carry_strength.current,
