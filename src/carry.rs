@@ -65,13 +65,13 @@ impl Plugin for CarryPlugin {
     }
 }
 
-// ── Intent messages reserved for later carry stories ─────────────────────
+// ── Intent messages for carry actions ─────────────────────────────────────
 
-/// Story 4.2 will emit this when the player wants to move the held item into carry.
+/// Emitted when the player wants to move the held item into carry.
 #[derive(Message)]
 struct StashIntent;
 
-/// Story 4.2 will emit this when the player wants to cycle the next carried item to hand.
+/// Emitted when the player wants to cycle the next carried item to hand.
 #[derive(Message)]
 struct CycleCarryIntent;
 
@@ -122,8 +122,8 @@ pub struct ObserveWeight {
     pub material: GameMaterial,
 }
 
-/// Later stories will emit this whenever carry weight changes so movement/stamina
-/// systems can respond without polling and guessing.
+/// Emitted whenever carry weight changes so movement/stamina systems can
+/// respond without polling.
 #[derive(Message, Clone, Copy, Debug, PartialEq)]
 struct CarryWeightChanged {
     pub current_weight: f32,
@@ -779,10 +779,10 @@ fn default_stamina_regen_per_second() -> f32 {
     14.0
 }
 
-/// Config shape for future speed degradation curves.
+/// Config shape for speed degradation curves.
 ///
-/// Story 4.3 will be the first real consumer. Story 4.1 just proves these
-/// values live in config and resolve deterministically into the active profile.
+/// Defines how carry weight translates into movement speed penalties.
+/// Values are loaded from `carry.toml` and resolved into the active profile.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct CarryCurveConfig {
     #[serde(default)]
