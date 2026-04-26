@@ -633,8 +633,9 @@ struct JournalRenderCache {
     /// Structured lines for the left-hand entry list panel, each carrying
     /// its display text and whether it represents the selected entry.
     list_lines: Vec<EntryListLine>,
-    /// Text for the right-hand detail panel.
-    detail: String,
+    /// Styled spans for the right-hand detail panel, rendered as `TextSpan`
+    /// children with per-span coloring (header, category label, body).
+    detail_spans: Vec<DetailSpan>,
     /// Text for the bottom help bar.
     help: String,
 }
@@ -647,6 +648,28 @@ struct EntryListLine {
     text: String,
     /// `true` when this line is the currently selected entry.
     selected: bool,
+}
+
+/// Visual role of a span in the detail panel, used to pick a text color.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum DetailSpanKind {
+    /// Entry name header line (bright highlight).
+    Header,
+    /// Category label prefix (e.g. "Surface:", "Heat:") — dimmer accent.
+    CategoryLabel,
+    /// Observation description text — normal body color.
+    Body,
+    /// Placeholder text when the journal is empty.
+    Placeholder,
+}
+
+/// A styled segment in the detail panel.  The panel is rebuilt each frame
+/// as a sequence of `TextSpan` children, each carrying one of these to
+/// determine its color.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DetailSpan {
+    text: String,
+    kind: DetailSpanKind,
 }
 
 // ── Rendering ───────────────────────────────────────────────────────────
@@ -664,14 +687,14 @@ fn compute_journal_panels(
 ) {
     if !state.visible {
         cache.list_lines.clear();
-        cache.detail.clear();
+        cache.detail_spans.clear();
         cache.help.clear();
         return;
     }
 
     let Ok(journal) = player_query.single() else {
         cache.list_lines.clear();
-        cache.detail.clear();
+        cache.detail_spans.clear();
         cache.help.clear();
         return;
     };
@@ -684,7 +707,7 @@ fn compute_journal_panels(
     state.clamp_to_entry_count(entry_count);
 
     cache.list_lines = build_entry_list_lines(&sorted_entries, &state);
-    cache.detail = build_detail_text(&sorted_entries, &state);
+    cache.detail_spans = build_detail_spans(&sorted_entries, &state);
     cache.help = build_help_text(entry_count, &state);
 }
 
@@ -704,6 +727,7 @@ fn sync_journal_ui(
     mut commands: Commands,
     mut panel_query: Query<&mut Visibility, With<JournalPanel>>,
     list_query: Query<(Entity, Option<&Children>), With<JournalEntryListText>>,
+    detail_query: Query<(Entity, Option<&Children>), With<JournalDetailText>>,
     mut texts: ParamSet<(
         Query<&mut Text, With<JournalEntryListText>>,
         Query<&mut Text, With<JournalDetailText>>,
@@ -766,9 +790,40 @@ fn sync_journal_ui(
         });
     }
 
-    if let Ok(mut detail_text) = texts.p1().single_mut() {
-        detail_text.0.clone_from(&cache.detail);
+    // ── Detail panel: rebuild TextSpan children for styled rendering ──
+    //
+    // Each DetailSpan becomes a child TextSpan with a color determined by
+    // its kind: header (bright highlight), category label (amber accent),
+    // body (normal text), or placeholder (dimmed).
+    let header_color = TextColor(Color::srgba(1.0, 0.85, 0.35, 1.0));
+    let category_color = TextColor(Color::srgba(0.75, 0.68, 0.45, 1.0));
+    let body_color = TextColor(Color::srgba(0.92, 0.92, 0.88, 1.0));
+    let placeholder_color = TextColor(Color::srgba(0.55, 0.55, 0.50, 1.0));
+
+    if let Ok((detail_entity, detail_children)) = detail_query.single() {
+        if let Some(children) = detail_children {
+            for child in children.iter() {
+                commands.entity(child).despawn();
+            }
+        }
+
+        if let Ok(mut root_text) = texts.p1().single_mut() {
+            root_text.0.clear();
+        }
+
+        commands.entity(detail_entity).with_children(|parent| {
+            for span in cache.detail_spans.iter() {
+                let color = match span.kind {
+                    DetailSpanKind::Header => header_color,
+                    DetailSpanKind::CategoryLabel => category_color,
+                    DetailSpanKind::Body => body_color,
+                    DetailSpanKind::Placeholder => placeholder_color,
+                };
+                parent.spawn((TextSpan::new(span.text.clone()), span_font.clone(), color));
+            }
+        });
     }
+
     if let Ok(mut help_text) = texts.p2().single_mut() {
         help_text.0.clone_from(&cache.help);
     }
@@ -822,31 +877,63 @@ fn build_entry_list_text(entries: &[&JournalEntry], state: &JournalUiState) -> S
         .join("\n")
 }
 
-/// Builds the right-panel detail view for the currently selected entry.
+/// Builds styled spans for the right-panel detail view of the currently
+/// selected entry.
 ///
-/// Shows the entry name as a header, then all observations grouped by
-/// category with descriptive prefixes matching the legacy rendering
-/// convention (Surface:, Heat:, Carried:, etc.).
-///
-/// If no entries exist, shows the "No observations yet." placeholder.
-fn build_detail_text(entries: &[&JournalEntry], state: &JournalUiState) -> String {
+/// The header (entry name) renders in a bright highlight color.  Category
+/// labels ("Surface:", "Heat:", etc.) use an amber accent, while observation
+/// descriptions use the normal body color.  If no entries exist, a single
+/// placeholder span is returned.
+fn build_detail_spans(entries: &[&JournalEntry], state: &JournalUiState) -> Vec<DetailSpan> {
     if entries.is_empty() {
-        return "No observations yet.".to_string();
+        return vec![DetailSpan {
+            text: "No observations yet.".to_string(),
+            kind: DetailSpanKind::Placeholder,
+        }];
     }
 
     let entry = entries[state.selected_index.min(entries.len() - 1)];
-    let mut out = vec![entry.name.clone()];
+    let mut spans: Vec<DetailSpan> = Vec::new();
 
-    for obs in entry.observations_by_category(&ObservationCategory::SurfaceAppearance) {
-        out.push(format!("  Surface: {}", obs.description));
+    // Entry name header.
+    spans.push(DetailSpan {
+        text: entry.name.clone(),
+        kind: DetailSpanKind::Header,
+    });
+
+    // Append label+description span pairs for each observation in a slice.
+    fn push_observations(spans: &mut Vec<DetailSpan>, label: &str, observations: &[Observation]) {
+        for obs in observations {
+            spans.push(DetailSpan {
+                text: format!("\n  {label} "),
+                kind: DetailSpanKind::CategoryLabel,
+            });
+            spans.push(DetailSpan {
+                text: obs.description.clone(),
+                kind: DetailSpanKind::Body,
+            });
+        }
     }
+
+    push_observations(
+        &mut spans,
+        "Surface:",
+        entry.observations_by_category(&ObservationCategory::SurfaceAppearance),
+    );
 
     // Show only the most recent thermal observation (matches legacy behavior).
     if let Some(thermal) = entry
         .observations_by_category(&ObservationCategory::ThermalBehavior)
         .last()
     {
-        out.push(format!("  Heat: {}", thermal.description));
+        spans.push(DetailSpan {
+            text: "\n  Heat: ".to_string(),
+            kind: DetailSpanKind::CategoryLabel,
+        });
+        spans.push(DetailSpan {
+            text: thermal.description.clone(),
+            kind: DetailSpanKind::Body,
+        });
     }
 
     // Show only the most recent weight observation (matches legacy behavior).
@@ -854,18 +941,38 @@ fn build_detail_text(entries: &[&JournalEntry], state: &JournalUiState) -> Strin
         .observations_by_category(&ObservationCategory::Weight)
         .last()
     {
-        out.push(format!("  Carried: {}", weight.description));
+        spans.push(DetailSpan {
+            text: "\n  Carried: ".to_string(),
+            kind: DetailSpanKind::CategoryLabel,
+        });
+        spans.push(DetailSpan {
+            text: weight.description.clone(),
+            kind: DetailSpanKind::Body,
+        });
     }
 
-    for obs in entry.observations_by_category(&ObservationCategory::FabricationResult) {
-        out.push(format!("  Fabrication: {}", obs.description));
-    }
+    push_observations(
+        &mut spans,
+        "Fabrication:",
+        entry.observations_by_category(&ObservationCategory::FabricationResult),
+    );
 
-    for obs in entry.observations_by_category(&ObservationCategory::LocationNote) {
-        out.push(format!("  Location: {}", obs.description));
-    }
+    push_observations(
+        &mut spans,
+        "Location:",
+        entry.observations_by_category(&ObservationCategory::LocationNote),
+    );
 
-    out.join("\n")
+    spans
+}
+
+/// Flattens detail spans into a plain string for test assertions.
+///
+/// Concatenates all span texts, which produces the same output as the
+/// original `build_detail_text` (header, then indented category lines).
+#[cfg(test)]
+fn detail_spans_to_string(spans: &[DetailSpan]) -> String {
+    spans.iter().map(|s| s.text.as_str()).collect()
 }
 
 /// Builds the bottom help bar showing navigation hints and a page indicator.
@@ -885,7 +992,7 @@ fn build_help_text(entry_count: usize, state: &JournalUiState) -> String {
 /// Formats all journal entries into a single display string.
 ///
 /// Retained for backward compatibility with existing tests.  The in-game
-/// UI now uses `build_entry_list_text` / `build_detail_text` instead, but
+/// UI now uses `build_entry_list_text` / `build_detail_spans` instead, but
 /// this function exercises the same rendering logic in a flat format that
 /// is convenient for unit-test assertions.
 #[cfg(test)]
@@ -2684,7 +2791,7 @@ mod tests {
             entries_per_page: 15,
         };
 
-        let detail = build_detail_text(&entries, &state);
+        let detail = detail_spans_to_string(&build_detail_spans(&entries, &state));
         assert!(detail.contains("Ferrite"), "detail should show entry name");
         assert!(
             detail.contains("Surface: Warm rust tone"),
@@ -2696,8 +2803,71 @@ mod tests {
     fn detail_empty_journal_shows_placeholder() {
         let state = JournalUiState::default();
         let entries: Vec<&JournalEntry> = vec![];
-        let detail = build_detail_text(&entries, &state);
+        let detail = detail_spans_to_string(&build_detail_spans(&entries, &state));
         assert_eq!(detail, "No observations yet.");
+    }
+
+    #[test]
+    fn detail_spans_have_correct_kinds() {
+        let mut journal = Journal::default();
+        let key = JournalKey::Material { seed: 1 };
+        journal.record(
+            key.clone(),
+            "Ferrite",
+            Observation {
+                category: ObservationCategory::SurfaceAppearance,
+                confidence: ConfidenceLevel::Tentative,
+                description: "Warm rust tone".into(),
+                recorded_at: 1,
+            },
+        );
+        journal.record(
+            key,
+            "Ferrite",
+            Observation {
+                category: ObservationCategory::Weight,
+                confidence: ConfidenceLevel::Observed,
+                description: "Heavy but manageable".into(),
+                recorded_at: 2,
+            },
+        );
+
+        let entries: Vec<&JournalEntry> = {
+            let mut v: Vec<_> = journal.entries.values().collect();
+            v.sort_by(|a, b| a.name.cmp(&b.name));
+            v
+        };
+
+        let state = JournalUiState {
+            visible: true,
+            selected_index: 0,
+            scroll_offset: 0,
+            entries_per_page: 15,
+        };
+
+        let spans = build_detail_spans(&entries, &state);
+        // First span: header with entry name.
+        assert_eq!(spans[0].kind, DetailSpanKind::Header);
+        assert_eq!(spans[0].text, "Ferrite");
+        // Surface category label + body.
+        assert_eq!(spans[1].kind, DetailSpanKind::CategoryLabel);
+        assert!(spans[1].text.contains("Surface:"));
+        assert_eq!(spans[2].kind, DetailSpanKind::Body);
+        assert_eq!(spans[2].text, "Warm rust tone");
+        // Weight category label + body.
+        assert_eq!(spans[3].kind, DetailSpanKind::CategoryLabel);
+        assert!(spans[3].text.contains("Carried:"));
+        assert_eq!(spans[4].kind, DetailSpanKind::Body);
+        assert_eq!(spans[4].text, "Heavy but manageable");
+    }
+
+    #[test]
+    fn detail_placeholder_span_kind() {
+        let state = JournalUiState::default();
+        let entries: Vec<&JournalEntry> = vec![];
+        let spans = build_detail_spans(&entries, &state);
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].kind, DetailSpanKind::Placeholder);
     }
 
     #[test]
@@ -2845,7 +3015,7 @@ mod tests {
 
         let list = build_entry_list_text(&entries, &state);
         assert!(!list.is_empty());
-        let detail = build_detail_text(&entries, &state);
+        let detail = build_detail_spans(&entries, &state);
         assert!(!detail.is_empty());
         let help = build_help_text(entries.len(), &state);
         assert!(help.contains("of 120"));
@@ -2918,8 +3088,8 @@ mod tests {
             "entry list lines should be populated after rendering with entries"
         );
         assert!(
-            !cache.detail.is_empty(),
-            "detail text should be populated after rendering with entries"
+            !cache.detail_spans.is_empty(),
+            "detail spans should be populated after rendering with entries"
         );
         assert!(
             !cache.help.is_empty(),
