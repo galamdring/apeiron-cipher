@@ -3233,6 +3233,38 @@ mod tests {
     }
 
     #[test]
+    fn home_jumps_to_first_entry() {
+        let mut state = JournalUiState {
+            visible: true,
+            selected_index: 42,
+            scroll_offset: 30,
+            entries_per_page: 15,
+        };
+        // Simulate Home key — sets selected_index to 0.
+        state.selected_index = 0;
+        state.clamp_to_entry_count(50);
+        assert_eq!(state.selected_index, 0);
+        assert_eq!(state.scroll_offset, 0);
+    }
+
+    #[test]
+    fn end_jumps_to_last_entry() {
+        let mut state = JournalUiState {
+            visible: true,
+            selected_index: 3,
+            scroll_offset: 0,
+            entries_per_page: 15,
+        };
+        let entry_count = 50;
+        // Simulate End key — sets selected_index to last entry.
+        state.selected_index = entry_count - 1;
+        state.clamp_to_entry_count(entry_count);
+        assert_eq!(state.selected_index, 49);
+        // scroll_offset should adjust so the last entry is visible.
+        assert_eq!(state.scroll_offset, 35);
+    }
+
+    #[test]
     fn page_down_adjusts_scroll_offset_past_visible_range() {
         let mut state = JournalUiState {
             visible: true,
