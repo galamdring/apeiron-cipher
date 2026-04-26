@@ -24,7 +24,7 @@ use crate::player::{Player, cursor_is_captured, spawn_player};
 /// accumulate about a journal subject. New game systems (navigation,
 /// trade, language) add variants here without touching existing match
 /// arms or storage structures.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum ObservationCategory {
     /// Visual or tactile surface properties noticed on first examination.
     SurfaceAppearance,
@@ -148,8 +148,12 @@ pub struct JournalEntry {
     pub key: JournalKey,
     /// Player-facing display name for this subject.
     pub name: String,
-    /// Chronologically ordered observations accumulated over time.
-    pub observations: Vec<Observation>,
+    /// Observations grouped by category, each group in chronological order.
+    ///
+    /// Using a `BTreeMap` gives deterministic iteration order over categories
+    /// (important for rendering stability and save/load reproducibility).
+    /// Within each category the `Vec` preserves insertion (chronological) order.
+    pub observations: BTreeMap<ObservationCategory, Vec<Observation>>,
     /// Game-time tick when the player first recorded *any* observation about
     /// this subject.
     pub first_observed_at: u64,
@@ -167,13 +171,14 @@ impl JournalEntry {
         Self {
             key,
             name,
-            observations: Vec::new(),
+            observations: BTreeMap::new(),
             first_observed_at: tick,
             last_updated_at: tick,
         }
     }
 
-    /// Record an observation, deduplicating against existing entries.
+    /// Record an observation, deduplicating against existing entries in the
+    /// same category group.
     ///
     /// If an observation with the same category **and** the same description
     /// already exists, the duplicate is not appended. Instead, the existing
@@ -183,14 +188,20 @@ impl JournalEntry {
     /// (e.g., picking up the same material multiple times).
     ///
     /// When the observation is genuinely new (different category or different
-    /// description), it is appended normally.
+    /// description), it is appended to the appropriate category group.
     pub fn add_observation(&mut self, observation: Observation) {
         self.last_updated_at = observation.recorded_at;
 
-        // Look for an existing observation with the same category and description.
-        if let Some(existing) = self.observations.iter_mut().find(|o| {
-            o.category == observation.category && o.description == observation.description
-        }) {
+        let group = self
+            .observations
+            .entry(observation.category.clone())
+            .or_default();
+
+        // Look for an existing observation with the same description within this category.
+        if let Some(existing) = group
+            .iter_mut()
+            .find(|o| o.description == observation.description)
+        {
             // Upgrade confidence if the new evidence is stronger.
             if observation.confidence > existing.confidence {
                 existing.confidence = observation.confidence;
@@ -198,15 +209,28 @@ impl JournalEntry {
             return;
         }
 
-        self.observations.push(observation);
+        group.push(observation);
     }
 
     /// Return all observations matching a given category, in recorded order.
-    pub fn observations_by_category(&self, category: &ObservationCategory) -> Vec<&Observation> {
+    ///
+    /// Returns an empty slice if no observations exist for the category.
+    pub fn observations_by_category(&self, category: &ObservationCategory) -> &[Observation] {
         self.observations
-            .iter()
-            .filter(|o| &o.category == category)
-            .collect()
+            .get(category)
+            .map_or(&[], |v| v.as_slice())
+    }
+
+    /// Total number of observations across all categories.
+    pub fn observation_count(&self) -> usize {
+        self.observations.values().map(|v| v.len()).sum()
+    }
+
+    /// Iterator over all observations across all categories, ordered by
+    /// category (deterministic via `BTreeMap`) then by insertion order
+    /// within each category.
+    pub fn all_observations(&self) -> impl Iterator<Item = &Observation> {
+        self.observations.values().flat_map(|v| v.iter())
     }
 }
 
@@ -500,9 +524,8 @@ fn build_journal_text(journal: &NewJournal) -> String {
         .values()
         .flat_map(|entry| {
             entry
-                .observations
+                .observations_by_category(&ObservationCategory::FabricationResult)
                 .iter()
-                .filter(|o| o.category == ObservationCategory::FabricationResult)
                 .map(|o| o.description.as_str())
         })
         .collect();
@@ -770,7 +793,7 @@ mod tests {
             recorded_at: 20,
         });
 
-        assert_eq!(entry.observations.len(), 1);
+        assert_eq!(entry.observation_count(), 1);
         assert_eq!(entry.first_observed_at, 10);
         assert_eq!(entry.last_updated_at, 20);
     }
@@ -799,7 +822,7 @@ mod tests {
             recorded_at: 55,
         });
 
-        assert_eq!(entry.observations.len(), 3);
+        assert_eq!(entry.observation_count(), 3);
         assert_eq!(entry.last_updated_at, 55);
     }
 
@@ -882,7 +905,7 @@ mod tests {
         );
 
         let entry = journal.entries.get(&key).expect("entry should exist");
-        assert_eq!(entry.observations.len(), 2);
+        assert_eq!(entry.observation_count(), 2);
         assert_eq!(entry.first_observed_at, 10);
         assert_eq!(entry.last_updated_at, 50);
     }
@@ -953,7 +976,7 @@ mod tests {
             .get(&JournalKey::Material { seed: 42 })
             .expect("Ferrite entry should exist");
         assert_eq!(ferrite.name, "Ferrite");
-        assert_eq!(ferrite.observations.len(), 1);
+        assert_eq!(ferrite.observation_count(), 1);
         assert_eq!(ferrite.first_observed_at, 10);
     }
 
@@ -990,8 +1013,8 @@ mod tests {
         assert_eq!(entry.last_updated_at, 42);
 
         // Exactly one observation stored.
-        assert_eq!(entry.observations.len(), 1);
-        let obs = &entry.observations[0];
+        assert_eq!(entry.observation_count(), 1);
+        let obs = &entry.observations_by_category(&ObservationCategory::ThermalBehavior)[0];
         assert_eq!(obs.category, ObservationCategory::ThermalBehavior);
         assert_eq!(obs.confidence, ConfidenceLevel::Observed);
         assert_eq!(obs.description, "Cracks under rapid heating");
@@ -1017,7 +1040,7 @@ mod tests {
             recorded_at: 20,
         });
 
-        assert_eq!(entry.observations.len(), 1, "duplicate should be skipped");
+        assert_eq!(entry.observation_count(), 1, "duplicate should be skipped");
         // Timestamp still advances even when the observation is deduplicated.
         assert_eq!(entry.last_updated_at, 20);
     }
@@ -1041,9 +1064,9 @@ mod tests {
             recorded_at: 30,
         });
 
-        assert_eq!(entry.observations.len(), 1, "duplicate should be skipped");
+        assert_eq!(entry.observation_count(), 1, "duplicate should be skipped");
         assert_eq!(
-            entry.observations[0].confidence,
+            entry.observations_by_category(&ObservationCategory::ThermalBehavior)[0].confidence,
             ConfidenceLevel::Confident,
             "confidence should be upgraded"
         );
@@ -1069,9 +1092,9 @@ mod tests {
             recorded_at: 20,
         });
 
-        assert_eq!(entry.observations.len(), 1);
+        assert_eq!(entry.observation_count(), 1);
         assert_eq!(
-            entry.observations[0].confidence,
+            entry.observations_by_category(&ObservationCategory::Weight)[0].confidence,
             ConfidenceLevel::Confident,
             "confidence should not downgrade"
         );
@@ -1096,7 +1119,9 @@ mod tests {
         });
 
         assert_eq!(
-            entry.observations.len(),
+            entry
+                .observations_by_category(&ObservationCategory::SurfaceAppearance)
+                .len(),
             2,
             "different descriptions are distinct observations"
         );
@@ -1121,7 +1146,7 @@ mod tests {
         });
 
         assert_eq!(
-            entry.observations.len(),
+            entry.observation_count(),
             2,
             "different categories are distinct observations"
         );
@@ -1208,65 +1233,37 @@ mod tests {
         assert_eq!(entry.first_observed_at, 10);
         assert_eq!(entry.last_updated_at, 80);
 
-        // All five distinct observations accumulated.
-        assert_eq!(entry.observations.len(), 5);
+        // All five distinct observations accumulated across four categories.
+        assert_eq!(entry.observation_count(), 5);
 
-        // Verify each observation in chronological order.
-        assert_eq!(
-            entry.observations[0].category,
-            ObservationCategory::SurfaceAppearance
-        );
-        assert_eq!(entry.observations[0].description, "Dark mineral grey");
-        assert_eq!(entry.observations[0].confidence, ConfidenceLevel::Tentative);
-        assert_eq!(entry.observations[0].recorded_at, 10);
-
-        assert_eq!(
-            entry.observations[1].category,
-            ObservationCategory::ThermalBehavior
-        );
-        assert_eq!(
-            entry.observations[1].description,
-            "Glows faintly when heated"
-        );
-        assert_eq!(entry.observations[1].confidence, ConfidenceLevel::Observed);
-        assert_eq!(entry.observations[1].recorded_at, 25);
-
-        assert_eq!(
-            entry.observations[2].category,
-            ObservationCategory::SurfaceAppearance
-        );
-        assert_eq!(
-            entry.observations[2].description,
-            "Slightly crystalline texture"
-        );
-        assert_eq!(entry.observations[2].confidence, ConfidenceLevel::Observed);
-        assert_eq!(entry.observations[2].recorded_at, 40);
-
-        assert_eq!(entry.observations[3].category, ObservationCategory::Weight);
-        assert_eq!(entry.observations[3].description, "Very heavy");
-        assert_eq!(entry.observations[3].confidence, ConfidenceLevel::Confident);
-        assert_eq!(entry.observations[3].recorded_at, 60);
-
-        assert_eq!(
-            entry.observations[4].category,
-            ObservationCategory::FabricationResult
-        );
-        assert_eq!(
-            entry.observations[4].description,
-            "Combined Volite + Silite -> Crystite"
-        );
-        assert_eq!(entry.observations[4].confidence, ConfidenceLevel::Confident);
-        assert_eq!(entry.observations[4].recorded_at, 80);
-
-        // Category filtering works across accumulated observations.
+        // Verify observations grouped by category.
         let surface = entry.observations_by_category(&ObservationCategory::SurfaceAppearance);
         assert_eq!(surface.len(), 2);
+        assert_eq!(surface[0].description, "Dark mineral grey");
+        assert_eq!(surface[0].confidence, ConfidenceLevel::Tentative);
+        assert_eq!(surface[0].recorded_at, 10);
+        assert_eq!(surface[1].description, "Slightly crystalline texture");
+        assert_eq!(surface[1].confidence, ConfidenceLevel::Observed);
+        assert_eq!(surface[1].recorded_at, 40);
+
         let thermal = entry.observations_by_category(&ObservationCategory::ThermalBehavior);
         assert_eq!(thermal.len(), 1);
+        assert_eq!(thermal[0].description, "Glows faintly when heated");
+        assert_eq!(thermal[0].confidence, ConfidenceLevel::Observed);
+        assert_eq!(thermal[0].recorded_at, 25);
+
         let weight = entry.observations_by_category(&ObservationCategory::Weight);
         assert_eq!(weight.len(), 1);
+        assert_eq!(weight[0].description, "Very heavy");
+        assert_eq!(weight[0].confidence, ConfidenceLevel::Confident);
+        assert_eq!(weight[0].recorded_at, 60);
+
         let fab = entry.observations_by_category(&ObservationCategory::FabricationResult);
         assert_eq!(fab.len(), 1);
+        assert_eq!(fab[0].description, "Combined Volite + Silite -> Crystite");
+        assert_eq!(fab[0].confidence, ConfidenceLevel::Confident);
+        assert_eq!(fab[0].recorded_at, 80);
+
         let loc = entry.observations_by_category(&ObservationCategory::LocationNote);
         assert_eq!(loc.len(), 0);
     }
@@ -1353,14 +1350,19 @@ mod tests {
             serde_json::from_str(&json).expect("JournalEntry should deserialize");
         assert_eq!(rt.key, entry.key);
         assert_eq!(rt.name, entry.name);
-        assert_eq!(rt.observations.len(), 2);
+        assert_eq!(rt.observation_count(), 2);
         assert_eq!(rt.first_observed_at, entry.first_observed_at);
         assert_eq!(rt.last_updated_at, entry.last_updated_at);
         assert_eq!(
-            rt.observations[0].category,
-            ObservationCategory::SurfaceAppearance
+            rt.observations_by_category(&ObservationCategory::SurfaceAppearance)
+                .len(),
+            1
         );
-        assert_eq!(rt.observations[1].category, ObservationCategory::Weight);
+        assert_eq!(
+            rt.observations_by_category(&ObservationCategory::Weight)
+                .len(),
+            1
+        );
 
         // ── NewJournal with all key types and all categories ────────
         let mut journal = NewJournal::default();
@@ -1432,45 +1434,58 @@ mod tests {
             .get(&mat_key)
             .expect("Material entry should exist");
         assert_eq!(silite.name, "Silite");
-        assert_eq!(silite.observations.len(), 3);
+        assert_eq!(silite.observation_count(), 3);
         assert_eq!(silite.first_observed_at, 1);
         assert_eq!(silite.last_updated_at, 8);
         assert_eq!(
-            silite.observations[0].category,
-            ObservationCategory::SurfaceAppearance
+            silite
+                .observations_by_category(&ObservationCategory::SurfaceAppearance)
+                .len(),
+            1
         );
         assert_eq!(
-            silite.observations[0].confidence,
+            silite.observations_by_category(&ObservationCategory::SurfaceAppearance)[0].confidence,
             ConfidenceLevel::Tentative
         );
         assert_eq!(
-            silite.observations[1].category,
-            ObservationCategory::ThermalBehavior
+            silite
+                .observations_by_category(&ObservationCategory::ThermalBehavior)
+                .len(),
+            1
         );
-        assert_eq!(silite.observations[2].category, ObservationCategory::Weight);
+        assert_eq!(
+            silite
+                .observations_by_category(&ObservationCategory::Weight)
+                .len(),
+            1
+        );
 
         let neoite = rt
             .entries
             .get(&fab_key)
             .expect("Fabrication entry should exist");
         assert_eq!(neoite.name, "Neoite");
-        assert_eq!(neoite.observations.len(), 2);
+        assert_eq!(neoite.observation_count(), 2);
         assert_eq!(neoite.first_observed_at, 10);
         assert_eq!(neoite.last_updated_at, 15);
         assert_eq!(
-            neoite.observations[0].category,
-            ObservationCategory::FabricationResult
+            neoite
+                .observations_by_category(&ObservationCategory::FabricationResult)
+                .len(),
+            1
         );
         assert_eq!(
-            neoite.observations[0].confidence,
+            neoite.observations_by_category(&ObservationCategory::FabricationResult)[0].confidence,
             ConfidenceLevel::Confident
         );
         assert_eq!(
-            neoite.observations[1].category,
-            ObservationCategory::LocationNote
+            neoite
+                .observations_by_category(&ObservationCategory::LocationNote)
+                .len(),
+            1
         );
         assert_eq!(
-            neoite.observations[1].description,
+            neoite.observations_by_category(&ObservationCategory::LocationNote)[0].description,
             "Found near volcanic ridge"
         );
     }
@@ -1552,17 +1567,19 @@ mod tests {
             .get(&mat_a)
             .expect("mat_a entry should exist");
         assert_eq!(entry_a.name, "Ferrite");
-        assert_eq!(entry_a.observations.len(), 2);
+        assert_eq!(entry_a.observation_count(), 2);
         assert_eq!(entry_a.first_observed_at, 1);
         assert_eq!(entry_a.last_updated_at, 4);
         assert_eq!(
-            entry_a.observations[0].category,
-            ObservationCategory::SurfaceAppearance
+            entry_a.observations_by_category(&ObservationCategory::SurfaceAppearance)[0]
+                .description,
+            "Warm rust tone"
         );
-        assert_eq!(entry_a.observations[0].description, "Warm rust tone");
         assert_eq!(
-            entry_a.observations[1].category,
-            ObservationCategory::ThermalBehavior
+            entry_a
+                .observations_by_category(&ObservationCategory::ThermalBehavior)
+                .len(),
+            1
         );
 
         // ── Verify material B ───────────────────────────────────────
@@ -1571,10 +1588,14 @@ mod tests {
             .get(&mat_b)
             .expect("mat_b entry should exist");
         assert_eq!(entry_b.name, "Silite");
-        assert_eq!(entry_b.observations.len(), 1);
+        assert_eq!(entry_b.observation_count(), 1);
         assert_eq!(entry_b.first_observed_at, 2);
         assert_eq!(entry_b.last_updated_at, 2);
-        assert_eq!(entry_b.observations[0].description, "Cool blue tone");
+        assert_eq!(
+            entry_b.observations_by_category(&ObservationCategory::SurfaceAppearance)[0]
+                .description,
+            "Cool blue tone"
+        );
 
         // ── Verify fabrication A (same numeric id as mat_a) ─────────
         let entry_fab = journal
@@ -1582,20 +1603,21 @@ mod tests {
             .get(&fab_a)
             .expect("fab_a entry should exist");
         assert_eq!(entry_fab.name, "Neoite");
-        assert_eq!(entry_fab.observations.len(), 1);
+        assert_eq!(entry_fab.observation_count(), 1);
         assert_eq!(entry_fab.first_observed_at, 3);
         assert_eq!(entry_fab.last_updated_at, 3);
         assert_eq!(
-            entry_fab.observations[0].category,
-            ObservationCategory::FabricationResult
+            entry_fab
+                .observations_by_category(&ObservationCategory::FabricationResult)
+                .len(),
+            1
         );
 
         // ── Cross-contamination checks ──────────────────────────────
         // Material A must not contain material B's or fab_a's observations.
         assert!(
             entry_a
-                .observations
-                .iter()
+                .all_observations()
                 .all(|o| o.description != "Cool blue tone"
                     && o.description != "Combined Ferrite + Silite -> Neoite"),
             "mat_a must not contain observations from other keys"
@@ -1604,8 +1626,7 @@ mod tests {
         // Material B must not contain material A's or fab_a's observations.
         assert!(
             entry_b
-                .observations
-                .iter()
+                .all_observations()
                 .all(|o| o.description != "Warm rust tone"
                     && o.description != "Holds together under heat"
                     && o.description != "Combined Ferrite + Silite -> Neoite"),
@@ -1615,8 +1636,7 @@ mod tests {
         // Fabrication A must not contain either material's observations.
         assert!(
             entry_fab
-                .observations
-                .iter()
+                .all_observations()
                 .all(|o| o.description != "Warm rust tone"
                     && o.description != "Cool blue tone"
                     && o.description != "Holds together under heat"),
