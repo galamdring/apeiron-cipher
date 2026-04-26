@@ -16,9 +16,9 @@
 
 use bevy::prelude::*;
 
-use crate::journal::RecordThermalObservation;
+use crate::journal::{JournalKey, Observation, ObservationCategory, RecordObservation};
 use crate::materials::{GameMaterial, MaterialObject, PropertyVisibility};
-use crate::observation::ConfidenceTracker;
+use crate::observation::{ConfidenceTracker, describe_thermal_observation};
 use crate::scene::{FurnitureConfig, HeatSourceConfig, Workbench};
 
 pub struct HeatPlugin;
@@ -265,7 +265,7 @@ fn reveal_thermal_property(
     mut commands: Commands,
     hs_cfg: Res<HeatSourceConfig>,
     mut tracker: ResMut<ConfidenceTracker>,
-    mut journal_writer: MessageWriter<RecordThermalObservation>,
+    mut journal_writer: MessageWriter<RecordObservation>,
     mut material_query: Query<
         (
             Entity,
@@ -303,11 +303,18 @@ fn reveal_thermal_property(
             commands
                 .entity(entity)
                 .insert(ThermalObservationRecordedThisCycle);
-            journal_writer.write(RecordThermalObservation {
-                seed: mat.seed,
+            journal_writer.write(RecordObservation {
+                key: JournalKey::Material { seed: mat.seed },
                 name: mat.name.clone(),
-                thermal_resistance: mat.thermal_resistance.value,
-                confidence: tracker.level(mat.seed, "thermal_resistance"),
+                observation: Observation {
+                    category: ObservationCategory::ThermalBehavior,
+                    confidence: tracker.level(mat.seed, "thermal_resistance"),
+                    description: describe_thermal_observation(
+                        mat.thermal_resistance.value,
+                        tracker.level(mat.seed, "thermal_resistance"),
+                    ),
+                    recorded_at: 0,
+                },
             });
             info!(
                 "'{}' thermal observation recorded (count = {})",
@@ -452,7 +459,7 @@ mod tests {
     #[test]
     fn thermal_observation_repeats_after_cooling_cycle() {
         let mut app = App::new();
-        app.add_message::<RecordThermalObservation>();
+        app.add_message::<RecordObservation>();
         app.insert_resource(HeatSourceConfig::default());
         app.insert_resource(ConfidenceTracker::default());
         app.add_systems(Update, reveal_thermal_property);
@@ -502,7 +509,7 @@ mod tests {
     #[test]
     fn revealing_one_entity_propagates_visibility_to_same_seed() {
         let mut app = App::new();
-        app.add_message::<RecordThermalObservation>();
+        app.add_message::<RecordObservation>();
         app.insert_resource(HeatSourceConfig::default());
         app.insert_resource(ConfidenceTracker::default());
         app.add_systems(Update, reveal_thermal_property);

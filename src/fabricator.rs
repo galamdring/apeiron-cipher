@@ -14,7 +14,7 @@
 use bevy::prelude::*;
 
 use crate::combination::CombinationRules;
-use crate::journal::RecordFabrication;
+use crate::journal::RecordObservation;
 use crate::materials::{
     GameMaterial, MATERIAL_SURFACE_GAP, MaterialCatalog, MaterialObject, MaterialProperty,
     PropertyVisibility,
@@ -184,7 +184,7 @@ fn tick_processing(
     time: Res<Time>,
     cfg: Res<FabricatorSceneConfig>,
     rules: Res<CombinationRules>,
-    _journal_writer: MessageWriter<RecordFabrication>,
+    _journal_writer: MessageWriter<RecordObservation>,
     mut state: ResMut<FabricatorState>,
     mut catalog: ResMut<MaterialCatalog>,
     mut slots: Query<&mut InputSlot>,

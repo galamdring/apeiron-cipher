@@ -13,8 +13,7 @@ use leafwing_input_manager::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::input::InputAction;
-use crate::materials::GameMaterial;
-use crate::observation::{ConfidenceLevel, describe_thermal_observation};
+use crate::observation::ConfidenceLevel;
 use crate::player::{Player, cursor_is_captured, spawn_player};
 
 // ── Observation data model ──────────────────────────────────────────────
@@ -91,10 +90,7 @@ pub struct JournalPlugin;
 
 impl Plugin for JournalPlugin {
     fn build(&self, app: &mut App) {
-        app.add_message::<RecordEncounter>()
-            .add_message::<RecordFabrication>()
-            .add_message::<RecordThermalObservation>()
-            .add_message::<RecordWeightObservation>()
+        app.add_message::<RecordObservation>()
             .add_message::<ToggleJournalIntent>()
             .init_resource::<JournalUiState>()
             .add_systems(
@@ -109,15 +105,8 @@ impl Plugin for JournalPlugin {
                 (
                     emit_toggle_journal_intent,
                     toggle_journal_visibility.after(emit_toggle_journal_intent),
-                    apply_encounter_records,
-                    apply_fabrication_records,
-                    apply_thermal_records,
-                    apply_weight_records,
-                    render_journal
-                        .after(apply_encounter_records)
-                        .after(apply_fabrication_records)
-                        .after(apply_thermal_records)
-                        .after(apply_weight_records),
+                    apply_observations,
+                    render_journal.after(apply_observations),
                 ),
             );
     }
@@ -125,31 +114,23 @@ impl Plugin for JournalPlugin {
 
 // ── Messages ────────────────────────────────────────────────────────────
 
+/// Unified message for recording any observation in the player's journal.
+///
+/// Any game system (materials, heat, carry, fabrication, navigation, trade)
+/// sends this single message type instead of a per-category variant. The
+/// journal ingestion system routes based on the [`Observation::category`]
+/// field — callers only need to fill in the key, name, and observation.
 #[derive(Message, Clone)]
-pub struct RecordEncounter {
-    pub material: GameMaterial,
-}
-
-#[derive(Message, Clone)]
-pub struct RecordFabrication {
-    pub output_material: GameMaterial,
-    pub input_a: String,
-    pub input_b: String,
-}
-
-#[derive(Message, Clone)]
-pub struct RecordThermalObservation {
-    pub seed: u64,
+pub struct RecordObservation {
+    /// Which journal subject this observation belongs to.
+    pub key: JournalKey,
+    /// Player-facing display name for the subject (used to initialise the
+    /// entry on first encounter; ignored for subsequent observations of the
+    /// same key).
     pub name: String,
-    pub thermal_resistance: f32,
-    pub confidence: ConfidenceLevel,
-}
-
-#[derive(Message, Clone)]
-pub struct RecordWeightObservation {
-    pub seed: u64,
-    pub name: String,
-    pub description: String,
+    /// The observation payload including category, confidence, description,
+    /// and game-time tick.
+    pub observation: Observation,
 }
 
 // ── Player-owned journal data ───────────────────────────────────────────
@@ -385,8 +366,11 @@ fn toggle_journal_visibility(
 
 // ── Record ingestion ────────────────────────────────────────────────────
 
-fn apply_encounter_records(
-    mut reader: MessageReader<RecordEncounter>,
+/// Unified ingestion system — reads [`RecordObservation`] messages and
+/// writes them into the legacy journal for rendering (story 10.2 will
+/// migrate rendering to `NewJournal`).
+fn apply_observations(
+    mut reader: MessageReader<RecordObservation>,
     mut player_query: Query<&mut LegacyJournal, With<Player>>,
 ) {
     let Ok(mut journal) = player_query.single_mut() else {
@@ -394,77 +378,55 @@ fn apply_encounter_records(
     };
 
     for event in reader.read() {
-        let entry = journal.ensure_entry(event.material.seed, &event.material.name);
-        if entry.surface_observations.is_empty() {
-            entry.surface_observations = vec![
-                format!("Color: {}", describe_color(&event.material.color)),
-                format!("Weight: {}", describe_density(event.material.density.value)),
-            ];
+        match event.observation.category {
+            ObservationCategory::SurfaceAppearance => {
+                let entry = journal.ensure_entry(
+                    match &event.key {
+                        JournalKey::Material { seed } => *seed,
+                        JournalKey::Fabrication { output_seed } => *output_seed,
+                    },
+                    &event.name,
+                );
+                if entry.surface_observations.is_empty() {
+                    entry
+                        .surface_observations
+                        .push(event.observation.description.clone());
+                }
+            }
+            ObservationCategory::ThermalBehavior => {
+                let seed = match &event.key {
+                    JournalKey::Material { seed } => *seed,
+                    JournalKey::Fabrication { output_seed } => *output_seed,
+                };
+                let entry = journal.ensure_entry(seed, &event.name);
+                entry.thermal_observation = Some(event.observation.description.clone());
+            }
+            ObservationCategory::Weight => {
+                let seed = match &event.key {
+                    JournalKey::Material { seed } => *seed,
+                    JournalKey::Fabrication { output_seed } => *output_seed,
+                };
+                let entry = journal.ensure_entry(seed, &event.name);
+                entry.weight_observation = Some(event.observation.description.clone());
+            }
+            ObservationCategory::FabricationResult => {
+                let description = &event.observation.description;
+                if !journal.fabrication_log.contains(description) {
+                    journal.fabrication_log.push(description.clone());
+                }
+                let seed = match &event.key {
+                    JournalKey::Material { seed } => *seed,
+                    JournalKey::Fabrication { output_seed } => *output_seed,
+                };
+                let entry = journal.ensure_entry(seed, &event.name);
+                if !entry.fabrication_history.contains(description) {
+                    entry.fabrication_history.push(description.clone());
+                }
+            }
+            ObservationCategory::LocationNote => {
+                // Location notes are a future feature; no legacy rendering yet.
+            }
         }
-    }
-}
-
-fn apply_fabrication_records(
-    mut reader: MessageReader<RecordFabrication>,
-    mut player_query: Query<&mut LegacyJournal, With<Player>>,
-) {
-    let Ok(mut journal) = player_query.single_mut() else {
-        return;
-    };
-
-    for event in reader.read() {
-        let history = format!(
-            "Combined {} + {} -> {}",
-            event.input_a, event.input_b, event.output_material.name
-        );
-        if !journal.fabrication_log.contains(&history) {
-            journal.fabrication_log.push(history.clone());
-        }
-
-        let entry = journal.ensure_entry(event.output_material.seed, &event.output_material.name);
-        if entry.surface_observations.is_empty() {
-            entry.surface_observations = vec![
-                format!("Color: {}", describe_color(&event.output_material.color)),
-                format!(
-                    "Weight: {}",
-                    describe_density(event.output_material.density.value)
-                ),
-            ];
-        }
-        if !entry.fabrication_history.contains(&history) {
-            entry.fabrication_history.push(history);
-        }
-    }
-}
-
-fn apply_thermal_records(
-    mut reader: MessageReader<RecordThermalObservation>,
-    mut player_query: Query<&mut LegacyJournal, With<Player>>,
-) {
-    let Ok(mut journal) = player_query.single_mut() else {
-        return;
-    };
-
-    for event in reader.read() {
-        let entry = journal.ensure_entry(event.seed, &event.name);
-        entry.thermal_observation = Some(describe_thermal_observation(
-            event.thermal_resistance,
-            event.confidence,
-        ));
-    }
-}
-
-fn apply_weight_records(
-    mut reader: MessageReader<RecordWeightObservation>,
-    mut player_query: Query<&mut LegacyJournal, With<Player>>,
-) {
-    let Ok(mut journal) = player_query.single_mut() else {
-        return;
-    };
-
-    for event in reader.read() {
-        let entry = journal.ensure_entry(event.seed, &event.name);
-        entry.weight_observation = Some(event.description.clone());
     }
 }
 
@@ -541,7 +503,7 @@ fn build_journal_text(journal: &LegacyJournal) -> String {
 
 // ── Descriptive language ────────────────────────────────────────────────
 
-fn describe_density(value: f32) -> &'static str {
+pub fn describe_density(value: f32) -> &'static str {
     if value < 0.15 {
         "Almost weightless"
     } else if value < 0.3 {
@@ -559,7 +521,7 @@ fn describe_density(value: f32) -> &'static str {
     }
 }
 
-fn describe_color(color: &[f32; 3]) -> &'static str {
+pub fn describe_color(color: &[f32; 3]) -> &'static str {
     let [r, g, b] = *color;
     let max = r.max(g).max(b);
     let min = r.min(g).min(b);

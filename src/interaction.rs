@@ -23,9 +23,11 @@ use bevy::prelude::*;
 use crate::carry::{CarryState, ObserveWeight, StashHeldForPickup};
 use crate::fabricator::{ActivateIntent, InputSlot, OutputSlot};
 use crate::input::InputAction;
-use crate::journal::RecordEncounter;
+use crate::journal::{
+    JournalKey, Observation, ObservationCategory, RecordObservation, describe_color,
+};
 use crate::materials::{GameMaterial, MATERIAL_SURFACE_GAP, MaterialObject, PropertyVisibility};
-use crate::observation::{ConfidenceTracker, describe_thermal_observation};
+use crate::observation::{ConfidenceLevel, ConfidenceTracker, describe_thermal_observation};
 use crate::player::{Player, PlayerCamera, cursor_is_captured};
 use crate::scene::{PlayerSceneConfig, Surface};
 use crate::world_generation::{PlanetSurface, WorldGenerationConfig, WorldProfile};
@@ -148,7 +150,7 @@ fn update_interaction_target(
     mut ray_cast: MeshRayCast,
     material_query: Query<&GameMaterial, With<MaterialObject>>,
     held_query: Query<(), With<HeldItem>>,
-    mut encounter_writer: MessageWriter<RecordEncounter>,
+    mut encounter_writer: MessageWriter<RecordObservation>,
 ) {
     let previous_target = target.entity;
     target.entity = None;
@@ -183,8 +185,21 @@ fn update_interaction_target(
         && let Some(entity) = target.entity
         && let Ok(material) = material_query.get(entity)
     {
-        encounter_writer.write(RecordEncounter {
-            material: material.clone(),
+        encounter_writer.write(RecordObservation {
+            key: JournalKey::Material {
+                seed: material.seed,
+            },
+            name: material.name.clone(),
+            observation: Observation {
+                category: ObservationCategory::SurfaceAppearance,
+                confidence: ConfidenceLevel::Tentative,
+                description: format!(
+                    "Color: {}\nWeight: {}",
+                    describe_color(&material.color),
+                    describe_density(material.density.value)
+                ),
+                recorded_at: 0,
+            },
         });
     }
 }
