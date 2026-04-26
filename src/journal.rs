@@ -10,11 +10,40 @@ use std::collections::BTreeMap;
 
 use bevy::prelude::*;
 use leafwing_input_manager::prelude::*;
+use serde::{Deserialize, Serialize};
 
 use crate::input::InputAction;
 use crate::materials::GameMaterial;
 use crate::observation::{ConfidenceLevel, describe_thermal_observation};
 use crate::player::{Player, cursor_is_captured, spawn_player};
+
+// ── Journal key ─────────────────────────────────────────────────────────
+
+/// Unique key identifying a journal subject.
+///
+/// Each variant encodes both the *type* of subject (material, fabrication
+/// output, etc.) and the identity that distinguishes one instance from
+/// another. The enum is intentionally non-exhaustive so future systems
+/// (navigation, trade, language) can add variants without breaking
+/// existing match arms.
+///
+/// `Ord` is derived so that `JournalKey` can serve as a `BTreeMap` key,
+/// giving the journal a stable, deterministic iteration order.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum JournalKey {
+    /// A raw or discovered material, keyed by its procedural seed.
+    Material {
+        /// The deterministic seed that uniquely identifies this material
+        /// within the world generation system.
+        seed: u64,
+    },
+    /// The output of a fabrication process, keyed by the resulting
+    /// material's seed.
+    Fabrication {
+        /// The deterministic seed of the fabricated output material.
+        output_seed: u64,
+    },
+}
 
 pub struct JournalPlugin;
 
@@ -426,6 +455,61 @@ mod tests {
 
         let text = build_journal_text(&journal);
         assert!(text.contains("Heat: Reliably hold together under heat"));
+    }
+
+    #[test]
+    fn journal_key_material_equality() {
+        let a = JournalKey::Material { seed: 42 };
+        let b = JournalKey::Material { seed: 42 };
+        let c = JournalKey::Material { seed: 99 };
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn journal_key_fabrication_equality() {
+        let a = JournalKey::Fabrication { output_seed: 7 };
+        let b = JournalKey::Fabrication { output_seed: 7 };
+        let c = JournalKey::Fabrication { output_seed: 8 };
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn journal_key_variants_are_distinct() {
+        let mat = JournalKey::Material { seed: 42 };
+        let fab = JournalKey::Fabrication { output_seed: 42 };
+        assert_ne!(mat, fab);
+    }
+
+    #[test]
+    fn journal_key_serde_round_trip() {
+        let keys = vec![
+            JournalKey::Material { seed: 123 },
+            JournalKey::Fabrication { output_seed: 456 },
+        ];
+        for key in &keys {
+            let json = serde_json::to_string(key).expect("JournalKey should serialize to JSON");
+            let deserialized: JournalKey =
+                serde_json::from_str(&json).expect("JournalKey should deserialize from JSON");
+            assert_eq!(*key, deserialized);
+        }
+    }
+
+    #[test]
+    fn journal_key_btreemap_ordering_is_stable() {
+        use std::collections::BTreeMap;
+        let mut map = BTreeMap::new();
+        map.insert(JournalKey::Fabrication { output_seed: 1 }, "fab");
+        map.insert(JournalKey::Material { seed: 99 }, "mat99");
+        map.insert(JournalKey::Material { seed: 1 }, "mat1");
+
+        let keys: Vec<_> = map.keys().collect();
+        // Derived Ord: enum variants ordered by declaration (Material < Fabrication),
+        // then by field values within each variant.
+        assert_eq!(*keys[0], JournalKey::Material { seed: 1 });
+        assert_eq!(*keys[1], JournalKey::Material { seed: 99 });
+        assert_eq!(*keys[2], JournalKey::Fabrication { output_seed: 1 });
     }
 
     #[test]
