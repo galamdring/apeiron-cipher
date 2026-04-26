@@ -1,6 +1,6 @@
-# State of the Game Address — 4/20/2026
+# State of the Game Address — 4/26/2026
 
-As we come to this momentous PR, we are proud to show you all the ways this world has grown. What began as an empty room has become a place where materials have weight, fire reveals secrets, and discovery rewards the curious.
+As we come to this momentous PR, we are proud to show you all the ways this world has grown. What began as an empty room has become a place where materials have weight, fire reveals secrets, and discovery rewards the curious. The ground beneath you now belongs to a planet — one that orbits a star, in a system generated from a single seed.
 
 Here is what awaits you.
 
@@ -8,7 +8,7 @@ Here is what awaits you.
 
 ## Your Workshop
 
-You wake in an enclosed stone workshop — four walls, a single doorway facing south, and a workbench at the center. Three shelves line the walls, each holding colored objects of different shapes and sizes. A glowing burner hums on the workbench. Beyond the doorway, a green expanse stretches outward.
+You wake in an enclosed stone workshop — four walls, a single doorway facing south, and a workbench at the center. Three shelves line the walls, each holding colored objects of different shapes and sizes. A glowing burner hums on the workbench. Beyond the doorway, a green expanse stretches outward — the surface of your planet, with rolling terrain shaped by noise-driven elevation and biome-specific mineral deposits scattered across the landscape.
 
 There is no tutorial. No quest marker. No explanation. The world teaches through consequence.
 
@@ -103,9 +103,10 @@ Press **J** to open your journal. Everything you've learned is recorded here aut
 
 - **Surface observations** — the color and apparent weight of each material you've examined
 - **Heat observations** — what happened when you put it near the burner, described with increasing confidence as you repeat the test
+- **Weight observations** — how heavy the material felt when you picked it up, relative to your carry strength
 - **Fabrication history** — which materials you combined and what they produced
 
-The journal is your memory. As you test, combine, and re-test, it fills with the knowledge you've earned through play.
+The journal is built on a typed data model — every observation is categorized, timestamped with real game time, and keyed by material identity. Observations are deduplicated automatically and confidence upgrades as you repeat experiments. The journal is your memory, structured for the long game.
 
 ---
 
@@ -121,8 +122,36 @@ All of this is tunable in `assets/config/carry.toml` — sprint speed, base stam
 
 ---
 
+## The World Outside
+
+Step through the doorway and you're standing on the surface of a planet. The terrain is procedurally generated from a seed — rolling hills shaped by multi-octave noise with detail overlays, wrapped on a torus so the world loops seamlessly. The ground height varies, slopes are computed per-vertex, and surface normals determine whether materials can be placed on a given patch of terrain.
+
+Different regions of the planet belong to different **biomes** — each biome carries its own mineral palette, so the materials you find scattered on the ground change as you explore. The biome system is climate-aware: hot planets skew toward scorched biomes, cold planets toward frost.
+
+Mineral deposits are scattered across the terrain surface-aware — they sit at the correct elevation, respect slope limits (no deposits on cliff faces), and their material identity comes from the biome palette with weighted random selection. Pick them up, carry them inside, test them. They're the same system as your workshop materials.
+
+---
+
+## The Solar System (Under the Hood)
+
+Your planet doesn't exist in isolation. It orbits a star, in a system generated entirely from a single **solar system seed**.
+
+From that seed:
+- A **star** is derived — type (red dwarf, sun-like, blue giant, etc.), mass, temperature, luminosity, all from weighted random selection across a configurable registry
+- An **orbital layout** distributes planets at increasing distances with minimum separation guarantees
+- Each planet gets **environmental parameters** — surface temperature, gravity, atmosphere density, radiation levels — all derived from its distance to the star and the star's properties
+- A **habitable zone** is computed from stellar luminosity, and planets inside it are flagged accordingly
+
+The planet you're standing on was selected by index from this layout. Its terrain frequency, elevation amplitude, surface radius, and biome climate all flow from the stellar context. Change the system seed, and you get a different star, different planets, different biomes, different materials.
+
+None of this is visible to the player yet — no star in the sky, no planet selection screen. But the data is there, deterministic and reproducible, waiting for the navigation epics to expose it.
+
+---
+
 ## What Lies Ahead
 
-The workshop is functional. You can gather, carry, heat, combine, and record. Your body now responds to what you carry. The world beyond the doorway is waiting.
+The workshop is functional. You can gather, carry, heat, combine, and record. Your body responds to what you carry. The ground beneath you belongs to a planet in a solar system. The journal knows what you know, typed and timestamped.
 
-But for now — ten materials, one burner, one fabricator, a carry container that slows you down, and a journal full of blank pages. The rest is up to you.
+**Ring 1 (Make Things)** is in progress — Epics 4 and 5 are complete, Epic 10 (Journal Architecture) has its data model landed, and Epics 11, 12, and 13 are next. **Ring 2 (Go Places)** — navigation, multi-planet travel, the wider universe — comes after.
+
+But for now — ten materials, one burner, one fabricator, a carry container that slows you down, a journal that remembers everything, and a planet with biomes full of minerals. The rest is up to you.
