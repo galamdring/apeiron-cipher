@@ -13,6 +13,7 @@
 //! All derivation is pure data — no rendering, no ECS components, no visual
 //! representation.
 
+use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -986,6 +987,20 @@ fn log_star_profile_on_startup(
     }
 }
 
+/// Bundled read-only access to the three solar-system registries that both
+/// `resolve_system_derived_profile` and `derive_and_insert_planet_environment`
+/// need.  Using a `SystemParam` keeps both system function signatures within
+/// the 4-parameter limit mandated by the architecture rules.
+#[derive(SystemParam)]
+pub struct SolarSystemRegistries<'w> {
+    /// Star type definitions loaded from `assets/config/star_types.toml`.
+    pub star_registry: Res<'w, StarTypeRegistry>,
+    /// Orbital layout constraints (planet count, orbit range, separation).
+    pub orbital_config: Res<'w, OrbitalConfig>,
+    /// Planet environment derivation parameters (temperature, gravity, atmosphere).
+    pub env_config: Res<'w, PlanetEnvironmentConfig>,
+}
+
 /// Derive the `PlanetEnvironment` for the player's current planet and insert
 /// it as a resource.
 ///
@@ -1002,11 +1017,16 @@ fn log_star_profile_on_startup(
 fn derive_and_insert_planet_environment(
     mut commands: Commands,
     world_config: Res<WorldGenerationConfig>,
-    world_profile: Res<WorldProfile>,
-    star_registry: Res<StarTypeRegistry>,
-    orbital_config: Res<OrbitalConfig>,
-    env_config: Res<PlanetEnvironmentConfig>,
+    world_profile: Option<Res<WorldProfile>>,
+    registries: SolarSystemRegistries,
 ) {
+    let Some(world_profile) = world_profile else {
+        error!(
+            "WorldProfile resource not available — cannot derive PlanetEnvironment. \
+             This is expected if WorldProfile creation failed during config loading."
+        );
+        return;
+    };
     // In system-derived mode, the WorldProfile already contains the full
     // SystemContext with the PlanetEnvironment. Extract and insert it as
     // a standalone resource for backward compatibility.
@@ -1027,15 +1047,21 @@ fn derive_and_insert_planet_environment(
     }
 
     // Override mode: derive from the orbital layout by matching planet seed.
-    let seed = SolarSystemSeed(world_config.solar_system_seed);
-    let star = derive_star_profile(seed, &star_registry);
-    let layout = derive_orbital_layout(seed, &orbital_config);
+    let Some(raw_planet_seed) = world_config.planet_seed else {
+        error!(
+            "BUG: derive_and_insert_planet_environment reached override-mode path \
+             but planet_seed is None. solar_system_seed={}, planet_index={}. \
+             Inserting default Earth-like PlanetEnvironment as fallback.",
+            world_config.solar_system_seed, world_config.planet_index,
+        );
+        commands.insert_resource(PlanetEnvironment::default());
+        return;
+    };
 
-    let planet_seed = PlanetSeed(
-        world_config
-            .planet_seed
-            .expect("override mode requires planet_seed"),
-    );
+    let seed = SolarSystemSeed(world_config.solar_system_seed);
+    let star = derive_star_profile(seed, &registries.star_registry);
+    let layout = derive_orbital_layout(seed, &registries.orbital_config);
+    let planet_seed = PlanetSeed(raw_planet_seed);
 
     // Find the player's planet in the orbital layout by matching planet seed.
     // When the planet seed is NOT found (override / manual-seed mode), we
@@ -1062,7 +1088,12 @@ fn derive_and_insert_planet_environment(
         }
     };
 
-    let env = derive_planet_environment(&star, orbital_distance_au, planet_seed, &env_config);
+    let env = derive_planet_environment(
+        &star,
+        orbital_distance_au,
+        planet_seed,
+        &registries.env_config,
+    );
 
     info!(
         "Planet environment derived: temp=[{:.0}, {:.0}]K, atmo={:.3}, \
@@ -1281,8 +1312,10 @@ pub fn derive_orbital_layout(
         distances.push(best_distance);
     }
 
-    // Sort innermost-first.
-    distances.sort_by(|a, b| a.partial_cmp(b).expect("orbital distances must not be NaN"));
+    // Sort innermost-first.  `total_cmp` provides a total ordering for f64
+    // that handles NaN deterministically (NaN sorts after all finite values)
+    // without panicking, unlike `partial_cmp().expect(...)`.
+    distances.sort_by(|a, b| a.total_cmp(b));
 
     // Safety net: if re-draw couldn't find valid positions for all planets
     // (pathologically tight config), enforce minimum separation by nudging
@@ -1681,7 +1714,7 @@ mod tests {
                 .star_types
                 .iter()
                 .find(|st| st.star_type == profile.star_type)
-                .expect("profile star_type_key must exist in registry");
+                .expect("profile star_type must exist in registry");
 
             assert!(
                 profile.luminosity >= star_type.luminosity_min
@@ -2205,7 +2238,7 @@ weight = 7.0
                 .find(|st| st.star_type == profile.star_type)
                 .unwrap_or_else(|| {
                     panic!(
-                        "seed {}: star_type_key '{}' not found in registry",
+                        "seed {}: star_type '{:?}' not found in registry",
                         raw, profile.star_type
                     )
                 });

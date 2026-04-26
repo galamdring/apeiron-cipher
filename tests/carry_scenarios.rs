@@ -32,7 +32,7 @@ fn carry_shared_setup(app: &mut App) {
 /// `attach_carry_state_to_player` has already initialised the component.
 fn load_items(world: &mut World, items: &[(String, f32)]) {
     for (name, density) in items {
-        let mat = test_material(name, *density);
+        let mat = test_material(name, *density, 42);
         let item_entity = world.spawn(mat.clone()).id();
 
         let mut q = world.query_filtered::<&mut CarryState, With<Player>>();

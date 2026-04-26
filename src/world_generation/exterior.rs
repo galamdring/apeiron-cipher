@@ -495,7 +495,7 @@ fn load_surface_mineral_deposit_catalog(mut commands: Commands) {
 fn sync_active_exterior_chunks(
     mut commands: Commands,
     active_chunks: Res<ActiveChunkNeighborhood>,
-    world_profile: Res<WorldProfile>,
+    world_profile: Option<Res<WorldProfile>>,
     world_gen_config: Res<WorldGenerationConfig>,
     deposit_catalog: Res<SurfaceMineralDepositCatalog>,
     mut material_catalog: ResMut<MaterialCatalog>,
@@ -509,6 +509,9 @@ fn sync_active_exterior_chunks(
     surface_registry: Res<crate::surface::SurfaceOverrideRegistry>,
     planet_env: Option<Res<crate::solar_system::PlanetEnvironment>>,
 ) {
+    let Some(world_profile) = world_profile else {
+        return;
+    };
     let active_chunk_set: HashSet<ChunkCoord> = active_chunks.chunks.iter().copied().collect();
     let inactive_chunks: Vec<ChunkCoord> = spawned_chunks
         .spawned_entities_by_chunk
@@ -837,7 +840,7 @@ fn release_collected_player_added_objects(
 fn claim_exterior_drops(
     mut commands: Commands,
     exterior_patch: Res<ExteriorGroundPatch>,
-    world_profile: Res<WorldProfile>,
+    world_profile: Option<Res<WorldProfile>>,
     mut player_additions: ResMut<ChunkPlayerAdditions>,
     mut id_counter: ResMut<PlayerAddedIdCounter>,
     unclaimed_query: Query<
@@ -851,6 +854,9 @@ fn claim_exterior_drops(
         ),
     >,
 ) {
+    let Some(world_profile) = world_profile else {
+        return;
+    };
     for (entity, material, transform) in unclaimed_query.iter() {
         let pos = transform.translation;
 

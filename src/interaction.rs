@@ -402,11 +402,14 @@ fn process_place(
     material_positions: Query<(Entity, &GlobalTransform, &GameMaterial), With<MaterialObject>>,
     slot_target: Res<SlotTarget>,
     mut slot_query: Query<(&GlobalTransform, &mut InputSlot)>,
-    world_profile: Res<WorldProfile>,
+    world_profile: Option<Res<WorldProfile>>,
     world_gen_config: Res<WorldGenerationConfig>,
     surface_registry: Res<crate::surface::SurfaceOverrideRegistry>,
     scene: Res<PlayerSceneConfig>,
 ) {
+    let Some(world_profile) = world_profile else {
+        return;
+    };
     for _intent in reader.read() {
         let Some((held_entity, held_material)) = held_query.iter().next() else {
             continue;
@@ -1092,7 +1095,7 @@ mod tests {
             .insert_resource(InteractionTarget::default())
             .insert_resource(SlotTarget::default())
             .insert_resource(SceneConfig::default())
-            .insert_resource(WorldProfile::default())
+            .insert_resource(WorldProfile::from_config(&WorldGenerationConfig::default()).unwrap())
             .insert_resource(WorldGenerationConfig::default())
             .insert_resource(crate::surface::SurfaceOverrideRegistry::default())
             .insert_resource(PlayerSceneConfig::default())

@@ -46,9 +46,9 @@ use crate::seed_util::{
     mix_seed,
 };
 use crate::solar_system::{
-    OrbitalConfig, OrbitalLayout, PlanetEnvironment, PlanetEnvironmentConfig, SolarSystemSeed,
-    StarProfile, StarTypeRegistry, derive_orbital_layout, derive_planet_environment,
-    derive_star_profile,
+    OrbitalConfig, OrbitalLayout, PlanetEnvironment, PlanetEnvironmentConfig,
+    SolarSystemRegistries, SolarSystemSeed, StarProfile, StarTypeRegistry, derive_orbital_layout,
+    derive_planet_environment, derive_star_profile,
 };
 
 // ── Surface Query Abstraction (Story 5.3) ────────────────────────────────
@@ -739,7 +739,6 @@ pub struct WorldGenerationPlugin;
 impl Plugin for WorldGenerationPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<WorldGenerationConfig>()
-            .init_resource::<WorldProfile>()
             .init_resource::<ActiveChunkNeighborhood>()
             .init_resource::<BiomeRegistry>()
             .add_systems(
@@ -1263,13 +1262,6 @@ pub struct WorldProfile {
     pub system_context: Option<SystemContext>,
 }
 
-impl Default for WorldProfile {
-    fn default() -> Self {
-        Self::from_config(&WorldGenerationConfig::default())
-            .expect("default WorldGenerationConfig always has planet_seed")
-    }
-}
-
 impl WorldProfile {
     /// Build a world profile in override mode — planet seed taken directly
     /// from config, no system derivation chain.
@@ -1284,7 +1276,7 @@ impl WorldProfile {
             "from_config requires planet_seed to be Some (override mode)".to_string()
         })?;
         let planet_seed = PlanetSeed(raw_seed);
-        Ok(Self::build(planet_seed, config, None))
+        Self::build(planet_seed, config, None)
     }
 
     /// Build a world profile in system-derived mode — planet seed derived
@@ -1331,7 +1323,7 @@ impl WorldProfile {
             planet_orbital_index: config.planet_index,
         };
 
-        Ok(Self::build(planet_seed, config, Some(context)))
+        Self::build(planet_seed, config, Some(context))
     }
 
     /// Shared builder used by both `from_config` and `from_system_seed`.
@@ -1339,7 +1331,7 @@ impl WorldProfile {
         planet_seed: PlanetSeed,
         config: &WorldGenerationConfig,
         system_context: Option<SystemContext>,
-    ) -> Self {
+    ) -> Result<Self, String> {
         // Derive the planet surface radius from the planet seed. We mix the
         // seed with a dedicated channel constant so this derivation is
         // independent of all other seed-derived values (placement density,
@@ -1352,11 +1344,15 @@ impl WorldProfile {
             config.planet_surface_min_radius,
             config.planet_surface_max_radius,
         );
-        let planet_surface_diameter = planet_surface_radius
-            .checked_mul(2)
-            .expect("planet surface diameter must fit in i32");
+        let planet_surface_diameter = planet_surface_radius.checked_mul(2).ok_or_else(|| {
+            format!(
+                "planet_surface_radius {planet_surface_radius} overflows i32 when doubled \
+                 (min_radius={}, max_radius={})",
+                config.planet_surface_min_radius, config.planet_surface_max_radius,
+            )
+        })?;
 
-        Self {
+        Ok(Self {
             planet_seed,
             chunk_size_world_units: config.chunk_size_world_units,
             active_chunk_radius: config.active_chunk_radius,
@@ -1368,7 +1364,7 @@ impl WorldProfile {
             planet_surface_diameter,
             elevation_seed: mix_seed(planet_seed.0, ELEVATION_CHANNEL),
             system_context,
-        }
+        })
     }
 
     /// Whether this profile was derived from a solar system seed.
@@ -1463,15 +1459,33 @@ fn load_world_generation_config(mut commands: Commands) {
 
     match config.seed_mode() {
         SeedMode::Override => {
-            info!(
-                "Seed mode: override (planet_seed={:#018X})",
-                config
-                    .planet_seed
-                    .expect("override mode requires planet_seed"),
-            );
-            let profile = WorldProfile::from_config(&config)
-                .expect("override mode guarantees planet_seed is present");
-            commands.insert_resource(profile);
+            let Some(planet_seed) = config.planet_seed else {
+                error!(
+                    "BUG: seed_mode() returned Override but planet_seed is None. \
+                     Config: solar_system_seed={}, planet_index={}, planet_seed={:?}. \
+                     Falling back to defaults.",
+                    config.solar_system_seed, config.planet_index, config.planet_seed,
+                );
+                commands.insert_resource(config);
+                return;
+            };
+            info!("Seed mode: override (planet_seed={planet_seed:#018X})");
+
+            match WorldProfile::from_config(&config) {
+                Ok(profile) => {
+                    commands.insert_resource(profile);
+                }
+                Err(err) => {
+                    error!(
+                        "Failed to build WorldProfile from config in override mode: {err}. \
+                         Config: planet_seed={planet_seed:#018X}, \
+                         solar_system_seed={}, planet_index={}. \
+                         WorldProfile resource will not be available — systems that \
+                         depend on it will gracefully skip until the config is corrected.",
+                        config.solar_system_seed, config.planet_index,
+                    );
+                }
+            }
         }
         SeedMode::SystemDerived => {
             info!(
@@ -1503,51 +1517,61 @@ fn load_world_generation_config(mut commands: Commands) {
 pub fn resolve_system_derived_profile(
     mut commands: Commands,
     config: Res<WorldGenerationConfig>,
-    star_registry: Res<StarTypeRegistry>,
-    orbital_config: Res<OrbitalConfig>,
-    env_config: Res<PlanetEnvironmentConfig>,
+    registries: SolarSystemRegistries,
     mut app_exit: bevy::ecs::message::MessageWriter<AppExit>,
 ) {
     if config.seed_mode() != SeedMode::SystemDerived {
         return;
     }
 
-    let profile =
-        match WorldProfile::from_system_seed(&config, &star_registry, &orbital_config, &env_config)
-        {
-            Ok(p) => p,
-            Err(err) => {
-                error!(
-                    "Failed to resolve system-derived WorldProfile: {err}. \
+    let profile = match WorldProfile::from_system_seed(
+        &config,
+        &registries.star_registry,
+        &registries.orbital_config,
+        &registries.env_config,
+    ) {
+        Ok(p) => p,
+        Err(err) => {
+            error!(
+                "Failed to resolve system-derived WorldProfile: {err}. \
                      Fix solar_system_seed / planet_index in {CONFIG_PATH} \
                      or switch to override mode by setting planet_seed directly."
-                );
-                app_exit.write(AppExit::error());
-                return;
-            }
-        };
+            );
+            app_exit.write(AppExit::error());
+            return;
+        }
+    };
+
+    let star_type_label = match profile.system_context.as_ref() {
+        Some(ctx) => format!("{}", ctx.star.star_type),
+        None => {
+            error!(
+                "BUG: system-derived WorldProfile has no system_context. \
+                 planet_seed={:#018X}, planet_index={}. \
+                 Inserting profile anyway but downstream systems may behave unexpectedly.",
+                profile.planet_seed.0, config.planet_index,
+            );
+            "<missing>".to_string()
+        }
+    };
 
     info!(
         "Resolved system-derived WorldProfile: planet_seed={:#018X}, \
-         star_type={}, planet_index={}",
-        profile.planet_seed.0,
-        profile
-            .system_context
-            .as_ref()
-            .expect("system-derived profile must have system_context")
-            .star
-            .star_type,
-        config.planet_index,
+         star_type={star_type_label}, planet_index={}",
+        profile.planet_seed.0, config.planet_index,
     );
 
     commands.insert_resource(profile);
 }
 
 fn update_active_chunk_neighborhood(
-    profile: Res<WorldProfile>,
+    profile: Option<Res<WorldProfile>>,
     mut active_chunks: ResMut<ActiveChunkNeighborhood>,
     player_query: Query<&Transform, With<Player>>,
 ) {
+    let Some(profile) = profile else {
+        return;
+    };
     let Ok(player_transform) = player_query.single() else {
         active_chunks.center_chunk = None;
         active_chunks.center_chunk_origin_xz = None;

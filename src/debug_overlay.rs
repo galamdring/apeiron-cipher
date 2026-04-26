@@ -55,11 +55,14 @@ fn spawn_debug_panel(mut commands: Commands) {
 fn update_debug_panel(
     player_query: Query<&Transform, With<Player>>,
     camera_query: Query<&GlobalTransform, With<PlayerCamera>>,
-    world_profile: Res<WorldProfile>,
+    world_profile: Option<Res<WorldProfile>>,
     world_gen_config: Res<WorldGenerationConfig>,
     mut text_query: Query<&mut Text, With<DebugText>>,
 ) {
     let Ok(player_tf) = player_query.single() else {
+        return;
+    };
+    let Some(world_profile) = world_profile else {
         return;
     };
     let Ok(mut text) = text_query.single_mut() else {
