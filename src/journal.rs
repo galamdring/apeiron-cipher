@@ -903,6 +903,41 @@ mod tests {
     }
 
     #[test]
+    fn single_observation_recorded_correctly() {
+        let mut journal = NewJournal::default();
+        let key = JournalKey::Material { seed: 55 };
+
+        journal.record(
+            key.clone(),
+            "Quarite",
+            Observation {
+                category: ObservationCategory::ThermalBehavior,
+                confidence: ConfidenceLevel::Observed,
+                description: "Cracks under rapid heating".into(),
+                recorded_at: 42,
+            },
+        );
+
+        // Exactly one entry created for the key.
+        assert_eq!(journal.entries.len(), 1);
+        let entry = journal.entries.get(&key).expect("entry should exist");
+
+        // Entry metadata is correct.
+        assert_eq!(entry.key, key);
+        assert_eq!(entry.name, "Quarite");
+        assert_eq!(entry.first_observed_at, 42);
+        assert_eq!(entry.last_updated_at, 42);
+
+        // Exactly one observation stored.
+        assert_eq!(entry.observations.len(), 1);
+        let obs = &entry.observations[0];
+        assert_eq!(obs.category, ObservationCategory::ThermalBehavior);
+        assert_eq!(obs.confidence, ConfidenceLevel::Observed);
+        assert_eq!(obs.description, "Cracks under rapid heating");
+        assert_eq!(obs.recorded_at, 42);
+    }
+
+    #[test]
     fn duplicate_observation_same_category_and_description_is_skipped() {
         let key = JournalKey::Material { seed: 1 };
         let mut entry = JournalEntry::new(key, "Ferrite".into(), 10);
