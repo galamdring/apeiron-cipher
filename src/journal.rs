@@ -17,6 +17,48 @@ use crate::materials::GameMaterial;
 use crate::observation::{ConfidenceLevel, describe_thermal_observation};
 use crate::player::{Player, cursor_is_captured, spawn_player};
 
+// ── Observation data model ──────────────────────────────────────────────
+
+/// Categories of observation — extensible by adding variants.
+///
+/// Each variant represents a distinct *kind* of knowledge the player can
+/// accumulate about a journal subject. New game systems (navigation,
+/// trade, language) add variants here without touching existing match
+/// arms or storage structures.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ObservationCategory {
+    /// Visual or tactile surface properties noticed on first examination.
+    SurfaceAppearance,
+    /// How the subject reacts to heat or cold exposure.
+    ThermalBehavior,
+    /// Perceived heft or density when the player picks up the subject.
+    Weight,
+    /// Outcome of combining materials in the fabricator.
+    FabricationResult,
+    /// A note about a specific location (landmark, hazard, resource).
+    LocationNote,
+    // Future: LanguageFragment, CulturalBehavior, TradePrice, etc.
+}
+
+/// A single observation about a journal subject, timestamped.
+///
+/// Observations are the atomic unit of player knowledge. Each one records
+/// *what* was observed ([`ObservationCategory`]), *how confident* the
+/// player should be ([`ConfidenceLevel`]), a human-readable description,
+/// and the game-time tick when it was recorded. Observations accumulate
+/// inside a [`JournalEntry`] over time — the journal never forgets.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Observation {
+    /// What kind of knowledge this observation represents.
+    pub category: ObservationCategory,
+    /// How certain the player is based on repeated evidence.
+    pub confidence: ConfidenceLevel,
+    /// Player-facing prose description of the observation.
+    pub description: String,
+    /// Game-time tick when this observation was recorded.
+    pub recorded_at: u64,
+}
+
 // ── Journal key ─────────────────────────────────────────────────────────
 
 /// Unique key identifying a journal subject.

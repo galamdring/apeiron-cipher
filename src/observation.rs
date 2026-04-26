@@ -16,6 +16,7 @@
 use std::collections::HashMap;
 
 use bevy::prelude::*;
+use serde::{Deserialize, Serialize};
 
 pub struct ObservationPlugin;
 
@@ -30,7 +31,7 @@ impl Plugin for ObservationPlugin {
 /// Qualitative confidence level derived from observation count.
 /// Used by the examine panel in the next PR to select descriptor language.
 #[allow(dead_code)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ConfidenceLevel {
     /// One observation — tentative language.
     Tentative,
