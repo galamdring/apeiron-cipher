@@ -154,14 +154,137 @@ pub struct RecordWeightObservation {
 
 // ── Player-owned journal data ───────────────────────────────────────────
 
+/// A journal entry that accumulates observations about a single subject over time.
+///
+/// Each entry is keyed by a [`JournalKey`] and holds a chronologically ordered
+/// vector of [`Observation`]s. The `first_observed_at` and `last_updated_at`
+/// timestamps track the game-time ticks bounding the observation window, which
+/// later systems (e.g., confidence decay, staleness indicators) can use without
+/// re-scanning all observations.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct JournalEntry {
+    /// The unique identifier for this journal subject.
+    pub key: JournalKey,
+    /// Player-facing display name for this subject.
+    pub name: String,
+    /// Chronologically ordered observations accumulated over time.
+    pub observations: Vec<Observation>,
+    /// Game-time tick when the player first recorded *any* observation about
+    /// this subject.
+    pub first_observed_at: u64,
+    /// Game-time tick of the most recent observation recorded for this subject.
+    pub last_updated_at: u64,
+}
+
+impl JournalEntry {
+    /// Create a new journal entry with no observations yet recorded.
+    ///
+    /// The `tick` parameter sets both `first_observed_at` and `last_updated_at`
+    /// to the same initial value; they diverge once additional observations
+    /// arrive.
+    pub fn new(key: JournalKey, name: String, tick: u64) -> Self {
+        Self {
+            key,
+            name,
+            observations: Vec::new(),
+            first_observed_at: tick,
+            last_updated_at: tick,
+        }
+    }
+
+    /// Append an observation and update the `last_updated_at` timestamp.
+    ///
+    /// The observation's `recorded_at` tick is used as the new
+    /// `last_updated_at` value, so callers must ensure observations are
+    /// appended in monotonically non-decreasing tick order.
+    pub fn add_observation(&mut self, observation: Observation) {
+        self.last_updated_at = observation.recorded_at;
+        self.observations.push(observation);
+    }
+
+    /// Return all observations matching a given category, in recorded order.
+    pub fn observations_by_category(&self, category: &ObservationCategory) -> Vec<&Observation> {
+        self.observations
+            .iter()
+            .filter(|o| &o.category == category)
+            .collect()
+    }
+}
+
+/// The player's journal — accumulates all observations about every subject
+/// the player has investigated.
+///
+/// Keyed by [`JournalKey`] so lookups are O(log n) and iteration order is
+/// deterministic (important for save/load reproducibility and test stability).
+#[derive(Component, Default, Clone, Debug, Serialize, Deserialize)]
+pub struct NewJournal {
+    /// All journal entries, keyed by subject identity.
+    ///
+    /// Serialized as a list of entries (not a JSON object) because
+    /// [`JournalKey`] is an enum and cannot serve as a JSON map key.
+    #[serde(with = "journal_entries_serde")]
+    pub entries: BTreeMap<JournalKey, JournalEntry>,
+}
+
+/// Serialize/deserialize a `BTreeMap<JournalKey, JournalEntry>` as a
+/// `Vec<JournalEntry>`. Each entry already carries its key, so the vec
+/// representation is lossless and avoids the JSON "keys must be strings"
+/// limitation.
+mod journal_entries_serde {
+    use super::*;
+    use serde::de::Deserializer;
+    use serde::ser::Serializer;
+
+    pub fn serialize<S: Serializer>(
+        map: &BTreeMap<JournalKey, JournalEntry>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        let entries: Vec<&JournalEntry> = map.values().collect();
+        entries.serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<BTreeMap<JournalKey, JournalEntry>, D::Error> {
+        let entries: Vec<JournalEntry> = Vec::deserialize(deserializer)?;
+        Ok(entries.into_iter().map(|e| (e.key.clone(), e)).collect())
+    }
+}
+
+impl NewJournal {
+    /// Look up or create a journal entry for the given key.
+    ///
+    /// If no entry exists yet, one is created with the provided `name` and
+    /// `tick` as the initial observation timestamp. If an entry already exists,
+    /// the existing entry is returned unchanged (name is *not* overwritten —
+    /// the first observer wins).
+    pub fn ensure_entry(&mut self, key: JournalKey, name: &str, tick: u64) -> &mut JournalEntry {
+        self.entries
+            .entry(key.clone())
+            .or_insert_with(|| JournalEntry::new(key, name.to_string(), tick))
+    }
+
+    /// Record an observation against a subject, creating the entry if needed.
+    ///
+    /// This is the primary write path that future systems (materials, heat,
+    /// fabrication, navigation, trade, language) use to push knowledge into
+    /// the journal.
+    pub fn record(&mut self, key: JournalKey, name: &str, observation: Observation) {
+        let entry = self.ensure_entry(key, name, observation.recorded_at);
+        entry.add_observation(observation);
+    }
+}
+
+// ── Legacy journal structs (POC — will be removed by migration stories) ─
+
 #[derive(Component, Default)]
-struct Journal {
+struct LegacyJournal {
     fabrication_log: Vec<String>,
-    entries: BTreeMap<u64, JournalEntry>,
+    entries: BTreeMap<u64, LegacyJournalEntry>,
 }
 
 #[derive(Clone, Debug, Default)]
-struct JournalEntry {
+struct LegacyJournalEntry {
     name: String,
     surface_observations: Vec<String>,
     thermal_observation: Option<String>,
@@ -169,12 +292,14 @@ struct JournalEntry {
     fabrication_history: Vec<String>,
 }
 
-impl Journal {
-    fn ensure_entry(&mut self, seed: u64, name: &str) -> &mut JournalEntry {
-        self.entries.entry(seed).or_insert_with(|| JournalEntry {
-            name: name.to_string(),
-            ..default()
-        })
+impl LegacyJournal {
+    fn ensure_entry(&mut self, seed: u64, name: &str) -> &mut LegacyJournalEntry {
+        self.entries
+            .entry(seed)
+            .or_insert_with(|| LegacyJournalEntry {
+                name: name.to_string(),
+                ..default()
+            })
     }
 }
 
@@ -198,7 +323,7 @@ fn attach_journal_to_player(mut commands: Commands, player_query: Query<Entity, 
     let Ok(player) = player_query.single() else {
         return;
     };
-    commands.entity(player).insert(Journal::default());
+    commands.entity(player).insert(LegacyJournal::default());
 }
 
 fn spawn_journal_ui(mut commands: Commands) {
@@ -262,7 +387,7 @@ fn toggle_journal_visibility(
 
 fn apply_encounter_records(
     mut reader: MessageReader<RecordEncounter>,
-    mut player_query: Query<&mut Journal, With<Player>>,
+    mut player_query: Query<&mut LegacyJournal, With<Player>>,
 ) {
     let Ok(mut journal) = player_query.single_mut() else {
         return;
@@ -281,7 +406,7 @@ fn apply_encounter_records(
 
 fn apply_fabrication_records(
     mut reader: MessageReader<RecordFabrication>,
-    mut player_query: Query<&mut Journal, With<Player>>,
+    mut player_query: Query<&mut LegacyJournal, With<Player>>,
 ) {
     let Ok(mut journal) = player_query.single_mut() else {
         return;
@@ -314,7 +439,7 @@ fn apply_fabrication_records(
 
 fn apply_thermal_records(
     mut reader: MessageReader<RecordThermalObservation>,
-    mut player_query: Query<&mut Journal, With<Player>>,
+    mut player_query: Query<&mut LegacyJournal, With<Player>>,
 ) {
     let Ok(mut journal) = player_query.single_mut() else {
         return;
@@ -331,7 +456,7 @@ fn apply_thermal_records(
 
 fn apply_weight_records(
     mut reader: MessageReader<RecordWeightObservation>,
-    mut player_query: Query<&mut Journal, With<Player>>,
+    mut player_query: Query<&mut LegacyJournal, With<Player>>,
 ) {
     let Ok(mut journal) = player_query.single_mut() else {
         return;
@@ -347,7 +472,7 @@ fn apply_weight_records(
 
 fn render_journal(
     state: Res<JournalUiState>,
-    player_query: Query<&Journal, With<Player>>,
+    player_query: Query<&LegacyJournal, With<Player>>,
     mut panel_query: Query<&mut Visibility, With<JournalPanel>>,
     mut text_query: Query<&mut Text, With<JournalText>>,
 ) {
@@ -372,7 +497,7 @@ fn render_journal(
     text.0 = build_journal_text(journal);
 }
 
-fn build_journal_text(journal: &Journal) -> String {
+fn build_journal_text(journal: &LegacyJournal) -> String {
     if journal.entries.is_empty() {
         return "Journal\n\nNo observations yet.".to_string();
     }
@@ -387,7 +512,7 @@ fn build_journal_text(journal: &Journal) -> String {
         }
     }
 
-    let mut entries: Vec<&JournalEntry> = journal.entries.values().collect();
+    let mut entries: Vec<&LegacyJournalEntry> = journal.entries.values().collect();
     entries.sort_by(|a, b| a.name.cmp(&b.name));
 
     for entry in entries {
@@ -464,7 +589,7 @@ mod tests {
 
     #[test]
     fn journal_omits_unknown_properties() {
-        let mut journal = Journal::default();
+        let mut journal = LegacyJournal::default();
         let entry = journal.ensure_entry(1, "Ferrite");
         entry.surface_observations.push("Weight: Heavy".into());
 
@@ -475,7 +600,7 @@ mod tests {
 
     #[test]
     fn journal_includes_fabrication_history() {
-        let mut journal = Journal::default();
+        let mut journal = LegacyJournal::default();
         journal
             .fabrication_log
             .push("Combined Ferrite + Silite -> Neoite".into());
@@ -491,7 +616,7 @@ mod tests {
 
     #[test]
     fn journal_shows_thermal_observation_when_present() {
-        let mut journal = Journal::default();
+        let mut journal = LegacyJournal::default();
         let entry = journal.ensure_entry(3, "TestMat");
         entry.thermal_observation = Some("Reliably hold together under heat".into());
 
@@ -556,7 +681,7 @@ mod tests {
 
     #[test]
     fn journal_shows_weight_observation_only_when_present() {
-        let mut journal = Journal::default();
+        let mut journal = LegacyJournal::default();
         let entry = journal.ensure_entry(4, "Ferrite");
         entry
             .surface_observations
@@ -570,5 +695,223 @@ mod tests {
 
         let with_weight = build_journal_text(&journal);
         assert!(with_weight.contains("Carried: Heavy but manageable"));
+    }
+
+    // ── New data model tests ────────────────────────────────────────────
+
+    #[test]
+    fn journal_entry_new_sets_timestamps() {
+        let key = JournalKey::Material { seed: 1 };
+        let entry = JournalEntry::new(key.clone(), "Ferrite".into(), 100);
+        assert_eq!(entry.key, key);
+        assert_eq!(entry.name, "Ferrite");
+        assert!(entry.observations.is_empty());
+        assert_eq!(entry.first_observed_at, 100);
+        assert_eq!(entry.last_updated_at, 100);
+    }
+
+    #[test]
+    fn journal_entry_add_observation_updates_timestamp() {
+        let key = JournalKey::Material { seed: 1 };
+        let mut entry = JournalEntry::new(key, "Ferrite".into(), 10);
+
+        entry.add_observation(Observation {
+            category: ObservationCategory::SurfaceAppearance,
+            confidence: ConfidenceLevel::Tentative,
+            description: "Warm rust tone".into(),
+            recorded_at: 20,
+        });
+
+        assert_eq!(entry.observations.len(), 1);
+        assert_eq!(entry.first_observed_at, 10);
+        assert_eq!(entry.last_updated_at, 20);
+    }
+
+    #[test]
+    fn journal_entry_accumulates_multiple_observations() {
+        let key = JournalKey::Material { seed: 1 };
+        let mut entry = JournalEntry::new(key, "Ferrite".into(), 10);
+
+        entry.add_observation(Observation {
+            category: ObservationCategory::SurfaceAppearance,
+            confidence: ConfidenceLevel::Tentative,
+            description: "Warm rust tone".into(),
+            recorded_at: 10,
+        });
+        entry.add_observation(Observation {
+            category: ObservationCategory::ThermalBehavior,
+            confidence: ConfidenceLevel::Observed,
+            description: "Holds together under heat".into(),
+            recorded_at: 50,
+        });
+        entry.add_observation(Observation {
+            category: ObservationCategory::Weight,
+            confidence: ConfidenceLevel::Tentative,
+            description: "Heavy".into(),
+            recorded_at: 55,
+        });
+
+        assert_eq!(entry.observations.len(), 3);
+        assert_eq!(entry.last_updated_at, 55);
+    }
+
+    #[test]
+    fn journal_entry_observations_by_category() {
+        let key = JournalKey::Material { seed: 1 };
+        let mut entry = JournalEntry::new(key, "Ferrite".into(), 10);
+
+        entry.add_observation(Observation {
+            category: ObservationCategory::SurfaceAppearance,
+            confidence: ConfidenceLevel::Tentative,
+            description: "Warm rust tone".into(),
+            recorded_at: 10,
+        });
+        entry.add_observation(Observation {
+            category: ObservationCategory::ThermalBehavior,
+            confidence: ConfidenceLevel::Observed,
+            description: "Holds together under heat".into(),
+            recorded_at: 20,
+        });
+        entry.add_observation(Observation {
+            category: ObservationCategory::SurfaceAppearance,
+            confidence: ConfidenceLevel::Observed,
+            description: "Slightly rough texture".into(),
+            recorded_at: 30,
+        });
+
+        let surface = entry.observations_by_category(&ObservationCategory::SurfaceAppearance);
+        assert_eq!(surface.len(), 2);
+        assert_eq!(surface[0].description, "Warm rust tone");
+        assert_eq!(surface[1].description, "Slightly rough texture");
+
+        let thermal = entry.observations_by_category(&ObservationCategory::ThermalBehavior);
+        assert_eq!(thermal.len(), 1);
+
+        let weight = entry.observations_by_category(&ObservationCategory::Weight);
+        assert!(weight.is_empty());
+    }
+
+    #[test]
+    fn new_journal_ensure_entry_creates_and_retrieves() {
+        let mut journal = NewJournal::default();
+        let key = JournalKey::Material { seed: 42 };
+
+        journal.ensure_entry(key.clone(), "Ferrite", 100);
+        journal.ensure_entry(key.clone(), "Ignored Name", 200);
+
+        assert_eq!(journal.entries.len(), 1);
+        let entry = journal.entries.get(&key).expect("entry should exist");
+        // First name wins.
+        assert_eq!(entry.name, "Ferrite");
+        // Timestamps unchanged by second ensure_entry call.
+        assert_eq!(entry.first_observed_at, 100);
+    }
+
+    #[test]
+    fn new_journal_record_accumulates_observations() {
+        let mut journal = NewJournal::default();
+        let key = JournalKey::Material { seed: 42 };
+
+        journal.record(
+            key.clone(),
+            "Ferrite",
+            Observation {
+                category: ObservationCategory::SurfaceAppearance,
+                confidence: ConfidenceLevel::Tentative,
+                description: "Warm rust tone".into(),
+                recorded_at: 10,
+            },
+        );
+        journal.record(
+            key.clone(),
+            "Ferrite",
+            Observation {
+                category: ObservationCategory::ThermalBehavior,
+                confidence: ConfidenceLevel::Observed,
+                description: "Holds together under heat".into(),
+                recorded_at: 50,
+            },
+        );
+
+        let entry = journal.entries.get(&key).expect("entry should exist");
+        assert_eq!(entry.observations.len(), 2);
+        assert_eq!(entry.first_observed_at, 10);
+        assert_eq!(entry.last_updated_at, 50);
+    }
+
+    #[test]
+    fn new_journal_different_keys_coexist() {
+        let mut journal = NewJournal::default();
+        let mat_key = JournalKey::Material { seed: 1 };
+        let fab_key = JournalKey::Fabrication { output_seed: 2 };
+
+        journal.record(
+            mat_key.clone(),
+            "Ferrite",
+            Observation {
+                category: ObservationCategory::SurfaceAppearance,
+                confidence: ConfidenceLevel::Tentative,
+                description: "Warm rust tone".into(),
+                recorded_at: 10,
+            },
+        );
+        journal.record(
+            fab_key.clone(),
+            "Neoite",
+            Observation {
+                category: ObservationCategory::FabricationResult,
+                confidence: ConfidenceLevel::Confident,
+                description: "Combined Ferrite + Silite -> Neoite".into(),
+                recorded_at: 20,
+            },
+        );
+
+        assert_eq!(journal.entries.len(), 2);
+        assert!(journal.entries.contains_key(&mat_key));
+        assert!(journal.entries.contains_key(&fab_key));
+    }
+
+    #[test]
+    fn new_journal_serde_round_trip() {
+        let mut journal = NewJournal::default();
+        journal.record(
+            JournalKey::Material { seed: 42 },
+            "Ferrite",
+            Observation {
+                category: ObservationCategory::SurfaceAppearance,
+                confidence: ConfidenceLevel::Tentative,
+                description: "Warm rust tone".into(),
+                recorded_at: 10,
+            },
+        );
+        journal.record(
+            JournalKey::Fabrication { output_seed: 99 },
+            "Neoite",
+            Observation {
+                category: ObservationCategory::FabricationResult,
+                confidence: ConfidenceLevel::Confident,
+                description: "Combined Ferrite + Silite -> Neoite".into(),
+                recorded_at: 50,
+            },
+        );
+
+        let json = serde_json::to_string(&journal).expect("NewJournal should serialize to JSON");
+        let deserialized: NewJournal =
+            serde_json::from_str(&json).expect("NewJournal should deserialize from JSON");
+
+        assert_eq!(deserialized.entries.len(), 2);
+        let ferrite = deserialized
+            .entries
+            .get(&JournalKey::Material { seed: 42 })
+            .expect("Ferrite entry should exist");
+        assert_eq!(ferrite.name, "Ferrite");
+        assert_eq!(ferrite.observations.len(), 1);
+        assert_eq!(ferrite.first_observed_at, 10);
+    }
+
+    #[test]
+    fn new_journal_empty_default() {
+        let journal = NewJournal::default();
+        assert!(journal.entries.is_empty());
     }
 }
