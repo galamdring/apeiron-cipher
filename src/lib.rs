@@ -17,6 +17,7 @@ pub mod carry_feedback;
 pub mod combination;
 #[allow(missing_docs)]
 pub mod debug_overlay;
+pub mod descriptions;
 #[allow(missing_docs)]
 pub mod fabricator;
 #[allow(missing_docs)]

@@ -766,7 +766,9 @@ pub struct PlanetSeed(pub u64);
 /// project these coordinates differently, but the first useful model is simply
 /// "infinite signed grid on X/Z" rather than "special-case only positive
 /// chunks near the room."
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize,
+)]
 pub struct ChunkCoord {
     pub x: i32,
     pub z: i32,

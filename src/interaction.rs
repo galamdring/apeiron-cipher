@@ -21,11 +21,14 @@ use bevy::picking::mesh_picking::ray_cast::{MeshRayCast, MeshRayCastSettings, Ra
 use bevy::prelude::*;
 
 use crate::carry::{CarryState, ObserveWeight, StashHeldForPickup};
+use crate::descriptions::{
+    describe_color, describe_density, describe_thermal_observation, describe_value,
+};
 use crate::fabricator::{ActivateIntent, InputSlot, OutputSlot};
 use crate::input::InputAction;
-use crate::journal::RecordEncounter;
+use crate::journal::{JournalKey, Observation, ObservationCategory, RecordObservation};
 use crate::materials::{GameMaterial, MATERIAL_SURFACE_GAP, MaterialObject, PropertyVisibility};
-use crate::observation::{ConfidenceTracker, describe_thermal_observation};
+use crate::observation::{ConfidenceLevel, ConfidenceTracker};
 use crate::player::{Player, PlayerCamera, cursor_is_captured};
 use crate::scene::{PlayerSceneConfig, Surface};
 use crate::world_generation::{PlanetSurface, WorldGenerationConfig, WorldProfile};
@@ -148,7 +151,7 @@ fn update_interaction_target(
     mut ray_cast: MeshRayCast,
     material_query: Query<&GameMaterial, With<MaterialObject>>,
     held_query: Query<(), With<HeldItem>>,
-    mut encounter_writer: MessageWriter<RecordEncounter>,
+    mut encounter_writer: MessageWriter<RecordObservation>,
 ) {
     let previous_target = target.entity;
     target.entity = None;
@@ -183,8 +186,21 @@ fn update_interaction_target(
         && let Some(entity) = target.entity
         && let Ok(material) = material_query.get(entity)
     {
-        encounter_writer.write(RecordEncounter {
-            material: material.clone(),
+        encounter_writer.write(RecordObservation {
+            key: JournalKey::Material {
+                seed: material.seed,
+            },
+            name: material.name.clone(),
+            observation: Observation {
+                category: ObservationCategory::SurfaceAppearance,
+                confidence: ConfidenceLevel::Tentative,
+                description: format!(
+                    "Color: {}\nWeight: {}",
+                    describe_color(&material.color),
+                    describe_density(material.density.value)
+                ),
+                recorded_at: 0,
+            },
         });
     }
 }
@@ -810,45 +826,6 @@ fn update_examine_panel(
     text.0 = build_examine_text(mat, &tracker);
 }
 
-// ── Property description ─────────────────────────────────────────────────
-
-/// Converts a normalised 0–1 property value into a descriptive word.
-fn describe_value(value: f32) -> &'static str {
-    if value < 0.15 {
-        "Negligible"
-    } else if value < 0.3 {
-        "Very low"
-    } else if value < 0.45 {
-        "Low"
-    } else if value < 0.55 {
-        "Moderate"
-    } else if value < 0.7 {
-        "High"
-    } else if value < 0.85 {
-        "Very high"
-    } else {
-        "Extreme"
-    }
-}
-
-fn describe_density(value: f32) -> &'static str {
-    if value < 0.15 {
-        "Almost weightless"
-    } else if value < 0.3 {
-        "Very light"
-    } else if value < 0.45 {
-        "Light"
-    } else if value < 0.55 {
-        "Medium weight"
-    } else if value < 0.7 {
-        "Heavy"
-    } else if value < 0.85 {
-        "Very heavy"
-    } else {
-        "Extremely dense"
-    }
-}
-
 fn build_examine_text(mat: &GameMaterial, tracker: &ConfidenceTracker) -> String {
     let mut lines = vec![mat.name.clone()];
     lines.push(String::new());
@@ -922,28 +899,6 @@ mod tests {
             planet_surface_diameter: 10,
             chunk_size_world_units: 45.0,
         }
-    }
-
-    #[test]
-    fn describe_value_covers_full_range() {
-        assert_eq!(describe_value(0.0), "Negligible");
-        assert_eq!(describe_value(0.2), "Very low");
-        assert_eq!(describe_value(0.35), "Low");
-        assert_eq!(describe_value(0.5), "Moderate");
-        assert_eq!(describe_value(0.6), "High");
-        assert_eq!(describe_value(0.75), "Very high");
-        assert_eq!(describe_value(0.9), "Extreme");
-    }
-
-    #[test]
-    fn describe_density_covers_full_range() {
-        assert_eq!(describe_density(0.1), "Almost weightless");
-        assert_eq!(describe_density(0.25), "Very light");
-        assert_eq!(describe_density(0.4), "Light");
-        assert_eq!(describe_density(0.5), "Medium weight");
-        assert_eq!(describe_density(0.65), "Heavy");
-        assert_eq!(describe_density(0.78), "Very heavy");
-        assert_eq!(describe_density(0.95), "Extremely dense");
     }
 
     fn test_material() -> GameMaterial {

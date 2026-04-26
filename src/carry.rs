@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::input::InputAction;
 use crate::interaction::{HOLD_OFFSET, HeldItem};
-use crate::journal::RecordWeightObservation;
+use crate::journal::{JournalKey, Observation, ObservationCategory, RecordObservation};
 use crate::materials::{GameMaterial, MaterialObject};
 use crate::observation::{ConfidenceLevel, ConfidenceTracker};
 use crate::player::{Player, PlayerCamera, cursor_is_captured};
@@ -1172,7 +1172,7 @@ pub fn record_weight_observation(
     carry_strength: f32,
     config: &CarryConfig,
     tracker: &mut ConfidenceTracker,
-    journal_writer: &mut MessageWriter<RecordWeightObservation>,
+    journal_writer: &mut MessageWriter<RecordObservation>,
 ) {
     tracker.record(material.seed, "weight");
     let confidence = tracker.level(material.seed, "weight");
@@ -1182,10 +1182,17 @@ pub fn record_weight_observation(
         confidence,
         &config.weight_descriptions,
     );
-    journal_writer.write(RecordWeightObservation {
-        seed: material.seed,
+    journal_writer.write(RecordObservation {
+        key: JournalKey::Material {
+            seed: material.seed,
+        },
         name: material.name.clone(),
-        description,
+        observation: Observation {
+            category: ObservationCategory::Weight,
+            confidence,
+            description,
+            recorded_at: 0,
+        },
     });
 }
 
@@ -1227,7 +1234,7 @@ fn process_stash_intent(
     mut reader: MessageReader<StashIntent>,
     mut weight_writer: MessageWriter<CarryWeightChanged>,
     mut reject_writer: MessageWriter<CarryActionRejected>,
-    mut journal_writer: MessageWriter<RecordWeightObservation>,
+    mut journal_writer: MessageWriter<RecordObservation>,
     mut tracker: ResMut<ConfidenceTracker>,
     config: Res<CarryConfig>,
     mut player_query: Query<(&mut CarryState, &CarryStrength), With<Player>>,
@@ -1275,7 +1282,7 @@ fn process_stash_held_for_pickup(
     mut commands: Commands,
     mut reader: MessageReader<StashHeldForPickup>,
     mut weight_writer: MessageWriter<CarryWeightChanged>,
-    mut journal_writer: MessageWriter<RecordWeightObservation>,
+    mut journal_writer: MessageWriter<RecordObservation>,
     mut tracker: ResMut<ConfidenceTracker>,
     config: Res<CarryConfig>,
     mut player_query: Query<(&mut CarryState, &CarryStrength), With<Player>>,
@@ -1313,7 +1320,7 @@ fn process_stash_held_for_pickup(
 /// Handle standalone weight observation requests from interaction (pickup without stash).
 fn process_observe_weight(
     mut reader: MessageReader<ObserveWeight>,
-    mut journal_writer: MessageWriter<RecordWeightObservation>,
+    mut journal_writer: MessageWriter<RecordObservation>,
     mut tracker: ResMut<ConfidenceTracker>,
     config: Res<CarryConfig>,
     player_query: Query<&CarryStrength, With<Player>>,
@@ -1341,7 +1348,7 @@ fn process_cycle_carry_intent(
     mut reader: MessageReader<CycleCarryIntent>,
     mut weight_writer: MessageWriter<CarryWeightChanged>,
     mut reject_writer: MessageWriter<CarryActionRejected>,
-    mut journal_writer: MessageWriter<RecordWeightObservation>,
+    mut journal_writer: MessageWriter<RecordObservation>,
     mut tracker: ResMut<ConfidenceTracker>,
     config: Res<CarryConfig>,
     mut player_query: Query<(&mut CarryState, &CarryStrength), With<Player>>,

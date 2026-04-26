@@ -16,6 +16,7 @@
 use std::collections::HashMap;
 
 use bevy::prelude::*;
+use serde::{Deserialize, Serialize};
 
 pub struct ObservationPlugin;
 
@@ -30,7 +31,7 @@ impl Plugin for ObservationPlugin {
 /// Qualitative confidence level derived from observation count.
 /// Used by the examine panel in the next PR to select descriptor language.
 #[allow(dead_code)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum ConfidenceLevel {
     /// One observation — tentative language.
     Tentative,
@@ -50,33 +51,6 @@ impl ConfidenceLevel {
             2..=3 => ConfidenceLevel::Observed,
             _ => ConfidenceLevel::Confident,
         }
-    }
-}
-
-fn describe_thermal_behavior(value: f32) -> &'static str {
-    if value < 0.25 {
-        "soften quickly under heat"
-    } else if value < 0.5 {
-        "change noticeably under heat"
-    } else if value < 0.75 {
-        "hold together under heat"
-    } else {
-        "barely react to heat"
-    }
-}
-
-pub fn describe_thermal_observation(value: f32, confidence: ConfidenceLevel) -> String {
-    let behavior = describe_thermal_behavior(value);
-    match confidence {
-        ConfidenceLevel::Tentative => format!("Seemed to {behavior}"),
-        ConfidenceLevel::Observed => {
-            let mut chars = behavior.chars();
-            let Some(first) = chars.next() else {
-                return String::new();
-            };
-            format!("{}{}", first.to_uppercase(), chars.as_str())
-        }
-        ConfidenceLevel::Confident => format!("Reliably {behavior}"),
     }
 }
 

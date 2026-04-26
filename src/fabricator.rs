@@ -14,7 +14,7 @@
 use bevy::prelude::*;
 
 use crate::combination::CombinationRules;
-use crate::journal::RecordFabrication;
+use crate::journal::{JournalKey, Observation, ObservationCategory, RecordObservation};
 use crate::materials::{
     GameMaterial, MATERIAL_SURFACE_GAP, MaterialCatalog, MaterialObject, MaterialProperty,
     PropertyVisibility,
@@ -184,7 +184,7 @@ fn tick_processing(
     time: Res<Time>,
     cfg: Res<FabricatorSceneConfig>,
     rules: Res<CombinationRules>,
-    _journal_writer: MessageWriter<RecordFabrication>,
+    mut journal_writer: MessageWriter<RecordObservation>,
     mut state: ResMut<FabricatorState>,
     mut catalog: ResMut<MaterialCatalog>,
     mut slots: Query<&mut InputSlot>,
@@ -264,6 +264,26 @@ fn tick_processing(
         .id();
 
     out_slot.material = Some(output_entity);
+
+    // Record the fabrication result in the player's journal so the player
+    // accumulates knowledge about what combinations produce which outputs.
+    let input_names: Vec<&str> = input_mats.iter().map(|m| m.name.as_str()).collect();
+    let description = format!(
+        "Combined {} and {} to produce {}.",
+        input_names[0], input_names[1], output_mat.name
+    );
+    journal_writer.write(RecordObservation {
+        key: JournalKey::Fabrication {
+            output_seed: output_mat.seed,
+        },
+        name: output_mat.name.clone(),
+        observation: Observation {
+            category: ObservationCategory::FabricationResult,
+            confidence: crate::observation::ConfidenceLevel::Confident,
+            description,
+            recorded_at: 0,
+        },
+    });
 
     info!("Fabrication complete — produced '{}'", output_mat.name);
     *state = FabricatorState::Idle;
