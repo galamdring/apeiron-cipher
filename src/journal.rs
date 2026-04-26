@@ -2905,6 +2905,210 @@ mod tests {
     }
 
     #[test]
+    fn detail_panel_shows_correct_observations_for_selected_entry() {
+        let mut journal = Journal::default();
+
+        // Create three entries with distinct observations.
+        journal.record(
+            JournalKey::Material { seed: 1 },
+            "Ferrite",
+            Observation {
+                category: ObservationCategory::SurfaceAppearance,
+                confidence: ConfidenceLevel::Tentative,
+                description: "Warm rust tone".into(),
+                recorded_at: 1,
+            },
+        );
+        journal.record(
+            JournalKey::Material { seed: 2 },
+            "Silite",
+            Observation {
+                category: ObservationCategory::SurfaceAppearance,
+                confidence: ConfidenceLevel::Observed,
+                description: "Glassy smooth surface".into(),
+                recorded_at: 2,
+            },
+        );
+        journal.record(
+            JournalKey::Material { seed: 3 },
+            "Neoite",
+            Observation {
+                category: ObservationCategory::Weight,
+                confidence: ConfidenceLevel::Confident,
+                description: "Surprisingly light".into(),
+                recorded_at: 3,
+            },
+        );
+
+        let entries: Vec<&JournalEntry> = {
+            let mut v: Vec<_> = journal.entries.values().collect();
+            v.sort_by(|a, b| a.name.cmp(&b.name));
+            v
+        };
+        // Sorted alphabetically: Ferrite, Neoite, Silite
+        assert_eq!(entries[0].name, "Ferrite");
+        assert_eq!(entries[1].name, "Neoite");
+        assert_eq!(entries[2].name, "Silite");
+
+        // Select first entry (Ferrite) — detail should show Ferrite's observations.
+        let state = JournalUiState {
+            visible: true,
+            selected_index: 0,
+            scroll_offset: 0,
+            entries_per_page: 15,
+        };
+        let detail = detail_spans_to_string(&build_detail_spans(&entries, &state));
+        assert!(detail.contains("Ferrite"), "header should be Ferrite");
+        assert!(
+            detail.contains("Warm rust tone"),
+            "should show Ferrite's observation"
+        );
+        assert!(
+            !detail.contains("Glassy smooth surface"),
+            "should not show Silite's observation"
+        );
+        assert!(
+            !detail.contains("Surprisingly light"),
+            "should not show Neoite's observation"
+        );
+
+        // Select second entry (Neoite) — detail should show Neoite's observations.
+        let state = JournalUiState {
+            visible: true,
+            selected_index: 1,
+            scroll_offset: 0,
+            entries_per_page: 15,
+        };
+        let detail = detail_spans_to_string(&build_detail_spans(&entries, &state));
+        assert!(detail.contains("Neoite"), "header should be Neoite");
+        assert!(
+            detail.contains("Surprisingly light"),
+            "should show Neoite's observation"
+        );
+        assert!(
+            !detail.contains("Warm rust tone"),
+            "should not show Ferrite's observation"
+        );
+        assert!(
+            !detail.contains("Glassy smooth surface"),
+            "should not show Silite's observation"
+        );
+
+        // Select third entry (Silite) — detail should show Silite's observations.
+        let state = JournalUiState {
+            visible: true,
+            selected_index: 2,
+            scroll_offset: 0,
+            entries_per_page: 15,
+        };
+        let detail = detail_spans_to_string(&build_detail_spans(&entries, &state));
+        assert!(detail.contains("Silite"), "header should be Silite");
+        assert!(
+            detail.contains("Glassy smooth surface"),
+            "should show Silite's observation"
+        );
+        assert!(
+            !detail.contains("Warm rust tone"),
+            "should not show Ferrite's observation"
+        );
+        assert!(
+            !detail.contains("Surprisingly light"),
+            "should not show Neoite's observation"
+        );
+    }
+
+    #[test]
+    fn detail_panel_shows_all_observations_for_multi_category_entry() {
+        let mut journal = Journal::default();
+        let key = JournalKey::Material { seed: 1 };
+
+        journal.record(
+            key.clone(),
+            "Ferrite",
+            Observation {
+                category: ObservationCategory::SurfaceAppearance,
+                confidence: ConfidenceLevel::Tentative,
+                description: "Warm rust tone".into(),
+                recorded_at: 1,
+            },
+        );
+        journal.record(
+            key.clone(),
+            "Ferrite",
+            Observation {
+                category: ObservationCategory::Weight,
+                confidence: ConfidenceLevel::Observed,
+                description: "Heavy but manageable".into(),
+                recorded_at: 2,
+            },
+        );
+        journal.record(
+            key,
+            "Ferrite",
+            Observation {
+                category: ObservationCategory::SurfaceAppearance,
+                confidence: ConfidenceLevel::Confident,
+                description: "Rough, pitted texture".into(),
+                recorded_at: 3,
+            },
+        );
+
+        // Add a second entry to confirm isolation.
+        journal.record(
+            JournalKey::Material { seed: 2 },
+            "Silite",
+            Observation {
+                category: ObservationCategory::SurfaceAppearance,
+                confidence: ConfidenceLevel::Tentative,
+                description: "Glassy smooth surface".into(),
+                recorded_at: 4,
+            },
+        );
+
+        let entries: Vec<&JournalEntry> = {
+            let mut v: Vec<_> = journal.entries.values().collect();
+            v.sort_by(|a, b| a.name.cmp(&b.name));
+            v
+        };
+
+        // Select Ferrite (index 0).
+        let state = JournalUiState {
+            visible: true,
+            selected_index: 0,
+            scroll_offset: 0,
+            entries_per_page: 15,
+        };
+        let spans = build_detail_spans(&entries, &state);
+        let detail = detail_spans_to_string(&spans);
+
+        // Should contain the header.
+        assert_eq!(spans[0].text, "Ferrite");
+        assert_eq!(spans[0].kind, DetailSpanKind::Header);
+
+        // Should contain both categories' observations.
+        assert!(detail.contains("Surface"), "should have Surface category");
+        assert!(detail.contains("Weight"), "should have Weight category");
+        assert!(
+            detail.contains("Warm rust tone"),
+            "should show first surface observation"
+        );
+        assert!(
+            detail.contains("Rough, pitted texture"),
+            "should show second surface observation"
+        );
+        assert!(
+            detail.contains("Heavy but manageable"),
+            "should show weight observation"
+        );
+
+        // Should not contain Silite's observations.
+        assert!(
+            !detail.contains("Glassy smooth surface"),
+            "should not leak other entry's observations"
+        );
+    }
+
+    #[test]
     fn navigation_clamp_up_from_first_stays_at_first() {
         let mut state = JournalUiState {
             visible: true,
