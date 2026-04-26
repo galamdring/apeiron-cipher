@@ -3753,4 +3753,171 @@ mod tests {
             state.entries_per_page,
         );
     }
+
+    /// With a single-entry journal, every navigation key must leave the
+    /// selection at index 0 — there is nowhere else to go.
+    #[test]
+    fn navigation_bounds_single_entry_journal() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.init_resource::<ButtonInput<KeyCode>>();
+        app.insert_resource(JournalUiState {
+            visible: true,
+            selected_index: 0,
+            scroll_offset: 0,
+            entries_per_page: 15,
+        });
+        app.add_systems(Update, journal_navigation);
+
+        let mut journal = Journal::default();
+        journal.record(
+            JournalKey::Material { seed: 0 },
+            "Sole-Material",
+            Observation {
+                category: ObservationCategory::SurfaceAppearance,
+                confidence: ConfidenceLevel::Tentative,
+                description: "Only entry".to_string(),
+                recorded_at: 0,
+            },
+        );
+        app.world_mut().spawn((Player, journal));
+
+        let keys_to_test = [
+            KeyCode::ArrowDown,
+            KeyCode::ArrowUp,
+            KeyCode::PageDown,
+            KeyCode::PageUp,
+            KeyCode::Home,
+            KeyCode::End,
+        ];
+
+        for key in keys_to_test {
+            app.world_mut()
+                .resource_mut::<ButtonInput<KeyCode>>()
+                .clear();
+            app.world_mut()
+                .resource_mut::<ButtonInput<KeyCode>>()
+                .press(key);
+            app.update();
+
+            let state = app.world().resource::<JournalUiState>();
+            assert_eq!(
+                state.selected_index, 0,
+                "{key:?} must not move selection past the only entry"
+            );
+            assert_eq!(
+                state.scroll_offset, 0,
+                "{key:?} must not shift scroll offset with a single entry"
+            );
+        }
+    }
+
+    /// PageDown at the last entry and PageUp at the first entry must not
+    /// exceed bounds when exercised through the full `journal_navigation`
+    /// system.
+    #[test]
+    fn navigation_bounds_page_keys_at_extremes() {
+        let entry_count: usize = 20;
+
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.init_resource::<ButtonInput<KeyCode>>();
+        app.insert_resource(JournalUiState {
+            visible: true,
+            selected_index: 0,
+            scroll_offset: 0,
+            entries_per_page: 5,
+        });
+        app.add_systems(Update, journal_navigation);
+
+        let mut journal = Journal::default();
+        for i in 0..entry_count {
+            journal.record(
+                JournalKey::Material {
+                    seed: i.try_into().expect("entry index fits in u64"),
+                },
+                &format!("Mat-{i:03}"),
+                Observation {
+                    category: ObservationCategory::SurfaceAppearance,
+                    confidence: ConfidenceLevel::Tentative,
+                    description: format!("Obs {i}"),
+                    recorded_at: 0,
+                },
+            );
+        }
+        app.world_mut().spawn((Player, journal));
+
+        // ── PageUp from index 0: must stay at 0 ────────────────────────
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::PageUp);
+        app.update();
+
+        let state = app.world().resource::<JournalUiState>();
+        assert_eq!(
+            state.selected_index, 0,
+            "PageUp at first entry must not go below zero"
+        );
+        assert_eq!(state.scroll_offset, 0);
+
+        // ── Jump to last entry via End ──────────────────────────────────
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .clear();
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::End);
+        app.update();
+
+        let state = app.world().resource::<JournalUiState>();
+        assert_eq!(state.selected_index, entry_count - 1);
+
+        // ── PageDown from last entry: must stay at last ─────────────────
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .clear();
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::PageDown);
+        app.update();
+
+        let state = app.world().resource::<JournalUiState>();
+        assert_eq!(
+            state.selected_index,
+            entry_count - 1,
+            "PageDown at last entry must not exceed bounds"
+        );
+        assert!(
+            state.selected_index >= state.scroll_offset
+                && state.selected_index < state.scroll_offset + state.entries_per_page,
+            "scroll_offset must keep selection visible after PageDown at end"
+        );
+    }
+
+    /// When `selected_index` starts beyond the actual entry count (e.g.,
+    /// entries were removed), `clamp_to_entry_count` must pull it back
+    /// within valid bounds.
+    #[test]
+    fn clamp_corrects_out_of_range_selected_index() {
+        let mut state = JournalUiState {
+            visible: true,
+            selected_index: 25,
+            scroll_offset: 20,
+            entries_per_page: 5,
+        };
+        state.clamp_to_entry_count(10);
+        assert_eq!(
+            state.selected_index, 9,
+            "selected_index must clamp to last valid index"
+        );
+        assert!(
+            state.selected_index >= state.scroll_offset
+                && state.selected_index < state.scroll_offset + state.entries_per_page,
+            "scroll_offset must adjust to keep clamped selection visible \
+             (selected={}, scroll_offset={}, entries_per_page={})",
+            state.selected_index,
+            state.scroll_offset,
+            state.entries_per_page,
+        );
+    }
 }
