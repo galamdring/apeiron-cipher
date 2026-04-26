@@ -20,7 +20,7 @@
 use bevy::picking::mesh_picking::ray_cast::{MeshRayCast, MeshRayCastSettings, RayCastVisibility};
 use bevy::prelude::*;
 
-use crate::carry::{CarryState, ObserveWeight, StashHeldForPickup};
+use crate::carry::{CarryConfig, CarryState, ObserveWeight, StashHeldForPickup};
 use crate::descriptions::{
     describe_color, describe_density, describe_thermal_observation, describe_value,
 };
@@ -36,7 +36,6 @@ use crate::world_generation::{PlanetSurface, WorldGenerationConfig, WorldProfile
 use leafwing_input_manager::prelude::*;
 
 const INTERACTION_RANGE: f32 = 3.0;
-pub const HOLD_OFFSET: Vec3 = Vec3::new(0.2, -0.15, -0.5);
 
 pub struct InteractionPlugin;
 
@@ -324,6 +323,7 @@ fn process_pickup(
     mut commands: Commands,
     mut reader: MessageReader<PickupIntent>,
     target: Res<InteractionTarget>,
+    carry_config: Res<CarryConfig>,
     mut stash_writer: MessageWriter<StashHeldForPickup>,
     mut observe_writer: MessageWriter<ObserveWeight>,
     player_query: Query<&CarryState, With<Player>>,
@@ -378,7 +378,7 @@ fn process_pickup(
             .entity(target_entity)
             .insert(HeldItem)
             .set_parent_in_place(camera_entity)
-            .insert(Transform::from_translation(HOLD_OFFSET));
+            .insert(Transform::from_translation(carry_config.hold_offset_vec3()));
     }
 }
 
@@ -685,9 +685,13 @@ fn floor_drop_position(
 
 // ── Held item tracking ───────────────────────────────────────────────────
 
-fn update_held_position(mut held_query: Query<&mut Transform, With<HeldItem>>) {
+fn update_held_position(
+    carry_config: Res<CarryConfig>,
+    mut held_query: Query<&mut Transform, With<HeldItem>>,
+) {
+    let offset = carry_config.hold_offset_vec3();
     for mut tf in &mut held_query {
-        tf.translation = HOLD_OFFSET;
+        tf.translation = offset;
         tf.rotation = Quat::IDENTITY;
     }
 }
@@ -1054,6 +1058,7 @@ mod tests {
             .insert_resource(WorldGenerationConfig::default())
             .insert_resource(crate::surface::SurfaceOverrideRegistry::default())
             .insert_resource(PlayerSceneConfig::default())
+            .insert_resource(CarryConfig::default())
             .add_systems(Update, (process_pickup, process_place));
 
         let camera = app

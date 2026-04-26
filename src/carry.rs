@@ -22,7 +22,7 @@ use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::input::InputAction;
-use crate::interaction::{HOLD_OFFSET, HeldItem};
+use crate::interaction::HeldItem;
 use crate::journal::{JournalKey, Observation, ObservationCategory, RecordObservation};
 use crate::materials::{GameMaterial, MaterialObject};
 use crate::observation::{ConfidenceLevel, ConfidenceTracker};
@@ -262,12 +262,9 @@ impl CarryState {
     }
 
     /// Check whether there is room to stash one more material given the current
-    /// weight and capacity rules.
+    /// weight and capacity rules.  Delegates to [`Self::can_accept`].
     pub fn can_stash(&self, material: &GameMaterial) -> bool {
-        if !self.hard_limit_enabled {
-            return true;
-        }
-        (self.current_weight + material.density.value) <= (self.effective_capacity + f32::EPSILON)
+        self.can_accept(material.density.value)
     }
 
     /// Select which carried entity should be returned next when cycling or dropping.
@@ -288,11 +285,14 @@ impl CarryState {
     /// When `hard_limit_enabled` is true, the item is rejected if it would push
     /// `current_weight` above `effective_capacity`. When hard limits are off, the
     /// container always accepts (soft-limit feedback is handled elsewhere).
+    ///
+    /// Includes an `f32::EPSILON` tolerance so that floating-point rounding
+    /// near exact capacity doesn't spuriously reject items.
     pub(crate) fn can_accept(&self, weight: f32) -> bool {
         if !self.hard_limit_enabled {
             return true;
         }
-        self.current_weight + weight <= self.effective_capacity
+        self.current_weight + weight <= self.effective_capacity + f32::EPSILON
     }
 
     /// Remove a carried item by entity without needing the material reference.
@@ -371,6 +371,12 @@ impl CarryDeviceState {
 /// rest of the epic.
 #[derive(Clone, Debug, Serialize, Deserialize, Resource)]
 pub struct CarryConfig {
+    /// Camera-relative offset for held items. Default: `[0.2, -0.15, -0.5]`.
+    ///
+    /// Previously hardcoded as `HOLD_OFFSET` in interaction.rs; now data-driven
+    /// so artists can tweak the hold position without recompiling.
+    #[serde(default = "default_hold_offset")]
+    pub hold_offset: [f32; 3],
     #[serde(default = "default_active_profile")]
     pub active_profile: String,
     #[serde(default = "default_starting_capacity")]
@@ -398,6 +404,7 @@ pub struct CarryConfig {
 impl Default for CarryConfig {
     fn default() -> Self {
         Self {
+            hold_offset: default_hold_offset(),
             active_profile: default_active_profile(),
             starting_capacity: default_starting_capacity(),
             starting_strength: default_starting_strength(),
@@ -411,6 +418,18 @@ impl Default for CarryConfig {
             profiles: CarryProfilesConfig::default(),
         }
     }
+}
+
+impl CarryConfig {
+    /// Convenience accessor that converts the TOML-friendly `[f32; 3]` into a
+    /// `Vec3` for use in transform operations.
+    pub fn hold_offset_vec3(&self) -> Vec3 {
+        Vec3::from_array(self.hold_offset)
+    }
+}
+
+fn default_hold_offset() -> [f32; 3] {
+    [0.2, -0.15, -0.5]
 }
 
 fn default_active_profile() -> String {
@@ -1049,14 +1068,29 @@ fn carry_strength_delta(
     let safe_strength = current_strength.max(0.0);
     match growth_curve.kind {
         CarryGrowthCurveKind::Linear => base,
-        CarryGrowthCurveKind::Logarithmic => base / (1.0 + safe_strength.ln_1p()),
-        CarryGrowthCurveKind::Asymptotic => {
-            let remaining = (growth_curve.max_strength - safe_strength).max(0.0);
+        // Accelerating growth — strength gains are slow when weak and speed up
+        // as the player practices.  Uses a power-curve with a 10 % floor so
+        // the very first lift still yields *some* progress.
+        //
+        // Shape: base × (0.1 + 0.9 × (s/max)²)
+        CarryGrowthCurveKind::Logarithmic => {
             if growth_curve.max_strength <= f32::EPSILON {
-                0.0
-            } else {
-                base * (remaining / growth_curve.max_strength)
+                return 0.0;
             }
+            let t = (safe_strength / growth_curve.max_strength).clamp(0.0, 1.0);
+            base * (0.1 + 0.9 * t * t)
+        }
+        // S-curve growth — slow start *and* slow finish, with the fastest
+        // gains in the middle of the strength range.  This is the "practice
+        // makes perfect … up to a point" curve.
+        //
+        // Shape: base × 4 × t × (1 − t)   (parabola peaking at t = 0.5)
+        CarryGrowthCurveKind::Asymptotic => {
+            if growth_curve.max_strength <= f32::EPSILON {
+                return 0.0;
+            }
+            let t = (safe_strength / growth_curve.max_strength).clamp(0.0, 1.0);
+            base * 4.0 * t * (1.0 - t)
         }
     }
 }
@@ -1099,18 +1133,25 @@ fn compute_effective_capacity(base_capacity: f32, device_state: &CarryDeviceStat
 
 // ── Input → carry intents ────────────────────────────────────────────────
 
+/// Shared guard: returns the player's action state only if cursor is captured.
+fn player_action_if_captured<'a>(
+    player_query: &'a Query<&ActionState<InputAction>, With<Player>>,
+    cursor_options: &bevy::window::CursorOptions,
+) -> Option<&'a ActionState<InputAction>> {
+    if !cursor_is_captured(cursor_options.grab_mode) {
+        return None;
+    }
+    player_query.single().ok()
+}
+
 fn emit_stash_intent(
     player_query: Query<&ActionState<InputAction>, With<Player>>,
     cursor_options: Single<&bevy::window::CursorOptions>,
     mut writer: MessageWriter<StashIntent>,
 ) {
-    if !cursor_is_captured(cursor_options.grab_mode) {
-        return;
-    }
-    let Ok(action) = player_query.single() else {
-        return;
-    };
-    if action.just_pressed(&InputAction::Stash) {
+    if let Some(action) = player_action_if_captured(&player_query, &cursor_options)
+        && action.just_pressed(&InputAction::Stash)
+    {
         writer.write(StashIntent);
     }
 }
@@ -1120,13 +1161,9 @@ fn emit_cycle_carry_intent(
     cursor_options: Single<&bevy::window::CursorOptions>,
     mut writer: MessageWriter<CycleCarryIntent>,
 ) {
-    if !cursor_is_captured(cursor_options.grab_mode) {
-        return;
-    }
-    let Ok(action) = player_query.single() else {
-        return;
-    };
-    if action.just_pressed(&InputAction::CycleCarry) {
+    if let Some(action) = player_action_if_captured(&player_query, &cursor_options)
+        && action.just_pressed(&InputAction::CycleCarry)
+    {
         writer.write(CycleCarryIntent);
     }
 }
@@ -1142,15 +1179,6 @@ fn emit_cycle_carry_intent(
 /// - remove `MaterialObject` because it should no longer behave like a world prop
 /// - add `InCarry` to make the state explicit for later systems
 /// - hide the entity so it stops rendering
-pub fn can_stash_material(carry_state: &CarryState, material: &GameMaterial) -> bool {
-    if !carry_state.hard_limit_enabled {
-        return true;
-    }
-
-    (carry_state.current_weight + material.density.value)
-        <= (carry_state.effective_capacity + f32::EPSILON)
-}
-
 pub fn stash_entity_into_carry(
     commands: &mut Commands,
     carry_state: &mut CarryState,
@@ -1202,7 +1230,12 @@ pub fn record_weight_observation(
 /// interaction loop already understands `HeldItem + MaterialObject`. Reusing that
 /// path keeps Epic 4 from inventing a second representation for "the material in
 /// front of the camera."
-fn move_entity_from_carry_to_hand(commands: &mut Commands, camera_entity: Entity, entity: Entity) {
+fn move_entity_from_carry_to_hand(
+    commands: &mut Commands,
+    camera_entity: Entity,
+    entity: Entity,
+    hold_offset: Vec3,
+) {
     commands
         .entity(entity)
         .remove::<InCarry>()
@@ -1210,7 +1243,7 @@ fn move_entity_from_carry_to_hand(commands: &mut Commands, camera_entity: Entity
         .insert(HeldItem)
         .insert(Visibility::Inherited)
         .set_parent_in_place(camera_entity)
-        .insert(Transform::from_translation(HOLD_OFFSET));
+        .insert(Transform::from_translation(hold_offset));
 }
 
 fn emit_carry_weight_changed(
@@ -1250,11 +1283,7 @@ fn process_stash_intent(
         let Ok((mut carry_state, carry_strength)) = player_query.single_mut() else {
             continue;
         };
-        if !can_stash_material(&carry_state, held_material) {
-            continue;
-        }
-
-        if !carry_state.can_accept(held_material.density.value) {
+        if !carry_state.can_stash(held_material) {
             reject_writer.write(CarryActionRejected {
                 reason: CarryRejectionReason::OverCapacity,
             });
@@ -1380,18 +1409,26 @@ fn process_cycle_carry_intent(
             continue;
         };
 
-        // Capture the current held item before mutating carry so LIFO/FIFO
-        // selection is based on what was already in carry, not the item currently
-        // in the player's hand.
-        let held_item = held_query
+        // Extract held item data before mutating carry state.
+        // Only density is needed for the capacity check; the full &GameMaterial
+        // reference is re-acquired after stashing for the weight observation.
+        let held_info = held_query
             .iter()
             .next()
-            .map(|(entity, material)| (entity, material.clone()));
-        if let Some((held_entity, held_material)) = held_item.as_ref() {
-            if !can_stash_material(&carry_state, held_material) {
+            .map(|(entity, material)| (entity, material.density.value));
+        if let Some((held_entity, held_density)) = held_info {
+            if carry_state.hard_limit_enabled
+                && (carry_state.current_weight + held_density)
+                    > (carry_state.effective_capacity + f32::EPSILON)
+            {
                 continue;
             }
-            stash_entity_into_carry(&mut commands, &mut carry_state, *held_entity, held_material);
+            // Re-acquire the material ref — entity is still alive, query is
+            // still valid since we only mutated CarryState (separate component).
+            let Ok((_, held_material)) = held_query.get(held_entity) else {
+                continue;
+            };
+            stash_entity_into_carry(&mut commands, &mut carry_state, held_entity, held_material);
             record_weight_observation(
                 held_material,
                 carry_strength.current,
@@ -1405,7 +1442,12 @@ fn process_cycle_carry_intent(
             continue;
         };
 
-        move_entity_from_carry_to_hand(&mut commands, camera_entity, next_entity);
+        move_entity_from_carry_to_hand(
+            &mut commands,
+            camera_entity,
+            next_entity,
+            config.hold_offset_vec3(),
+        );
         record_weight_observation(
             next_material,
             carry_strength.current,
@@ -1571,21 +1613,21 @@ exponent = 1.0
     }
 
     #[test]
-    fn can_stash_material_respects_hard_limit_capacity() {
+    fn can_stash_respects_hard_limit_capacity() {
         let material = material_with_density(0.6);
         let mut state = CarryState::new(1.0, true);
         state.current_weight = 0.5;
 
-        assert!(!can_stash_material(&state, &material));
+        assert!(!state.can_stash(&material));
     }
 
     #[test]
-    fn can_stash_material_ignores_capacity_when_hard_limit_disabled() {
+    fn can_stash_ignores_capacity_when_hard_limit_disabled() {
         let material = material_with_density(0.6);
         let mut state = CarryState::new(1.0, false);
         state.current_weight = 0.9;
 
-        assert!(can_stash_material(&state, &material));
+        assert!(state.can_stash(&material));
     }
 
     #[test]
@@ -1707,6 +1749,115 @@ exponent = 1.0
 
         assert!(early > late);
         assert!(late > 0.0);
+    }
+
+    /// Logarithmic growth accelerates with strength — early gains are slower
+    /// than later gains, matching the "practice makes you better" design.
+    #[test]
+    fn logarithmic_growth_accelerates_with_strength() {
+        let curve = CarryGrowthCurveConfig {
+            kind: CarryGrowthCurveKind::Logarithmic,
+            max_strength: 8.0,
+        };
+        let weight = 2.0;
+        let rate = 0.1;
+        let dt = 1.0;
+
+        let at_low = carry_strength_delta(weight, 1.0, rate, &curve, dt);
+        let at_mid = carry_strength_delta(weight, 4.0, rate, &curve, dt);
+        let at_high = carry_strength_delta(weight, 7.0, rate, &curve, dt);
+
+        // Monotonically increasing: low < mid < high.
+        assert!(
+            at_low < at_mid,
+            "growth at strength 1 ({at_low}) should be less than at 4 ({at_mid})"
+        );
+        assert!(
+            at_mid < at_high,
+            "growth at strength 4 ({at_mid}) should be less than at 7 ({at_high})"
+        );
+        // Floor: even at strength=0 there is some growth (10% floor).
+        let at_zero = carry_strength_delta(weight, 0.0, rate, &curve, dt);
+        assert!(
+            at_zero > 0.0,
+            "zero-strength floor should still yield growth"
+        );
+        let base = weight * rate * dt;
+        let expected_floor = base * 0.1;
+        assert!(
+            (at_zero - expected_floor).abs() < f32::EPSILON,
+            "zero-strength growth should be 10% of base"
+        );
+    }
+
+    /// Asymptotic S-curve peaks at midpoint and tapers at both extremes.
+    #[test]
+    fn asymptotic_growth_is_s_curve() {
+        let curve = CarryGrowthCurveConfig {
+            kind: CarryGrowthCurveKind::Asymptotic,
+            max_strength: 8.0,
+        };
+        let weight = 2.0;
+        let rate = 0.1;
+        let dt = 1.0;
+
+        let at_start = carry_strength_delta(weight, 0.0, rate, &curve, dt);
+        let at_mid = carry_strength_delta(weight, 4.0, rate, &curve, dt);
+        let at_end = carry_strength_delta(weight, 8.0, rate, &curve, dt);
+
+        // S-curve: zero at both extremes, peak at midpoint.
+        assert!(
+            at_start.abs() < f32::EPSILON,
+            "growth at strength=0 should be ~0 (was {at_start})"
+        );
+        assert!(
+            at_end.abs() < f32::EPSILON,
+            "growth at strength=max should be ~0 (was {at_end})"
+        );
+        assert!(
+            at_mid > at_start && at_mid > at_end,
+            "midpoint ({at_mid}) should be the peak"
+        );
+        // Peak equals base (parabola normalised to 4×0.5×0.5 = 1.0).
+        let base = weight * rate * dt;
+        assert!(
+            (at_mid - base).abs() < f32::EPSILON,
+            "midpoint growth should equal base rate ({base}), got {at_mid}"
+        );
+    }
+
+    /// All curve kinds return zero when max_strength is zero or negative.
+    #[test]
+    fn growth_curves_zero_max_strength() {
+        for kind in [
+            CarryGrowthCurveKind::Logarithmic,
+            CarryGrowthCurveKind::Asymptotic,
+        ] {
+            let curve = CarryGrowthCurveConfig {
+                kind,
+                max_strength: 0.0,
+            };
+            let result = carry_strength_delta(2.0, 1.0, 0.1, &curve, 1.0);
+            assert!(
+                result.abs() < f32::EPSILON,
+                "{kind:?} with max_strength=0 should return 0, got {result}"
+            );
+        }
+    }
+
+    /// Linear growth is unaffected by strength level.
+    #[test]
+    fn linear_growth_is_constant() {
+        let curve = CarryGrowthCurveConfig {
+            kind: CarryGrowthCurveKind::Linear,
+            max_strength: 8.0,
+        };
+        let at_low = carry_strength_delta(2.0, 1.0, 0.1, &curve, 1.0);
+        let at_high = carry_strength_delta(2.0, 7.0, 0.1, &curve, 1.0);
+        assert!(
+            (at_low - at_high).abs() < f32::EPSILON,
+            "linear growth should be constant regardless of strength"
+        );
     }
 
     /// Parameterized sweep of `evaluate_speed_curve` across the full

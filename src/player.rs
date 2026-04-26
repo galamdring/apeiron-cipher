@@ -70,18 +70,30 @@ fn enforce_eye_height(
     translation.y = standing_y + eye_height;
 }
 
+/// System sets exported by the player plugin for ordering dependencies.
+///
+/// Other plugins that need to run after player spawning (e.g. carry feedback
+/// attaching components to the player entity) should order against
+/// `PlayerSet::Spawn` instead of referencing `spawn_player` directly.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub enum PlayerSet {
+    /// The set containing `spawn_player`. Runs during `Startup`.
+    Spawn,
+}
+
 pub struct PlayerPlugin;
 
 impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, spawn_player).add_systems(
-            Update,
-            (
-                cursor_grab,
-                player_look.after(cursor_grab),
-                player_move.after(player_look),
-            ),
-        );
+        app.add_systems(Startup, spawn_player.in_set(PlayerSet::Spawn))
+            .add_systems(
+                Update,
+                (
+                    cursor_grab,
+                    player_look.after(cursor_grab),
+                    player_move.after(player_look),
+                ),
+            );
     }
 }
 
