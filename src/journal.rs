@@ -1828,4 +1828,132 @@ mod tests {
             "empty journal must show placeholder message"
         );
     }
+
+    /// A journal with 100+ entries of mixed key types and observation
+    /// categories must not panic during recording, lookup, rendering, or
+    /// serialization round-trip.
+    #[test]
+    fn journal_with_100_plus_mixed_entries_does_not_panic() {
+        let categories = [
+            ObservationCategory::SurfaceAppearance,
+            ObservationCategory::ThermalBehavior,
+            ObservationCategory::Weight,
+            ObservationCategory::FabricationResult,
+            ObservationCategory::LocationNote,
+        ];
+
+        let confidences = [
+            ConfidenceLevel::Tentative,
+            ConfidenceLevel::Observed,
+            ConfidenceLevel::Confident,
+        ];
+
+        let mut journal = NewJournal::default();
+
+        // Record 120 entries: 80 Material keys and 40 Fabrication keys,
+        // each with between 1 and 3 observations across different categories.
+        for i in 0u64..120 {
+            let key = if i % 3 == 0 {
+                JournalKey::Fabrication { output_seed: i }
+            } else {
+                JournalKey::Material { seed: i }
+            };
+
+            let name = format!("Subject-{i}");
+            let tick_base = i * 10;
+
+            // Primary observation — category and confidence rotate through variants.
+            let primary_cat = &categories[i as usize % categories.len()];
+            let primary_conf = confidences[i as usize % confidences.len()];
+            journal.record(
+                key.clone(),
+                &name,
+                Observation {
+                    category: primary_cat.clone(),
+                    confidence: primary_conf,
+                    description: format!("Primary observation for {name}"),
+                    recorded_at: tick_base,
+                },
+            );
+
+            // Every other entry gets a second observation in a different category.
+            if i % 2 == 0 {
+                let secondary_cat = &categories[(i as usize + 1) % categories.len()];
+                journal.record(
+                    key.clone(),
+                    &name,
+                    Observation {
+                        category: secondary_cat.clone(),
+                        confidence: ConfidenceLevel::Tentative,
+                        description: format!("Secondary observation for {name}"),
+                        recorded_at: tick_base + 1,
+                    },
+                );
+            }
+
+            // Every third entry gets a third observation (same category as
+            // primary but different description — should not deduplicate).
+            if i % 3 == 0 {
+                journal.record(
+                    key.clone(),
+                    &name,
+                    Observation {
+                        category: primary_cat.clone(),
+                        confidence: ConfidenceLevel::Confident,
+                        description: format!("Follow-up observation for {name}"),
+                        recorded_at: tick_base + 2,
+                    },
+                );
+            }
+        }
+
+        // Verify entry count.
+        assert!(
+            journal.entries.len() >= 100,
+            "expected at least 100 entries, got {}",
+            journal.entries.len()
+        );
+
+        // Verify both key types are present.
+        let material_count = journal
+            .entries
+            .keys()
+            .filter(|k| matches!(k, JournalKey::Material { .. }))
+            .count();
+        let fabrication_count = journal
+            .entries
+            .keys()
+            .filter(|k| matches!(k, JournalKey::Fabrication { .. }))
+            .count();
+        assert!(material_count > 0, "must contain Material entries");
+        assert!(fabrication_count > 0, "must contain Fabrication entries");
+
+        // Verify all five observation categories are represented.
+        let mut seen_categories = std::collections::HashSet::new();
+        for entry in journal.entries.values() {
+            for cat in entry.observations.keys() {
+                seen_categories.insert(cat.clone());
+            }
+        }
+        for cat in &categories {
+            assert!(
+                seen_categories.contains(cat),
+                "category {cat:?} must be present in the journal"
+            );
+        }
+
+        // Rendering must not panic.
+        let text = build_journal_text(&journal);
+        assert!(!text.is_empty(), "rendered text must not be empty");
+
+        // Serde round-trip must not panic or lose entries.
+        let serialized = serde_json::to_string(&journal).expect("journal must serialize");
+        let deserialized: NewJournal =
+            serde_json::from_str(&serialized).expect("journal must deserialize");
+        assert_eq!(
+            journal.entries.len(),
+            deserialized.entries.len(),
+            "round-trip must preserve entry count"
+        );
+    }
 }
