@@ -1107,6 +1107,87 @@ mod tests {
         );
     }
 
+    /// Examining the same material twice with identical observations must not
+    /// duplicate the journal entry or its observations. The journal should
+    /// contain exactly one entry with one observation, and confidence should
+    /// be preserved (or upgraded if the second look is stronger).
+    #[test]
+    fn examine_same_material_twice_does_not_duplicate() {
+        let mut journal = NewJournal::default();
+        let key = JournalKey::Material { seed: 42 };
+
+        let observation = Observation {
+            category: ObservationCategory::SurfaceAppearance,
+            confidence: ConfidenceLevel::Tentative,
+            description: "Warm rust tone".into(),
+            recorded_at: 10,
+        };
+
+        // First examination.
+        journal.record(key.clone(), "Ferrite", observation.clone());
+
+        // Second examination — identical observation at a later tick.
+        journal.record(
+            key.clone(),
+            "Ferrite",
+            Observation {
+                category: ObservationCategory::SurfaceAppearance,
+                confidence: ConfidenceLevel::Tentative,
+                description: "Warm rust tone".into(),
+                recorded_at: 50,
+            },
+        );
+
+        assert_eq!(journal.entries.len(), 1, "only one entry for the material");
+        let entry = journal.entries.get(&key).expect("entry must exist");
+        assert_eq!(
+            entry.observation_count(),
+            1,
+            "duplicate observation must not be appended"
+        );
+        assert_eq!(entry.last_updated_at, 50, "timestamp should advance");
+    }
+
+    /// Examining the same material twice where the second look carries higher
+    /// confidence upgrades the stored observation without duplicating it.
+    #[test]
+    fn examine_same_material_twice_upgrades_confidence() {
+        let mut journal = NewJournal::default();
+        let key = JournalKey::Material { seed: 42 };
+
+        journal.record(
+            key.clone(),
+            "Ferrite",
+            Observation {
+                category: ObservationCategory::SurfaceAppearance,
+                confidence: ConfidenceLevel::Tentative,
+                description: "Warm rust tone".into(),
+                recorded_at: 10,
+            },
+        );
+
+        // Second examination — same description, higher confidence.
+        journal.record(
+            key.clone(),
+            "Ferrite",
+            Observation {
+                category: ObservationCategory::SurfaceAppearance,
+                confidence: ConfidenceLevel::Observed,
+                description: "Warm rust tone".into(),
+                recorded_at: 50,
+            },
+        );
+
+        assert_eq!(journal.entries.len(), 1);
+        let entry = journal.entries.get(&key).expect("entry must exist");
+        assert_eq!(entry.observation_count(), 1);
+        assert_eq!(
+            entry.observations_by_category(&ObservationCategory::SurfaceAppearance)[0].confidence,
+            ConfidenceLevel::Observed,
+            "confidence should upgrade on re-examination"
+        );
+    }
+
     #[test]
     fn same_category_different_description_is_not_duplicate() {
         let key = JournalKey::Material { seed: 1 };
