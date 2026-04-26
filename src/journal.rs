@@ -534,7 +534,7 @@ fn build_journal_text(journal: &NewJournal) -> String {
         out.push(String::new());
         out.push("Recent Fabrication".to_string());
         for desc in &fabrication_descriptions {
-            out.push((*desc).to_string());
+            out.push(format!("  {desc}"));
         }
     }
 
@@ -543,11 +543,12 @@ fn build_journal_text(journal: &NewJournal) -> String {
     entries.sort_by(|a, b| a.name.cmp(&b.name));
 
     for entry in entries {
+        // Visual separator between entries for legibility.
         out.push(String::new());
-        out.push(entry.name.clone());
+        out.push(format!("--- {} ---", entry.name));
 
         for obs in entry.observations_by_category(&ObservationCategory::SurfaceAppearance) {
-            out.push(format!("Surface: {}", obs.description));
+            out.push(format!("  Surface: {}", obs.description));
         }
 
         // Show only the most recent thermal observation (matches legacy
@@ -556,7 +557,7 @@ fn build_journal_text(journal: &NewJournal) -> String {
             .observations_by_category(&ObservationCategory::ThermalBehavior)
             .last()
         {
-            out.push(format!("Heat: {}", thermal.description));
+            out.push(format!("  Heat: {}", thermal.description));
         }
 
         // Show only the most recent weight observation (matches legacy
@@ -565,11 +566,11 @@ fn build_journal_text(journal: &NewJournal) -> String {
             .observations_by_category(&ObservationCategory::Weight)
             .last()
         {
-            out.push(format!("Carried: {}", weight.description));
+            out.push(format!("  Carried: {}", weight.description));
         }
 
         for obs in entry.observations_by_category(&ObservationCategory::FabricationResult) {
-            out.push(obs.description.clone());
+            out.push(format!("  {}", obs.description));
         }
     }
 
