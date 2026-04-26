@@ -102,10 +102,14 @@ pub fn spawn_player(
     mut commands: Commands,
     scene: Res<PlayerSceneConfig>,
     carry_movement: Res<CarryMovementState>,
-    world_profile: Res<WorldProfile>,
+    world_profile: Option<Res<WorldProfile>>,
     world_gen_config: Res<WorldGenerationConfig>,
     surface_registry: Res<crate::surface::SurfaceOverrideRegistry>,
 ) {
+    let Some(world_profile) = world_profile else {
+        error!("WorldProfile resource not available — cannot spawn player.");
+        return;
+    };
     let surface = PlanetSurface::new_from_profile(&world_profile, &world_gen_config);
     let terrain_y = surface.sample_elevation(scene.spawn_x, scene.spawn_z);
     let standing_y = crate::surface::resolve_standing_surface(
@@ -206,7 +210,7 @@ fn player_move(
     scene: Res<PlayerSceneConfig>,
     room_shell: Res<RoomShellCollision>,
     carry_movement: Res<CarryMovementState>,
-    world_profile: Res<WorldProfile>,
+    world_profile: Option<Res<WorldProfile>>,
     world_gen_config: Res<WorldGenerationConfig>,
     surface_registry: Res<crate::surface::SurfaceOverrideRegistry>,
     mut player_query: Query<
@@ -217,6 +221,9 @@ fn player_move(
     if !cursor_is_captured(cursor_options.grab_mode) {
         return;
     }
+    let Some(world_profile) = world_profile else {
+        return;
+    };
 
     let Ok((action_state, mut transform, mut stamina)) = player_query.single_mut() else {
         return;

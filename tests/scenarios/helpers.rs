@@ -10,15 +10,16 @@ use bevy::prelude::*;
 // ── Factories ────────────────────────────────────────────────────────────
 
 /// Construct a [`GameMaterial`] with the given density.  All other
-/// properties use neutral defaults.
-pub fn test_material(name: &str, density: f32) -> GameMaterial {
+/// properties use neutral defaults.  Pass a unique `seed` per material
+/// so that combination / fabrication determinism tests don't collide.
+pub fn test_material(name: &str, density: f32, seed: u64) -> GameMaterial {
     let prop = |v| MaterialProperty {
         value: v,
         visibility: PropertyVisibility::Observable,
     };
     GameMaterial {
         name: name.into(),
-        seed: 42,
+        seed,
         color: [0.5, 0.5, 0.5],
         density: prop(density),
         thermal_resistance: prop(0.5),
