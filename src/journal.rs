@@ -964,8 +964,15 @@ fn build_detail_spans(entries: &[&JournalEntry], state: &JournalUiState) -> Vec<
         };
 
         for obs in visible {
+            // Multi-line descriptions (e.g. surface observations that combine
+            // color + weight) need each line indented consistently.
+            let indented = obs
+                .description
+                .lines()
+                .map(|line| format!("\n  {line}"))
+                .collect::<String>();
             spans.push(DetailSpan {
-                text: format!("\n  {}", obs.description),
+                text: indented,
                 kind: DetailSpanKind::Body,
             });
         }
