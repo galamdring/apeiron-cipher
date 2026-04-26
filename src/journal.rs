@@ -437,8 +437,11 @@ fn spawn_journal_ui(mut commands: Commands) {
                 text_color,
                 Node {
                     margin: UiRect::bottom(Val::Px(8.0)),
+                    padding: UiRect::bottom(Val::Px(6.0)),
+                    border: UiRect::bottom(Val::Px(1.0)),
                     ..default()
                 },
+                BorderColor::all(Color::srgba(0.3, 0.3, 0.28, 0.4)),
             ));
 
             // ── Body row (entry list | detail) ─────────────────
@@ -450,14 +453,21 @@ fn spawn_journal_ui(mut commands: Commands) {
                     ..default()
                 })
                 .with_children(|body| {
-                    // Left: entry list (30% width).
-                    body.spawn(Node {
-                        width: Val::Percent(30.0),
-                        flex_direction: FlexDirection::Column,
-                        padding: UiRect::right(Val::Px(8.0)),
-                        overflow: Overflow::clip(),
-                        ..default()
-                    })
+                    // Left: entry list (30% width) with subtle background
+                    // to distinguish from the detail panel.
+                    body.spawn((
+                        Node {
+                            width: Val::Percent(30.0),
+                            flex_direction: FlexDirection::Column,
+                            padding: UiRect::all(Val::Px(8.0)),
+                            margin: UiRect::right(Val::Px(4.0)),
+                            overflow: Overflow::clip(),
+                            border: UiRect::right(Val::Px(1.0)),
+                            ..default()
+                        },
+                        BackgroundColor(Color::srgba(0.05, 0.05, 0.07, 0.6)),
+                        BorderColor::all(Color::srgba(0.3, 0.3, 0.28, 0.4)),
+                    ))
                     .with_children(|left| {
                         left.spawn((
                             JournalEntryListText,
@@ -467,14 +477,19 @@ fn spawn_journal_ui(mut commands: Commands) {
                         ));
                     });
 
-                    // Right: detail panel (70% width).
-                    body.spawn(Node {
-                        width: Val::Percent(70.0),
-                        flex_direction: FlexDirection::Column,
-                        padding: UiRect::left(Val::Px(8.0)),
-                        overflow: Overflow::clip(),
-                        ..default()
-                    })
+                    // Right: detail panel (70% width) with slightly lighter
+                    // background to visually separate from the entry list.
+                    body.spawn((
+                        Node {
+                            width: Val::Percent(70.0),
+                            flex_direction: FlexDirection::Column,
+                            padding: UiRect::all(Val::Px(8.0)),
+                            margin: UiRect::left(Val::Px(4.0)),
+                            overflow: Overflow::clip(),
+                            ..default()
+                        },
+                        BackgroundColor(Color::srgba(0.06, 0.06, 0.08, 0.5)),
+                    ))
                     .with_children(|right| {
                         right.spawn((JournalDetailText, Text::new(""), font.clone(), text_color));
                     });
@@ -490,9 +505,12 @@ fn spawn_journal_ui(mut commands: Commands) {
                 },
                 dim_text_color,
                 Node {
-                    margin: UiRect::top(Val::Px(8.0)),
+                    margin: UiRect::top(Val::Px(4.0)),
+                    padding: UiRect::new(Val::Px(8.0), Val::Px(8.0), Val::Px(6.0), Val::Px(6.0)),
+                    border: UiRect::top(Val::Px(1.0)),
                     ..default()
                 },
+                BorderColor::all(Color::srgba(0.3, 0.3, 0.28, 0.4)),
             ));
         });
 }
