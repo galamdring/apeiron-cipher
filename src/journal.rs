@@ -3170,6 +3170,87 @@ mod tests {
     }
 
     #[test]
+    fn page_down_moves_selection_by_entries_per_page() {
+        let mut state = JournalUiState {
+            visible: true,
+            selected_index: 2,
+            scroll_offset: 0,
+            entries_per_page: 5,
+        };
+        // Simulate PageDown: advance by entries_per_page.
+        state.selected_index = (state.selected_index + state.entries_per_page).min(20 - 1);
+        state.clamp_to_entry_count(20);
+        assert_eq!(state.selected_index, 7);
+        // Scroll offset should adjust so index 7 is visible.
+        assert!(state.scroll_offset + state.entries_per_page > 7);
+    }
+
+    #[test]
+    fn page_down_clamps_to_last_entry() {
+        let mut state = JournalUiState {
+            visible: true,
+            selected_index: 8,
+            scroll_offset: 5,
+            entries_per_page: 5,
+        };
+        let entry_count = 10;
+        // PageDown from index 8 with page size 5 would overshoot — should clamp to 9.
+        state.selected_index = (state.selected_index + state.entries_per_page).min(entry_count - 1);
+        state.clamp_to_entry_count(entry_count);
+        assert_eq!(state.selected_index, 9);
+    }
+
+    #[test]
+    fn page_up_moves_selection_by_entries_per_page() {
+        let mut state = JournalUiState {
+            visible: true,
+            selected_index: 12,
+            scroll_offset: 10,
+            entries_per_page: 5,
+        };
+        // Simulate PageUp: go back by entries_per_page.
+        state.selected_index = state.selected_index.saturating_sub(state.entries_per_page);
+        state.clamp_to_entry_count(20);
+        assert_eq!(state.selected_index, 7);
+        // Scroll offset should snap so index 7 is visible.
+        assert!(state.scroll_offset <= 7);
+        assert!(state.scroll_offset + state.entries_per_page > 7);
+    }
+
+    #[test]
+    fn page_up_clamps_to_first_entry() {
+        let mut state = JournalUiState {
+            visible: true,
+            selected_index: 2,
+            scroll_offset: 0,
+            entries_per_page: 5,
+        };
+        // PageUp from index 2 with page size 5 would underflow — saturating_sub clamps to 0.
+        state.selected_index = state.selected_index.saturating_sub(state.entries_per_page);
+        state.clamp_to_entry_count(10);
+        assert_eq!(state.selected_index, 0);
+        assert_eq!(state.scroll_offset, 0);
+    }
+
+    #[test]
+    fn page_down_adjusts_scroll_offset_past_visible_range() {
+        let mut state = JournalUiState {
+            visible: true,
+            selected_index: 0,
+            scroll_offset: 0,
+            entries_per_page: 3,
+        };
+        // PageDown jumps selection to index 3, which is outside window [0..3).
+        state.selected_index = (state.selected_index + state.entries_per_page).min(10 - 1);
+        state.clamp_to_entry_count(10);
+        assert_eq!(state.selected_index, 3);
+        assert_eq!(
+            state.scroll_offset, 1,
+            "scroll_offset should be 3+1-3=1 so index 3 is the last visible"
+        );
+    }
+
+    #[test]
     fn clamp_to_entry_count_zero_entries() {
         let mut state = JournalUiState {
             visible: true,
