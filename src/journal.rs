@@ -914,4 +914,208 @@ mod tests {
         let journal = NewJournal::default();
         assert!(journal.entries.is_empty());
     }
+
+    /// Every type in the journal data model serializes to JSON and deserializes
+    /// back to an identical value. Covers all `JournalKey` variants, all
+    /// `ObservationCategory` variants, all `ConfidenceLevel` variants, the
+    /// `Observation` struct, `JournalEntry`, and a `NewJournal` containing
+    /// entries of every key type with observations of every category.
+    #[test]
+    fn all_types_serde_round_trip() {
+        // ── JournalKey variants ─────────────────────────────────────
+        let keys = vec![
+            JournalKey::Material { seed: 0 },
+            JournalKey::Material { seed: u64::MAX },
+            JournalKey::Fabrication { output_seed: 42 },
+        ];
+        for key in &keys {
+            let json = serde_json::to_string(key).expect("JournalKey should serialize");
+            let rt: JournalKey =
+                serde_json::from_str(&json).expect("JournalKey should deserialize");
+            assert_eq!(*key, rt);
+        }
+
+        // ── ObservationCategory variants ────────────────────────────
+        let categories = vec![
+            ObservationCategory::SurfaceAppearance,
+            ObservationCategory::ThermalBehavior,
+            ObservationCategory::Weight,
+            ObservationCategory::FabricationResult,
+            ObservationCategory::LocationNote,
+        ];
+        for cat in &categories {
+            let json = serde_json::to_string(cat).expect("ObservationCategory should serialize");
+            let rt: ObservationCategory =
+                serde_json::from_str(&json).expect("ObservationCategory should deserialize");
+            assert_eq!(*cat, rt);
+        }
+
+        // ── ConfidenceLevel variants ────────────────────────────────
+        let levels = vec![
+            ConfidenceLevel::Tentative,
+            ConfidenceLevel::Observed,
+            ConfidenceLevel::Confident,
+        ];
+        for level in &levels {
+            let json = serde_json::to_string(level).expect("ConfidenceLevel should serialize");
+            let rt: ConfidenceLevel =
+                serde_json::from_str(&json).expect("ConfidenceLevel should deserialize");
+            assert_eq!(*level, rt);
+        }
+
+        // ── Observation struct ──────────────────────────────────────
+        let observation = Observation {
+            category: ObservationCategory::ThermalBehavior,
+            confidence: ConfidenceLevel::Observed,
+            description: "Holds together under heat".into(),
+            recorded_at: 999,
+        };
+        let json = serde_json::to_string(&observation).expect("Observation should serialize");
+        let rt: Observation = serde_json::from_str(&json).expect("Observation should deserialize");
+        assert_eq!(rt.category, observation.category);
+        assert_eq!(rt.confidence, observation.confidence);
+        assert_eq!(rt.description, observation.description);
+        assert_eq!(rt.recorded_at, observation.recorded_at);
+
+        // ── JournalEntry struct ─────────────────────────────────────
+        let mut entry = JournalEntry::new(JournalKey::Material { seed: 7 }, "Ferrite".into(), 10);
+        entry.add_observation(Observation {
+            category: ObservationCategory::SurfaceAppearance,
+            confidence: ConfidenceLevel::Tentative,
+            description: "Warm rust tone".into(),
+            recorded_at: 10,
+        });
+        entry.add_observation(Observation {
+            category: ObservationCategory::Weight,
+            confidence: ConfidenceLevel::Confident,
+            description: "Very heavy".into(),
+            recorded_at: 20,
+        });
+
+        let json = serde_json::to_string(&entry).expect("JournalEntry should serialize");
+        let rt: JournalEntry =
+            serde_json::from_str(&json).expect("JournalEntry should deserialize");
+        assert_eq!(rt.key, entry.key);
+        assert_eq!(rt.name, entry.name);
+        assert_eq!(rt.observations.len(), 2);
+        assert_eq!(rt.first_observed_at, entry.first_observed_at);
+        assert_eq!(rt.last_updated_at, entry.last_updated_at);
+        assert_eq!(
+            rt.observations[0].category,
+            ObservationCategory::SurfaceAppearance
+        );
+        assert_eq!(rt.observations[1].category, ObservationCategory::Weight);
+
+        // ── NewJournal with all key types and all categories ────────
+        let mut journal = NewJournal::default();
+
+        // Material entry with surface, thermal, and weight observations.
+        let mat_key = JournalKey::Material { seed: 100 };
+        journal.record(
+            mat_key.clone(),
+            "Silite",
+            Observation {
+                category: ObservationCategory::SurfaceAppearance,
+                confidence: ConfidenceLevel::Tentative,
+                description: "Cool blue tone".into(),
+                recorded_at: 1,
+            },
+        );
+        journal.record(
+            mat_key.clone(),
+            "Silite",
+            Observation {
+                category: ObservationCategory::ThermalBehavior,
+                confidence: ConfidenceLevel::Observed,
+                description: "Softens quickly under heat".into(),
+                recorded_at: 5,
+            },
+        );
+        journal.record(
+            mat_key.clone(),
+            "Silite",
+            Observation {
+                category: ObservationCategory::Weight,
+                confidence: ConfidenceLevel::Confident,
+                description: "Light".into(),
+                recorded_at: 8,
+            },
+        );
+
+        // Fabrication entry with fabrication result and location note.
+        let fab_key = JournalKey::Fabrication { output_seed: 200 };
+        journal.record(
+            fab_key.clone(),
+            "Neoite",
+            Observation {
+                category: ObservationCategory::FabricationResult,
+                confidence: ConfidenceLevel::Confident,
+                description: "Combined Silite + Ferrite -> Neoite".into(),
+                recorded_at: 10,
+            },
+        );
+        journal.record(
+            fab_key.clone(),
+            "Neoite",
+            Observation {
+                category: ObservationCategory::LocationNote,
+                confidence: ConfidenceLevel::Tentative,
+                description: "Found near volcanic ridge".into(),
+                recorded_at: 15,
+            },
+        );
+
+        let json = serde_json::to_string(&journal).expect("NewJournal should serialize");
+        let rt: NewJournal = serde_json::from_str(&json).expect("NewJournal should deserialize");
+
+        // Verify structure preserved.
+        assert_eq!(rt.entries.len(), 2);
+
+        let silite = rt
+            .entries
+            .get(&mat_key)
+            .expect("Material entry should exist");
+        assert_eq!(silite.name, "Silite");
+        assert_eq!(silite.observations.len(), 3);
+        assert_eq!(silite.first_observed_at, 1);
+        assert_eq!(silite.last_updated_at, 8);
+        assert_eq!(
+            silite.observations[0].category,
+            ObservationCategory::SurfaceAppearance
+        );
+        assert_eq!(
+            silite.observations[0].confidence,
+            ConfidenceLevel::Tentative
+        );
+        assert_eq!(
+            silite.observations[1].category,
+            ObservationCategory::ThermalBehavior
+        );
+        assert_eq!(silite.observations[2].category, ObservationCategory::Weight);
+
+        let neoite = rt
+            .entries
+            .get(&fab_key)
+            .expect("Fabrication entry should exist");
+        assert_eq!(neoite.name, "Neoite");
+        assert_eq!(neoite.observations.len(), 2);
+        assert_eq!(neoite.first_observed_at, 10);
+        assert_eq!(neoite.last_updated_at, 15);
+        assert_eq!(
+            neoite.observations[0].category,
+            ObservationCategory::FabricationResult
+        );
+        assert_eq!(
+            neoite.observations[0].confidence,
+            ConfidenceLevel::Confident
+        );
+        assert_eq!(
+            neoite.observations[1].category,
+            ObservationCategory::LocationNote
+        );
+        assert_eq!(
+            neoite.observations[1].description,
+            "Found near volcanic ridge"
+        );
+    }
 }
