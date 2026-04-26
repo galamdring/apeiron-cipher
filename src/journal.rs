@@ -1066,6 +1066,150 @@ mod tests {
         );
     }
 
+    /// Multiple observations recorded against the same `JournalKey` via
+    /// `NewJournal::record` accumulate in chronological order. The entry is
+    /// created once and subsequent observations append without replacing
+    /// earlier ones, timestamps track the full observation window, and each
+    /// observation preserves its own category, confidence, and description.
+    #[test]
+    fn multiple_observations_for_same_key_accumulate() {
+        let mut journal = NewJournal::default();
+        let key = JournalKey::Material { seed: 77 };
+
+        // First observation — creates the entry.
+        journal.record(
+            key.clone(),
+            "Volite",
+            Observation {
+                category: ObservationCategory::SurfaceAppearance,
+                confidence: ConfidenceLevel::Tentative,
+                description: "Dark mineral grey".into(),
+                recorded_at: 10,
+            },
+        );
+
+        // Second observation — same key, different category.
+        journal.record(
+            key.clone(),
+            "Volite",
+            Observation {
+                category: ObservationCategory::ThermalBehavior,
+                confidence: ConfidenceLevel::Observed,
+                description: "Glows faintly when heated".into(),
+                recorded_at: 25,
+            },
+        );
+
+        // Third observation — same key, same category as first but different description.
+        journal.record(
+            key.clone(),
+            "Volite",
+            Observation {
+                category: ObservationCategory::SurfaceAppearance,
+                confidence: ConfidenceLevel::Observed,
+                description: "Slightly crystalline texture".into(),
+                recorded_at: 40,
+            },
+        );
+
+        // Fourth observation — same key, yet another category.
+        journal.record(
+            key.clone(),
+            "Volite",
+            Observation {
+                category: ObservationCategory::Weight,
+                confidence: ConfidenceLevel::Confident,
+                description: "Very heavy".into(),
+                recorded_at: 60,
+            },
+        );
+
+        // Fifth observation — fabrication result recorded against the same material key.
+        journal.record(
+            key.clone(),
+            "Volite",
+            Observation {
+                category: ObservationCategory::FabricationResult,
+                confidence: ConfidenceLevel::Confident,
+                description: "Combined Volite + Silite -> Crystite".into(),
+                recorded_at: 80,
+            },
+        );
+
+        // Only one entry exists for the key.
+        assert_eq!(journal.entries.len(), 1, "all observations share one entry");
+        let entry = journal.entries.get(&key).expect("entry should exist");
+
+        // Name set by the first record call is retained.
+        assert_eq!(entry.name, "Volite");
+
+        // Timestamps span the full observation window.
+        assert_eq!(entry.first_observed_at, 10);
+        assert_eq!(entry.last_updated_at, 80);
+
+        // All five distinct observations accumulated.
+        assert_eq!(entry.observations.len(), 5);
+
+        // Verify each observation in chronological order.
+        assert_eq!(
+            entry.observations[0].category,
+            ObservationCategory::SurfaceAppearance
+        );
+        assert_eq!(entry.observations[0].description, "Dark mineral grey");
+        assert_eq!(entry.observations[0].confidence, ConfidenceLevel::Tentative);
+        assert_eq!(entry.observations[0].recorded_at, 10);
+
+        assert_eq!(
+            entry.observations[1].category,
+            ObservationCategory::ThermalBehavior
+        );
+        assert_eq!(
+            entry.observations[1].description,
+            "Glows faintly when heated"
+        );
+        assert_eq!(entry.observations[1].confidence, ConfidenceLevel::Observed);
+        assert_eq!(entry.observations[1].recorded_at, 25);
+
+        assert_eq!(
+            entry.observations[2].category,
+            ObservationCategory::SurfaceAppearance
+        );
+        assert_eq!(
+            entry.observations[2].description,
+            "Slightly crystalline texture"
+        );
+        assert_eq!(entry.observations[2].confidence, ConfidenceLevel::Observed);
+        assert_eq!(entry.observations[2].recorded_at, 40);
+
+        assert_eq!(entry.observations[3].category, ObservationCategory::Weight);
+        assert_eq!(entry.observations[3].description, "Very heavy");
+        assert_eq!(entry.observations[3].confidence, ConfidenceLevel::Confident);
+        assert_eq!(entry.observations[3].recorded_at, 60);
+
+        assert_eq!(
+            entry.observations[4].category,
+            ObservationCategory::FabricationResult
+        );
+        assert_eq!(
+            entry.observations[4].description,
+            "Combined Volite + Silite -> Crystite"
+        );
+        assert_eq!(entry.observations[4].confidence, ConfidenceLevel::Confident);
+        assert_eq!(entry.observations[4].recorded_at, 80);
+
+        // Category filtering works across accumulated observations.
+        let surface = entry.observations_by_category(&ObservationCategory::SurfaceAppearance);
+        assert_eq!(surface.len(), 2);
+        let thermal = entry.observations_by_category(&ObservationCategory::ThermalBehavior);
+        assert_eq!(thermal.len(), 1);
+        let weight = entry.observations_by_category(&ObservationCategory::Weight);
+        assert_eq!(weight.len(), 1);
+        let fab = entry.observations_by_category(&ObservationCategory::FabricationResult);
+        assert_eq!(fab.len(), 1);
+        let loc = entry.observations_by_category(&ObservationCategory::LocationNote);
+        assert_eq!(loc.len(), 0);
+    }
+
     /// Every type in the journal data model serializes to JSON and deserializes
     /// back to an identical value. Covers all `JournalKey` variants, all
     /// `ObservationCategory` variants, all `ConfidenceLevel` variants, the
