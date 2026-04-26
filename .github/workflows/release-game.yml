@@ -16,11 +16,17 @@ permissions:
   issues: write
   pull-requests: write
 
+env:
+  BINARY_NAME: apeiron-cipher
+
 jobs:
-  release:
+  # ── Step 1: determine version and create tag + GitHub release ──────────
+  semantic-release:
     name: Semantic Release
     runs-on: ubuntu-latest
-
+    outputs:
+      new_release_published: ${{ steps.semrel.outputs.new_release_published }}
+      new_release_version: ${{ steps.semrel.outputs.new_release_version }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -28,6 +34,7 @@ jobs:
           fetch-depth: 0
 
       - name: Run semantic-release
+        id: semrel
         uses: cycjimmy/semantic-release-action@v4
         with:
           extra_plugins: |
@@ -37,3 +44,189 @@ jobs:
             conventional-changelog-conventionalcommits
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ── Step 2: build native binaries (only when a release was created) ────
+  build-native:
+    name: Build ${{ matrix.target }}
+    needs: [semantic-release]
+    if: needs.semantic-release.outputs.new_release_published == 'true'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            ext: .exe
+          - target: x86_64-apple-darwin
+            os: macos-13
+            ext: ""
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            ext: ""
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            ext: ""
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            ext: ""
+            cross: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libudev-dev \
+            libasound2-dev \
+            libwayland-dev \
+            libxkbcommon-dev
+
+      - name: Install cross (ARM64 Linux)
+        if: matrix.cross
+        run: cargo install cross --git https://github.com/cross-rs/cross
+
+      - name: Build with cargo
+        if: ${{ !matrix.cross }}
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Build with cross
+        if: matrix.cross
+        run: cross build --release --target ${{ matrix.target }}
+
+      - name: Package (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          VERSION="v${{ needs.semantic-release.outputs.new_release_version }}"
+          STAGING="${{ env.BINARY_NAME }}-${VERSION}-${{ matrix.target }}"
+          mkdir -p "$STAGING"
+          cp "target/${{ matrix.target }}/release/${{ env.BINARY_NAME }}${{ matrix.ext }}" "$STAGING/"
+          cp -r assets "$STAGING/"
+          tar czf "${STAGING}.tar.gz" "$STAGING"
+          echo "ASSET=${STAGING}.tar.gz" >> "$GITHUB_ENV"
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $version = "v${{ needs.semantic-release.outputs.new_release_version }}"
+          $staging = "${{ env.BINARY_NAME }}-${version}-${{ matrix.target }}"
+          New-Item -ItemType Directory -Path $staging
+          Copy-Item "target/${{ matrix.target }}/release/${{ env.BINARY_NAME }}${{ matrix.ext }}" $staging
+          Copy-Item -Recurse assets $staging
+          Compress-Archive -Path $staging -DestinationPath "${staging}.zip"
+          echo "ASSET=${staging}.zip" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: ${{ env.ASSET }}
+
+  # ── Step 3: build WASM (only when a release was created) ───────────────
+  build-wasm:
+    name: Build WASM
+    needs: [semantic-release]
+    if: needs.semantic-release.outputs.new_release_published == 'true'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: wasm
+
+      - name: Build WASM
+        run: cargo build --release --target wasm32-unknown-unknown
+
+      - name: Install matching wasm-bindgen-cli
+        run: |
+          WB_VERSION=$(cargo metadata --format-version 1 \
+            | jq -r '.packages[] | select(.name == "wasm-bindgen") | .version')
+          cargo install wasm-bindgen-cli --version "$WB_VERSION"
+
+      - name: Generate JS bindings
+        run: |
+          wasm-bindgen \
+            --out-dir wasm-out \
+            --out-name ${{ env.BINARY_NAME }} \
+            --target web \
+            target/wasm32-unknown-unknown/release/${{ env.BINARY_NAME }}.wasm
+
+      - name: Create HTML shell
+        run: |
+          cat > wasm-out/index.html << 'HTMLEOF'
+          <!DOCTYPE html>
+          <html lang="en">
+          <head>
+            <meta charset="utf-8">
+            <title>Apeiron Cipher</title>
+            <style>
+              html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #1a1a2e; }
+              canvas { width: 100%; height: 100%; display: block; }
+            </style>
+          </head>
+          <body>
+            <script type="module">
+              import init from './${{ env.BINARY_NAME }}.js';
+              init();
+            </script>
+          </body>
+          </html>
+          HTMLEOF
+
+      - name: Copy assets into WASM bundle
+        run: cp -r assets wasm-out/
+
+      - name: Package
+        run: |
+          VERSION="v${{ needs.semantic-release.outputs.new_release_version }}"
+          STAGING="${{ env.BINARY_NAME }}-${VERSION}-wasm"
+          mv wasm-out "$STAGING"
+          tar czf "${STAGING}.tar.gz" "$STAGING"
+          echo "ASSET=${STAGING}.tar.gz" >> "$GITHUB_ENV"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wasm
+          path: ${{ env.ASSET }}
+
+  # ── Step 4: attach build artifacts to the GitHub release ───────────────
+  upload-assets:
+    name: Upload Release Assets
+    needs: [semantic-release, build-native, build-wasm]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Upload to GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "v${{ needs.semantic-release.outputs.new_release_version }}"
+          files: artifacts/*
