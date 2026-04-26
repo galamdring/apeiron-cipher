@@ -1643,4 +1643,182 @@ mod tests {
             "fab_a must not contain observations from other keys"
         );
     }
+
+    /// The rendered text from `build_journal_text` preserves all information
+    /// that the legacy POC journal displayed: material names, surface
+    /// observations, thermal observations, weight observations, fabrication
+    /// history, and the "Recent Fabrication" header. This test populates a
+    /// `NewJournal` with the same variety of data the legacy `LegacyJournal`
+    /// held and asserts every piece of information appears in the output.
+    #[test]
+    fn rendered_text_contains_same_information_as_legacy_journal() {
+        let mut journal = NewJournal::default();
+
+        // ── Material entry with surface, thermal, and weight observations ──
+        // Legacy equivalent: LegacyJournalEntry with surface_observations,
+        // thermal_observation, and weight_observation populated.
+        let mat_key = JournalKey::Material { seed: 42 };
+
+        journal.record(
+            mat_key.clone(),
+            "Ferrite",
+            Observation {
+                category: ObservationCategory::SurfaceAppearance,
+                confidence: ConfidenceLevel::Tentative,
+                description: "Warm rust tone".into(),
+                recorded_at: 1,
+            },
+        );
+        journal.record(
+            mat_key.clone(),
+            "Ferrite",
+            Observation {
+                category: ObservationCategory::SurfaceAppearance,
+                confidence: ConfidenceLevel::Observed,
+                description: "Slightly rough texture".into(),
+                recorded_at: 2,
+            },
+        );
+        journal.record(
+            mat_key.clone(),
+            "Ferrite",
+            Observation {
+                category: ObservationCategory::ThermalBehavior,
+                confidence: ConfidenceLevel::Observed,
+                description: "Holds together under heat".into(),
+                recorded_at: 3,
+            },
+        );
+        journal.record(
+            mat_key,
+            "Ferrite",
+            Observation {
+                category: ObservationCategory::Weight,
+                confidence: ConfidenceLevel::Confident,
+                description: "Heavy but manageable".into(),
+                recorded_at: 4,
+            },
+        );
+
+        // ── Second material with only surface observation ───────────────
+        // Legacy equivalent: entry with surface_observations only (no thermal
+        // or weight).
+        let mat_key_b = JournalKey::Material { seed: 99 };
+        journal.record(
+            mat_key_b,
+            "Silite",
+            Observation {
+                category: ObservationCategory::SurfaceAppearance,
+                confidence: ConfidenceLevel::Tentative,
+                description: "Cool blue tone".into(),
+                recorded_at: 5,
+            },
+        );
+
+        // ── Fabrication entry ───────────────────────────────────────────
+        // Legacy equivalent: fabrication_log entry + LegacyJournalEntry with
+        // fabrication_history.
+        let fab_key = JournalKey::Fabrication { output_seed: 200 };
+        journal.record(
+            fab_key,
+            "Neoite",
+            Observation {
+                category: ObservationCategory::FabricationResult,
+                confidence: ConfidenceLevel::Confident,
+                description: "Combined Ferrite + Silite -> Neoite".into(),
+                recorded_at: 6,
+            },
+        );
+
+        let text = build_journal_text(&journal);
+
+        // ── Header ──────────────────────────────────────────────────────
+        assert!(
+            text.starts_with("Journal"),
+            "rendered text must start with Journal header"
+        );
+
+        // ── Material names displayed ────────────────────────────────────
+        assert!(
+            text.contains("Ferrite"),
+            "material name Ferrite must appear"
+        );
+        assert!(text.contains("Silite"), "material name Silite must appear");
+
+        // ── Surface observations prefixed with "Surface:" ───────────────
+        assert!(
+            text.contains("Surface: Warm rust tone"),
+            "surface observation must appear with Surface: prefix"
+        );
+        assert!(
+            text.contains("Surface: Slightly rough texture"),
+            "multiple surface observations must all appear"
+        );
+        assert!(
+            text.contains("Surface: Cool blue tone"),
+            "second material surface observation must appear"
+        );
+
+        // ── Thermal observation prefixed with "Heat:" ───────────────────
+        assert!(
+            text.contains("Heat: Holds together under heat"),
+            "thermal observation must appear with Heat: prefix"
+        );
+
+        // ── Weight observation prefixed with "Carried:" ─────────────────
+        assert!(
+            text.contains("Carried: Heavy but manageable"),
+            "weight observation must appear with Carried: prefix"
+        );
+
+        // ── Fabrication result in "Recent Fabrication" section ───────────
+        assert!(
+            text.contains("Recent Fabrication"),
+            "fabrication header must appear"
+        );
+        assert!(
+            text.contains("Combined Ferrite + Silite -> Neoite"),
+            "fabrication description must appear"
+        );
+
+        // ── Material without thermal/weight must NOT show those prefixes ─
+        // Split rendered text by material name to isolate Silite's section.
+        // Silite appears after Ferrite alphabetically — but we verify the
+        // overall text does not associate Heat:/Carried: with Silite by
+        // checking that Heat: and Carried: only appear once each (belonging
+        // to Ferrite).
+        let heat_count = text.matches("Heat:").count();
+        assert_eq!(
+            heat_count, 1,
+            "Heat: should appear exactly once (only for Ferrite)"
+        );
+        let carried_count = text.matches("Carried:").count();
+        assert_eq!(
+            carried_count, 1,
+            "Carried: should appear exactly once (only for Ferrite)"
+        );
+
+        // ── Fabrication name listed as an entry ─────────────────────────
+        assert!(
+            text.contains("Neoite"),
+            "fabrication output name must appear as an entry"
+        );
+    }
+
+    /// An empty journal renders without panic and shows the expected
+    /// placeholder text — matching the legacy behavior where an empty
+    /// journal simply displayed a header with no entries.
+    #[test]
+    fn empty_journal_renders_placeholder_text() {
+        let journal = NewJournal::default();
+        let text = build_journal_text(&journal);
+        assert!(
+            text.contains("Journal"),
+            "empty journal must still show header"
+        );
+        assert!(
+            text.contains("No observations yet."),
+            "empty journal must show placeholder message"
+        );
+    }
 }
