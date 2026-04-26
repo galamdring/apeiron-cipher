@@ -2037,4 +2037,201 @@ mod tests {
             "round-trip must preserve entry count"
         );
     }
+
+    /// Examining 3+ different materials produces separate journal entries with
+    /// no cross-contamination. Each material's observations are isolated, and
+    /// rendering displays each material as a distinct section with only its
+    /// own observations.
+    #[test]
+    fn multiple_materials_have_separate_entries_and_rendering() {
+        let mut journal = NewJournal::default();
+
+        // ── Material 1: Ferrite ─────────────────────────────────────
+        let key_ferrite = JournalKey::Material { seed: 10 };
+        journal.record(
+            key_ferrite.clone(),
+            "Ferrite",
+            Observation {
+                category: ObservationCategory::SurfaceAppearance,
+                confidence: ConfidenceLevel::Tentative,
+                description: "Warm rust tone".into(),
+                recorded_at: 1,
+            },
+        );
+        journal.record(
+            key_ferrite.clone(),
+            "Ferrite",
+            Observation {
+                category: ObservationCategory::ThermalBehavior,
+                confidence: ConfidenceLevel::Observed,
+                description: "Holds together under heat".into(),
+                recorded_at: 2,
+            },
+        );
+
+        // ── Material 2: Silite ──────────────────────────────────────
+        let key_silite = JournalKey::Material { seed: 20 };
+        journal.record(
+            key_silite.clone(),
+            "Silite",
+            Observation {
+                category: ObservationCategory::SurfaceAppearance,
+                confidence: ConfidenceLevel::Observed,
+                description: "Cool blue tone".into(),
+                recorded_at: 3,
+            },
+        );
+        journal.record(
+            key_silite.clone(),
+            "Silite",
+            Observation {
+                category: ObservationCategory::Weight,
+                confidence: ConfidenceLevel::Confident,
+                description: "Feather-light".into(),
+                recorded_at: 4,
+            },
+        );
+
+        // ── Material 3: Volite ──────────────────────────────────────
+        let key_volite = JournalKey::Material { seed: 30 };
+        journal.record(
+            key_volite.clone(),
+            "Volite",
+            Observation {
+                category: ObservationCategory::SurfaceAppearance,
+                confidence: ConfidenceLevel::Tentative,
+                description: "Dark mineral grey".into(),
+                recorded_at: 5,
+            },
+        );
+        journal.record(
+            key_volite.clone(),
+            "Volite",
+            Observation {
+                category: ObservationCategory::ThermalBehavior,
+                confidence: ConfidenceLevel::Confident,
+                description: "Glows faintly when heated".into(),
+                recorded_at: 6,
+            },
+        );
+        journal.record(
+            key_volite.clone(),
+            "Volite",
+            Observation {
+                category: ObservationCategory::Weight,
+                confidence: ConfidenceLevel::Observed,
+                description: "Very heavy".into(),
+                recorded_at: 7,
+            },
+        );
+
+        // ── Material 4: Crystite (ensures "3+" is exceeded) ─────────
+        let key_crystite = JournalKey::Material { seed: 40 };
+        journal.record(
+            key_crystite.clone(),
+            "Crystite",
+            Observation {
+                category: ObservationCategory::SurfaceAppearance,
+                confidence: ConfidenceLevel::Observed,
+                description: "Translucent with prismatic flecks".into(),
+                recorded_at: 8,
+            },
+        );
+
+        // ── Verify entry separation ─────────────────────────────────
+        assert_eq!(journal.entries.len(), 4, "four distinct material entries");
+        assert!(journal.entries.contains_key(&key_ferrite));
+        assert!(journal.entries.contains_key(&key_silite));
+        assert!(journal.entries.contains_key(&key_volite));
+        assert!(journal.entries.contains_key(&key_crystite));
+
+        // ── Verify observation counts per entry ─────────────────────
+        let ferrite = journal.entries.get(&key_ferrite).unwrap();
+        assert_eq!(ferrite.observation_count(), 2);
+        assert_eq!(ferrite.name, "Ferrite");
+
+        let silite = journal.entries.get(&key_silite).unwrap();
+        assert_eq!(silite.observation_count(), 2);
+        assert_eq!(silite.name, "Silite");
+
+        let volite = journal.entries.get(&key_volite).unwrap();
+        assert_eq!(volite.observation_count(), 3);
+        assert_eq!(volite.name, "Volite");
+
+        let crystite = journal.entries.get(&key_crystite).unwrap();
+        assert_eq!(crystite.observation_count(), 1);
+        assert_eq!(crystite.name, "Crystite");
+
+        // ── Cross-contamination: each entry contains only its own data ──
+        assert!(
+            ferrite
+                .all_observations()
+                .all(|o| o.description == "Warm rust tone"
+                    || o.description == "Holds together under heat"),
+            "Ferrite must only contain its own observations"
+        );
+        assert!(
+            silite
+                .all_observations()
+                .all(|o| o.description == "Cool blue tone" || o.description == "Feather-light"),
+            "Silite must only contain its own observations"
+        );
+        assert!(
+            volite
+                .all_observations()
+                .all(|o| o.description == "Dark mineral grey"
+                    || o.description == "Glows faintly when heated"
+                    || o.description == "Very heavy"),
+            "Volite must only contain its own observations"
+        );
+        assert!(
+            crystite
+                .all_observations()
+                .all(|o| o.description == "Translucent with prismatic flecks"),
+            "Crystite must only contain its own observations"
+        );
+
+        // ── Verify rendering shows all four materials separated ─────
+        let text = build_journal_text(&journal);
+
+        // All material names appear.
+        assert!(text.contains("Ferrite"));
+        assert!(text.contains("Silite"));
+        assert!(text.contains("Volite"));
+        assert!(text.contains("Crystite"));
+
+        // Each material's observations appear in the rendered text.
+        assert!(text.contains("Surface: Warm rust tone"));
+        assert!(text.contains("Heat: Holds together under heat"));
+        assert!(text.contains("Surface: Cool blue tone"));
+        assert!(text.contains("Carried: Feather-light"));
+        assert!(text.contains("Surface: Dark mineral grey"));
+        assert!(text.contains("Heat: Glows faintly when heated"));
+        assert!(text.contains("Carried: Very heavy"));
+        assert!(text.contains("Surface: Translucent with prismatic flecks"));
+
+        // Entries are rendered alphabetically (Crystite, Ferrite, Silite, Volite).
+        let pos_crystite = text.find("Crystite").unwrap();
+        let pos_ferrite = text.find("Ferrite").unwrap();
+        let pos_silite = text.find("Silite").unwrap();
+        let pos_volite = text.find("Volite").unwrap();
+        assert!(
+            pos_crystite < pos_ferrite && pos_ferrite < pos_silite && pos_silite < pos_volite,
+            "materials must be rendered in alphabetical order"
+        );
+
+        // Thermal observations appear exactly where expected (Ferrite and
+        // Volite have thermal data; Silite and Crystite do not).
+        assert_eq!(
+            text.matches("Heat:").count(),
+            2,
+            "exactly two materials have thermal observations"
+        );
+        // Weight observations: Silite and Volite.
+        assert_eq!(
+            text.matches("Carried:").count(),
+            2,
+            "exactly two materials have weight observations"
+        );
+    }
 }
