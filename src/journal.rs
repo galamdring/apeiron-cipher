@@ -2928,6 +2928,76 @@ mod tests {
     }
 
     #[test]
+    fn correct_entries_shown_for_given_scroll_offset() {
+        let journal = make_journal_with_n_entries(10);
+        let entries: Vec<&JournalEntry> = {
+            let mut v: Vec<_> = journal.entries.values().collect();
+            v.sort_by(|a, b| a.name.cmp(&b.name));
+            v
+        };
+        // Sorted names: Material-000 .. Material-009
+
+        // Page starting at offset 0, page size 3: should show entries 0, 1, 2.
+        let state = JournalUiState {
+            visible: true,
+            selected_index: 0,
+            scroll_offset: 0,
+            entries_per_page: 3,
+        };
+        let lines = build_entry_list_lines(&entries, &state);
+        assert_eq!(lines.len(), 3);
+        assert!(lines[0].text.contains("Material-000"));
+        assert!(lines[1].text.contains("Material-001"));
+        assert!(lines[2].text.contains("Material-002"));
+
+        // Page starting at offset 4, page size 3: should show entries 4, 5, 6.
+        let state = JournalUiState {
+            visible: true,
+            selected_index: 5,
+            scroll_offset: 4,
+            entries_per_page: 3,
+        };
+        let lines = build_entry_list_lines(&entries, &state);
+        assert_eq!(lines.len(), 3);
+        assert!(
+            lines[0].text.contains("Material-004"),
+            "first visible entry should be Material-004, got: {}",
+            lines[0].text
+        );
+        assert!(
+            lines[1].text.contains("Material-005"),
+            "second visible entry should be Material-005, got: {}",
+            lines[1].text
+        );
+        assert!(
+            lines[1].selected,
+            "Material-005 at abs index 5 should be selected"
+        );
+        assert!(
+            lines[2].text.contains("Material-006"),
+            "third visible entry should be Material-006, got: {}",
+            lines[2].text
+        );
+
+        // Page at the tail: offset 8, page size 3 but only 2 remain.
+        let state = JournalUiState {
+            visible: true,
+            selected_index: 9,
+            scroll_offset: 8,
+            entries_per_page: 3,
+        };
+        let lines = build_entry_list_lines(&entries, &state);
+        assert_eq!(
+            lines.len(),
+            2,
+            "should clamp to remaining entries when page extends past end"
+        );
+        assert!(lines[0].text.contains("Material-008"));
+        assert!(lines[1].text.contains("Material-009"));
+        assert!(lines[1].selected, "last entry should be selected");
+    }
+
+    #[test]
     fn toggle_close_reopen_preserves_selection_and_scroll() {
         let mut state = JournalUiState {
             visible: true,
