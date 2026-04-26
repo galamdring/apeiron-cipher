@@ -3535,4 +3535,100 @@ mod tests {
         assert_eq!(state.selected_index, 7, "selection preserved after toggle");
         assert_eq!(state.scroll_offset, 3, "scroll preserved after toggle");
     }
+
+    /// Verifies that `journal_navigation` ignores all key presses when the
+    /// journal is hidden.  We build a minimal `App` with the system, insert
+    /// a player with a journal, press ArrowDown, and confirm that
+    /// `selected_index` stays at its initial value.
+    #[test]
+    fn navigation_ignored_when_journal_is_hidden() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.init_resource::<ButtonInput<KeyCode>>();
+        app.insert_resource(JournalUiState {
+            visible: false,
+            selected_index: 3,
+            scroll_offset: 0,
+            entries_per_page: 15,
+        });
+        app.add_systems(Update, journal_navigation);
+
+        // Spawn a player with a journal containing entries so navigation
+        // would normally have something to move through.
+        let mut journal = Journal::default();
+        for i in 0..10 {
+            journal.record(
+                JournalKey::Material { seed: i },
+                &format!("Mat-{i:03}"),
+                Observation {
+                    category: ObservationCategory::SurfaceAppearance,
+                    confidence: ConfidenceLevel::Tentative,
+                    description: format!("Obs {i}"),
+                    recorded_at: 0,
+                },
+            );
+        }
+        app.world_mut().spawn((Player, journal));
+
+        // Simulate pressing ArrowDown.
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::ArrowDown);
+
+        app.update();
+
+        let state = app.world().resource::<JournalUiState>();
+        assert_eq!(
+            state.selected_index, 3,
+            "navigation must not change selection when journal is hidden"
+        );
+        assert_eq!(
+            state.scroll_offset, 0,
+            "navigation must not change scroll when journal is hidden"
+        );
+    }
+
+    /// Mirror test: confirms navigation *does* work when the journal is
+    /// visible, so the hidden-guard test above isn't vacuously passing.
+    #[test]
+    fn navigation_active_when_journal_is_visible() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.init_resource::<ButtonInput<KeyCode>>();
+        app.insert_resource(JournalUiState {
+            visible: true,
+            selected_index: 3,
+            scroll_offset: 0,
+            entries_per_page: 15,
+        });
+        app.add_systems(Update, journal_navigation);
+
+        let mut journal = Journal::default();
+        for i in 0..10 {
+            journal.record(
+                JournalKey::Material { seed: i },
+                &format!("Mat-{i:03}"),
+                Observation {
+                    category: ObservationCategory::SurfaceAppearance,
+                    confidence: ConfidenceLevel::Tentative,
+                    description: format!("Obs {i}"),
+                    recorded_at: 0,
+                },
+            );
+        }
+        app.world_mut().spawn((Player, journal));
+
+        // Simulate pressing ArrowDown.
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::ArrowDown);
+
+        app.update();
+
+        let state = app.world().resource::<JournalUiState>();
+        assert_eq!(
+            state.selected_index, 4,
+            "navigation must advance selection when journal is visible"
+        );
+    }
 }
