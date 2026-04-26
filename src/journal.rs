@@ -300,9 +300,45 @@ impl Journal {
 
 // ── UI state ────────────────────────────────────────────────────────────
 
-#[derive(Resource, Default)]
+/// Tracks the journal panel's visibility and navigation state.
+///
+/// `selected_index` — which entry in the sorted entry list the player has
+/// highlighted.  `scroll_offset` — the first visible entry index when the
+/// list is longer than one page.  `entries_per_page` — how many entry rows
+/// fit in the left-hand list panel (data-driven default: 15).
+///
+/// Scroll position and selection survive close/reopen — toggling visibility
+/// does **not** reset navigation fields.
+#[derive(Resource)]
 struct JournalUiState {
+    /// Whether the journal overlay is currently shown.
     visible: bool,
+    /// Index of the currently highlighted entry in the sorted entry list.
+    #[allow(dead_code)] // Read by navigation systems added in Story 10.2 Phase 2
+    selected_index: usize,
+    /// Index of the first entry visible in the left-hand list panel.
+    #[allow(dead_code)] // Read by navigation systems added in Story 10.2 Phase 2
+    scroll_offset: usize,
+    /// Maximum number of entry rows displayed per page.  Loaded from
+    /// configuration; falls back to `Self::DEFAULT_ENTRIES_PER_PAGE`.
+    #[allow(dead_code)] // Read by navigation systems added in Story 10.2 Phase 2
+    entries_per_page: usize,
+}
+
+impl JournalUiState {
+    /// Sensible default when no configuration override is provided.
+    const DEFAULT_ENTRIES_PER_PAGE: usize = 15;
+}
+
+impl Default for JournalUiState {
+    fn default() -> Self {
+        Self {
+            visible: false,
+            selected_index: 0,
+            scroll_offset: 0,
+            entries_per_page: Self::DEFAULT_ENTRIES_PER_PAGE,
+        }
+    }
 }
 
 #[derive(Message)]
