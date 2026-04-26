@@ -630,12 +630,23 @@ fn apply_observations(
 /// within the 4-parameter limit.
 #[derive(Resource, Default)]
 struct JournalRenderCache {
-    /// Text for the left-hand entry list panel.
-    list: String,
+    /// Structured lines for the left-hand entry list panel, each carrying
+    /// its display text and whether it represents the selected entry.
+    list_lines: Vec<EntryListLine>,
     /// Text for the right-hand detail panel.
     detail: String,
     /// Text for the bottom help bar.
     help: String,
+}
+
+/// A single line in the entry list panel, carrying its display text and
+/// whether it is the currently selected entry (for highlight rendering).
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct EntryListLine {
+    /// The formatted display text for this line (e.g. `"> Ferrite (3 obs)"`).
+    text: String,
+    /// `true` when this line is the currently selected entry.
+    selected: bool,
 }
 
 // ── Rendering ───────────────────────────────────────────────────────────
@@ -652,14 +663,14 @@ fn compute_journal_panels(
     mut cache: ResMut<JournalRenderCache>,
 ) {
     if !state.visible {
-        cache.list.clear();
+        cache.list_lines.clear();
         cache.detail.clear();
         cache.help.clear();
         return;
     }
 
     let Ok(journal) = player_query.single() else {
-        cache.list.clear();
+        cache.list_lines.clear();
         cache.detail.clear();
         cache.help.clear();
         return;
@@ -672,7 +683,7 @@ fn compute_journal_panels(
     let entry_count = sorted_entries.len();
     state.clamp_to_entry_count(entry_count);
 
-    cache.list = build_entry_list_text(&sorted_entries, &state);
+    cache.list_lines = build_entry_list_lines(&sorted_entries, &state);
     cache.detail = build_detail_text(&sorted_entries, &state);
     cache.help = build_help_text(entry_count, &state);
 }
@@ -690,7 +701,9 @@ fn compute_journal_panels(
 fn sync_journal_ui(
     state: Res<JournalUiState>,
     cache: Res<JournalRenderCache>,
+    mut commands: Commands,
     mut panel_query: Query<&mut Visibility, With<JournalPanel>>,
+    list_query: Query<(Entity, Option<&Children>), With<JournalEntryListText>>,
     mut texts: ParamSet<(
         Query<&mut Text, With<JournalEntryListText>>,
         Query<&mut Text, With<JournalDetailText>>,
@@ -708,15 +721,86 @@ fn sync_journal_ui(
 
     *panel_vis = Visibility::Visible;
 
-    if let Ok(mut list_text) = texts.p0().single_mut() {
-        list_text.0.clone_from(&cache.list);
+    // ── Entry list: rebuild TextSpan children for per-line coloring ──
+    //
+    // The root Text node stays empty; each visible line becomes a child
+    // TextSpan with a highlight color for the selected entry and the
+    // default color for the rest.
+    let selected_color = TextColor(Color::srgba(1.0, 0.85, 0.35, 1.0));
+    let normal_color = TextColor(Color::srgba(0.92, 0.92, 0.88, 1.0));
+    let span_font = TextFont {
+        font_size: 16.0,
+        ..default()
+    };
+
+    if let Ok((list_entity, children)) = list_query.single() {
+        // Despawn old spans.
+        if let Some(children) = children {
+            for child in children.iter() {
+                commands.entity(child).despawn();
+            }
+        }
+
+        // Clear root text so only spans render.
+        if let Ok(mut root_text) = texts.p0().single_mut() {
+            root_text.0.clear();
+        }
+
+        // Spawn new spans — one per visible entry line.
+        let line_count = cache.list_lines.len();
+        commands.entity(list_entity).with_children(|parent| {
+            for (i, line) in cache.list_lines.iter().enumerate() {
+                let color = if line.selected {
+                    selected_color
+                } else {
+                    normal_color
+                };
+                // Append newline between lines but not after the last one.
+                let suffix = if i + 1 < line_count { "\n" } else { "" };
+                parent.spawn((
+                    TextSpan::new(format!("{}{suffix}", line.text)),
+                    span_font.clone(),
+                    color,
+                ));
+            }
+        });
     }
+
     if let Ok(mut detail_text) = texts.p1().single_mut() {
         detail_text.0.clone_from(&cache.detail);
     }
     if let Ok(mut help_text) = texts.p2().single_mut() {
         help_text.0.clone_from(&cache.help);
     }
+}
+
+/// Builds structured line data for the left-panel entry list.
+///
+/// Each line carries its display text and a flag indicating whether it is
+/// the currently selected entry.  The selected entry is prefixed with `>`
+/// and rendered with a distinct highlight color by the UI sync system.
+fn build_entry_list_lines(entries: &[&JournalEntry], state: &JournalUiState) -> Vec<EntryListLine> {
+    if entries.is_empty() {
+        return Vec::new();
+    }
+
+    let page_end = (state.scroll_offset + state.entries_per_page).min(entries.len());
+    let visible = &entries[state.scroll_offset..page_end];
+
+    visible
+        .iter()
+        .enumerate()
+        .map(|(i, entry)| {
+            let abs_index = state.scroll_offset + i;
+            let selected = abs_index == state.selected_index;
+            let prefix = if selected { ">" } else { " " };
+            let obs_count = entry.observation_count();
+            EntryListLine {
+                text: format!("{prefix} {} ({obs_count} obs)", entry.name),
+                selected,
+            }
+        })
+        .collect()
 }
 
 /// Builds the left-panel entry list showing names within the visible
@@ -728,26 +812,14 @@ fn sync_journal_ui(
 /// > Ferrite (3 obs)       ← selected
 ///   Silite (1 obs)        ← not selected
 /// ```
+#[cfg(test)]
 fn build_entry_list_text(entries: &[&JournalEntry], state: &JournalUiState) -> String {
-    if entries.is_empty() {
-        return String::new();
-    }
-
-    let page_end = (state.scroll_offset + state.entries_per_page).min(entries.len());
-    let visible = &entries[state.scroll_offset..page_end];
-
-    let mut lines: Vec<String> = Vec::with_capacity(visible.len());
-    for (i, entry) in visible.iter().enumerate() {
-        let abs_index = state.scroll_offset + i;
-        let prefix = if abs_index == state.selected_index {
-            ">"
-        } else {
-            " "
-        };
-        let obs_count = entry.observation_count();
-        lines.push(format!("{prefix} {} ({obs_count} obs)", entry.name));
-    }
-    lines.join("\n")
+    let lines = build_entry_list_lines(entries, state);
+    lines
+        .iter()
+        .map(|l| l.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Builds the right-panel detail view for the currently selected entry.
@@ -2842,8 +2914,8 @@ mod tests {
         // Verify the render cache was populated (non-empty list text).
         let cache = app.world().resource::<JournalRenderCache>();
         assert!(
-            !cache.list.is_empty(),
-            "entry list text should be populated after rendering with entries"
+            !cache.list_lines.is_empty(),
+            "entry list lines should be populated after rendering with entries"
         );
         assert!(
             !cache.detail.is_empty(),
