@@ -2779,6 +2779,82 @@ mod tests {
         assert!(help.contains("of 120"));
     }
 
+    /// The two-panel journal UI spawns without panic and the render pipeline
+    /// (`compute_journal_panels` → `sync_journal_ui`) executes successfully
+    /// when the journal is visible, both with an empty journal and one
+    /// populated with entries.  This exercises the full ECS wiring: resource
+    /// initialisation, UI node spawning, text computation, and text sync.
+    #[test]
+    fn panels_render_without_panic() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        // Initialise the resources and spawn the UI nodes that the journal
+        // plugin registers at Startup.
+        app.init_resource::<JournalUiState>();
+        app.init_resource::<JournalRenderCache>();
+        app.add_systems(Startup, spawn_journal_ui);
+        app.add_systems(
+            Update,
+            (
+                compute_journal_panels,
+                sync_journal_ui.after(compute_journal_panels),
+            ),
+        );
+
+        // Spawn a player entity with an empty journal.
+        app.world_mut()
+            .spawn((Player, Journal::default(), Transform::default()));
+
+        // Frame 0: run Startup (spawns UI nodes).
+        app.update();
+
+        // Make journal visible so the render path is exercised.
+        app.world_mut().resource_mut::<JournalUiState>().visible = true;
+
+        // Frame 1: compute + sync with empty journal — should not panic.
+        app.update();
+
+        // Populate the journal with a few entries and re-render.
+        {
+            let mut query = app
+                .world_mut()
+                .query_filtered::<&mut Journal, With<Player>>();
+            let mut journal = query
+                .single_mut(app.world_mut())
+                .expect("player must exist");
+            for i in 0..5u64 {
+                journal.record(
+                    JournalKey::Material { seed: i },
+                    &format!("Mat-{i}"),
+                    Observation {
+                        category: ObservationCategory::SurfaceAppearance,
+                        confidence: ConfidenceLevel::Tentative,
+                        description: format!("Appearance of Mat-{i}"),
+                        recorded_at: i,
+                    },
+                );
+            }
+        }
+
+        // Frame 2: compute + sync with populated journal — should not panic.
+        app.update();
+
+        // Verify the render cache was populated (non-empty list text).
+        let cache = app.world().resource::<JournalRenderCache>();
+        assert!(
+            !cache.list.is_empty(),
+            "entry list text should be populated after rendering with entries"
+        );
+        assert!(
+            !cache.detail.is_empty(),
+            "detail text should be populated after rendering with entries"
+        );
+        assert!(
+            !cache.help.is_empty(),
+            "help text should be populated after rendering with entries"
+        );
+    }
+
     #[test]
     fn toggle_close_reopen_preserves_selection_and_scroll() {
         let mut state = JournalUiState {
