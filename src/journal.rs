@@ -282,6 +282,7 @@ struct LegacyJournal {
     entries: BTreeMap<u64, LegacyJournalEntry>,
 }
 
+#[expect(dead_code)]
 #[derive(Clone, Debug, Default)]
 struct LegacyJournalEntry {
     name: String,
@@ -459,7 +460,7 @@ fn apply_observations(
 
 fn render_journal(
     state: Res<JournalUiState>,
-    player_query: Query<&LegacyJournal, With<Player>>,
+    player_query: Query<&NewJournal, With<Player>>,
     mut panel_query: Query<&mut Visibility, With<JournalPanel>>,
     mut text_query: Query<&mut Text, With<JournalText>>,
 ) {
@@ -484,42 +485,68 @@ fn render_journal(
     text.0 = build_journal_text(journal);
 }
 
-fn build_journal_text(journal: &LegacyJournal) -> String {
+fn build_journal_text(journal: &NewJournal) -> String {
     if journal.entries.is_empty() {
         return "Journal\n\nNo observations yet.".to_string();
     }
 
     let mut out = vec!["Journal".to_string()];
 
-    if !journal.fabrication_log.is_empty() {
+    // Collect all fabrication result descriptions across all entries, in
+    // insertion order (BTreeMap iteration is deterministic). This mirrors
+    // the legacy "Recent Fabrication" section which was a flat log.
+    let fabrication_descriptions: Vec<&str> = journal
+        .entries
+        .values()
+        .flat_map(|entry| {
+            entry
+                .observations
+                .iter()
+                .filter(|o| o.category == ObservationCategory::FabricationResult)
+                .map(|o| o.description.as_str())
+        })
+        .collect();
+
+    if !fabrication_descriptions.is_empty() {
         out.push(String::new());
         out.push("Recent Fabrication".to_string());
-        for history in &journal.fabrication_log {
-            out.push(history.clone());
+        for desc in &fabrication_descriptions {
+            out.push((*desc).to_string());
         }
     }
 
-    let mut entries: Vec<&LegacyJournalEntry> = journal.entries.values().collect();
+    // Sort entries by name for stable, alphabetical display order.
+    let mut entries: Vec<&JournalEntry> = journal.entries.values().collect();
     entries.sort_by(|a, b| a.name.cmp(&b.name));
 
     for entry in entries {
         out.push(String::new());
         out.push(entry.name.clone());
 
-        for obs in &entry.surface_observations {
-            out.push(format!("Surface: {obs}"));
+        for obs in entry.observations_by_category(&ObservationCategory::SurfaceAppearance) {
+            out.push(format!("Surface: {}", obs.description));
         }
 
-        if let Some(thermal) = &entry.thermal_observation {
-            out.push(format!("Heat: {thermal}"));
+        // Show only the most recent thermal observation (matches legacy
+        // behavior where `thermal_observation` was a single `Option<String>`).
+        if let Some(thermal) = entry
+            .observations_by_category(&ObservationCategory::ThermalBehavior)
+            .last()
+        {
+            out.push(format!("Heat: {}", thermal.description));
         }
 
-        if let Some(weight) = &entry.weight_observation {
-            out.push(format!("Carried: {weight}"));
+        // Show only the most recent weight observation (matches legacy
+        // behavior where `weight_observation` was a single `Option<String>`).
+        if let Some(weight) = entry
+            .observations_by_category(&ObservationCategory::Weight)
+            .last()
+        {
+            out.push(format!("Carried: {}", weight.description));
         }
 
-        for history in &entry.fabrication_history {
-            out.push(history.clone());
+        for obs in entry.observations_by_category(&ObservationCategory::FabricationResult) {
+            out.push(obs.description.clone());
         }
     }
 
@@ -576,9 +603,17 @@ mod tests {
 
     #[test]
     fn journal_omits_unknown_properties() {
-        let mut journal = LegacyJournal::default();
-        let entry = journal.ensure_entry(1, "Ferrite");
-        entry.surface_observations.push("Weight: Heavy".into());
+        let mut journal = NewJournal::default();
+        journal.record(
+            JournalKey::Material { seed: 1 },
+            "Ferrite",
+            Observation {
+                category: ObservationCategory::SurfaceAppearance,
+                confidence: ConfidenceLevel::Tentative,
+                description: "Weight: Heavy".into(),
+                recorded_at: 1,
+            },
+        );
 
         let text = build_journal_text(&journal);
         assert!(text.contains("Weight: Heavy"));
@@ -587,14 +622,17 @@ mod tests {
 
     #[test]
     fn journal_includes_fabrication_history() {
-        let mut journal = LegacyJournal::default();
-        journal
-            .fabrication_log
-            .push("Combined Ferrite + Silite -> Neoite".into());
-        let entry = journal.ensure_entry(2, "Neoite");
-        entry
-            .fabrication_history
-            .push("Combined Ferrite + Silite -> Neoite".into());
+        let mut journal = NewJournal::default();
+        journal.record(
+            JournalKey::Fabrication { output_seed: 2 },
+            "Neoite",
+            Observation {
+                category: ObservationCategory::FabricationResult,
+                confidence: ConfidenceLevel::Confident,
+                description: "Combined Ferrite + Silite -> Neoite".into(),
+                recorded_at: 1,
+            },
+        );
 
         let text = build_journal_text(&journal);
         assert!(text.contains("Combined Ferrite + Silite -> Neoite"));
@@ -603,9 +641,17 @@ mod tests {
 
     #[test]
     fn journal_shows_thermal_observation_when_present() {
-        let mut journal = LegacyJournal::default();
-        let entry = journal.ensure_entry(3, "TestMat");
-        entry.thermal_observation = Some("Reliably hold together under heat".into());
+        let mut journal = NewJournal::default();
+        journal.record(
+            JournalKey::Material { seed: 3 },
+            "TestMat",
+            Observation {
+                category: ObservationCategory::ThermalBehavior,
+                confidence: ConfidenceLevel::Observed,
+                description: "Reliably hold together under heat".into(),
+                recorded_at: 1,
+            },
+        );
 
         let text = build_journal_text(&journal);
         assert!(text.contains("Heat: Reliably hold together under heat"));
@@ -668,17 +714,32 @@ mod tests {
 
     #[test]
     fn journal_shows_weight_observation_only_when_present() {
-        let mut journal = LegacyJournal::default();
-        let entry = journal.ensure_entry(4, "Ferrite");
-        entry
-            .surface_observations
-            .push("Color: Cool blue tone".into());
+        let mut journal = NewJournal::default();
+        let key = JournalKey::Material { seed: 4 };
+        journal.record(
+            key.clone(),
+            "Ferrite",
+            Observation {
+                category: ObservationCategory::SurfaceAppearance,
+                confidence: ConfidenceLevel::Tentative,
+                description: "Color: Cool blue tone".into(),
+                recorded_at: 1,
+            },
+        );
 
         let without_weight = build_journal_text(&journal);
         assert!(!without_weight.contains("Carried: Heavy but manageable"));
 
-        let entry = journal.ensure_entry(4, "Ferrite");
-        entry.weight_observation = Some("Heavy but manageable".into());
+        journal.record(
+            key,
+            "Ferrite",
+            Observation {
+                category: ObservationCategory::Weight,
+                confidence: ConfidenceLevel::Observed,
+                description: "Heavy but manageable".into(),
+                recorded_at: 2,
+            },
+        );
 
         let with_weight = build_journal_text(&journal);
         assert!(with_weight.contains("Carried: Heavy but manageable"));
