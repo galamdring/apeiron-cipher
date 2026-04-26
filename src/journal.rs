@@ -173,13 +173,31 @@ impl JournalEntry {
         }
     }
 
-    /// Append an observation and update the `last_updated_at` timestamp.
+    /// Record an observation, deduplicating against existing entries.
     ///
-    /// The observation's `recorded_at` tick is used as the new
-    /// `last_updated_at` value, so callers must ensure observations are
-    /// appended in monotonically non-decreasing tick order.
+    /// If an observation with the same category **and** the same description
+    /// already exists, the duplicate is not appended. Instead, the existing
+    /// observation's confidence is upgraded to the higher of the two values
+    /// and the `last_updated_at` timestamp is advanced. This prevents the
+    /// journal from bloating when systems repeatedly report the same finding
+    /// (e.g., picking up the same material multiple times).
+    ///
+    /// When the observation is genuinely new (different category or different
+    /// description), it is appended normally.
     pub fn add_observation(&mut self, observation: Observation) {
         self.last_updated_at = observation.recorded_at;
+
+        // Look for an existing observation with the same category and description.
+        if let Some(existing) = self.observations.iter_mut().find(|o| {
+            o.category == observation.category && o.description == observation.description
+        }) {
+            // Upgrade confidence if the new evidence is stronger.
+            if observation.confidence > existing.confidence {
+                existing.confidence = observation.confidence;
+            }
+            return;
+        }
+
         self.observations.push(observation);
     }
 
@@ -882,6 +900,135 @@ mod tests {
     fn new_journal_empty_default() {
         let journal = NewJournal::default();
         assert!(journal.entries.is_empty());
+    }
+
+    #[test]
+    fn duplicate_observation_same_category_and_description_is_skipped() {
+        let key = JournalKey::Material { seed: 1 };
+        let mut entry = JournalEntry::new(key, "Ferrite".into(), 10);
+
+        entry.add_observation(Observation {
+            category: ObservationCategory::SurfaceAppearance,
+            confidence: ConfidenceLevel::Tentative,
+            description: "Warm rust tone".into(),
+            recorded_at: 10,
+        });
+        // Same category + same description at a later tick — should NOT add a second entry.
+        entry.add_observation(Observation {
+            category: ObservationCategory::SurfaceAppearance,
+            confidence: ConfidenceLevel::Tentative,
+            description: "Warm rust tone".into(),
+            recorded_at: 20,
+        });
+
+        assert_eq!(entry.observations.len(), 1, "duplicate should be skipped");
+        // Timestamp still advances even when the observation is deduplicated.
+        assert_eq!(entry.last_updated_at, 20);
+    }
+
+    #[test]
+    fn duplicate_observation_upgrades_confidence() {
+        let key = JournalKey::Material { seed: 1 };
+        let mut entry = JournalEntry::new(key, "Ferrite".into(), 10);
+
+        entry.add_observation(Observation {
+            category: ObservationCategory::ThermalBehavior,
+            confidence: ConfidenceLevel::Tentative,
+            description: "Holds together under heat".into(),
+            recorded_at: 10,
+        });
+        // Same category + description but higher confidence — should upgrade.
+        entry.add_observation(Observation {
+            category: ObservationCategory::ThermalBehavior,
+            confidence: ConfidenceLevel::Confident,
+            description: "Holds together under heat".into(),
+            recorded_at: 30,
+        });
+
+        assert_eq!(entry.observations.len(), 1, "duplicate should be skipped");
+        assert_eq!(
+            entry.observations[0].confidence,
+            ConfidenceLevel::Confident,
+            "confidence should be upgraded"
+        );
+        assert_eq!(entry.last_updated_at, 30);
+    }
+
+    #[test]
+    fn duplicate_does_not_downgrade_confidence() {
+        let key = JournalKey::Material { seed: 1 };
+        let mut entry = JournalEntry::new(key, "Ferrite".into(), 10);
+
+        entry.add_observation(Observation {
+            category: ObservationCategory::Weight,
+            confidence: ConfidenceLevel::Confident,
+            description: "Heavy".into(),
+            recorded_at: 10,
+        });
+        // Same category + description but lower confidence — confidence should stay.
+        entry.add_observation(Observation {
+            category: ObservationCategory::Weight,
+            confidence: ConfidenceLevel::Tentative,
+            description: "Heavy".into(),
+            recorded_at: 20,
+        });
+
+        assert_eq!(entry.observations.len(), 1);
+        assert_eq!(
+            entry.observations[0].confidence,
+            ConfidenceLevel::Confident,
+            "confidence should not downgrade"
+        );
+    }
+
+    #[test]
+    fn same_category_different_description_is_not_duplicate() {
+        let key = JournalKey::Material { seed: 1 };
+        let mut entry = JournalEntry::new(key, "Ferrite".into(), 10);
+
+        entry.add_observation(Observation {
+            category: ObservationCategory::SurfaceAppearance,
+            confidence: ConfidenceLevel::Tentative,
+            description: "Warm rust tone".into(),
+            recorded_at: 10,
+        });
+        entry.add_observation(Observation {
+            category: ObservationCategory::SurfaceAppearance,
+            confidence: ConfidenceLevel::Tentative,
+            description: "Slightly rough texture".into(),
+            recorded_at: 20,
+        });
+
+        assert_eq!(
+            entry.observations.len(),
+            2,
+            "different descriptions are distinct observations"
+        );
+    }
+
+    #[test]
+    fn same_description_different_category_is_not_duplicate() {
+        let key = JournalKey::Material { seed: 1 };
+        let mut entry = JournalEntry::new(key, "Ferrite".into(), 10);
+
+        entry.add_observation(Observation {
+            category: ObservationCategory::SurfaceAppearance,
+            confidence: ConfidenceLevel::Tentative,
+            description: "Notable".into(),
+            recorded_at: 10,
+        });
+        entry.add_observation(Observation {
+            category: ObservationCategory::LocationNote,
+            confidence: ConfidenceLevel::Tentative,
+            description: "Notable".into(),
+            recorded_at: 20,
+        });
+
+        assert_eq!(
+            entry.observations.len(),
+            2,
+            "different categories are distinct observations"
+        );
     }
 
     /// Every type in the journal data model serializes to JSON and deserializes
