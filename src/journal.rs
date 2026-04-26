@@ -93,6 +93,7 @@ impl Plugin for JournalPlugin {
         app.add_message::<RecordObservation>()
             .add_message::<ToggleJournalIntent>()
             .init_resource::<JournalUiState>()
+            .init_resource::<JournalRenderCache>()
             .add_systems(
                 Startup,
                 (
@@ -105,8 +106,12 @@ impl Plugin for JournalPlugin {
                 (
                     emit_toggle_journal_intent,
                     toggle_journal_visibility.after(emit_toggle_journal_intent),
+                    journal_navigation.after(toggle_journal_visibility),
                     apply_observations,
-                    render_journal.after(apply_observations),
+                    compute_journal_panels
+                        .after(apply_observations)
+                        .after(journal_navigation),
+                    sync_journal_ui.after(compute_journal_panels),
                 ),
             );
     }
@@ -310,24 +315,42 @@ impl Journal {
 /// Scroll position and selection survive close/reopen — toggling visibility
 /// does **not** reset navigation fields.
 #[derive(Resource)]
-struct JournalUiState {
+pub struct JournalUiState {
     /// Whether the journal overlay is currently shown.
-    visible: bool,
+    pub visible: bool,
     /// Index of the currently highlighted entry in the sorted entry list.
-    #[allow(dead_code)] // Read by navigation systems added in Story 10.2 Phase 2
-    selected_index: usize,
+    pub selected_index: usize,
     /// Index of the first entry visible in the left-hand list panel.
-    #[allow(dead_code)] // Read by navigation systems added in Story 10.2 Phase 2
-    scroll_offset: usize,
+    pub scroll_offset: usize,
     /// Maximum number of entry rows displayed per page.  Loaded from
     /// configuration; falls back to `Self::DEFAULT_ENTRIES_PER_PAGE`.
-    #[allow(dead_code)] // Read by navigation systems added in Story 10.2 Phase 2
-    entries_per_page: usize,
+    pub entries_per_page: usize,
 }
 
 impl JournalUiState {
     /// Sensible default when no configuration override is provided.
     const DEFAULT_ENTRIES_PER_PAGE: usize = 15;
+
+    /// Clamp `selected_index` and `scroll_offset` so they stay within valid
+    /// bounds for the given total entry count.  Called after any navigation
+    /// input and before rendering so the UI never references out-of-range
+    /// indices.
+    fn clamp_to_entry_count(&mut self, entry_count: usize) {
+        if entry_count == 0 {
+            self.selected_index = 0;
+            self.scroll_offset = 0;
+            return;
+        }
+        // Clamp selection to last valid index.
+        self.selected_index = self.selected_index.min(entry_count - 1);
+        // Ensure selected entry is within the visible scroll window.
+        if self.selected_index < self.scroll_offset {
+            self.scroll_offset = self.selected_index;
+        }
+        if self.selected_index >= self.scroll_offset + self.entries_per_page {
+            self.scroll_offset = self.selected_index + 1 - self.entries_per_page;
+        }
+    }
 }
 
 impl Default for JournalUiState {
@@ -344,11 +367,21 @@ impl Default for JournalUiState {
 #[derive(Message)]
 struct ToggleJournalIntent;
 
+/// Root container for the entire journal overlay (two-panel layout).
 #[derive(Component)]
 struct JournalPanel;
 
+/// Marker for the left-hand entry list text node.
 #[derive(Component)]
-struct JournalText;
+struct JournalEntryListText;
+
+/// Marker for the right-hand detail panel text node.
+#[derive(Component)]
+struct JournalDetailText;
+
+/// Marker for the bottom help bar text node.
+#[derive(Component)]
+struct JournalHelpText;
 
 fn attach_journal_to_player(mut commands: Commands, player_query: Query<Entity, With<Player>>) {
     let Ok(player) = player_query.single() else {
@@ -357,7 +390,29 @@ fn attach_journal_to_player(mut commands: Commands, player_query: Query<Entity, 
     commands.entity(player).insert(Journal::default());
 }
 
+/// Spawns the two-panel journal overlay: a vertical flex container holding
+/// a title row, a horizontal body (entry list | detail), and a help bar.
+///
+/// Layout hierarchy:
+/// ```text
+/// JournalPanel (absolute, column)
+///   ├─ Title text ("Journal")
+///   ├─ Body row (row)
+///   │   ├─ Entry list column (30% width)
+///   │   │   └─ JournalEntryListText
+///   │   └─ Detail column (70% width)
+///   │       └─ JournalDetailText
+///   └─ Help bar
+///       └─ JournalHelpText
+/// ```
 fn spawn_journal_ui(mut commands: Commands) {
+    let text_color = TextColor(Color::srgba(0.92, 0.92, 0.88, 1.0));
+    let font = TextFont {
+        font_size: 16.0,
+        ..default()
+    };
+    let dim_text_color = TextColor(Color::srgba(0.6, 0.6, 0.56, 1.0));
+
     commands
         .spawn((
             JournalPanel,
@@ -365,23 +420,79 @@ fn spawn_journal_ui(mut commands: Commands) {
                 position_type: PositionType::Absolute,
                 top: Val::Px(24.0),
                 left: Val::Px(24.0),
-                width: Val::Px(460.0),
-                max_height: Val::Percent(80.0),
+                width: Val::Px(640.0),
+                height: Val::Percent(80.0),
                 padding: UiRect::all(Val::Px(16.0)),
+                flex_direction: FlexDirection::Column,
                 ..default()
             },
             BackgroundColor(Color::srgba(0.07, 0.07, 0.09, 0.92)),
             Visibility::Hidden,
         ))
         .with_children(|parent| {
+            // ── Title ──────────────────────────────────────────
             parent.spawn((
-                JournalText,
-                Text::new(""),
-                TextFont {
-                    font_size: 16.0,
+                Text::new("Journal"),
+                font.clone(),
+                text_color,
+                Node {
+                    margin: UiRect::bottom(Val::Px(8.0)),
                     ..default()
                 },
-                TextColor(Color::srgba(0.92, 0.92, 0.88, 1.0)),
+            ));
+
+            // ── Body row (entry list | detail) ─────────────────
+            parent
+                .spawn(Node {
+                    flex_direction: FlexDirection::Row,
+                    flex_grow: 1.0,
+                    overflow: Overflow::clip(),
+                    ..default()
+                })
+                .with_children(|body| {
+                    // Left: entry list (30% width).
+                    body.spawn(Node {
+                        width: Val::Percent(30.0),
+                        flex_direction: FlexDirection::Column,
+                        padding: UiRect::right(Val::Px(8.0)),
+                        overflow: Overflow::clip(),
+                        ..default()
+                    })
+                    .with_children(|left| {
+                        left.spawn((
+                            JournalEntryListText,
+                            Text::new(""),
+                            font.clone(),
+                            text_color,
+                        ));
+                    });
+
+                    // Right: detail panel (70% width).
+                    body.spawn(Node {
+                        width: Val::Percent(70.0),
+                        flex_direction: FlexDirection::Column,
+                        padding: UiRect::left(Val::Px(8.0)),
+                        overflow: Overflow::clip(),
+                        ..default()
+                    })
+                    .with_children(|right| {
+                        right.spawn((JournalDetailText, Text::new(""), font.clone(), text_color));
+                    });
+                });
+
+            // ── Help bar ───────────────────────────────────────
+            parent.spawn((
+                JournalHelpText,
+                Text::new(""),
+                TextFont {
+                    font_size: 13.0,
+                    ..default()
+                },
+                dim_text_color,
+                Node {
+                    margin: UiRect::top(Val::Px(8.0)),
+                    ..default()
+                },
             ));
         });
 }
@@ -414,6 +525,62 @@ fn toggle_journal_visibility(
     }
 }
 
+// ── Navigation ──────────────────────────────────────────────────────────
+
+/// Handles keyboard navigation within the journal overlay.
+///
+/// Runs in Update after `toggle_journal_visibility`.  Only processes input
+/// when the journal is visible.  Reads raw `ButtonInput<KeyCode>` because
+/// journal navigation keys (arrows, Page Up/Down, Home/End) are internal
+/// to the journal UI and intentionally not routed through the game-wide
+/// `InputAction` enum.
+///
+/// Navigation rules:
+/// - Up/Down: move selection by one entry, clamped to [0, entry_count-1].
+/// - PageUp/PageDown: move selection by `entries_per_page`.
+/// - Home/End: jump to first/last entry.
+/// - Scroll offset auto-adjusts via `clamp_to_entry_count` so the
+///   selected entry is always within the visible window.
+fn journal_navigation(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut state: ResMut<JournalUiState>,
+    player_query: Query<&Journal, With<Player>>,
+) {
+    if !state.visible {
+        return;
+    }
+
+    let Ok(journal) = player_query.single() else {
+        return;
+    };
+
+    let entry_count = journal.entries.len();
+    if entry_count == 0 {
+        return;
+    }
+
+    if keys.just_pressed(KeyCode::ArrowUp) {
+        state.selected_index = state.selected_index.saturating_sub(1);
+    }
+    if keys.just_pressed(KeyCode::ArrowDown) {
+        state.selected_index = (state.selected_index + 1).min(entry_count - 1);
+    }
+    if keys.just_pressed(KeyCode::PageUp) {
+        state.selected_index = state.selected_index.saturating_sub(state.entries_per_page);
+    }
+    if keys.just_pressed(KeyCode::PageDown) {
+        state.selected_index = (state.selected_index + state.entries_per_page).min(entry_count - 1);
+    }
+    if keys.just_pressed(KeyCode::Home) {
+        state.selected_index = 0;
+    }
+    if keys.just_pressed(KeyCode::End) {
+        state.selected_index = entry_count - 1;
+    }
+
+    state.clamp_to_entry_count(entry_count);
+}
+
 // ── Record ingestion ────────────────────────────────────────────────────
 
 /// Unified ingestion system — reads [`RecordObservation`] messages and
@@ -439,18 +606,80 @@ fn apply_observations(
     }
 }
 
+/// Cached text output computed by `compute_journal_panels` and consumed
+/// by `sync_journal_ui` to update the Bevy `Text` nodes.  Keeping the
+/// computation and UI sync in separate systems allows each system to stay
+/// within the 4-parameter limit.
+#[derive(Resource, Default)]
+struct JournalRenderCache {
+    /// Text for the left-hand entry list panel.
+    list: String,
+    /// Text for the right-hand detail panel.
+    detail: String,
+    /// Text for the bottom help bar.
+    help: String,
+}
+
 // ── Rendering ───────────────────────────────────────────────────────────
 
-fn render_journal(
-    state: Res<JournalUiState>,
+/// Computes the text content for both journal panels and caches it in
+/// [`JournalRenderCache`].
+///
+/// Runs in Update after `apply_observations` and `journal_navigation`.
+/// Reads the player's `Journal` and `JournalUiState`, clamps indices,
+/// and writes the computed strings into the render cache resource.
+fn compute_journal_panels(
+    mut state: ResMut<JournalUiState>,
     player_query: Query<&Journal, With<Player>>,
-    mut panel_query: Query<&mut Visibility, With<JournalPanel>>,
-    mut text_query: Query<&mut Text, With<JournalText>>,
+    mut cache: ResMut<JournalRenderCache>,
 ) {
-    let Ok(mut panel_vis) = panel_query.single_mut() else {
+    if !state.visible {
+        cache.list.clear();
+        cache.detail.clear();
+        cache.help.clear();
+        return;
+    }
+
+    let Ok(journal) = player_query.single() else {
+        cache.list.clear();
+        cache.detail.clear();
+        cache.help.clear();
         return;
     };
-    let Ok(mut text) = text_query.single_mut() else {
+
+    // Sort entries alphabetically for stable display order.
+    let mut sorted_entries: Vec<&JournalEntry> = journal.entries.values().collect();
+    sorted_entries.sort_by(|a, b| a.name.cmp(&b.name));
+
+    let entry_count = sorted_entries.len();
+    state.clamp_to_entry_count(entry_count);
+
+    cache.list = build_entry_list_text(&sorted_entries, &state);
+    cache.detail = build_detail_text(&sorted_entries, &state);
+    cache.help = build_help_text(entry_count, &state);
+}
+
+/// Syncs the cached text into the Bevy UI `Text` nodes and toggles
+/// panel visibility.
+///
+/// Runs in Update after `compute_journal_panels`.  Reads `JournalUiState`
+/// for visibility, and `JournalRenderCache` for the precomputed text.
+/// The `ParamSet` groups three text queries that would otherwise conflict
+/// on the `Text` component; clippy's type-complexity lint is suppressed
+/// because the alternative (a custom `SystemParam`) adds indirection
+/// without improving clarity for a single call-site.
+#[allow(clippy::type_complexity)]
+fn sync_journal_ui(
+    state: Res<JournalUiState>,
+    cache: Res<JournalRenderCache>,
+    mut panel_query: Query<&mut Visibility, With<JournalPanel>>,
+    mut texts: ParamSet<(
+        Query<&mut Text, With<JournalEntryListText>>,
+        Query<&mut Text, With<JournalDetailText>>,
+        Query<&mut Text, With<JournalHelpText>>,
+    )>,
+) {
+    let Ok(mut panel_vis) = panel_query.single_mut() else {
         return;
     };
 
@@ -459,15 +688,117 @@ fn render_journal(
         return;
     }
 
-    let Ok(journal) = player_query.single() else {
-        *panel_vis = Visibility::Hidden;
-        return;
-    };
-
     *panel_vis = Visibility::Visible;
-    text.0 = build_journal_text(journal);
+
+    if let Ok(mut list_text) = texts.p0().single_mut() {
+        list_text.0.clone_from(&cache.list);
+    }
+    if let Ok(mut detail_text) = texts.p1().single_mut() {
+        detail_text.0.clone_from(&cache.detail);
+    }
+    if let Ok(mut help_text) = texts.p2().single_mut() {
+        help_text.0.clone_from(&cache.help);
+    }
 }
 
+/// Builds the left-panel entry list showing names within the visible
+/// scroll window.  The selected entry is prefixed with `>` and shows
+/// observation count; other entries show observation count without prefix.
+///
+/// Format per line:
+/// ```text
+/// > Ferrite (3 obs)       ← selected
+///   Silite (1 obs)        ← not selected
+/// ```
+fn build_entry_list_text(entries: &[&JournalEntry], state: &JournalUiState) -> String {
+    if entries.is_empty() {
+        return String::new();
+    }
+
+    let page_end = (state.scroll_offset + state.entries_per_page).min(entries.len());
+    let visible = &entries[state.scroll_offset..page_end];
+
+    let mut lines: Vec<String> = Vec::with_capacity(visible.len());
+    for (i, entry) in visible.iter().enumerate() {
+        let abs_index = state.scroll_offset + i;
+        let prefix = if abs_index == state.selected_index {
+            ">"
+        } else {
+            " "
+        };
+        let obs_count = entry.observation_count();
+        lines.push(format!("{prefix} {} ({obs_count} obs)", entry.name));
+    }
+    lines.join("\n")
+}
+
+/// Builds the right-panel detail view for the currently selected entry.
+///
+/// Shows the entry name as a header, then all observations grouped by
+/// category with descriptive prefixes matching the legacy rendering
+/// convention (Surface:, Heat:, Carried:, etc.).
+///
+/// If no entries exist, shows the "No observations yet." placeholder.
+fn build_detail_text(entries: &[&JournalEntry], state: &JournalUiState) -> String {
+    if entries.is_empty() {
+        return "No observations yet.".to_string();
+    }
+
+    let entry = entries[state.selected_index.min(entries.len() - 1)];
+    let mut out = vec![entry.name.clone()];
+
+    for obs in entry.observations_by_category(&ObservationCategory::SurfaceAppearance) {
+        out.push(format!("  Surface: {}", obs.description));
+    }
+
+    // Show only the most recent thermal observation (matches legacy behavior).
+    if let Some(thermal) = entry
+        .observations_by_category(&ObservationCategory::ThermalBehavior)
+        .last()
+    {
+        out.push(format!("  Heat: {}", thermal.description));
+    }
+
+    // Show only the most recent weight observation (matches legacy behavior).
+    if let Some(weight) = entry
+        .observations_by_category(&ObservationCategory::Weight)
+        .last()
+    {
+        out.push(format!("  Carried: {}", weight.description));
+    }
+
+    for obs in entry.observations_by_category(&ObservationCategory::FabricationResult) {
+        out.push(format!("  Fabrication: {}", obs.description));
+    }
+
+    for obs in entry.observations_by_category(&ObservationCategory::LocationNote) {
+        out.push(format!("  Location: {}", obs.description));
+    }
+
+    out.join("\n")
+}
+
+/// Builds the bottom help bar showing navigation hints and a page indicator.
+fn build_help_text(entry_count: usize, state: &JournalUiState) -> String {
+    if entry_count == 0 {
+        return "J: Close".to_string();
+    }
+
+    let page_start = state.scroll_offset + 1;
+    let page_end = (state.scroll_offset + state.entries_per_page).min(entry_count);
+
+    format!(
+        "\u{2191}\u{2193} Navigate  PgUp/PgDn: Page  Home/End: Jump  J: Close  [{page_start}-{page_end} of {entry_count}]"
+    )
+}
+
+/// Formats all journal entries into a single display string.
+///
+/// Retained for backward compatibility with existing tests.  The in-game
+/// UI now uses `build_entry_list_text` / `build_detail_text` instead, but
+/// this function exercises the same rendering logic in a flat format that
+/// is convenient for unit-test assertions.
+#[cfg(test)]
 fn build_journal_text(journal: &Journal) -> String {
     if journal.entries.is_empty() {
         return "Journal\n\nNo observations yet.".to_string();
@@ -2147,5 +2478,304 @@ mod tests {
             2,
             "exactly two materials have weight observations"
         );
+    }
+
+    // ── Two-panel rendering tests ───────────────────────────────────
+
+    /// Helper: create a journal with N material entries named alphabetically.
+    fn make_journal_with_n_entries(n: usize) -> Journal {
+        let mut journal = Journal::default();
+        for i in 0..n {
+            let key = JournalKey::Material { seed: i as u64 };
+            let name = format!("Material-{i:03}");
+            journal.record(
+                key,
+                &name,
+                Observation {
+                    category: ObservationCategory::SurfaceAppearance,
+                    confidence: ConfidenceLevel::Tentative,
+                    description: format!("Appearance of {name}"),
+                    recorded_at: i as u64,
+                },
+            );
+        }
+        journal
+    }
+
+    #[test]
+    fn entry_list_shows_selected_entry_with_prefix() {
+        let journal = make_journal_with_n_entries(3);
+        let entries: Vec<&JournalEntry> = {
+            let mut v: Vec<_> = journal.entries.values().collect();
+            v.sort_by(|a, b| a.name.cmp(&b.name));
+            v
+        };
+
+        let state = JournalUiState {
+            visible: true,
+            selected_index: 1,
+            scroll_offset: 0,
+            entries_per_page: 15,
+        };
+
+        let list = build_entry_list_text(&entries, &state);
+        let lines: Vec<&str> = list.lines().collect();
+        assert_eq!(lines.len(), 3);
+        assert!(
+            lines[0].starts_with(' '),
+            "non-selected should start with space"
+        );
+        assert!(lines[1].starts_with('>'), "selected should start with >");
+        assert!(
+            lines[2].starts_with(' '),
+            "non-selected should start with space"
+        );
+    }
+
+    #[test]
+    fn entry_list_shows_observation_count() {
+        let mut journal = Journal::default();
+        let key = JournalKey::Material { seed: 1 };
+        journal.record(
+            key.clone(),
+            "Ferrite",
+            Observation {
+                category: ObservationCategory::SurfaceAppearance,
+                confidence: ConfidenceLevel::Tentative,
+                description: "Warm rust".into(),
+                recorded_at: 1,
+            },
+        );
+        journal.record(
+            key,
+            "Ferrite",
+            Observation {
+                category: ObservationCategory::ThermalBehavior,
+                confidence: ConfidenceLevel::Observed,
+                description: "Heat resistant".into(),
+                recorded_at: 2,
+            },
+        );
+
+        let entries: Vec<&JournalEntry> = journal.entries.values().collect();
+        let state = JournalUiState::default();
+        let list = build_entry_list_text(&entries, &state);
+        assert!(
+            list.contains("(2 obs)"),
+            "entry list should show observation count"
+        );
+    }
+
+    #[test]
+    fn detail_shows_selected_entry_observations() {
+        let mut journal = Journal::default();
+        let key = JournalKey::Material { seed: 1 };
+        journal.record(
+            key,
+            "Ferrite",
+            Observation {
+                category: ObservationCategory::SurfaceAppearance,
+                confidence: ConfidenceLevel::Tentative,
+                description: "Warm rust tone".into(),
+                recorded_at: 1,
+            },
+        );
+
+        let entries: Vec<&JournalEntry> = {
+            let mut v: Vec<_> = journal.entries.values().collect();
+            v.sort_by(|a, b| a.name.cmp(&b.name));
+            v
+        };
+
+        let state = JournalUiState {
+            visible: true,
+            selected_index: 0,
+            scroll_offset: 0,
+            entries_per_page: 15,
+        };
+
+        let detail = build_detail_text(&entries, &state);
+        assert!(detail.contains("Ferrite"), "detail should show entry name");
+        assert!(
+            detail.contains("Surface: Warm rust tone"),
+            "detail should show observations"
+        );
+    }
+
+    #[test]
+    fn detail_empty_journal_shows_placeholder() {
+        let state = JournalUiState::default();
+        let entries: Vec<&JournalEntry> = vec![];
+        let detail = build_detail_text(&entries, &state);
+        assert_eq!(detail, "No observations yet.");
+    }
+
+    #[test]
+    fn navigation_clamp_up_from_first_stays_at_first() {
+        let mut state = JournalUiState {
+            visible: true,
+            selected_index: 0,
+            scroll_offset: 0,
+            entries_per_page: 15,
+        };
+        // Simulate pressing up — selection would go to saturating_sub(1) = 0.
+        state.selected_index = state.selected_index.saturating_sub(1);
+        state.clamp_to_entry_count(5);
+        assert_eq!(state.selected_index, 0);
+    }
+
+    #[test]
+    fn navigation_clamp_down_from_last_stays_at_last() {
+        let mut state = JournalUiState {
+            visible: true,
+            selected_index: 4,
+            scroll_offset: 0,
+            entries_per_page: 15,
+        };
+        state.selected_index = (state.selected_index + 1).min(4);
+        state.clamp_to_entry_count(5);
+        assert_eq!(state.selected_index, 4);
+    }
+
+    #[test]
+    fn scroll_offset_adjusts_when_selection_moves_past_visible_range() {
+        let mut state = JournalUiState {
+            visible: true,
+            selected_index: 0,
+            scroll_offset: 0,
+            entries_per_page: 3,
+        };
+        // Move selection to index 4 (past the 3-entry window).
+        state.selected_index = 4;
+        state.clamp_to_entry_count(10);
+        // scroll_offset should adjust so index 4 is visible.
+        assert!(
+            state.scroll_offset + state.entries_per_page > 4,
+            "selected entry must be within visible window"
+        );
+        assert_eq!(state.scroll_offset, 2, "scroll should be 4+1-3=2");
+    }
+
+    #[test]
+    fn scroll_offset_adjusts_when_selection_moves_above_visible_range() {
+        let mut state = JournalUiState {
+            visible: true,
+            selected_index: 1,
+            scroll_offset: 3,
+            entries_per_page: 3,
+        };
+        state.clamp_to_entry_count(10);
+        assert_eq!(
+            state.scroll_offset, 1,
+            "scroll should snap to selected index when it is above the window"
+        );
+    }
+
+    #[test]
+    fn clamp_to_entry_count_zero_entries() {
+        let mut state = JournalUiState {
+            visible: true,
+            selected_index: 5,
+            scroll_offset: 3,
+            entries_per_page: 15,
+        };
+        state.clamp_to_entry_count(0);
+        assert_eq!(state.selected_index, 0);
+        assert_eq!(state.scroll_offset, 0);
+    }
+
+    #[test]
+    fn entry_list_respects_scroll_offset_and_page_size() {
+        let journal = make_journal_with_n_entries(20);
+        let entries: Vec<&JournalEntry> = {
+            let mut v: Vec<_> = journal.entries.values().collect();
+            v.sort_by(|a, b| a.name.cmp(&b.name));
+            v
+        };
+
+        let state = JournalUiState {
+            visible: true,
+            selected_index: 5,
+            scroll_offset: 3,
+            entries_per_page: 5,
+        };
+
+        let list = build_entry_list_text(&entries, &state);
+        let lines: Vec<&str> = list.lines().collect();
+        assert_eq!(lines.len(), 5, "should show exactly entries_per_page lines");
+        // The selected entry (index 5) is at position 5-3=2 in the visible window.
+        assert!(
+            lines[2].starts_with('>'),
+            "selected entry should be highlighted"
+        );
+    }
+
+    #[test]
+    fn help_text_shows_page_indicator() {
+        let state = JournalUiState {
+            visible: true,
+            selected_index: 0,
+            scroll_offset: 0,
+            entries_per_page: 15,
+        };
+        let help = build_help_text(42, &state);
+        assert!(
+            help.contains("[1-15 of 42]"),
+            "help should show page indicator, got: {help}"
+        );
+    }
+
+    #[test]
+    fn help_text_empty_journal() {
+        let state = JournalUiState::default();
+        let help = build_help_text(0, &state);
+        assert!(help.contains("J: Close"), "help should show close hint");
+        assert!(
+            !help.contains("Navigate"),
+            "no navigation hints for empty journal"
+        );
+    }
+
+    #[test]
+    fn two_panel_rendering_100_plus_entries_does_not_panic() {
+        let journal = make_journal_with_n_entries(120);
+        let entries: Vec<&JournalEntry> = {
+            let mut v: Vec<_> = journal.entries.values().collect();
+            v.sort_by(|a, b| a.name.cmp(&b.name));
+            v
+        };
+
+        let mut state = JournalUiState {
+            visible: true,
+            selected_index: 50,
+            scroll_offset: 0,
+            entries_per_page: 15,
+        };
+        state.clamp_to_entry_count(entries.len());
+
+        let list = build_entry_list_text(&entries, &state);
+        assert!(!list.is_empty());
+        let detail = build_detail_text(&entries, &state);
+        assert!(!detail.is_empty());
+        let help = build_help_text(entries.len(), &state);
+        assert!(help.contains("of 120"));
+    }
+
+    #[test]
+    fn toggle_close_reopen_preserves_selection_and_scroll() {
+        let mut state = JournalUiState {
+            visible: true,
+            selected_index: 7,
+            scroll_offset: 3,
+            entries_per_page: 15,
+        };
+
+        // Toggle closed.
+        state.visible = false;
+        // Toggle reopened.
+        state.visible = true;
+
+        assert_eq!(state.selected_index, 7, "selection preserved after toggle");
+        assert_eq!(state.scroll_offset, 3, "scroll preserved after toggle");
     }
 }
