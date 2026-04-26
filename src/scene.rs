@@ -338,19 +338,22 @@ fn default_shelf_depth() -> f32 {
 
 fn default_shelves() -> Vec<ShelfConfig> {
     vec![
+        // West wall — flush against inner face.
         ShelfConfig {
-            x: -3.15,
+            x: -3.725,
             z: 0.7,
             y: 0.92,
         },
+        // East wall — flush against inner face.
         ShelfConfig {
-            x: 3.15,
+            x: 3.725,
             z: -0.7,
             y: 0.92,
         },
+        // North wall — flush against inner face.
         ShelfConfig {
-            x: 0.6,
-            z: -3.15,
+            x: 0.0,
+            z: 3.725,
             y: 0.92,
         },
     ]

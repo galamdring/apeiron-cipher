@@ -226,8 +226,11 @@ fn tick_processing(
     let output_mat = rule_combine(&rules, &input_mats[0], &input_mats[1]);
 
     // Register the fabricated material in the catalog so it is discoverable
-    // by seed/name lookups (e.g. journal, future recipes).
-    let _ = catalog.register_fabricated(output_mat.clone());
+    // by seed/name lookups (e.g. journal, future recipes).  The catalog may
+    // disambiguate the name if it collides with an existing entry, so we use
+    // the *registered* version for the spawned entity — not the pre-registration
+    // clone.  (Fixes #311: spawned entity had a stale, potentially colliding name.)
+    let output_mat = catalog.register_fabricated(output_mat).clone();
 
     // Spawn the output material on the output slot.
     let Ok((output_gtf, mut out_slot)) = output_slot.single_mut() else {

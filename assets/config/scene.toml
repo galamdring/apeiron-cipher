@@ -41,19 +41,23 @@ shelf_width = 1.35
 shelf_thickness = 0.07
 shelf_depth = 0.55
 
+# West wall — flush against inner face (x = -4.0 + shelf_depth/2).
 [[furniture.shelves]]
-x = -3.15
+x = -3.725
 z = 0.7
 y = 0.92
 
+# East wall — flush against inner face (x = 4.0 - shelf_depth/2).
 [[furniture.shelves]]
-x = 3.15
+x = 3.725
 z = -0.7
 y = 0.92
 
+# North wall — flush against inner face (z = 4.0 - shelf_depth/2).
+# Moved from south wall to avoid blocking the doorway.
 [[furniture.shelves]]
-x = 0.6
-z = -3.15
+x = 0.0
+z = 3.725
 y = 0.92
 
 [fabricator]

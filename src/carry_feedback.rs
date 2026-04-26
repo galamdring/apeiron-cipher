@@ -27,7 +27,22 @@ use leafwing_input_manager::prelude::*;
 
 use crate::carry::{CarryConfig, CarryCueConfig, CarryMovementState};
 use crate::input::InputAction;
-use crate::player::{Player, PlayerCamera, cursor_is_captured, spawn_player};
+use crate::player::{Player, PlayerCamera, PlayerSet, cursor_is_captured};
+
+/// Returns `true` when the player is actively walking (cursor captured, move
+/// input present, and not in creative mode).
+///
+/// Three systems in this module share this exact check. Centralising it here
+/// keeps the conditions in sync and makes the intent obvious.
+fn is_player_moving(
+    grab_mode: bevy::window::CursorGrabMode,
+    action_state: &ActionState<InputAction>,
+    carry_movement: &CarryMovementState,
+) -> bool {
+    cursor_is_captured(grab_mode)
+        && action_state.clamped_axis_pair(&InputAction::Move) != Vec2::ZERO
+        && !carry_movement.creative_mode
+}
 
 pub struct CarryFeedbackPlugin;
 
@@ -38,7 +53,7 @@ impl Plugin for CarryFeedbackPlugin {
                 Startup,
                 (
                     initialize_carry_cue_assets,
-                    attach_carry_feedback_state.after(spawn_player),
+                    attach_carry_feedback_state.after(PlayerSet::Spawn),
                 ),
             )
             .add_systems(
@@ -162,9 +177,7 @@ fn update_carry_camera_bob(
         return;
     };
 
-    let is_captured = cursor_is_captured(cursor_options.grab_mode);
-    let move_input = action_state.clamped_axis_pair(&InputAction::Move);
-    let is_moving = is_captured && move_input != Vec2::ZERO && !carry_movement.creative_mode;
+    let is_moving = is_player_moving(cursor_options.grab_mode, action_state, &carry_movement);
 
     if !is_moving {
         bob_state.phase_radians = 0.0;
@@ -214,9 +227,7 @@ fn emit_weighted_footsteps(
         return;
     };
 
-    let is_captured = cursor_is_captured(cursor_options.grab_mode);
-    let move_input = action_state.clamped_axis_pair(&InputAction::Move);
-    let is_moving = is_captured && move_input != Vec2::ZERO && !carry_movement.creative_mode;
+    let is_moving = is_player_moving(cursor_options.grab_mode, action_state, &carry_movement);
 
     if !is_moving {
         // Reset to half the interval so the first step after resuming movement
@@ -279,10 +290,9 @@ fn update_breathing_cue(
         return;
     };
 
-    let is_captured = cursor_is_captured(cursor_options.grab_mode);
-    let is_moving = is_captured && action_state.clamped_axis_pair(&InputAction::Move) != Vec2::ZERO;
+    let is_moving = is_player_moving(cursor_options.grab_mode, action_state, &carry_movement);
 
-    if carry_movement.creative_mode || !is_moving {
+    if !is_moving {
         sink.set_volume(Volume::Linear(0.0));
         sink.set_speed(config.weight_cues.breathing_base_speed);
         return;
