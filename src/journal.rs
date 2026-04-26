@@ -1413,4 +1413,153 @@ mod tests {
             "Found near volcanic ridge"
         );
     }
+
+    /// Different `JournalKey`s are stored independently: observations recorded
+    /// against one key never appear in, modify, or interfere with entries keyed
+    /// by a different key — even when seeds overlap across variant types or when
+    /// the same observation category is used for multiple subjects.
+    #[test]
+    fn different_keys_stored_independently() {
+        let mut journal = NewJournal::default();
+
+        // Three keys: two Material keys with different seeds and one
+        // Fabrication key whose output_seed numerically equals the first
+        // Material seed (verifies variant-level isolation).
+        let mat_a = JournalKey::Material { seed: 10 };
+        let mat_b = JournalKey::Material { seed: 20 };
+        let fab_a = JournalKey::Fabrication { output_seed: 10 };
+
+        // Record a surface observation on material A.
+        journal.record(
+            mat_a.clone(),
+            "Ferrite",
+            Observation {
+                category: ObservationCategory::SurfaceAppearance,
+                confidence: ConfidenceLevel::Tentative,
+                description: "Warm rust tone".into(),
+                recorded_at: 1,
+            },
+        );
+
+        // Record a surface observation on material B (same category, different key).
+        journal.record(
+            mat_b.clone(),
+            "Silite",
+            Observation {
+                category: ObservationCategory::SurfaceAppearance,
+                confidence: ConfidenceLevel::Observed,
+                description: "Cool blue tone".into(),
+                recorded_at: 2,
+            },
+        );
+
+        // Record a fabrication result on fab_a (same numeric id as mat_a).
+        journal.record(
+            fab_a.clone(),
+            "Neoite",
+            Observation {
+                category: ObservationCategory::FabricationResult,
+                confidence: ConfidenceLevel::Confident,
+                description: "Combined Ferrite + Silite -> Neoite".into(),
+                recorded_at: 3,
+            },
+        );
+
+        // Add a second observation to material A to verify accumulation is
+        // scoped to that key alone.
+        journal.record(
+            mat_a.clone(),
+            "Ferrite",
+            Observation {
+                category: ObservationCategory::ThermalBehavior,
+                confidence: ConfidenceLevel::Observed,
+                description: "Holds together under heat".into(),
+                recorded_at: 4,
+            },
+        );
+
+        // ── Verify entry count ──────────────────────────────────────
+        assert_eq!(
+            journal.entries.len(),
+            3,
+            "three distinct keys = three entries"
+        );
+
+        // ── Verify material A ───────────────────────────────────────
+        let entry_a = journal
+            .entries
+            .get(&mat_a)
+            .expect("mat_a entry should exist");
+        assert_eq!(entry_a.name, "Ferrite");
+        assert_eq!(entry_a.observations.len(), 2);
+        assert_eq!(entry_a.first_observed_at, 1);
+        assert_eq!(entry_a.last_updated_at, 4);
+        assert_eq!(
+            entry_a.observations[0].category,
+            ObservationCategory::SurfaceAppearance
+        );
+        assert_eq!(entry_a.observations[0].description, "Warm rust tone");
+        assert_eq!(
+            entry_a.observations[1].category,
+            ObservationCategory::ThermalBehavior
+        );
+
+        // ── Verify material B ───────────────────────────────────────
+        let entry_b = journal
+            .entries
+            .get(&mat_b)
+            .expect("mat_b entry should exist");
+        assert_eq!(entry_b.name, "Silite");
+        assert_eq!(entry_b.observations.len(), 1);
+        assert_eq!(entry_b.first_observed_at, 2);
+        assert_eq!(entry_b.last_updated_at, 2);
+        assert_eq!(entry_b.observations[0].description, "Cool blue tone");
+
+        // ── Verify fabrication A (same numeric id as mat_a) ─────────
+        let entry_fab = journal
+            .entries
+            .get(&fab_a)
+            .expect("fab_a entry should exist");
+        assert_eq!(entry_fab.name, "Neoite");
+        assert_eq!(entry_fab.observations.len(), 1);
+        assert_eq!(entry_fab.first_observed_at, 3);
+        assert_eq!(entry_fab.last_updated_at, 3);
+        assert_eq!(
+            entry_fab.observations[0].category,
+            ObservationCategory::FabricationResult
+        );
+
+        // ── Cross-contamination checks ──────────────────────────────
+        // Material A must not contain material B's or fab_a's observations.
+        assert!(
+            entry_a
+                .observations
+                .iter()
+                .all(|o| o.description != "Cool blue tone"
+                    && o.description != "Combined Ferrite + Silite -> Neoite"),
+            "mat_a must not contain observations from other keys"
+        );
+
+        // Material B must not contain material A's or fab_a's observations.
+        assert!(
+            entry_b
+                .observations
+                .iter()
+                .all(|o| o.description != "Warm rust tone"
+                    && o.description != "Holds together under heat"
+                    && o.description != "Combined Ferrite + Silite -> Neoite"),
+            "mat_b must not contain observations from other keys"
+        );
+
+        // Fabrication A must not contain either material's observations.
+        assert!(
+            entry_fab
+                .observations
+                .iter()
+                .all(|o| o.description != "Warm rust tone"
+                    && o.description != "Cool blue tone"
+                    && o.description != "Holds together under heat"),
+            "fab_a must not contain observations from other keys"
+        );
+    }
 }
