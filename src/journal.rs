@@ -3631,4 +3631,126 @@ mod tests {
             "navigation must advance selection when journal is visible"
         );
     }
+
+    /// Verifies full first-to-last navigation: Home key resets to the first
+    /// entry, End key jumps to the last entry, ArrowUp from the first entry
+    /// stays at first (no wrap), and ArrowDown from the last entry stays at
+    /// last (no wrap).
+    #[test]
+    fn navigation_first_to_last_entry() {
+        let entry_count: usize = 20;
+
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.init_resource::<ButtonInput<KeyCode>>();
+        app.insert_resource(JournalUiState {
+            visible: true,
+            selected_index: 0,
+            scroll_offset: 0,
+            entries_per_page: 15,
+        });
+        app.add_systems(Update, journal_navigation);
+
+        let mut journal = Journal::default();
+        for i in 0..entry_count {
+            journal.record(
+                JournalKey::Material {
+                    seed: i.try_into().expect("entry index fits in u64"),
+                },
+                &format!("Mat-{i:03}"),
+                Observation {
+                    category: ObservationCategory::SurfaceAppearance,
+                    confidence: ConfidenceLevel::Tentative,
+                    description: format!("Obs {i}"),
+                    recorded_at: 0,
+                },
+            );
+        }
+        app.world_mut().spawn((Player, journal));
+
+        // ── End key: jump from first to last ────────────────────────────
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::End);
+        app.update();
+
+        let state = app.world().resource::<JournalUiState>();
+        assert_eq!(
+            state.selected_index,
+            entry_count - 1,
+            "End key must jump to the last entry"
+        );
+
+        // Clear previous input so the next press registers as `just_pressed`.
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .clear();
+
+        // ── ArrowDown from last entry: must stay at last (no wrap) ──────
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::ArrowDown);
+        app.update();
+
+        let state = app.world().resource::<JournalUiState>();
+        assert_eq!(
+            state.selected_index,
+            entry_count - 1,
+            "ArrowDown at last entry must not wrap or exceed bounds"
+        );
+
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .clear();
+
+        // ── Home key: jump back to first ────────────────────────────────
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::Home);
+        app.update();
+
+        let state = app.world().resource::<JournalUiState>();
+        assert_eq!(
+            state.selected_index, 0,
+            "Home key must jump to the first entry"
+        );
+
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .clear();
+
+        // ── ArrowUp from first entry: must stay at first (no wrap) ──────
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::ArrowUp);
+        app.update();
+
+        let state = app.world().resource::<JournalUiState>();
+        assert_eq!(
+            state.selected_index, 0,
+            "ArrowUp at first entry must not wrap below zero"
+        );
+
+        // ── Scroll offset tracks selection after End ────────────────────
+        // Jump to the end again and verify scroll_offset adjusted so the
+        // selected entry is within the visible page.
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .clear();
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::End);
+        app.update();
+
+        let state = app.world().resource::<JournalUiState>();
+        assert!(
+            state.selected_index >= state.scroll_offset
+                && state.selected_index < state.scroll_offset + state.entries_per_page,
+            "scroll_offset must keep the selected entry within the visible page \
+             (selected={}, scroll_offset={}, entries_per_page={})",
+            state.selected_index,
+            state.scroll_offset,
+            state.entries_per_page,
+        );
+    }
 }
