@@ -9,43 +9,44 @@
 
 use bevy::prelude::*;
 
-// Module-level doc coverage is deferred — each module has internal item docs
-// but adding module-level //! headers is tracked as incremental work.
-#[allow(missing_docs)]
+// Module-level `//!` doc headers are deferred — each module has internal item
+// docs but crate-level module summaries are tracked as incremental work.
+// Suppress `missing_docs` per-module until those headers land.
+#[allow(missing_docs)] // carry system: pickup, stash, cycle, drop, weight, capacity
 pub mod carry;
-#[allow(missing_docs)]
+#[allow(missing_docs)] // carry feedback: camera bob, footstep audio, breathing cues
 pub mod carry_feedback;
-#[allow(missing_docs)]
+#[allow(missing_docs)] // combination rules: data-driven pair outcomes for fabrication
 pub mod combination;
-#[allow(missing_docs)]
+#[allow(missing_docs)] // debug overlay: temporary terrain diagnostic rendering
 pub mod debug_overlay;
 pub mod descriptions;
-#[allow(missing_docs)]
+#[allow(missing_docs)] // fabricator: workbench input/output slot processing
 pub mod fabricator;
-#[allow(missing_docs)]
+#[allow(missing_docs)] // heat: burner exposure, thermal property revelation
 pub mod heat;
-#[allow(missing_docs)]
+#[allow(missing_docs)] // input: TOML-driven key/mouse bindings via leafwing
 pub mod input;
-#[allow(missing_docs)]
+#[allow(missing_docs)] // interaction: raycast, pickup/place, examine, crosshair
 pub mod interaction;
-#[allow(missing_docs)]
+#[allow(missing_docs)] // journal: player observation record and rendering
 pub mod journal;
-#[allow(missing_docs)]
+#[allow(missing_docs)] // materials: procedural material derivation and catalog
 pub mod materials;
-#[allow(missing_docs)]
+#[allow(missing_docs)] // naming: deterministic procedural name generation
 pub mod naming;
-#[allow(missing_docs)]
+#[allow(missing_docs)] // observation: confidence tracking for player knowledge
 pub mod observation;
-#[allow(missing_docs)]
+#[allow(missing_docs)] // player: entity hierarchy, camera, movement, stamina
 pub mod player;
-#[allow(missing_docs)]
+#[allow(missing_docs)] // scene: enclosed room, furniture, lighting from scene.toml
 pub mod scene;
 pub mod seed_util;
-#[allow(missing_docs)]
+#[allow(missing_docs)] // solar_system: star/orbital/planet derivation from system seed
 pub mod solar_system;
-#[allow(missing_docs)]
+#[allow(missing_docs)] // surface: walkable surface override registry
 pub mod surface;
-#[allow(missing_docs)]
+#[allow(missing_docs)] // world_generation: deterministic chunk/terrain/deposit pipeline
 pub mod world_generation;
 
 /// Registers every game plugin onto the given [`App`].
