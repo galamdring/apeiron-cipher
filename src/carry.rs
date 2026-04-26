@@ -921,17 +921,23 @@ fn attach_carry_state_to_player(
 
 /// Convert current carry state into movement-facing consequences.
 ///
-/// This runs every frame instead of only on `CarryWeightChanged` because Story 4.3
-/// is the first consumer and simplicity matters more than event fan-out here.
-/// Later stories can make this reactive if needed.
+/// Only runs the recomputation when `CarryState` or `ActiveCarryProfile`
+/// actually change, avoiding redundant writes on idle frames.
 fn update_carry_movement_state(
     active_profile: Res<ActiveCarryProfile>,
     mut movement_state: ResMut<CarryMovementState>,
-    player_query: Query<&CarryState, With<Player>>,
+    player_query: Query<(Ref<CarryState>,), With<Player>>,
 ) {
-    let Ok(carry_state) = player_query.single() else {
+    let Ok((carry_ref,)) = player_query.single() else {
         return;
     };
+
+    // Skip recomputation when neither input changed this frame.
+    if !carry_ref.is_changed() && !active_profile.is_changed() {
+        return;
+    }
+
+    let carry_state = &*carry_ref;
 
     // Always propagate the stamina tuning knobs from the active profile so
     // player.rs never needs its own hardcoded copies.
