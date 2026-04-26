@@ -987,6 +987,13 @@ mod tests {
     }
 
     #[test]
+    fn empty_journal_renders_no_observations_yet() {
+        let journal = NewJournal::default();
+        let text = build_journal_text(&journal);
+        assert_eq!(text, "Journal\n\nNo observations yet.");
+    }
+
+    #[test]
     fn single_observation_recorded_correctly() {
         let mut journal = NewJournal::default();
         let key = JournalKey::Material { seed: 55 };
