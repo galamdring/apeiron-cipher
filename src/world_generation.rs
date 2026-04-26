@@ -1595,6 +1595,14 @@ fn update_active_chunk_neighborhood(
     // must be rendered at their raw world-space positions.
     let center_chunk =
         world_position_to_chunk_coord(player_position_xz, profile.chunk_size_world_units);
+
+    // Early-out: skip recomputation when the player hasn't changed chunks.
+    // This avoids per-frame Vec allocation and prevents Bevy change detection
+    // from firing on ActiveChunkNeighborhood every frame.
+    if active_chunks.center_chunk == Some(center_chunk) {
+        return;
+    }
+
     let center_chunk_origin_xz = chunk_origin_xz(center_chunk, profile.chunk_size_world_units);
     let center_chunk_generation_key = derive_chunk_generation_key(&profile, center_chunk);
     let chunks = active_chunk_neighborhood(center_chunk, profile.active_chunk_radius);
@@ -1620,13 +1628,17 @@ pub fn world_position_to_chunk_coord(
     position_xz: PositionXZ,
     chunk_size_world_units: f32,
 ) -> ChunkCoord {
-    debug_assert!(
-        chunk_size_world_units > 0.0,
-        "chunk size must be positive to derive chunk coordinates"
-    );
+    // Clamp to minimum 1.0 to prevent division by zero in release builds.
+    // Validation at config load should prevent this, but defense in depth.
+    let chunk_size = if chunk_size_world_units > 0.0 {
+        chunk_size_world_units
+    } else {
+        error!("chunk_size_world_units was {chunk_size_world_units}, clamping to 1.0");
+        1.0
+    };
 
-    let chunk_x = (position_xz.x / chunk_size_world_units).floor() as i32;
-    let chunk_z = (position_xz.z / chunk_size_world_units).floor() as i32;
+    let chunk_x = (position_xz.x / chunk_size).floor() as i32;
+    let chunk_z = (position_xz.z / chunk_size).floor() as i32;
     ChunkCoord::new(chunk_x, chunk_z)
 }
 

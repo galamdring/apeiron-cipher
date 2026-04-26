@@ -9,6 +9,8 @@
 
 use bevy::prelude::*;
 
+// Module-level doc coverage is deferred — each module has internal item docs
+// but adding module-level //! headers is tracked as incremental work.
 #[allow(missing_docs)]
 pub mod carry;
 #[allow(missing_docs)]

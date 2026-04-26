@@ -29,7 +29,7 @@ impl Plugin for ObservationPlugin {
 // ── Confidence levels ────────────────────────────────────────────────────
 
 /// Qualitative confidence level derived from observation count.
-/// Used by the examine panel in the next PR to select descriptor language.
+/// Used by the examine panel and journal to select descriptor language.
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum ConfidenceLevel {
@@ -42,7 +42,7 @@ pub enum ConfidenceLevel {
 }
 
 impl ConfidenceLevel {
-    // Will be used when observation-count UI is wired up; keeping the API ready.
+    // Used when observation-count UI is wired up; keeping the API ready.
     #[allow(dead_code)]
     pub fn from_count(count: u32) -> Self {
         match count {
@@ -61,7 +61,7 @@ type ObsKey = (u64, String);
 
 /// Stores how many times the player has observed each (material, property)
 /// combination through environmental testing.
-/// Fields read by the examine panel and heat systems in the next PRs.
+/// Read by the examine panel and heat systems for confidence-based language.
 #[allow(dead_code)]
 #[derive(Resource, Debug, Default)]
 pub struct ConfidenceTracker {
@@ -70,7 +70,6 @@ pub struct ConfidenceTracker {
 
 impl ConfidenceTracker {
     /// Record one observation. Returns the new count.
-    /// Called by the heat revelation system in the next PR.
     #[allow(dead_code)]
     pub fn record(&mut self, seed: u64, property: &str) -> u32 {
         let key = (seed, property.to_string());
@@ -80,7 +79,6 @@ impl ConfidenceTracker {
     }
 
     /// Current observation count (0 if never observed).
-    /// Used by the examine panel in the next PR.
     #[allow(dead_code)]
     pub fn count(&self, seed: u64, property: &str) -> u32 {
         self.counts
@@ -90,7 +88,6 @@ impl ConfidenceTracker {
     }
 
     /// Confidence level for a specific (material, property) pair.
-    /// Used by the examine panel in the next PR.
     #[allow(dead_code)]
     pub fn level(&self, seed: u64, property: &str) -> ConfidenceLevel {
         ConfidenceLevel::from_count(self.count(seed, property))
