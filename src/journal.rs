@@ -240,7 +240,7 @@ impl JournalEntry {
 /// Keyed by [`JournalKey`] so lookups are O(log n) and iteration order is
 /// deterministic (important for save/load reproducibility and test stability).
 #[derive(Component, Default, Clone, Debug, Serialize, Deserialize)]
-pub struct NewJournal {
+pub struct Journal {
     /// All journal entries, keyed by subject identity.
     ///
     /// Serialized as a list of entries (not a JSON object) because
@@ -274,7 +274,7 @@ mod journal_entries_serde {
     }
 }
 
-impl NewJournal {
+impl Journal {
     /// Look up or create a journal entry for the given key.
     ///
     /// If no entry exists yet, one is created with the provided `name` and
@@ -298,35 +298,6 @@ impl NewJournal {
     }
 }
 
-// ── Legacy journal structs (POC — will be removed by migration stories) ─
-
-#[derive(Component, Default)]
-struct LegacyJournal {
-    fabrication_log: Vec<String>,
-    entries: BTreeMap<u64, LegacyJournalEntry>,
-}
-
-#[expect(dead_code)]
-#[derive(Clone, Debug, Default)]
-struct LegacyJournalEntry {
-    name: String,
-    surface_observations: Vec<String>,
-    thermal_observation: Option<String>,
-    weight_observation: Option<String>,
-    fabrication_history: Vec<String>,
-}
-
-impl LegacyJournal {
-    fn ensure_entry(&mut self, seed: u64, name: &str) -> &mut LegacyJournalEntry {
-        self.entries
-            .entry(seed)
-            .or_insert_with(|| LegacyJournalEntry {
-                name: name.to_string(),
-                ..default()
-            })
-    }
-}
-
 // ── UI state ────────────────────────────────────────────────────────────
 
 #[derive(Resource, Default)]
@@ -347,9 +318,7 @@ fn attach_journal_to_player(mut commands: Commands, player_query: Query<Entity, 
     let Ok(player) = player_query.single() else {
         return;
     };
-    commands
-        .entity(player)
-        .insert((LegacyJournal::default(), NewJournal::default()));
+    commands.entity(player).insert(Journal::default());
 }
 
 fn spawn_journal_ui(mut commands: Commands) {
@@ -412,71 +381,25 @@ fn toggle_journal_visibility(
 // ── Record ingestion ────────────────────────────────────────────────────
 
 /// Unified ingestion system — reads [`RecordObservation`] messages and
-/// writes them into the legacy journal for rendering (story 10.2 will
-/// migrate rendering to `NewJournal`).
+/// writes them into the player's [`Journal`].
+///
+/// Callers pass `recorded_at: 0` — this system overwrites with real
+/// elapsed time so caller signatures stay lean.
 fn apply_observations(
     mut reader: MessageReader<RecordObservation>,
-    mut player_query: Query<(&mut LegacyJournal, &mut NewJournal), With<Player>>,
+    mut player_query: Query<&mut Journal, With<Player>>,
+    time: Res<Time>,
 ) {
-    let Ok((mut journal, mut new_journal)) = player_query.single_mut() else {
+    let Ok(mut journal) = player_query.single_mut() else {
         return;
     };
 
-    for event in reader.read() {
-        // Write into the new typed journal for all categories.
-        new_journal.record(event.key.clone(), &event.name, event.observation.clone());
+    let tick = time.elapsed().as_millis() as u64;
 
-        // Also write into the legacy journal so the existing text overlay
-        // keeps working until story 10.2 migrates rendering.
-        match event.observation.category {
-            ObservationCategory::SurfaceAppearance => {
-                let entry = journal.ensure_entry(
-                    match &event.key {
-                        JournalKey::Material { seed } => *seed,
-                        JournalKey::Fabrication { output_seed } => *output_seed,
-                    },
-                    &event.name,
-                );
-                if entry.surface_observations.is_empty() {
-                    entry
-                        .surface_observations
-                        .push(event.observation.description.clone());
-                }
-            }
-            ObservationCategory::ThermalBehavior => {
-                let seed = match &event.key {
-                    JournalKey::Material { seed } => *seed,
-                    JournalKey::Fabrication { output_seed } => *output_seed,
-                };
-                let entry = journal.ensure_entry(seed, &event.name);
-                entry.thermal_observation = Some(event.observation.description.clone());
-            }
-            ObservationCategory::Weight => {
-                let seed = match &event.key {
-                    JournalKey::Material { seed } => *seed,
-                    JournalKey::Fabrication { output_seed } => *output_seed,
-                };
-                let entry = journal.ensure_entry(seed, &event.name);
-                entry.weight_observation = Some(event.observation.description.clone());
-            }
-            ObservationCategory::FabricationResult => {
-                let description = &event.observation.description;
-                if !journal.fabrication_log.contains(description) {
-                    journal.fabrication_log.push(description.clone());
-                }
-                let seed = match &event.key {
-                    JournalKey::Material { seed } => *seed,
-                    JournalKey::Fabrication { output_seed } => *output_seed,
-                };
-                let entry = journal.ensure_entry(seed, &event.name);
-                if !entry.fabrication_history.contains(description) {
-                    entry.fabrication_history.push(description.clone());
-                }
-            }
-            ObservationCategory::LocationNote => {
-                // Location notes are a future feature; no legacy rendering yet.
-            }
-        }
+    for event in reader.read() {
+        let mut obs = event.observation.clone();
+        obs.recorded_at = tick;
+        journal.record(event.key.clone(), &event.name, obs);
     }
 }
 
@@ -484,7 +407,7 @@ fn apply_observations(
 
 fn render_journal(
     state: Res<JournalUiState>,
-    player_query: Query<&NewJournal, With<Player>>,
+    player_query: Query<&Journal, With<Player>>,
     mut panel_query: Query<&mut Visibility, With<JournalPanel>>,
     mut text_query: Query<&mut Text, With<JournalText>>,
 ) {
@@ -509,7 +432,7 @@ fn render_journal(
     text.0 = build_journal_text(journal);
 }
 
-fn build_journal_text(journal: &NewJournal) -> String {
+fn build_journal_text(journal: &Journal) -> String {
     if journal.entries.is_empty() {
         return "Journal\n\nNo observations yet.".to_string();
     }
@@ -577,48 +500,6 @@ fn build_journal_text(journal: &NewJournal) -> String {
     out.join("\n")
 }
 
-// ── Descriptive language ────────────────────────────────────────────────
-
-pub fn describe_density(value: f32) -> &'static str {
-    if value < 0.15 {
-        "Almost weightless"
-    } else if value < 0.3 {
-        "Very light"
-    } else if value < 0.45 {
-        "Light"
-    } else if value < 0.55 {
-        "Medium weight"
-    } else if value < 0.7 {
-        "Heavy"
-    } else if value < 0.85 {
-        "Very heavy"
-    } else {
-        "Extremely dense"
-    }
-}
-
-pub fn describe_color(color: &[f32; 3]) -> &'static str {
-    let [r, g, b] = *color;
-    let max = r.max(g).max(b);
-    let min = r.min(g).min(b);
-
-    if max - min < 0.08 {
-        if max < 0.25 {
-            "Dark mineral grey"
-        } else if max < 0.7 {
-            "Muted stone grey"
-        } else {
-            "Pale chalk grey"
-        }
-    } else if r >= g && r >= b {
-        "Warm rust tone"
-    } else if g >= r && g >= b {
-        "Verdant green tone"
-    } else {
-        "Cool blue tone"
-    }
-}
-
 // ── Tests ───────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -627,7 +508,7 @@ mod tests {
 
     #[test]
     fn journal_omits_unknown_properties() {
-        let mut journal = NewJournal::default();
+        let mut journal = Journal::default();
         journal.record(
             JournalKey::Material { seed: 1 },
             "Ferrite",
@@ -646,7 +527,7 @@ mod tests {
 
     #[test]
     fn journal_includes_fabrication_history() {
-        let mut journal = NewJournal::default();
+        let mut journal = Journal::default();
         journal.record(
             JournalKey::Fabrication { output_seed: 2 },
             "Neoite",
@@ -665,7 +546,7 @@ mod tests {
 
     #[test]
     fn journal_shows_thermal_observation_when_present() {
-        let mut journal = NewJournal::default();
+        let mut journal = Journal::default();
         journal.record(
             JournalKey::Material { seed: 3 },
             "TestMat",
@@ -738,7 +619,7 @@ mod tests {
 
     #[test]
     fn journal_shows_weight_observation_only_when_present() {
-        let mut journal = NewJournal::default();
+        let mut journal = Journal::default();
         let key = JournalKey::Material { seed: 4 };
         journal.record(
             key.clone(),
@@ -865,7 +746,7 @@ mod tests {
 
     #[test]
     fn new_journal_ensure_entry_creates_and_retrieves() {
-        let mut journal = NewJournal::default();
+        let mut journal = Journal::default();
         let key = JournalKey::Material { seed: 42 };
 
         journal.ensure_entry(key.clone(), "Ferrite", 100);
@@ -881,7 +762,7 @@ mod tests {
 
     #[test]
     fn new_journal_record_accumulates_observations() {
-        let mut journal = NewJournal::default();
+        let mut journal = Journal::default();
         let key = JournalKey::Material { seed: 42 };
 
         journal.record(
@@ -913,7 +794,7 @@ mod tests {
 
     #[test]
     fn new_journal_different_keys_coexist() {
-        let mut journal = NewJournal::default();
+        let mut journal = Journal::default();
         let mat_key = JournalKey::Material { seed: 1 };
         let fab_key = JournalKey::Fabrication { output_seed: 2 };
 
@@ -945,7 +826,7 @@ mod tests {
 
     #[test]
     fn new_journal_serde_round_trip() {
-        let mut journal = NewJournal::default();
+        let mut journal = Journal::default();
         journal.record(
             JournalKey::Material { seed: 42 },
             "Ferrite",
@@ -967,9 +848,9 @@ mod tests {
             },
         );
 
-        let json = serde_json::to_string(&journal).expect("NewJournal should serialize to JSON");
-        let deserialized: NewJournal =
-            serde_json::from_str(&json).expect("NewJournal should deserialize from JSON");
+        let json = serde_json::to_string(&journal).expect("Journal should serialize to JSON");
+        let deserialized: Journal =
+            serde_json::from_str(&json).expect("Journal should deserialize from JSON");
 
         assert_eq!(deserialized.entries.len(), 2);
         let ferrite = deserialized
@@ -983,20 +864,20 @@ mod tests {
 
     #[test]
     fn new_journal_empty_default() {
-        let journal = NewJournal::default();
+        let journal = Journal::default();
         assert!(journal.entries.is_empty());
     }
 
     #[test]
     fn empty_journal_renders_no_observations_yet() {
-        let journal = NewJournal::default();
+        let journal = Journal::default();
         let text = build_journal_text(&journal);
         assert_eq!(text, "Journal\n\nNo observations yet.");
     }
 
     #[test]
     fn single_observation_recorded_correctly() {
-        let mut journal = NewJournal::default();
+        let mut journal = Journal::default();
         let key = JournalKey::Material { seed: 55 };
 
         journal.record(
@@ -1114,7 +995,7 @@ mod tests {
     /// be preserved (or upgraded if the second look is stronger).
     #[test]
     fn examine_same_material_twice_does_not_duplicate() {
-        let mut journal = NewJournal::default();
+        let mut journal = Journal::default();
         let key = JournalKey::Material { seed: 42 };
 
         let observation = Observation {
@@ -1153,7 +1034,7 @@ mod tests {
     /// confidence upgrades the stored observation without duplicating it.
     #[test]
     fn examine_same_material_twice_upgrades_confidence() {
-        let mut journal = NewJournal::default();
+        let mut journal = Journal::default();
         let key = JournalKey::Material { seed: 42 };
 
         journal.record(
@@ -1242,13 +1123,13 @@ mod tests {
     }
 
     /// Multiple observations recorded against the same `JournalKey` via
-    /// `NewJournal::record` accumulate in chronological order. The entry is
+    /// `Journal::record` accumulate in chronological order. The entry is
     /// created once and subsequent observations append without replacing
     /// earlier ones, timestamps track the full observation window, and each
     /// observation preserves its own category, confidence, and description.
     #[test]
     fn multiple_observations_for_same_key_accumulate() {
-        let mut journal = NewJournal::default();
+        let mut journal = Journal::default();
         let key = JournalKey::Material { seed: 77 };
 
         // First observation — creates the entry.
@@ -1360,7 +1241,7 @@ mod tests {
     /// Every type in the journal data model serializes to JSON and deserializes
     /// back to an identical value. Covers all `JournalKey` variants, all
     /// `ObservationCategory` variants, all `ConfidenceLevel` variants, the
-    /// `Observation` struct, `JournalEntry`, and a `NewJournal` containing
+    /// `Observation` struct, `JournalEntry`, and a `Journal` containing
     /// entries of every key type with observations of every category.
     #[test]
     fn all_types_serde_round_trip() {
@@ -1453,8 +1334,8 @@ mod tests {
             1
         );
 
-        // ── NewJournal with all key types and all categories ────────
-        let mut journal = NewJournal::default();
+        // ── Journal with all key types and all categories ────────
+        let mut journal = Journal::default();
 
         // Material entry with surface, thermal, and weight observations.
         let mat_key = JournalKey::Material { seed: 100 };
@@ -1512,8 +1393,8 @@ mod tests {
             },
         );
 
-        let json = serde_json::to_string(&journal).expect("NewJournal should serialize");
-        let rt: NewJournal = serde_json::from_str(&json).expect("NewJournal should deserialize");
+        let json = serde_json::to_string(&journal).expect("Journal should serialize");
+        let rt: Journal = serde_json::from_str(&json).expect("Journal should deserialize");
 
         // Verify structure preserved.
         assert_eq!(rt.entries.len(), 2);
@@ -1585,7 +1466,7 @@ mod tests {
     /// the same observation category is used for multiple subjects.
     #[test]
     fn different_keys_stored_independently() {
-        let mut journal = NewJournal::default();
+        let mut journal = Journal::default();
 
         // Three keys: two Material keys with different seeds and one
         // Fabrication key whose output_seed numerically equals the first
@@ -1737,15 +1618,13 @@ mod tests {
     /// that the legacy POC journal displayed: material names, surface
     /// observations, thermal observations, weight observations, fabrication
     /// history, and the "Recent Fabrication" header. This test populates a
-    /// `NewJournal` with the same variety of data the legacy `LegacyJournal`
-    /// held and asserts every piece of information appears in the output.
+    /// `Journal` with the same variety of data and asserts every piece of
+    /// information appears in the output.
     #[test]
     fn rendered_text_contains_same_information_as_legacy_journal() {
-        let mut journal = NewJournal::default();
+        let mut journal = Journal::default();
 
         // ── Material entry with surface, thermal, and weight observations ──
-        // Legacy equivalent: LegacyJournalEntry with surface_observations,
-        // thermal_observation, and weight_observation populated.
         let mat_key = JournalKey::Material { seed: 42 };
 
         journal.record(
@@ -1805,8 +1684,6 @@ mod tests {
         );
 
         // ── Fabrication entry ───────────────────────────────────────────
-        // Legacy equivalent: fabrication_log entry + LegacyJournalEntry with
-        // fabrication_history.
         let fab_key = JournalKey::Fabrication { output_seed: 200 };
         journal.record(
             fab_key,
@@ -1899,7 +1776,7 @@ mod tests {
     /// journal simply displayed a header with no entries.
     #[test]
     fn empty_journal_renders_placeholder_text() {
-        let journal = NewJournal::default();
+        let journal = Journal::default();
         let text = build_journal_text(&journal);
         assert!(
             text.contains("Journal"),
@@ -1930,7 +1807,7 @@ mod tests {
             ConfidenceLevel::Confident,
         ];
 
-        let mut journal = NewJournal::default();
+        let mut journal = Journal::default();
 
         // Record 120 entries: 80 Material keys and 40 Fabrication keys,
         // each with between 1 and 3 observations across different categories.
@@ -2030,7 +1907,7 @@ mod tests {
 
         // Serde round-trip must not panic or lose entries.
         let serialized = serde_json::to_string(&journal).expect("journal must serialize");
-        let deserialized: NewJournal =
+        let deserialized: Journal =
             serde_json::from_str(&serialized).expect("journal must deserialize");
         assert_eq!(
             journal.entries.len(),
@@ -2045,7 +1922,7 @@ mod tests {
     /// own observations.
     #[test]
     fn multiple_materials_have_separate_entries_and_rendering() {
-        let mut journal = NewJournal::default();
+        let mut journal = Journal::default();
 
         // ── Material 1: Ferrite ─────────────────────────────────────
         let key_ferrite = JournalKey::Material { seed: 10 };

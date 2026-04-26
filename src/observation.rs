@@ -54,33 +54,6 @@ impl ConfidenceLevel {
     }
 }
 
-fn describe_thermal_behavior(value: f32) -> &'static str {
-    if value < 0.25 {
-        "soften quickly under heat"
-    } else if value < 0.5 {
-        "change noticeably under heat"
-    } else if value < 0.75 {
-        "hold together under heat"
-    } else {
-        "barely react to heat"
-    }
-}
-
-pub fn describe_thermal_observation(value: f32, confidence: ConfidenceLevel) -> String {
-    let behavior = describe_thermal_behavior(value);
-    match confidence {
-        ConfidenceLevel::Tentative => format!("Seemed to {behavior}"),
-        ConfidenceLevel::Observed => {
-            let mut chars = behavior.chars();
-            let Some(first) = chars.next() else {
-                return String::new();
-            };
-            format!("{}{}", first.to_uppercase(), chars.as_str())
-        }
-        ConfidenceLevel::Confident => format!("Reliably {behavior}"),
-    }
-}
-
 // ── Tracker resource ─────────────────────────────────────────────────────
 
 /// Canonical key: (material seed, property name).

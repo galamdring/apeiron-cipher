@@ -16,9 +16,10 @@
 
 use bevy::prelude::*;
 
+use crate::descriptions::describe_thermal_observation;
 use crate::journal::{JournalKey, Observation, ObservationCategory, RecordObservation};
 use crate::materials::{GameMaterial, MaterialObject, PropertyVisibility};
-use crate::observation::{ConfidenceTracker, describe_thermal_observation};
+use crate::observation::ConfidenceTracker;
 use crate::scene::{FurnitureConfig, HeatSourceConfig, Workbench};
 
 pub struct HeatPlugin;
