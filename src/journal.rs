@@ -304,7 +304,9 @@ fn attach_journal_to_player(mut commands: Commands, player_query: Query<Entity, 
     let Ok(player) = player_query.single() else {
         return;
     };
-    commands.entity(player).insert(LegacyJournal::default());
+    commands
+        .entity(player)
+        .insert((LegacyJournal::default(), NewJournal::default()));
 }
 
 fn spawn_journal_ui(mut commands: Commands) {
@@ -371,13 +373,18 @@ fn toggle_journal_visibility(
 /// migrate rendering to `NewJournal`).
 fn apply_observations(
     mut reader: MessageReader<RecordObservation>,
-    mut player_query: Query<&mut LegacyJournal, With<Player>>,
+    mut player_query: Query<(&mut LegacyJournal, &mut NewJournal), With<Player>>,
 ) {
-    let Ok(mut journal) = player_query.single_mut() else {
+    let Ok((mut journal, mut new_journal)) = player_query.single_mut() else {
         return;
     };
 
     for event in reader.read() {
+        // Write into the new typed journal for all categories.
+        new_journal.record(event.key.clone(), &event.name, event.observation.clone());
+
+        // Also write into the legacy journal so the existing text overlay
+        // keeps working until story 10.2 migrates rendering.
         match event.observation.category {
             ObservationCategory::SurfaceAppearance => {
                 let entry = journal.ensure_entry(
