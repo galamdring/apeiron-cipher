@@ -52,6 +52,16 @@ impl ConfidenceLevel {
             _ => ConfidenceLevel::Confident,
         }
     }
+
+    /// Qualitative language shown in the journal detail panel to convey how
+    /// certain an observation is without exposing raw numbers.
+    pub fn display_label(self) -> &'static str {
+        match self {
+            ConfidenceLevel::Tentative => "Uncertain",
+            ConfidenceLevel::Observed => "Noted",
+            ConfidenceLevel::Confident => "Confirmed",
+        }
+    }
 }
 
 // ── Tracker resource ─────────────────────────────────────────────────────

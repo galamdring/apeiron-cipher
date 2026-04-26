@@ -698,6 +698,9 @@ enum DetailSpanKind {
     CategoryGroupHeader,
     /// Observation description text — normal body color.
     Body,
+    /// Qualitative confidence label (e.g. "Uncertain", "Noted", "Confirmed")
+    /// rendered after each observation description in a subdued style.
+    ConfidenceLabel,
     /// Placeholder text when the journal is empty.
     Placeholder,
 }
@@ -837,6 +840,7 @@ fn sync_journal_ui(
     let header_color = TextColor(Color::srgba(1.0, 0.85, 0.35, 1.0));
     let category_group_color = TextColor(Color::srgba(0.75, 0.68, 0.45, 1.0));
     let body_color = TextColor(Color::srgba(0.92, 0.92, 0.88, 1.0));
+    let confidence_color = TextColor(Color::srgba(0.6, 0.65, 0.7, 1.0));
     let placeholder_color = TextColor(Color::srgba(0.55, 0.55, 0.50, 1.0));
 
     if let Ok((detail_entity, detail_children)) = detail_query.single() {
@@ -856,6 +860,7 @@ fn sync_journal_ui(
                     DetailSpanKind::Header => header_color,
                     DetailSpanKind::CategoryGroupHeader => category_group_color,
                     DetailSpanKind::Body => body_color,
+                    DetailSpanKind::ConfidenceLabel => confidence_color,
                     DetailSpanKind::Placeholder => placeholder_color,
                 };
                 parent.spawn((TextSpan::new(span.text.clone()), span_font.clone(), color));
@@ -974,6 +979,12 @@ fn build_detail_spans(entries: &[&JournalEntry], state: &JournalUiState) -> Vec<
             spans.push(DetailSpan {
                 text: indented,
                 kind: DetailSpanKind::Body,
+            });
+            // Qualitative confidence indicator — communicates certainty
+            // without exposing internal counts.
+            spans.push(DetailSpan {
+                text: format!("  [{}]", obs.confidence.display_label()),
+                kind: DetailSpanKind::ConfidenceLabel,
             });
         }
     }
@@ -2868,16 +2879,20 @@ mod tests {
         // First span: header with entry name.
         assert_eq!(spans[0].kind, DetailSpanKind::Header);
         assert_eq!(spans[0].text, "Ferrite");
-        // Surface category group header + observation body.
+        // Surface category group header + observation body + confidence.
         assert_eq!(spans[1].kind, DetailSpanKind::CategoryGroupHeader);
         assert!(spans[1].text.contains("Surface"));
         assert_eq!(spans[2].kind, DetailSpanKind::Body);
         assert!(spans[2].text.contains("Warm rust tone"));
-        // Weight category group header + observation body.
-        assert_eq!(spans[3].kind, DetailSpanKind::CategoryGroupHeader);
-        assert!(spans[3].text.contains("Weight"));
-        assert_eq!(spans[4].kind, DetailSpanKind::Body);
-        assert!(spans[4].text.contains("Heavy but manageable"));
+        assert_eq!(spans[3].kind, DetailSpanKind::ConfidenceLabel);
+        assert!(spans[3].text.contains("Uncertain"));
+        // Weight category group header + observation body + confidence.
+        assert_eq!(spans[4].kind, DetailSpanKind::CategoryGroupHeader);
+        assert!(spans[4].text.contains("Weight"));
+        assert_eq!(spans[5].kind, DetailSpanKind::Body);
+        assert!(spans[5].text.contains("Heavy but manageable"));
+        assert_eq!(spans[6].kind, DetailSpanKind::ConfidenceLabel);
+        assert!(spans[6].text.contains("Noted"));
     }
 
     #[test]
