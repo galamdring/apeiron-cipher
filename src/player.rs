@@ -42,6 +42,7 @@ struct StaminaState {
     pub max: f32,
 }
 
+/// Returns `true` when the cursor is grabbed (locked or confined).
 pub fn cursor_is_captured(grab_mode: CursorGrabMode) -> bool {
     grab_mode != CursorGrabMode::None
 }
@@ -70,6 +71,7 @@ fn enforce_eye_height(
     translation.y = standing_y + eye_height;
 }
 
+/// Plugin that spawns the player entity and drives first-person movement and look.
 pub struct PlayerPlugin;
 
 impl Plugin for PlayerPlugin {
@@ -98,6 +100,7 @@ pub struct PlayerCamera;
 #[derive(Component, Default)]
 struct CameraPitch(f32);
 
+/// Spawns the player body, camera, and input-manager bundle into the world.
 pub fn spawn_player(
     mut commands: Commands,
     scene: Res<PlayerSceneConfig>,

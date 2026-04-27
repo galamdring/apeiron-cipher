@@ -29,6 +29,7 @@ use crate::carry::{CarryConfig, CarryCueConfig, CarryMovementState};
 use crate::input::InputAction;
 use crate::player::{Player, PlayerCamera, cursor_is_captured, spawn_player};
 
+/// Plugin that provides visual and audio feedback for the carry system.
 pub struct CarryFeedbackPlugin;
 
 impl Plugin for CarryFeedbackPlugin {

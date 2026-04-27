@@ -18,6 +18,7 @@ use std::collections::HashMap;
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 
+/// Plugin that initialises the observation confidence tracking system.
 pub struct ObservationPlugin;
 
 impl Plugin for ObservationPlugin {
@@ -44,6 +45,7 @@ pub enum ConfidenceLevel {
 impl ConfidenceLevel {
     // Used when observation-count UI is wired up; keeping the API ready.
     #[allow(dead_code)]
+    /// Returns the confidence level corresponding to the given observation count.
     pub fn from_count(count: u32) -> Self {
         match count {
             0 => ConfidenceLevel::Tentative,

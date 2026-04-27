@@ -86,6 +86,7 @@ pub enum JournalKey {
     },
 }
 
+/// Plugin that manages the player journal, recording observations and discoveries.
 pub struct JournalPlugin;
 
 impl Plugin for JournalPlugin {

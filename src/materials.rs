@@ -28,8 +28,10 @@ use crate::seed_util::{
     MAT_DENSITY_CHANNEL, MAT_REACTIVITY_CHANNEL, MAT_THERMAL_RESISTANCE_CHANNEL,
     MAT_TOXICITY_CHANNEL, mix_seed,
 };
+/// Registers the material data model, catalog, and world-object spawning systems.
 pub struct MaterialPlugin;
 
+/// Small vertical gap between a material object and the surface it rests on.
 pub const MATERIAL_SURFACE_GAP: f32 = 0.01;
 
 // ── Well-known material seeds ────────────────────────────────────────────
@@ -71,8 +73,11 @@ impl Plugin for MaterialPlugin {
 /// `Revealed` is set at runtime once the player has uncovered a hidden property.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Reflect)]
 pub enum PropertyVisibility {
+    /// The player can perceive this property on first inspection.
     Observable,
+    /// This property is not yet visible to the player.
     Hidden,
+    /// This property was hidden but has been uncovered through experimentation.
     Revealed,
 }
 
@@ -83,7 +88,9 @@ pub enum PropertyVisibility {
 /// Values are clamped to \[0.0, 1.0\] for uniform combination math (Story 3.2).
 #[derive(Clone, Debug, Serialize, Deserialize, Reflect)]
 pub struct MaterialProperty {
+    /// Normalised property value in \[0.0, 1.0\].
     pub value: f32,
+    /// Whether the player can currently see this property.
     pub visibility: PropertyVisibility,
 }
 
@@ -100,14 +107,21 @@ pub struct MaterialProperty {
 /// input seeds.
 #[derive(Component, Clone, Debug, Serialize, Deserialize, Reflect)]
 pub struct GameMaterial {
+    /// Human-readable display name (procedurally generated or disambiguated).
     pub name: String,
+    /// Deterministic seed used for generation and catalog identity.
     pub seed: u64,
     /// Display colour as \[R, G, B\] in sRGB 0.0–1.0.
     pub color: [f32; 3],
+    /// How heavy the material feels — affects mesh shape selection.
     pub density: MaterialProperty,
+    /// Resistance to heat transfer.
     pub thermal_resistance: MaterialProperty,
+    /// Tendency to react when combined with other materials.
     pub reactivity: MaterialProperty,
+    /// Ability to conduct energy (electrical/thermal).
     pub conductivity: MaterialProperty,
+    /// Degree of toxicity when handled or combined.
     pub toxicity: MaterialProperty,
 }
 
@@ -142,10 +156,12 @@ impl GameMaterial {
         }
     }
 
+    /// Returns the Y coordinate for the entity center when resting on a surface.
     pub fn resting_center_y(&self, surface_y: f32) -> f32 {
         surface_y + self.support_height() + MATERIAL_SURFACE_GAP
     }
 
+    /// Returns the horizontal collision radius of the mesh for this material's density.
     pub fn footprint_radius(&self) -> f32 {
         let density = self.density.value;
         if density < 0.3 {

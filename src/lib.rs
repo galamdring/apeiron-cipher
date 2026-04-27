@@ -9,43 +9,24 @@
 
 use bevy::prelude::*;
 
-// Module-level doc coverage is deferred — each module has internal item docs
-// but adding module-level //! headers is tracked as incremental work.
-#[allow(missing_docs)]
 pub mod carry;
-#[allow(missing_docs)]
 pub mod carry_feedback;
-#[allow(missing_docs)]
 pub mod combination;
-#[allow(missing_docs)]
 pub mod debug_overlay;
 pub mod descriptions;
-#[allow(missing_docs)]
 pub mod fabricator;
-#[allow(missing_docs)]
 pub mod heat;
-#[allow(missing_docs)]
 pub mod input;
-#[allow(missing_docs)]
 pub mod interaction;
-#[allow(missing_docs)]
 pub mod journal;
-#[allow(missing_docs)]
 pub mod materials;
-#[allow(missing_docs)]
 pub mod naming;
-#[allow(missing_docs)]
 pub mod observation;
-#[allow(missing_docs)]
 pub mod player;
-#[allow(missing_docs)]
 pub mod scene;
 pub mod seed_util;
-#[allow(missing_docs)]
 pub mod solar_system;
-#[allow(missing_docs)]
 pub mod surface;
-#[allow(missing_docs)]
 pub mod world_generation;
 
 /// Registers every game plugin onto the given [`App`].

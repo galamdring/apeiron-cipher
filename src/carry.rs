@@ -31,6 +31,7 @@ use leafwing_input_manager::prelude::*;
 
 const CONFIG_PATH: &str = "assets/config/carry.toml";
 
+/// Registers carry system resources, messages, and systems with the Bevy app.
 pub struct CarryPlugin;
 
 impl Plugin for CarryPlugin {
@@ -109,8 +110,11 @@ pub(crate) enum CarryRejectionReason {
 /// Carry handles the stash mutation and weight observation for the held item.
 #[derive(Message)]
 pub struct StashHeldForPickup {
+    /// Entity currently held that should be stashed.
     pub held_entity: Entity,
+    /// Material type of the held entity being stashed.
     pub held_material: GameMaterial,
+    /// Material type of the newly picked-up item.
     pub picked_material: GameMaterial,
 }
 
@@ -119,6 +123,7 @@ pub struct StashHeldForPickup {
 /// and journal recording.
 #[derive(Message)]
 pub struct ObserveWeight {
+    /// Material to record a weight observation for.
     pub material: GameMaterial,
 }
 
@@ -138,9 +143,13 @@ struct CarryWeightChanged {
 /// how carry contents are tracked.
 #[derive(Clone, Debug, Resource, PartialEq)]
 pub struct CarryMovementState {
+    /// Speed multiplier derived from current encumbrance (1.0 = full speed).
     pub speed_modifier: f32,
+    /// Stamina drain multiplier scaling with carry weight.
     pub stamina_drain_multiplier: f32,
+    /// Ratio of current weight to effective capacity (0.0–1.0+).
     pub encumbrance_ratio: f32,
+    /// Whether carry weight effects are disabled (creative profile).
     pub creative_mode: bool,
     /// Sprint speed multiplier sourced from the active carry profile config.
     pub sprint_speed_multiplier: f32,
@@ -195,10 +204,12 @@ pub struct InCarry;
 /// Starting with a struct now avoids rewriting every caller later.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CarriedItem {
+    /// The ECS entity representing this carried material.
     pub entity: Entity,
 }
 
 impl CarriedItem {
+    /// Creates a new `CarriedItem` wrapping the given entity.
     pub fn new(entity: Entity) -> Self {
         Self { entity }
     }
@@ -212,13 +223,18 @@ impl CarriedItem {
 /// devices are equipped or strength accretes.
 #[derive(Component, Clone, Debug, PartialEq)]
 pub struct CarryState {
+    /// Sum of density values for all items currently in carry.
     pub current_weight: f32,
+    /// Maximum weight the carry container can hold right now.
     pub effective_capacity: f32,
+    /// Whether stashing is rejected when weight exceeds capacity.
     pub hard_limit_enabled: bool,
+    /// Ordered list of items currently stashed in carry.
     pub carried_items: Vec<CarriedItem>,
 }
 
 impl CarryState {
+    /// Creates a new empty carry state with the given capacity and hard-limit setting.
     pub fn new(effective_capacity: f32, hard_limit_enabled: bool) -> Self {
         Self {
             current_weight: 0.0,
@@ -323,6 +339,7 @@ impl CarryState {
 /// duplicated here, since it is a tuning constant rather than mutable player state.
 #[derive(Component, Clone, Copy, Debug, PartialEq)]
 pub struct CarryStrength {
+    /// The player's current carry strength value (grows over time while carrying weight).
     pub current: f32,
 }
 
@@ -371,26 +388,37 @@ impl CarryDeviceState {
 /// rest of the epic.
 #[derive(Clone, Debug, Serialize, Deserialize, Resource)]
 pub struct CarryConfig {
+    /// Name of the active carry profile ("default", "relaxed", or "creative").
     #[serde(default = "default_active_profile")]
     pub active_profile: String,
+    /// Base carry capacity before device or strength modifiers.
     #[serde(default = "default_starting_capacity")]
     pub starting_capacity: f32,
+    /// Initial carry strength assigned to new players.
     #[serde(default = "default_starting_strength")]
     pub starting_strength: f32,
+    /// Base strength growth rate per unit weight per second.
     #[serde(default = "default_growth_rate")]
     pub growth_rate: f32,
+    /// Shape and cap for the strength growth curve.
     #[serde(default)]
     pub growth_curve: CarryGrowthCurveConfig,
+    /// Item key required to enable carrying (None = always enabled).
     #[serde(default)]
     pub carry_device_item_key: Option<String>,
+    /// Whether to auto-equip the carry device at game start.
     #[serde(default)]
     pub grant_starting_device: bool,
+    /// FIFO or LIFO order when cycling items out of carry.
     #[serde(default)]
     pub cycle_order: CarryCycleOrder,
+    /// Descriptive text bands mapping weight ratios to diegetic descriptions.
     #[serde(default = "default_weight_descriptions")]
     pub weight_descriptions: Vec<WeightDescriptionBand>,
+    /// Tuning knobs for sensory carry cues (footsteps, bob, breathing).
     #[serde(default)]
     pub weight_cues: CarryCueConfig,
+    /// Per-difficulty-profile carry consequence configurations.
     #[serde(default)]
     pub profiles: CarryProfilesConfig,
 }
@@ -429,10 +457,13 @@ fn default_growth_rate() -> f32 {
     0.02
 }
 
+/// Configuration for strength growth curve shape and ceiling.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct CarryGrowthCurveConfig {
+    /// Mathematical shape of the growth curve.
     #[serde(default)]
     pub kind: CarryGrowthCurveKind,
+    /// Upper bound for carry strength; growth stops at this value.
     #[serde(default = "default_growth_curve_cap")]
     pub max_strength: f32,
 }
@@ -450,18 +481,25 @@ fn default_growth_curve_cap() -> f32 {
     8.0
 }
 
+/// Mathematical shape for carry strength growth over time.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum CarryGrowthCurveKind {
+    /// Constant growth rate regardless of current strength.
     #[default]
     Linear,
+    /// Growth rate decreases logarithmically as strength rises.
     Logarithmic,
+    /// Growth rate approaches zero near the strength cap.
     Asymptotic,
 }
 
+/// A band mapping a weight-to-strength ratio to a diegetic description string.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct WeightDescriptionBand {
+    /// Upper bound of the weight/strength ratio for this band (inclusive).
     pub max_ratio: f32,
+    /// Descriptive text shown to the player for weights in this band.
     pub text: String,
 }
 
@@ -501,44 +539,64 @@ fn default_weight_descriptions() -> Vec<WeightDescriptionBand> {
 /// channels" rather than "camera math and audio live in unrelated systems."
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct CarryCueConfig {
+    /// Base interval in seconds between footstep sounds.
     #[serde(default = "default_footstep_interval_seconds")]
     pub footstep_interval_seconds: f32,
+    /// Minimum footstep volume at zero encumbrance.
     #[serde(default = "default_footstep_base_volume")]
     pub footstep_base_volume: f32,
+    /// Maximum footstep volume at full encumbrance.
     #[serde(default = "default_footstep_max_volume")]
     pub footstep_max_volume: f32,
+    /// Footstep playback speed when lightly loaded.
     #[serde(default = "default_footstep_light_speed")]
     pub footstep_light_speed: f32,
+    /// Footstep playback speed when heavily loaded.
     #[serde(default = "default_footstep_heavy_speed")]
     pub footstep_heavy_speed: f32,
+    /// Camera bob amplitude at zero carry weight.
     #[serde(default = "default_bob_base_amplitude")]
     pub bob_base_amplitude: f32,
+    /// Additional bob amplitude added proportionally to carry weight.
     #[serde(default = "default_bob_weight_amplitude")]
     pub bob_weight_amplitude: f32,
+    /// Base oscillation frequency for camera bob.
     #[serde(default = "default_bob_frequency")]
     pub bob_frequency: f32,
+    /// Multiplier applied to bob amplitude while sprinting.
     #[serde(default = "default_bob_sprint_multiplier")]
     pub bob_sprint_multiplier: f32,
+    /// Encumbrance ratio at which breathing audio begins.
     #[serde(default = "default_breathing_start_ratio")]
     pub breathing_start_ratio: f32,
+    /// Encumbrance ratio at which breathing audio reaches full intensity.
     #[serde(default = "default_breathing_full_ratio")]
     pub breathing_full_ratio: f32,
+    /// Maximum volume for breathing audio.
     #[serde(default = "default_breathing_max_volume")]
     pub breathing_max_volume: f32,
+    /// Breathing playback speed at low encumbrance.
     #[serde(default = "default_breathing_base_speed")]
     pub breathing_base_speed: f32,
+    /// Breathing playback speed at high encumbrance.
     #[serde(default = "default_breathing_heavy_speed")]
     pub breathing_heavy_speed: f32,
+    /// Frequency in Hz for procedural footstep tone generation.
     #[serde(default = "default_footstep_tone_hz")]
     pub footstep_tone_hz: f32,
+    /// Duration in milliseconds for each procedural footstep tone.
     #[serde(default = "default_footstep_duration_ms")]
     pub footstep_duration_ms: u64,
+    /// Frequency in Hz for procedural breathing tone generation.
     #[serde(default = "default_breathing_tone_hz")]
     pub breathing_tone_hz: f32,
+    /// Duration in milliseconds for one breathing cycle.
     #[serde(default = "default_breathing_cycle_ms")]
     pub breathing_cycle_ms: u64,
+    /// Ratio of forward-axis bob relative to vertical bob.
     #[serde(default = "default_bob_forward_ratio")]
     pub bob_forward_ratio: f32,
+    /// Cadence multiplier for footsteps while sprinting.
     #[serde(default = "default_footstep_sprint_cadence")]
     pub footstep_sprint_cadence: f32,
     /// Exponential decay rate (per second) for the camera bob when the player
@@ -665,17 +723,23 @@ fn default_bob_decay_rate() -> f32 {
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum CarryCycleOrder {
+    /// Retrieve the oldest stashed item first.
     #[default]
     Fifo,
+    /// Retrieve the most recently stashed item first.
     Lifo,
 }
 
+/// Container for all named carry profile configurations.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CarryProfilesConfig {
+    /// Standard difficulty profile with full carry consequences.
     #[serde(default = "default_profile_config")]
     pub default: CarryProfileConfig,
+    /// Relaxed difficulty profile with softer carry penalties.
     #[serde(default = "relaxed_profile_config")]
     pub relaxed: CarryProfileConfig,
+    /// Creative profile that disables all carry weight effects.
     #[serde(default = "creative_profile_config")]
     pub creative: CarryProfileConfig,
 }
@@ -693,21 +757,28 @@ impl Default for CarryProfilesConfig {
 /// One difficulty/mode profile's carry consequences.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct CarryProfileConfig {
+    /// Speed degradation curve applied as encumbrance increases.
     #[serde(default)]
     pub speed_curve: CarryCurveConfig,
+    /// Multiplier for stamina drain scaling with carry weight.
     #[serde(default = "default_stamina_cost_multiplier")]
     pub stamina_cost_multiplier: f32,
+    /// Whether stashing is rejected when weight would exceed capacity.
     #[serde(default = "default_hard_limit_enabled")]
     pub hard_limit_enabled: bool,
     /// When true, carry weight has no effect on movement or stamina.
     #[serde(default)]
     pub creative_mode: bool,
+    /// Sprint speed multiplier for this profile.
     #[serde(default = "default_sprint_speed_multiplier")]
     pub sprint_speed_multiplier: f32,
+    /// Maximum stamina pool for this profile.
     #[serde(default = "default_base_stamina")]
     pub base_stamina: f32,
+    /// Base stamina drain per second before weight scaling.
     #[serde(default = "default_stamina_drain_per_second")]
     pub stamina_drain_per_second: f32,
+    /// Stamina regeneration per second when not sprinting.
     #[serde(default = "default_stamina_regen_per_second")]
     pub stamina_regen_per_second: f32,
 }
@@ -785,10 +856,13 @@ fn default_stamina_regen_per_second() -> f32 {
 /// Values are loaded from `carry.toml` and resolved into the active profile.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct CarryCurveConfig {
+    /// Mathematical shape of the speed degradation curve.
     #[serde(default)]
     pub kind: CarryCurveKind,
+    /// Lowest speed multiplier at maximum encumbrance.
     #[serde(default = "default_min_multiplier")]
     pub min_multiplier: f32,
+    /// Exponent controlling curve steepness.
     #[serde(default = "default_curve_exponent")]
     pub exponent: f32,
 }
@@ -811,11 +885,14 @@ fn default_curve_exponent() -> f32 {
     1.35
 }
 
+/// Mathematical shape for speed degradation as encumbrance increases.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum CarryCurveKind {
+    /// Speed decreases linearly with encumbrance ratio.
     #[default]
     Linear,
+    /// Speed decreases exponentially, penalizing heavy loads more.
     Exponential,
 }
 
@@ -1151,6 +1228,7 @@ pub fn can_stash_material(carry_state: &CarryState, material: &GameMaterial) -> 
         <= (carry_state.effective_capacity + f32::EPSILON)
 }
 
+/// Moves a held entity into carry state, updating weight and ECS components.
 pub fn stash_entity_into_carry(
     commands: &mut Commands,
     carry_state: &mut CarryState,
@@ -1167,6 +1245,7 @@ pub fn stash_entity_into_carry(
         .insert(Visibility::Hidden);
 }
 
+/// Records a weight observation for a material, updating confidence and journal.
 pub fn record_weight_observation(
     material: &GameMaterial,
     carry_strength: f32,

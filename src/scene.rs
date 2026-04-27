@@ -11,6 +11,7 @@ use std::path::Path;
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 
+/// Bevy plugin that loads scene configuration and spawns the room environment.
 pub struct ScenePlugin;
 
 impl Plugin for ScenePlugin {
@@ -32,7 +33,9 @@ pub struct Workbench;
 /// the placement system never needs offset math.
 #[derive(Component)]
 pub struct Surface {
+    /// Half-width of the placement area along the X axis.
     pub half_extent_x: f32,
+    /// Half-depth of the placement area along the Z axis.
     pub half_extent_z: f32,
 }
 
@@ -47,11 +50,14 @@ pub struct Shelf;
 /// the X/Z plane instead of the X/Y plane familiar from CAD or 3D printing.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PositionXZ {
+    /// World X coordinate.
     pub x: f32,
+    /// World Z coordinate.
     pub z: f32,
 }
 
 impl PositionXZ {
+    /// Creates a new ground-plane position from X and Z coordinates.
     pub fn new(x: f32, z: f32) -> Self {
         Self { x, z }
     }
@@ -60,14 +66,20 @@ impl PositionXZ {
 /// Axis-aligned rectangle on the world X/Z plane.
 #[derive(Clone, Copy, Debug)]
 pub struct RectXZ {
+    /// Minimum X boundary.
     pub min_x: f32,
+    /// Maximum X boundary.
     pub max_x: f32,
+    /// Minimum Z boundary.
     pub min_z: f32,
+    /// Maximum Z boundary.
     pub max_z: f32,
 }
 
+/// Collision shape for a single wall segment on the X/Z plane.
 #[derive(Clone, Debug)]
 pub struct WallCollider {
+    /// Axis-aligned footprint of this wall segment.
     pub footprint_xz: RectXZ,
 }
 
@@ -93,12 +105,15 @@ impl WallCollider {
     }
 }
 
+/// Collection of wall colliders forming the room shell for movement blocking.
 #[derive(Resource, Clone, Debug, Default)]
 pub struct RoomShellCollision {
+    /// All wall segment colliders in the room.
     pub wall_colliders: Vec<WallCollider>,
 }
 
 impl RoomShellCollision {
+    /// Returns `true` if any wall segment overlaps a circle at the given position.
     pub fn blocks_circle_xz(&self, position_xz: PositionXZ, radius: f32) -> bool {
         self.wall_colliders
             .iter()
@@ -115,7 +130,9 @@ impl RoomShellCollision {
 /// time in a different module.
 #[derive(Resource, Clone, Debug)]
 pub struct ExteriorGroundPatch {
+    /// Axis-aligned bounds of the exterior patch on the X/Z plane.
     pub bounds_xz: RectXZ,
+    /// Y height of the exterior ground surface.
     pub surface_y: f32,
 }
 
@@ -126,30 +143,42 @@ const CONFIG_PATH: &str = "assets/config/scene.toml";
 /// Top-level structure of `assets/config/scene.toml`.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, Resource)]
 pub struct SceneConfig {
+    /// Room dimensions and wall geometry.
     #[serde(default)]
     pub room: RoomConfig,
+    /// Player spawn position and movement parameters.
     #[serde(default)]
     pub player: PlayerSceneConfig,
+    /// Ambient, directional, and spot light settings.
     #[serde(default)]
     pub lighting: LightingConfig,
+    /// Workbench and shelf placement configuration.
     #[serde(default)]
     pub furniture: FurnitureConfig,
+    /// Fabricator slot and output geometry.
     #[serde(default)]
     pub fabricator: FabricatorSceneConfig,
+    /// Heat source position and reaction timing.
     #[serde(default)]
     pub heat_source: HeatSourceConfig,
 }
 
+/// Configuration for the enclosed room dimensions and wall geometry.
 #[derive(Clone, Debug, Serialize, Deserialize, Resource)]
 pub struct RoomConfig {
+    /// Half the room width along the X axis.
     #[serde(default = "default_half_extent_x")]
     pub half_extent_x: f32,
+    /// Half the room depth along the Z axis.
     #[serde(default = "default_half_extent_z")]
     pub half_extent_z: f32,
+    /// Height of the room walls in meters.
     #[serde(default = "default_wall_height")]
     pub wall_height: f32,
+    /// Thickness of each wall slab in meters.
     #[serde(default = "default_wall_thickness")]
     pub wall_thickness: f32,
+    /// Inward margin from walls for player movement bounds.
     #[serde(default = "default_boundary_margin")]
     pub boundary_margin: f32,
 }
@@ -182,14 +211,19 @@ impl Default for RoomConfig {
     }
 }
 
+/// Configuration for the player's spawn position and movement in the scene.
 #[derive(Clone, Debug, Serialize, Deserialize, Resource)]
 pub struct PlayerSceneConfig {
+    /// Camera height above the floor in meters.
     #[serde(default = "default_eye_height")]
     pub eye_height: f32,
+    /// Initial X spawn coordinate.
     #[serde(default)]
     pub spawn_x: f32,
+    /// Initial Z spawn coordinate.
     #[serde(default = "default_spawn_z")]
     pub spawn_z: f32,
+    /// Movement speed in meters per second.
     #[serde(default = "default_move_speed")]
     pub move_speed: f32,
     /// Max height the player can step up onto a surface (meters).
@@ -229,24 +263,34 @@ impl Default for PlayerSceneConfig {
     }
 }
 
+/// Configuration for all scene lighting (ambient, directional, and spot).
 #[derive(Clone, Debug, Serialize, Deserialize, Resource)]
 pub struct LightingConfig {
+    /// Ambient light brightness level.
     #[serde(default = "default_ambient_brightness")]
     pub ambient_brightness: f32,
+    /// Directional light illuminance in lux.
     #[serde(default = "default_directional_illuminance")]
     pub directional_illuminance: f32,
+    /// Whether the directional light casts shadows.
     #[serde(default = "default_directional_shadows")]
     pub directional_shadows: bool,
+    /// Spot light intensity in candela.
     #[serde(default = "default_spot_intensity")]
     pub spot_intensity: f32,
+    /// Maximum range of the spot light in meters.
     #[serde(default = "default_spot_range")]
     pub spot_range: f32,
+    /// Inner cone angle of the spot light in radians.
     #[serde(default = "default_spot_inner_angle")]
     pub spot_inner_angle: f32,
+    /// Outer cone angle of the spot light in radians.
     #[serde(default = "default_spot_outer_angle")]
     pub spot_outer_angle: f32,
+    /// Height of the spot light above the floor.
     #[serde(default = "default_spot_height")]
     pub spot_height: f32,
+    /// Y coordinate the spot light aims at.
     #[serde(default = "default_spot_target_y")]
     pub spot_target_y: f32,
 }
@@ -295,24 +339,34 @@ impl Default for LightingConfig {
     }
 }
 
+/// Configuration for workbench and shelf furniture placement.
 #[derive(Clone, Debug, Serialize, Deserialize, Resource)]
 pub struct FurnitureConfig {
+    /// Width of the workbench along the X axis.
     #[serde(default = "default_workbench_width")]
     pub workbench_width: f32,
+    /// Height of the workbench in meters.
     #[serde(default = "default_workbench_height")]
     pub workbench_height: f32,
+    /// Depth of the workbench along the Z axis.
     #[serde(default = "default_workbench_depth")]
     pub workbench_depth: f32,
+    /// X position of the workbench center.
     #[serde(default)]
     pub workbench_x: f32,
+    /// Z position of the workbench center.
     #[serde(default)]
     pub workbench_z: f32,
+    /// Width of each shelf along its long axis.
     #[serde(default = "default_shelf_width")]
     pub shelf_width: f32,
+    /// Vertical thickness of each shelf slab.
     #[serde(default = "default_shelf_thickness")]
     pub shelf_thickness: f32,
+    /// Depth of each shelf along its short axis.
     #[serde(default = "default_shelf_depth")]
     pub shelf_depth: f32,
+    /// List of individual shelf placements in the room.
     #[serde(default = "default_shelves")]
     pub shelves: Vec<ShelfConfig>,
 }
@@ -372,33 +426,47 @@ impl Default for FurnitureConfig {
     }
 }
 
+/// Position of a single shelf in world coordinates.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ShelfConfig {
+    /// X position of the shelf center.
     pub x: f32,
+    /// Z position of the shelf center.
     pub z: f32,
+    /// Y height of the shelf top surface.
     pub y: f32,
 }
 
 // ── Fabricator config ────────────────────────────────────────────────────
 
+/// Configuration for fabricator input slots and output tray on the workbench.
 #[derive(Clone, Debug, Serialize, Deserialize, Resource)]
 pub struct FabricatorSceneConfig {
+    /// X offset of input slots from the workbench center.
     #[serde(default = "default_fab_slot_offset_x")]
     pub slot_offset_x: f32,
+    /// Z spacing between adjacent input slots.
     #[serde(default = "default_fab_slot_spacing_z")]
     pub slot_spacing_z: f32,
+    /// Radius of each input slot circle.
     #[serde(default = "default_fab_slot_radius")]
     pub slot_radius: f32,
+    /// Visual height of each input slot disc.
     #[serde(default = "default_fab_slot_height")]
     pub slot_height: f32,
+    /// X offset of the output tray from the workbench center.
     #[serde(default = "default_fab_output_offset_x")]
     pub output_offset_x: f32,
+    /// Z offset of the output tray from the workbench center.
     #[serde(default = "default_fab_output_offset_z")]
     pub output_offset_z: f32,
+    /// Radius of the output tray circle.
     #[serde(default = "default_fab_output_radius")]
     pub output_radius: f32,
+    /// Visual height of the output tray disc.
     #[serde(default = "default_fab_output_height")]
     pub output_height: f32,
+    /// Duration in seconds for a fabrication process to complete.
     #[serde(default = "default_fab_process_seconds")]
     pub process_seconds: f32,
 }
@@ -449,16 +517,22 @@ impl Default for FabricatorSceneConfig {
 
 // ── Heat source config ──────────────────────────────────────────────────
 
+/// Configuration for the heat source position and reaction parameters.
 #[derive(Clone, Debug, Serialize, Deserialize, Resource)]
 pub struct HeatSourceConfig {
+    /// X offset of the heat source from the workbench center.
     #[serde(default = "default_hs_offset_x")]
     pub offset_x: f32,
+    /// Z offset of the heat source from the workbench center.
     #[serde(default = "default_hs_offset_z")]
     pub offset_z: f32,
+    /// Visual radius of the heat source element.
     #[serde(default = "default_hs_radius")]
     pub radius: f32,
+    /// Radius of the heat effect zone around the source.
     #[serde(default = "default_hs_zone_radius")]
     pub zone_radius: f32,
+    /// Intensity of the heat source's point light.
     #[serde(default = "default_hs_light_intensity")]
     pub light_intensity: f32,
     /// Seconds of exposure before a material fully reacts.
@@ -559,6 +633,7 @@ fn north_wall_center_z(room_half_depth: f32, wall_thickness: f32) -> f32 {
     room_half_depth + wall_thickness * 0.5
 }
 
+/// Builds wall colliders for the room shell including the south-wall doorway gap.
 pub fn build_room_shell_collision(
     room_half_width: f32,
     room_half_depth: f32,

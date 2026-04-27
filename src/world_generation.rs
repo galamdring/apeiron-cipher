@@ -734,6 +734,7 @@ pub fn generate_chunk_heightmap_mesh(
 
 const CONFIG_PATH: &str = "assets/config/world_generation.toml";
 
+/// Plugin that registers world generation resources, config loading, and chunk neighborhood systems.
 pub struct WorldGenerationPlugin;
 
 impl Plugin for WorldGenerationPlugin {
@@ -770,11 +771,14 @@ pub struct PlanetSeed(pub u64);
     Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize,
 )]
 pub struct ChunkCoord {
+    /// Chunk index along the X axis.
     pub x: i32,
+    /// Chunk index along the Z axis.
     pub z: i32,
 }
 
 impl ChunkCoord {
+    /// Creates a new chunk coordinate from the given X and Z indices.
     pub const fn new(x: i32, z: i32) -> Self {
         Self { x, z }
     }
@@ -841,8 +845,10 @@ pub struct WorldGenerationConfig {
     /// fails with a descriptive error rather than silently clamping.
     #[serde(default)]
     pub planet_index: u32,
+    /// Side length of a chunk in world units.
     #[serde(default = "default_chunk_size_world_units")]
     pub chunk_size_world_units: f32,
+    /// Number of chunks around the player to keep active.
     #[serde(default = "default_active_chunk_radius")]
     pub active_chunk_radius: i32,
     /// Side length (in world units) of the 3D building cells used for spatial
@@ -1226,11 +1232,17 @@ pub struct SystemContext {
 /// consistency.
 #[derive(Clone, Debug, Resource, PartialEq, Serialize, Deserialize)]
 pub struct WorldProfile {
+    /// Seed uniquely identifying this planet.
     pub planet_seed: PlanetSeed,
+    /// Side length of a chunk in world units.
     pub chunk_size_world_units: f32,
+    /// Number of chunks around the player to keep active.
     pub active_chunk_radius: i32,
+    /// Seed used to determine object placement density per chunk.
     pub placement_density_seed: u64,
+    /// Seed used to vary object positions within a chunk.
     pub placement_variation_seed: u64,
+    /// Seed used to deterministically assign object identities.
     pub object_identity_seed: u64,
     /// Per-planet biome climate seed, derived from the planet seed.
     ///
@@ -1391,9 +1403,13 @@ impl WorldProfile {
 /// talking about.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChunkGenerationKey {
+    /// The chunk these keys belong to.
     pub chunk_coord: ChunkCoord,
+    /// Per-chunk key for placement density noise.
     pub placement_density_key: u64,
+    /// Per-chunk key for placement variation noise.
     pub placement_variation_key: u64,
+    /// Per-chunk key for deterministic object identity assignment.
     pub object_identity_key: u64,
 }
 
@@ -1405,10 +1421,15 @@ pub struct ChunkGenerationKey {
 /// object kind, and which deterministic local candidate it refers to.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Component)]
 pub struct GeneratedObjectId {
+    /// Planet this object belongs to.
     pub planet_seed: PlanetSeed,
+    /// Chunk containing this object.
     pub chunk_coord: ChunkCoord,
+    /// String key identifying the kind of object (e.g. mineral type).
     pub object_kind_key: String,
+    /// Deterministic index of this candidate within its chunk and kind.
     pub local_candidate_index: u32,
+    /// Version of the generator that produced this object.
     pub generator_version: u32,
 }
 
@@ -1420,10 +1441,15 @@ pub struct GeneratedObjectId {
 /// neighborhood math or re-derive it ad hoc in multiple systems.
 #[derive(Clone, Debug, Default, Resource, PartialEq)]
 pub struct ActiveChunkNeighborhood {
+    /// Chunk the player currently occupies, if known.
     pub center_chunk: Option<ChunkCoord>,
+    /// World-space origin of the center chunk.
     pub center_chunk_origin_xz: Option<PositionXZ>,
+    /// Generation key for the center chunk.
     pub center_chunk_generation_key: Option<ChunkGenerationKey>,
+    /// How many chunks outward from center to include.
     pub radius: i32,
+    /// All chunk coordinates in the active neighborhood.
     pub chunks: Vec<ChunkCoord>,
 }
 
@@ -1792,6 +1818,7 @@ pub fn wrap_chunk_coord(coord: ChunkCoord, planet_surface_diameter: i32) -> Chun
     )
 }
 
+/// Constructs a [`GeneratedObjectId`] from the world profile, chunk, kind, and candidate index.
 pub fn derive_generated_object_id(
     profile: &WorldProfile,
     chunk_coord: ChunkCoord,

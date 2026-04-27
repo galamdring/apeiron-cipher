@@ -36,8 +36,10 @@ use crate::world_generation::{PlanetSurface, WorldGenerationConfig, WorldProfile
 use leafwing_input_manager::prelude::*;
 
 const INTERACTION_RANGE: f32 = 3.0;
+/// Camera-relative offset where a held object is positioned.
 pub const HOLD_OFFSET: Vec3 = Vec3::new(0.2, -0.15, -0.5);
 
+/// Plugin that handles object pickup, placement, and examination interactions.
 pub struct InteractionPlugin;
 
 impl Plugin for InteractionPlugin {
