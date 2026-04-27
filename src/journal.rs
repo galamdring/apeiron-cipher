@@ -3536,6 +3536,63 @@ mod tests {
         assert_eq!(state.scroll_offset, 3, "scroll preserved after toggle");
     }
 
+    /// Drives `toggle_journal_visibility` through real `ToggleJournalIntent`
+    /// messages and verifies that closing then reopening the journal leaves
+    /// the navigation state (`selected_index`, `scroll_offset`, and
+    /// `entries_per_page`) untouched.  This exercises the actual system path
+    /// that runs in-game, not just direct field manipulation.
+    #[test]
+    fn toggle_visibility_system_preserves_navigation_state() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.add_message::<ToggleJournalIntent>();
+        app.insert_resource(JournalUiState {
+            visible: true,
+            selected_index: 7,
+            scroll_offset: 3,
+            entries_per_page: 15,
+        });
+        app.add_systems(Update, toggle_journal_visibility);
+
+        // ── Close: send one toggle intent. ──────────────────────────
+        app.world_mut().write_message(ToggleJournalIntent);
+        app.update();
+
+        let state = app.world().resource::<JournalUiState>();
+        assert!(!state.visible, "first toggle should hide the journal");
+        assert_eq!(
+            state.selected_index, 7,
+            "closing must not reset selected_index"
+        );
+        assert_eq!(
+            state.scroll_offset, 3,
+            "closing must not reset scroll_offset"
+        );
+        assert_eq!(
+            state.entries_per_page, 15,
+            "closing must not reset entries_per_page"
+        );
+
+        // ── Reopen: send a second toggle intent. ────────────────────
+        app.world_mut().write_message(ToggleJournalIntent);
+        app.update();
+
+        let state = app.world().resource::<JournalUiState>();
+        assert!(state.visible, "second toggle should re-show the journal");
+        assert_eq!(
+            state.selected_index, 7,
+            "reopening must restore the previous selected_index"
+        );
+        assert_eq!(
+            state.scroll_offset, 3,
+            "reopening must restore the previous scroll_offset"
+        );
+        assert_eq!(
+            state.entries_per_page, 15,
+            "reopening must preserve entries_per_page"
+        );
+    }
+
     /// Verifies that `journal_navigation` ignores all key presses when the
     /// journal is hidden.  We build a minimal `App` with the system, insert
     /// a player with a journal, press ArrowDown, and confirm that
