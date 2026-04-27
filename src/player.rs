@@ -14,7 +14,7 @@ use bevy::prelude::*;
 use bevy::window::{CursorGrabMode, CursorOptions};
 use leafwing_input_manager::prelude::*;
 
-use crate::carry::CarryMovementState;
+use crate::carry::{CarryConfig, CarryMovementState};
 use crate::input::InputAction;
 use crate::scene::{PlayerSceneConfig, PositionXZ, RoomShellCollision};
 use crate::world_generation::{PlanetSurface, WorldGenerationConfig, WorldProfile};
@@ -113,7 +113,7 @@ struct CameraPitch(f32);
 pub fn spawn_player(
     mut commands: Commands,
     scene: Res<PlayerSceneConfig>,
-    carry_movement: Res<CarryMovementState>,
+    carry_config: Res<CarryConfig>,
     world_profile: Option<Res<WorldProfile>>,
     world_gen_config: Res<WorldGenerationConfig>,
     surface_registry: Res<crate::surface::SurfaceOverrideRegistry>,
@@ -133,6 +133,14 @@ pub fn spawn_player(
         terrain_y,
         &surface_registry,
     );
+    // Read base_stamina from the active profile in config. CarryMovementState
+    // is a Component attached later by CarryPlugin — it doesn't exist yet at
+    // spawn time, and we only need the profile's starting stamina here.
+    let base_stamina = carry_config
+        .profiles
+        .get(&carry_config.active_profile)
+        .map(|p| p.base_stamina)
+        .unwrap_or(100.0);
     commands
         .spawn((
             Player,
@@ -142,8 +150,8 @@ pub fn spawn_player(
             // The InputMap is attached separately by InputPlugin after spawn.
             ActionState::<InputAction>::default(),
             StaminaState {
-                current: carry_movement.base_stamina,
-                max: carry_movement.base_stamina,
+                current: base_stamina,
+                max: base_stamina,
             },
         ))
         .with_children(|parent| {
@@ -221,12 +229,16 @@ fn player_move(
     cursor_options: Single<&CursorOptions>,
     scene: Res<PlayerSceneConfig>,
     room_shell: Res<RoomShellCollision>,
-    carry_movement: Res<CarryMovementState>,
     world_profile: Option<Res<WorldProfile>>,
     world_gen_config: Res<WorldGenerationConfig>,
     surface_registry: Res<crate::surface::SurfaceOverrideRegistry>,
     mut player_query: Query<
-        (&ActionState<InputAction>, &mut Transform, &mut StaminaState),
+        (
+            &ActionState<InputAction>,
+            &mut Transform,
+            &mut StaminaState,
+            &CarryMovementState,
+        ),
         With<Player>,
     >,
 ) {
@@ -237,7 +249,8 @@ fn player_move(
         return;
     };
 
-    let Ok((action_state, mut transform, mut stamina)) = player_query.single_mut() else {
+    let Ok((action_state, mut transform, mut stamina, carry_movement)) = player_query.single_mut()
+    else {
         return;
     };
 

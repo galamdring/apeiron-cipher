@@ -47,7 +47,11 @@ pub fn assert_carry_weight(world: &mut World, expected: f32) {
 
 /// Assert the speed modifier on [`CarryMovementState`] is within a range.
 pub fn assert_speed_in_range(world: &mut World, min: f32, max: f32) {
-    let state = world.resource::<CarryMovementState>();
+    let state = world
+        .query::<&CarryMovementState>()
+        .iter(world)
+        .next()
+        .expect("no entity with CarryMovementState found");
     assert!(
         state.speed_modifier >= min && state.speed_modifier <= max,
         "expected speed_modifier in [{min}, {max}], got {}",

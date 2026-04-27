@@ -43,7 +43,6 @@ impl Plugin for CarryPlugin {
             .add_message::<ObserveWeight>()
             .init_resource::<CarryConfig>()
             .init_resource::<ActiveCarryProfile>()
-            .init_resource::<CarryMovementState>()
             .add_systems(PreStartup, load_carry_config)
             .add_systems(
                 Startup,
@@ -136,7 +135,7 @@ struct CarryWeightChanged {
 /// source of truth for *how that mass affects locomotion right now*. Keeping the
 /// two separated lets later stories change the feedback model without rewriting
 /// how carry contents are tracked.
-#[derive(Clone, Debug, Resource, PartialEq)]
+#[derive(Clone, Debug, Component, PartialEq)]
 pub struct CarryMovementState {
     pub speed_modifier: f32,
     pub stamina_drain_multiplier: f32,
@@ -397,7 +396,7 @@ pub struct CarryConfig {
     pub weight_descriptions: Vec<WeightDescriptionBand>,
     #[serde(default)]
     pub weight_cues: CarryCueConfig,
-    #[serde(default)]
+    #[serde(default = "default_profiles")]
     pub profiles: CarryProfilesConfig,
 }
 
@@ -415,7 +414,7 @@ impl Default for CarryConfig {
             cycle_order: CarryCycleOrder::default(),
             weight_descriptions: default_weight_descriptions(),
             weight_cues: CarryCueConfig::default(),
-            profiles: CarryProfilesConfig::default(),
+            profiles: default_profiles(),
         }
     }
 }
@@ -689,24 +688,26 @@ pub enum CarryCycleOrder {
     Lifo,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct CarryProfilesConfig {
-    #[serde(default = "default_profile_config")]
-    pub default: CarryProfileConfig,
-    #[serde(default = "relaxed_profile_config")]
-    pub relaxed: CarryProfileConfig,
-    #[serde(default = "creative_profile_config")]
-    pub creative: CarryProfileConfig,
-}
+/// Profile name for the creative (no-consequence) carry mode.
+///
+/// Used as the key in [`CarryConfig::profiles`] and for string comparisons
+/// elsewhere — centralised here to avoid scattered string literals.
+pub const CREATIVE_PROFILE: &str = "creative";
 
-impl Default for CarryProfilesConfig {
-    fn default() -> Self {
-        Self {
-            default: default_profile_config(),
-            relaxed: relaxed_profile_config(),
-            creative: creative_profile_config(),
-        }
-    }
+/// Map of named carry profiles keyed by profile name.
+///
+/// The TOML `[profiles.<name>]` tables deserialize directly into this map.
+/// Adding a new profile requires only a new TOML section — no code changes.
+pub type CarryProfilesConfig = std::collections::HashMap<String, CarryProfileConfig>;
+
+/// Build the default set of three carry profiles: `"default"`, `"relaxed"`,
+/// and `"creative"`.
+fn default_profiles() -> CarryProfilesConfig {
+    let mut map = CarryProfilesConfig::new();
+    map.insert("default".into(), default_profile_config());
+    map.insert("relaxed".into(), relaxed_profile_config());
+    map.insert(CREATIVE_PROFILE.into(), creative_profile_config());
+    map
 }
 
 /// One difficulty/mode profile's carry consequences.
@@ -859,10 +860,18 @@ impl Default for ActiveCarryProfile {
 
 impl ActiveCarryProfile {
     fn from_config(config: &CarryConfig) -> Self {
-        let tuning = match config.active_profile.as_str() {
-            "relaxed" => config.profiles.relaxed.clone(),
-            "creative" => config.profiles.creative.clone(),
-            _ => config.profiles.default.clone(),
+        let tuning = if let Some(profile) = config.profiles.get(&config.active_profile) {
+            profile.clone()
+        } else {
+            warn!(
+                "Carry profile '{}' not found in config; falling back to 'default'",
+                config.active_profile
+            );
+            config
+                .profiles
+                .get("default")
+                .cloned()
+                .unwrap_or_else(default_profile_config)
         };
 
         Self {
@@ -935,6 +944,7 @@ fn attach_carry_state_to_player(
             current: config.starting_strength,
         },
         device_state,
+        CarryMovementState::default(),
     ));
 }
 
@@ -944,10 +954,9 @@ fn attach_carry_state_to_player(
 /// actually change, avoiding redundant writes on idle frames.
 fn update_carry_movement_state(
     active_profile: Res<ActiveCarryProfile>,
-    mut movement_state: ResMut<CarryMovementState>,
-    player_query: Query<(Ref<CarryState>,), With<Player>>,
+    mut player_query: Query<(Ref<CarryState>, &mut CarryMovementState), With<Player>>,
 ) {
-    let Ok((carry_ref,)) = player_query.single() else {
+    let Ok((carry_ref, mut movement_state)) = player_query.single_mut() else {
         return;
     };
 
@@ -1015,7 +1024,7 @@ fn update_carry_strength(
     config: Res<CarryConfig>,
     mut player_query: Query<(&CarryState, &mut CarryStrength), With<Player>>,
 ) {
-    if active_profile.profile_name == "creative" {
+    if active_profile.profile_name == CREATIVE_PROFILE {
         return;
     }
 
@@ -1560,7 +1569,7 @@ exponent = 1.0
         assert!(config.grant_starting_device);
         assert_eq!(config.cycle_order, CarryCycleOrder::Lifo);
         assert_eq!(
-            config.profiles.relaxed.speed_curve.kind,
+            config.profiles["relaxed"].speed_curve.kind,
             CarryCurveKind::Exponential
         );
     }
@@ -2017,5 +2026,131 @@ exponent = 1.0
         );
 
         assert_eq!(text, "Straining under the weight");
+    }
+
+    // ── Tests added by #282 ─────────────────────────────────────────────
+
+    #[test]
+    fn remove_from_empty_carry_is_harmless() {
+        let mat = material_with_density(0.5);
+        let mut state = CarryState::new(10.0, true);
+        // Removing a material that was never added should not panic or
+        // corrupt state.
+        assert!(
+            state
+                .remove_material(Entity::from_bits(999), &mat)
+                .is_none()
+        );
+        assert_eq!(state.current_weight, 0.0);
+        assert!(state.carried_items.is_empty());
+    }
+
+    #[test]
+    fn remove_nonexistent_entity_leaves_state_unchanged() {
+        let mat = material_with_density(0.5);
+        let entity = Entity::from_bits(1);
+        let mut state = CarryState::new(10.0, true);
+        state.add_material(entity, &mat);
+
+        let other = Entity::from_bits(42);
+        assert!(state.remove_material(other, &mat).is_none());
+        assert_eq!(state.carried_items.len(), 1);
+        assert!((state.current_weight - 0.5).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn device_state_no_requirement_always_ready() {
+        let config = CarryConfig {
+            carry_device_item_key: None,
+            ..CarryConfig::default()
+        };
+        let device = CarryDeviceState::from_config(&config);
+        assert!(device.has_required_device());
+    }
+
+    #[test]
+    fn device_state_requirement_without_grant_is_missing() {
+        let config = CarryConfig {
+            carry_device_item_key: Some("satchel".into()),
+            grant_starting_device: false,
+            ..CarryConfig::default()
+        };
+        let device = CarryDeviceState::from_config(&config);
+        assert!(!device.has_required_device());
+    }
+
+    #[test]
+    fn device_state_requirement_with_grant_is_present() {
+        let config = CarryConfig {
+            carry_device_item_key: Some("satchel".into()),
+            grant_starting_device: true,
+            ..CarryConfig::default()
+        };
+        let device = CarryDeviceState::from_config(&config);
+        assert!(device.has_required_device());
+    }
+
+    #[test]
+    fn exponential_speed_curve_degrades_at_full_load() {
+        let curve = CarryCurveConfig {
+            kind: CarryCurveKind::Exponential,
+            min_multiplier: 0.3,
+            exponent: 2.0,
+        };
+        let speed = evaluate_speed_curve(&curve, 1.0, true);
+        // Exponential curve asymptotically approaches min_multiplier but
+        // never quite reaches it at ratio 1.0. Verify it's well below 1.0
+        // and clamped above min_multiplier.
+        assert!(speed < 0.5, "expected significant degradation, got {speed}");
+        assert!(
+            speed >= 0.3,
+            "expected speed >= min_multiplier 0.3, got {speed}"
+        );
+    }
+
+    #[test]
+    fn exponential_speed_curve_full_speed_at_zero_load() {
+        let curve = CarryCurveConfig {
+            kind: CarryCurveKind::Exponential,
+            min_multiplier: 0.3,
+            exponent: 2.0,
+        };
+        let speed = evaluate_speed_curve(&curve, 0.0, true);
+        assert!(
+            (speed - 1.0).abs() < f32::EPSILON,
+            "expected 1.0 at zero load, got {speed}"
+        );
+    }
+
+    #[test]
+    fn hashmap_profiles_parse_from_toml() {
+        let toml = r#"
+active_profile = "custom"
+
+[profiles.custom]
+creative_mode = true
+
+[profiles.custom.speed_curve]
+kind = "linear"
+min_multiplier = 1.0
+exponent = 1.0
+"#;
+        let config: CarryConfig = toml::from_str(toml).expect("should parse custom profile");
+        assert!(config.profiles.contains_key("custom"));
+        assert!(config.profiles["custom"].creative_mode);
+        // Default profiles are NOT auto-injected — only what's in the TOML.
+        assert!(!config.profiles.contains_key("default"));
+    }
+
+    #[test]
+    fn unknown_active_profile_falls_back_with_warning() {
+        let config = CarryConfig {
+            active_profile: "nonexistent".into(),
+            ..CarryConfig::default()
+        };
+        let active = ActiveCarryProfile::from_config(&config);
+        // Should fall back to the "default" profile's tuning.
+        assert_eq!(active.tuning, default_profile_config());
+        assert_eq!(active.profile_name, "nonexistent");
     }
 }
