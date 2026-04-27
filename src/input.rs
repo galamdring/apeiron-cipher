@@ -26,6 +26,7 @@ use crate::player::Player;
 
 // ── Plugin ──────────────────────────────────────────────────────────────
 
+/// Registers input action mappings loaded from TOML config via leafwing.
 pub struct InputPlugin;
 
 impl Plugin for InputPlugin {
@@ -57,15 +58,25 @@ pub enum InputAction {
     /// Mouse delta — produces a Vec2 look offset.
     #[actionlike(DualAxis)]
     Look,
+    /// Left-click to capture the cursor for camera control.
     CaptureCursor,
+    /// Hold to move at increased speed.
     Sprint,
+    /// Pick up or interact with the targeted object.
     Interact,
+    /// Inspect the targeted material to record observations.
     Examine,
+    /// Stash the carried material into the player's inventory.
     Stash,
+    /// Cycle through carried materials.
     CycleCarry,
+    /// Place the carried material onto the targeted surface or slot.
     Place,
+    /// Toggle the journal overlay on or off.
     ToggleJournal,
+    /// Activate the fabricator to begin processing.
     Activate,
+    /// Pause the game.
     Pause,
 }
 

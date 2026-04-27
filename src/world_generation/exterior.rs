@@ -63,6 +63,7 @@ use crate::seed_util::lerp;
 const DEPOSIT_CONFIG_PATH: &str = "assets/exterior/surface_mineral_deposits.toml";
 const SURFACE_MINERAL_DEPOSIT_GENERATOR_VERSION: u32 = 1;
 
+/// Plugin that registers exterior terrain generation, mineral deposits, and chunk spawn/despawn systems.
 pub struct ExteriorGenerationPlugin;
 
 impl Plugin for ExteriorGenerationPlugin {

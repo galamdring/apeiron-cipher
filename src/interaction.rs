@@ -37,6 +37,7 @@ use leafwing_input_manager::prelude::*;
 
 const INTERACTION_RANGE: f32 = 3.0;
 
+/// Plugin that handles object pickup, placement, and examination interactions.
 pub struct InteractionPlugin;
 
 impl Plugin for InteractionPlugin {

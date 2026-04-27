@@ -15,6 +15,7 @@ use crate::world_generation::{
     world_position_to_chunk_coord,
 };
 
+/// Plugin that renders an on-screen debug information panel.
 pub struct DebugOverlayPlugin;
 
 impl Plugin for DebugOverlayPlugin {

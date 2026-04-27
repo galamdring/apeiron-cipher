@@ -44,6 +44,7 @@ fn is_player_moving(
         && !carry_movement.creative_mode
 }
 
+/// Plugin that provides visual and audio feedback for the carry system.
 pub struct CarryFeedbackPlugin;
 
 impl Plugin for CarryFeedbackPlugin {

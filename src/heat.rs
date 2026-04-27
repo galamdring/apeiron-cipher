@@ -22,6 +22,7 @@ use crate::materials::{GameMaterial, MaterialObject, PropertyVisibility};
 use crate::observation::ConfidenceTracker;
 use crate::scene::{FurnitureConfig, HeatSourceConfig, Workbench};
 
+/// Plugin that manages heat sources and temperature-based material interactions.
 pub struct HeatPlugin;
 
 impl Plugin for HeatPlugin {
