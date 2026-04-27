@@ -1150,29 +1150,37 @@ fn player_action_if_captured<'a>(
     player_query.single().ok()
 }
 
-fn emit_stash_intent(
-    player_query: Query<&ActionState<InputAction>, With<Player>>,
-    cursor_options: Single<&bevy::window::CursorOptions>,
-    mut writer: MessageWriter<StashIntent>,
-) {
-    if let Some(action) = player_action_if_captured(&player_query, &cursor_options)
-        && action.just_pressed(&InputAction::Stash)
-    {
-        writer.write(StashIntent);
-    }
+/// Generate a Bevy system that fires a unit-struct message when a specific
+/// [`InputAction`] is `just_pressed` and the cursor is captured.
+///
+/// Every carry-intent emitter follows the same three-step pattern:
+/// 1. Guard on cursor capture via [`player_action_if_captured`].
+/// 2. Check `just_pressed` for one [`InputAction`] variant.
+/// 3. Write one unit-struct message.
+///
+/// Adding a new intent (e.g. a future `DropIntent`) is a single macro call.
+macro_rules! emit_intent_system {
+    ($fn_name:ident, $action:expr, $msg:ident) => {
+        fn $fn_name(
+            player_query: Query<&ActionState<InputAction>, With<Player>>,
+            cursor_options: Single<&bevy::window::CursorOptions>,
+            mut writer: MessageWriter<$msg>,
+        ) {
+            if let Some(action) = player_action_if_captured(&player_query, &cursor_options)
+                && action.just_pressed(&$action)
+            {
+                writer.write($msg);
+            }
+        }
+    };
 }
 
-fn emit_cycle_carry_intent(
-    player_query: Query<&ActionState<InputAction>, With<Player>>,
-    cursor_options: Single<&bevy::window::CursorOptions>,
-    mut writer: MessageWriter<CycleCarryIntent>,
-) {
-    if let Some(action) = player_action_if_captured(&player_query, &cursor_options)
-        && action.just_pressed(&InputAction::CycleCarry)
-    {
-        writer.write(CycleCarryIntent);
-    }
-}
+emit_intent_system!(emit_stash_intent, InputAction::Stash, StashIntent);
+emit_intent_system!(
+    emit_cycle_carry_intent,
+    InputAction::CycleCarry,
+    CycleCarryIntent
+);
 
 // ── Carry mutation helpers ───────────────────────────────────────────────
 
