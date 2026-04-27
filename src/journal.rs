@@ -416,6 +416,12 @@ struct ToggleJournalIntent;
 ///
 /// * Re-anchor `selected_index` onto the tracked key when its sort position
 ///   moves (e.g. another entry was added before it).
+/// * Re-anchor `scroll_offset` onto the entry that occupied the top of the
+///   visible window in the previous frame (`top_key`), so the visible
+///   contents of the entry list do not shift underneath the player when a
+///   new entry is recorded while the journal is open.  Without this, a
+///   single insertion before the visible window would scroll every visible
+///   row down by one — disruptive when the player is reading the panel.
 /// * Fall back to the nearest remaining entry — by sort position — when the
 ///   tracked key has been removed altogether.  "Nearest" is the entry now
 ///   occupying the deleted entry's sort slot, falling back to the last
@@ -428,6 +434,11 @@ struct ToggleJournalIntent;
 /// "the user navigated this frame" (selected_index changed away from
 /// last_index) from "entries shifted underneath the user" (selected_index
 /// equals last_index but the tracked key's new position differs).
+///
+/// `top_key` and `last_scroll_offset` mirror the same idea for the visible
+/// window's top entry: when `scroll_offset` matches `last_scroll_offset`
+/// the user did not page/jump this frame, so we follow `top_key` to its
+/// new sort position to keep the visible window pinned to the same entries.
 ///
 /// The tracker is internal bookkeeping; gameplay systems do not interact
 /// with it directly. It is `None` until the panel reconciles against a
@@ -442,6 +453,16 @@ struct JournalSelectionTracker {
     /// previous frame — used to detect whether `selected_index` was
     /// changed by user navigation or by entries shifting.
     last_index: usize,
+    /// The key of the entry that occupied the top of the visible window
+    /// at the end of the previous frame (i.e. the entry at sort position
+    /// `last_scroll_offset`).  `None` when no anchor has been established
+    /// yet (empty journal) or when the previous top entry was deleted.
+    top_key: Option<JournalKey>,
+    /// The `scroll_offset` value at the end of the previous frame, used
+    /// to detect whether the user changed the scroll position this frame
+    /// (Page Up/Down, Home/End, or selection-driven scroll adjustment)
+    /// versus entries shifting underneath a stationary view.
+    last_scroll_offset: usize,
 }
 
 /// Root container for the entire journal overlay (two-panel layout).
@@ -824,20 +845,49 @@ fn compute_journal_panels(
         state.selected_index = new_pos;
     }
 
+    // ── Scroll-offset reconciliation ────────────────────────────────
+    //
+    // Same idea as selection reconciliation, but for the top of the
+    // visible window.  When the user did not page/jump this frame
+    // (`scroll_offset` matches what the tracker recorded last frame) and
+    // the entry that was at the top of the window still exists, snap
+    // `scroll_offset` to that entry's new sort position.  This keeps the
+    // visible rows pinned to the same subjects when a new entry is
+    // recorded outside the visible window — without it, an insertion
+    // before `scroll_offset` would silently scroll every visible row
+    // down by one and disrupt the player's reading.
+    //
+    // When the previous top entry has been deleted we leave
+    // `scroll_offset` alone; `clamp_to_entry_count` below ensures the
+    // (possibly already re-anchored) selection stays visible.
+    if let Some(top_key) = tracker.top_key.clone()
+        && state.scroll_offset == tracker.last_scroll_offset
+        && let Some(new_top_pos) = sorted_entries.iter().position(|e| e.key == top_key)
+    {
+        state.scroll_offset = new_top_pos;
+    }
+
     state.clamp_to_entry_count(entry_count);
 
     // ── Update tracker for the next frame ───────────────────────────
     //
     // Anchor onto whatever entry is now selected (which, after clamping,
-    // is guaranteed to exist when entry_count > 0).
+    // is guaranteed to exist when entry_count > 0) and onto whatever
+    // entry now occupies the top of the visible window.
     if let Some(entry) = sorted_entries.get(state.selected_index) {
         tracker.key = Some(entry.key.clone());
         tracker.last_index = state.selected_index;
+        tracker.top_key = sorted_entries
+            .get(state.scroll_offset)
+            .map(|e| e.key.clone());
+        tracker.last_scroll_offset = state.scroll_offset;
     } else {
         // Empty journal: clear the tracker so a future first observation
         // does not cause us to re-anchor onto a stale key.
         tracker.key = None;
         tracker.last_index = 0;
+        tracker.top_key = None;
+        tracker.last_scroll_offset = 0;
     }
 
     cache.list_lines = build_entry_list_lines(&sorted_entries, &state);
@@ -4435,6 +4485,153 @@ mod tests {
         assert_eq!(
             state.selected_index, 1,
             "selection must follow Charlie to its new sort position after deletion before it"
+        );
+    }
+
+    // ── Phase 5: new entries arriving while journal is open ─────────────
+    //
+    // The journal must not disrupt the player's current view when a new
+    // observation is recorded while the panel is visible.  "Not disrupt"
+    // means three things:
+    //
+    // 1. The highlighted subject stays highlighted, even if its sort
+    //    position shifts (covered by the existing selection-tracker tests
+    //    above and re-confirmed here in the scroll-window context).
+    // 2. The visible window of entries continues to show the same
+    //    subjects — a new entry inserted *before* the visible window
+    //    must not silently scroll every visible row down by one.
+    // 3. A new entry inserted *outside* the visible window must not
+    //    cause the window to jump; the page indicator updates but the
+    //    visible entries stay put.
+
+    /// A new entry inserted before the visible window must shift
+    /// `scroll_offset` so the same set of entries remains visible.
+    /// Without scroll-anchoring, the visible rows would all shift down
+    /// by one — disruptive when the player is reading the panel.
+    #[test]
+    fn new_entry_before_visible_window_keeps_visible_entries_stable() {
+        let mut app = make_panel_app(3);
+
+        // Build a 6-entry journal: Bravo, Charlie, Delta, Echo, Foxtrot, Golf.
+        // Sorted order will match insertion order since names are alphabetical.
+        record(&mut app, JournalKey::Material { seed: 1 }, "Bravo", 1);
+        record(&mut app, JournalKey::Material { seed: 2 }, "Charlie", 2);
+        record(&mut app, JournalKey::Material { seed: 3 }, "Delta", 3);
+        record(&mut app, JournalKey::Material { seed: 4 }, "Echo", 4);
+        record(&mut app, JournalKey::Material { seed: 5 }, "Foxtrot", 5);
+        record(&mut app, JournalKey::Material { seed: 6 }, "Golf", 6);
+        app.update();
+
+        // Scroll down so the window shows entries 3-5: Echo, Foxtrot, Golf.
+        // Selection sits on Foxtrot (index 4).
+        {
+            let mut state = app.world_mut().resource_mut::<JournalUiState>();
+            state.scroll_offset = 3;
+            state.selected_index = 4;
+        }
+        app.update();
+
+        // Sanity: the tracker is now anchored on Foxtrot (selection) and
+        // Echo (top of window) at scroll_offset 3.
+        let state = app.world().resource::<JournalUiState>();
+        assert_eq!(state.scroll_offset, 3, "precondition: window starts at 3");
+        assert_eq!(state.selected_index, 4, "precondition: Foxtrot selected");
+
+        // Insert "Alpha" — sorts before everything, shifting every existing
+        // entry down by one slot.  The visible entries (Echo, Foxtrot, Golf)
+        // are now at indices 4, 5, 6 instead of 3, 4, 5.  To keep them
+        // visible, scroll_offset must shift from 3 to 4 and selected_index
+        // from 4 to 5.
+        record(&mut app, JournalKey::Material { seed: 99 }, "Alpha", 7);
+        app.update();
+
+        let state = app.world().resource::<JournalUiState>();
+        assert_eq!(
+            state.scroll_offset, 4,
+            "scroll_offset must follow the top entry (Echo) so the visible \
+             window keeps showing the same subjects"
+        );
+        assert_eq!(
+            state.selected_index, 5,
+            "selection must follow Foxtrot to its new sort position"
+        );
+    }
+
+    /// A new entry inserted *after* the visible window must not move the
+    /// window at all.  Selection and scroll stay put; only the page
+    /// indicator (rendered separately) reflects the new total.
+    #[test]
+    fn new_entry_after_visible_window_does_not_move_view() {
+        let mut app = make_panel_app(3);
+
+        record(&mut app, JournalKey::Material { seed: 1 }, "Alpha", 1);
+        record(&mut app, JournalKey::Material { seed: 2 }, "Bravo", 2);
+        record(&mut app, JournalKey::Material { seed: 3 }, "Charlie", 3);
+        app.update();
+
+        // Window shows Alpha, Bravo, Charlie (indices 0..3).  Select Bravo.
+        {
+            let mut state = app.world_mut().resource_mut::<JournalUiState>();
+            state.selected_index = 1;
+        }
+        app.update();
+
+        // Insert "Zulu" — sorts after everything, lands at index 3 (just
+        // past the visible window).  Nothing in view should change.
+        record(&mut app, JournalKey::Material { seed: 99 }, "Zulu", 4);
+        app.update();
+
+        let state = app.world().resource::<JournalUiState>();
+        assert_eq!(
+            state.scroll_offset, 0,
+            "scroll_offset must not move when entry is inserted past the \
+             visible window"
+        );
+        assert_eq!(
+            state.selected_index, 1,
+            "selection must stay on Bravo when an unrelated entry is added"
+        );
+    }
+
+    /// A new entry inserted *between* the top of the visible window and
+    /// the selection must shift `selected_index` (the selected subject
+    /// has moved down) but must leave `scroll_offset` alone — the top
+    /// entry has not moved, so the window's anchor is still valid.  The
+    /// new entry naturally appears in the middle of the visible window;
+    /// that is the correct outcome of recording an observation about a
+    /// subject the player can already see.
+    #[test]
+    fn new_entry_between_top_and_selection_shifts_only_selection() {
+        let mut app = make_panel_app(5);
+
+        record(&mut app, JournalKey::Material { seed: 1 }, "Alpha", 1);
+        record(&mut app, JournalKey::Material { seed: 2 }, "Bravo", 2);
+        record(&mut app, JournalKey::Material { seed: 3 }, "Delta", 3);
+        record(&mut app, JournalKey::Material { seed: 4 }, "Echo", 4);
+        app.update();
+
+        // Window shows all four (indices 0..4).  Select Echo at index 3.
+        {
+            let mut state = app.world_mut().resource_mut::<JournalUiState>();
+            state.selected_index = 3;
+        }
+        app.update();
+
+        // Insert "Charlie" — sorts between Bravo and Delta at index 2.
+        // Echo shifts from index 3 to index 4.  Top entry (Alpha) is
+        // unchanged at index 0.
+        record(&mut app, JournalKey::Material { seed: 99 }, "Charlie", 5);
+        app.update();
+
+        let state = app.world().resource::<JournalUiState>();
+        assert_eq!(
+            state.scroll_offset, 0,
+            "scroll_offset must not move when the top entry's position is \
+             unchanged"
+        );
+        assert_eq!(
+            state.selected_index, 4,
+            "selection must follow Echo to its new sort position"
         );
     }
 }
