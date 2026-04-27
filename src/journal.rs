@@ -4635,6 +4635,224 @@ mod tests {
         );
     }
 
+    /// Phase 5 capstone: while the journal is open and an entry is
+    /// highlighted, recording new observations that create brand-new
+    /// entries must (a) update the journal data and the rendered list
+    /// to reflect every new subject — either as a visible row or by an
+    /// updated page indicator and reachable entry — and (b) leave the
+    /// highlight pinned to the originally selected subject.  The earlier
+    /// Phase 5 tests assert the bookkeeping invariants (`selected_index`
+    /// / `scroll_offset` shift correctly); this test asserts the
+    /// player-facing outcome by inspecting the actual `JournalRenderCache`
+    /// contents and the page-indicator help text.
+    ///
+    /// Three insertion positions are exercised in a single fixture so
+    /// the assertion holds across all relative positions of the new
+    /// entry vs. the selection:
+    ///
+    /// * inserted *before* the visible window's top entry (visible
+    ///   window stays pinned to the same subjects per Phase 5
+    ///   scroll-anchoring; the new entry is reachable but offscreen and
+    ///   the page indicator reflects the larger total);
+    /// * inserted *between* the top of the window and the selection
+    ///   (the new subject appears mid-window, selection follows); and
+    /// * inserted *after* the visible window (page indicator reflects
+    ///   the new total; visible window untouched).
+    ///
+    /// In every case the highlighted line must still belong to the
+    /// originally selected subject ("Echo") and that subject's
+    /// observation count must be unchanged — selection stability means
+    /// both that the highlight stays put and that the underlying data
+    /// for the selected subject is undisturbed by additions of other
+    /// subjects.
+    #[test]
+    fn adding_entry_while_open_updates_list_and_keeps_selection_stable() {
+        let mut app = make_panel_app(5);
+
+        // Initial fixture: five entries spanning the visible window
+        // (entries_per_page = 5).  Sorted alphabetically:
+        // Bravo, Delta, Echo, Foxtrot, Hotel.
+        record(&mut app, JournalKey::Material { seed: 1 }, "Bravo", 1);
+        record(&mut app, JournalKey::Material { seed: 2 }, "Delta", 2);
+        record(&mut app, JournalKey::Material { seed: 3 }, "Echo", 3);
+        record(&mut app, JournalKey::Material { seed: 4 }, "Foxtrot", 4);
+        record(&mut app, JournalKey::Material { seed: 5 }, "Hotel", 5);
+        app.update();
+
+        // Select "Echo" (sort index 2).  All five entries fit on a single
+        // page so the visible window is [0..5).
+        app.world_mut()
+            .resource_mut::<JournalUiState>()
+            .selected_index = 2;
+        app.update();
+
+        // Helper: assert the rendered entry list contains a line for `name`.
+        fn list_contains(app: &App, name: &str) -> bool {
+            let cache = app.world().resource::<JournalRenderCache>();
+            cache.list_lines.iter().any(|l| l.text.contains(name))
+        }
+
+        // Helper: return the single highlighted line text, asserting that
+        // exactly one line is selected.
+        fn highlighted_line(app: &App) -> String {
+            let cache = app.world().resource::<JournalRenderCache>();
+            let hits: Vec<&str> = cache
+                .list_lines
+                .iter()
+                .filter(|l| l.selected)
+                .map(|l| l.text.as_str())
+                .collect();
+            assert_eq!(
+                hits.len(),
+                1,
+                "exactly one entry must be highlighted (got {hits:?})"
+            );
+            hits[0].to_string()
+        }
+
+        // Helper: read the cached page-indicator help text.
+        fn help_text(app: &App) -> String {
+            app.world().resource::<JournalRenderCache>().help.clone()
+        }
+
+        // Helper: read the journal entry count via a query.
+        fn entry_count(app: &mut App) -> usize {
+            let mut q = app.world_mut().query_filtered::<&Journal, With<Player>>();
+            q.single(app.world())
+                .expect("player must exist")
+                .entries
+                .len()
+        }
+
+        // Sanity: initial rendered state has Echo selected and all five
+        // subjects present in the list.
+        for name in ["Bravo", "Delta", "Echo", "Foxtrot", "Hotel"] {
+            assert!(list_contains(&app, name), "precondition: {name} visible");
+        }
+        assert!(
+            highlighted_line(&app).contains("Echo"),
+            "precondition: Echo highlighted"
+        );
+        assert!(
+            help_text(&app).contains("of 5"),
+            "precondition: help indicator shows 5 total entries, got: {:?}",
+            help_text(&app)
+        );
+
+        // ── Insertion 1: before the window's top entry ──────────────────
+        //
+        // "Alpha" sorts before everything.  By Phase 5 scroll-anchoring,
+        // the visible window stays pinned to the same five subjects
+        // (Bravo, Delta, Echo, Foxtrot, Hotel) — Alpha is reachable but
+        // offscreen.  Echo's highlight follows.  The page indicator must
+        // update to reflect the new total of six.
+        record(&mut app, JournalKey::Material { seed: 10 }, "Alpha", 10);
+        app.update();
+
+        assert_eq!(
+            entry_count(&mut app),
+            6,
+            "Alpha must be present in the journal after recording"
+        );
+        assert!(
+            help_text(&app).contains("of 6"),
+            "help indicator must reflect the new total of 6 entries, got: {:?}",
+            help_text(&app)
+        );
+        assert!(
+            highlighted_line(&app).contains("Echo"),
+            "highlight must stay on Echo after an insert before the window"
+        );
+        // Visible window still shows the original five subjects.
+        for name in ["Bravo", "Delta", "Echo", "Foxtrot", "Hotel"] {
+            assert!(
+                list_contains(&app, name),
+                "{name} must still be visible after insert before the window"
+            );
+        }
+
+        // ── Insertion 2: between window top and the selection ───────────
+        //
+        // "Charlie" sorts between Bravo and Delta — i.e. above Echo.  The
+        // visible window is anchored on Bravo (its top entry); inserting
+        // Charlie between Bravo and Delta makes Charlie naturally appear
+        // in the visible window (no scroll change needed).  Echo's sort
+        // index advances by one; the highlight must follow.
+        record(&mut app, JournalKey::Material { seed: 11 }, "Charlie", 11);
+        app.update();
+
+        assert_eq!(entry_count(&mut app), 7);
+        assert!(
+            list_contains(&app, "Charlie"),
+            "Charlie must appear in the visible window when inserted between top and selection"
+        );
+        assert!(
+            highlighted_line(&app).contains("Echo"),
+            "highlight must stay on Echo after an insert between top and selection"
+        );
+        assert!(
+            help_text(&app).contains("of 7"),
+            "help indicator must reflect 7 entries, got: {:?}",
+            help_text(&app)
+        );
+
+        // ── Insertion 3: after the visible window ───────────────────────
+        //
+        // "Zulu" sorts past everything else.  By Phase 5 anchoring the
+        // visible window does not move, so Zulu may be offscreen — the
+        // contract is that the journal contains it and the page
+        // indicator reflects the new total.  Echo's highlight remains.
+        record(&mut app, JournalKey::Material { seed: 12 }, "Zulu", 12);
+        app.update();
+
+        assert_eq!(entry_count(&mut app), 8);
+        {
+            let mut q = app.world_mut().query_filtered::<&Journal, With<Player>>();
+            let journal = q.single(app.world()).expect("player must exist");
+            assert!(
+                journal
+                    .entries
+                    .contains_key(&JournalKey::Material { seed: 12 }),
+                "Zulu entry must be present in the journal after recording"
+            );
+        }
+        assert!(
+            help_text(&app).contains("of 8"),
+            "help indicator must reflect 8 entries, got: {:?}",
+            help_text(&app)
+        );
+        assert!(
+            highlighted_line(&app).contains("Echo"),
+            "highlight must stay on Echo after an insert past the window"
+        );
+
+        // ── Echo's own observation count must be untouched ──────────────
+        //
+        // Selection-stability also means the *contents* of the selected
+        // subject are unaffected by additions of unrelated subjects.
+        {
+            let mut q = app.world_mut().query_filtered::<&Journal, With<Player>>();
+            let journal = q.single(app.world()).expect("player must exist");
+            let echo = journal
+                .entries
+                .get(&JournalKey::Material { seed: 3 })
+                .expect("Echo entry must still exist");
+            assert_eq!(
+                echo.observation_count(),
+                1,
+                "Echo's observations must be unchanged by additions of other subjects"
+            );
+        }
+
+        // ── Tracker still anchored on Echo ──────────────────────────────
+        let tracker = app.world().resource::<JournalSelectionTracker>();
+        assert_eq!(
+            tracker.key,
+            Some(JournalKey::Material { seed: 3 }),
+            "tracker must remain anchored on Echo across all three insertions"
+        );
+    }
+
     /// End-to-end: with a populated journal, navigate to a specific subject,
     /// close the journal via a `ToggleJournalIntent`, reopen it via another
     /// intent, and confirm the same subject is still highlighted.
