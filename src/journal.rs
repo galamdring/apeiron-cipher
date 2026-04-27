@@ -4634,4 +4634,89 @@ mod tests {
             "selection must follow Echo to its new sort position"
         );
     }
+
+    /// End-to-end: with a populated journal, navigate to a specific subject,
+    /// close the journal via a `ToggleJournalIntent`, reopen it via another
+    /// intent, and confirm the same subject is still highlighted.
+    ///
+    /// This complements `toggle_close_reopen_preserves_selection_and_scroll`
+    /// (which manipulates `JournalUiState` fields directly) and
+    /// `toggle_visibility_system_preserves_navigation_state` (which drives
+    /// the toggle system but with no journal data) by exercising the full
+    /// pipeline: real entries, real navigation, real toggle messages, and
+    /// the panel-reconciliation pass that runs every frame.  The asserted
+    /// invariant is the player-facing one called out by the Story 10.2
+    /// acceptance criterion: "Journal remembers selection when toggled
+    /// closed and reopened."
+    #[test]
+    fn reopen_journal_preserves_same_selected_entry() {
+        let mut app = make_panel_app(15);
+        app.add_message::<ToggleJournalIntent>();
+        // Run the visibility toggle before panel reconciliation so any
+        // visibility flip this frame is reflected in the same update().
+        app.add_systems(
+            Update,
+            toggle_journal_visibility.before(compute_journal_panels),
+        );
+
+        // Populate four entries.  Sorted alphabetically the order is
+        // Alpha (0), Bravo (1), Charlie (2), Delta (3).
+        record(&mut app, JournalKey::Material { seed: 1 }, "Alpha", 1);
+        record(&mut app, JournalKey::Material { seed: 2 }, "Bravo", 2);
+        record(&mut app, JournalKey::Material { seed: 3 }, "Charlie", 3);
+        record(&mut app, JournalKey::Material { seed: 4 }, "Delta", 4);
+        app.update();
+
+        // User navigates to "Charlie" (sort index 2).
+        app.world_mut()
+            .resource_mut::<JournalUiState>()
+            .selected_index = 2;
+        app.update();
+
+        // Sanity: the tracker has anchored onto Charlie.
+        {
+            let state = app.world().resource::<JournalUiState>();
+            assert!(state.visible, "journal must be visible before close");
+            assert_eq!(state.selected_index, 2);
+        }
+
+        // Close: send one toggle intent.
+        app.world_mut().write_message(ToggleJournalIntent);
+        app.update();
+        assert!(
+            !app.world().resource::<JournalUiState>().visible,
+            "first toggle must hide the journal"
+        );
+
+        // Reopen: send a second toggle intent.
+        app.world_mut().write_message(ToggleJournalIntent);
+        app.update();
+
+        let state = app.world().resource::<JournalUiState>();
+        assert!(state.visible, "second toggle must reopen the journal");
+        assert_eq!(
+            state.selected_index, 2,
+            "reopening must keep the same entry selected"
+        );
+
+        // Verify the *subject* (not just the index) — the highlighted line
+        // in the entry list must still be Charlie's.
+        let cache = app.world().resource::<JournalRenderCache>();
+        let highlighted: Vec<&str> = cache
+            .list_lines
+            .iter()
+            .filter(|l| l.selected)
+            .map(|l| l.text.as_str())
+            .collect();
+        assert_eq!(
+            highlighted.len(),
+            1,
+            "exactly one entry must be highlighted after reopening"
+        );
+        assert!(
+            highlighted[0].contains("Charlie"),
+            "highlighted entry after reopening must still be Charlie, got {:?}",
+            highlighted[0]
+        );
+    }
 }
