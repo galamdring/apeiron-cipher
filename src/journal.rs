@@ -131,6 +131,7 @@ impl Plugin for JournalPlugin {
         app.add_message::<RecordObservation>()
             .add_message::<ToggleJournalIntent>()
             .init_resource::<JournalUiState>()
+            .init_resource::<JournalSelectionTracker>()
             .init_resource::<JournalRenderCache>()
             .add_systems(
                 Startup,
@@ -404,6 +405,44 @@ impl Default for JournalUiState {
 
 #[derive(Message)]
 struct ToggleJournalIntent;
+
+/// Tracks the [`JournalKey`] of the entry the player has highlighted, so the
+/// selection survives entry deletions and additions.
+///
+/// The selection in [`JournalUiState`] is index-based, but indices shift
+/// whenever entries appear or disappear in the (alphabetically sorted)
+/// entry list.  This tracker remembers *which subject* was selected, so
+/// `compute_journal_panels` can:
+///
+/// * Re-anchor `selected_index` onto the tracked key when its sort position
+///   moves (e.g. another entry was added before it).
+/// * Fall back to the nearest remaining entry — by sort position — when the
+///   tracked key has been removed altogether.  "Nearest" is the entry now
+///   occupying the deleted entry's sort slot, falling back to the last
+///   entry when the deletion was at the end of the list.  This is what
+///   `JournalUiState::clamp_to_entry_count` produces naturally once the
+///   tracker has decided not to override `selected_index`.
+///
+/// `last_index` records the sort position the tracker key occupied at the
+/// end of the previous frame.  It lets `compute_journal_panels` distinguish
+/// "the user navigated this frame" (selected_index changed away from
+/// last_index) from "entries shifted underneath the user" (selected_index
+/// equals last_index but the tracked key's new position differs).
+///
+/// The tracker is internal bookkeeping; gameplay systems do not interact
+/// with it directly. It is `None` until the panel reconciles against a
+/// non-empty journal, and is reset to `None` whenever the journal becomes
+/// empty.
+#[derive(Resource, Default)]
+struct JournalSelectionTracker {
+    /// The key of the entry currently considered "selected", or `None`
+    /// when no selection has yet been established (empty journal).
+    key: Option<JournalKey>,
+    /// The sort position the tracked key occupied at the end of the
+    /// previous frame — used to detect whether `selected_index` was
+    /// changed by user navigation or by entries shifting.
+    last_index: usize,
+}
 
 /// Root container for the entire journal overlay (two-panel layout).
 #[derive(Component)]
@@ -720,12 +759,31 @@ struct DetailSpan {
 /// [`JournalRenderCache`].
 ///
 /// Runs in Update after `apply_observations` and `journal_navigation`.
-/// Reads the player's `Journal` and `JournalUiState`, clamps indices,
-/// and writes the computed strings into the render cache resource.
+/// Reads the player's `Journal` and `JournalUiState`, reconciles the
+/// selection against [`JournalSelectionTracker`] so it survives entry
+/// additions and deletions, clamps indices, and writes the computed
+/// strings into the render cache resource.
+///
+/// Selection-survival rules:
+///
+/// * If the tracker's `selected_index` from the previous frame still
+///   matches the current `selected_index`, the user did not navigate this
+///   frame.  In that case we follow the tracked [`JournalKey`] to its new
+///   sort position — this keeps the highlight pinned to the player's
+///   subject when other entries are inserted before or after it.
+/// * If the tracked key no longer exists (the entry was deleted), we
+///   leave `selected_index` alone and let `clamp_to_entry_count` pull it
+///   to the nearest valid entry — which, in an alphabetically sorted
+///   list, is the entry now occupying the deleted slot, or the last
+///   entry when the deletion was at the end.
+/// * If the user navigated (`selected_index` differs from the tracker's
+///   recorded position), we trust the new index and re-anchor the tracker
+///   onto whatever entry is now selected.
 fn compute_journal_panels(
     mut state: ResMut<JournalUiState>,
     player_query: Query<&Journal, With<Player>>,
     mut cache: ResMut<JournalRenderCache>,
+    mut tracker: ResMut<JournalSelectionTracker>,
 ) {
     if !state.visible {
         cache.list_lines.clear();
@@ -746,7 +804,41 @@ fn compute_journal_panels(
     sorted_entries.sort_by(|a, b| a.name.cmp(&b.name));
 
     let entry_count = sorted_entries.len();
+
+    // ── Selection reconciliation ────────────────────────────────────
+    //
+    // Only follow the tracked key when the user did NOT navigate this
+    // frame.  We detect navigation by comparing the live `selected_index`
+    // to the index the tracker recorded at the end of the previous frame:
+    // they match iff no navigation key fired in between.
+    // When the user has not navigated this frame and the tracked entry
+    // still exists, snap `selected_index` to its (possibly shifted) sort
+    // position.  When it no longer exists, `selected_index` is left as-is
+    // so that `clamp_to_entry_count` pulls it to the nearest valid entry
+    // — the entry now occupying the deleted slot, or the new last entry
+    // if the deletion was at the end of the list.
+    if let Some(tracked_key) = tracker.key.clone()
+        && state.selected_index == tracker.last_index
+        && let Some(new_pos) = sorted_entries.iter().position(|e| e.key == tracked_key)
+    {
+        state.selected_index = new_pos;
+    }
+
     state.clamp_to_entry_count(entry_count);
+
+    // ── Update tracker for the next frame ───────────────────────────
+    //
+    // Anchor onto whatever entry is now selected (which, after clamping,
+    // is guaranteed to exist when entry_count > 0).
+    if let Some(entry) = sorted_entries.get(state.selected_index) {
+        tracker.key = Some(entry.key.clone());
+        tracker.last_index = state.selected_index;
+    } else {
+        // Empty journal: clear the tracker so a future first observation
+        // does not cause us to re-anchor onto a stale key.
+        tracker.key = None;
+        tracker.last_index = 0;
+    }
 
     cache.list_lines = build_entry_list_lines(&sorted_entries, &state);
     cache.detail_spans = build_detail_spans(&sorted_entries, &state);
@@ -3385,6 +3477,7 @@ mod tests {
         // plugin registers at Startup.
         app.init_resource::<JournalUiState>();
         app.init_resource::<JournalRenderCache>();
+        app.init_resource::<JournalSelectionTracker>();
         app.add_systems(Startup, spawn_journal_ui);
         app.add_systems(
             Update,
@@ -4092,5 +4185,256 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ── Graceful entry-deletion tests ───────────────────────────────────
+    //
+    // These tests exercise `compute_journal_panels`'s reconciliation of
+    // `selected_index` against `JournalSelectionTracker`.  They cover the
+    // four behaviours promised by the "select nearest on deletion" rule:
+    //
+    // 1. The selection follows its anchored subject when other entries
+    //    are inserted *before* it (sort-position shift).
+    // 2. When the selected subject is removed, the highlight moves to the
+    //    entry now occupying that sort slot — the nearest in alphabetical
+    //    order.
+    // 3. When the last entry is removed while selected, the highlight
+    //    falls back to the new last entry.
+    // 4. When the journal becomes empty, the tracker resets so a future
+    //    first observation does not re-anchor onto a stale key.
+
+    /// Helper: build a minimal `App` running just `compute_journal_panels`
+    /// against a player-owned journal.  Returns the `App` ready to mutate
+    /// the journal and re-run frames.  Visibility is set to true so the
+    /// reconciliation path runs every frame.
+    fn make_panel_app(initial_entries_per_page: usize) -> App {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.init_resource::<JournalRenderCache>();
+        app.init_resource::<JournalSelectionTracker>();
+        app.insert_resource(JournalUiState {
+            visible: true,
+            selected_index: 0,
+            scroll_offset: 0,
+            entries_per_page: initial_entries_per_page,
+        });
+        app.add_systems(Update, compute_journal_panels);
+        app.world_mut()
+            .spawn((Player, Journal::default(), Transform::default()));
+        app
+    }
+
+    /// Helper: append an observation to the player's journal.
+    fn record(app: &mut App, key: JournalKey, name: &str, recorded_at: u64) {
+        let mut query = app
+            .world_mut()
+            .query_filtered::<&mut Journal, With<Player>>();
+        let mut journal = query
+            .single_mut(app.world_mut())
+            .expect("player must exist");
+        journal.record(
+            key,
+            name,
+            Observation {
+                category: ObservationCategory::SurfaceAppearance,
+                confidence: ConfidenceLevel::Tentative,
+                description: format!("Appearance of {name}"),
+                recorded_at,
+            },
+        );
+    }
+
+    /// Helper: remove an entry from the player's journal by key.
+    fn delete(app: &mut App, key: &JournalKey) {
+        let mut query = app
+            .world_mut()
+            .query_filtered::<&mut Journal, With<Player>>();
+        let mut journal = query
+            .single_mut(app.world_mut())
+            .expect("player must exist");
+        journal.entries.remove(key);
+    }
+
+    /// Inserting an entry that sorts *before* the selected entry must
+    /// shift `selected_index` so the highlight stays on the same subject.
+    /// Without the tracker, `selected_index` would still point at index N
+    /// — but index N now refers to a different (newly inserted) entry.
+    #[test]
+    fn selection_follows_subject_when_entry_inserted_before_it() {
+        let mut app = make_panel_app(15);
+
+        record(&mut app, JournalKey::Material { seed: 1 }, "Bravo", 1);
+        record(&mut app, JournalKey::Material { seed: 2 }, "Charlie", 2);
+        record(&mut app, JournalKey::Material { seed: 3 }, "Delta", 3);
+        // Frame 1: panel reconciles initial state.
+        app.update();
+
+        // User navigates onto "Charlie" (sort index 1).
+        app.world_mut()
+            .resource_mut::<JournalUiState>()
+            .selected_index = 1;
+        app.update();
+
+        // Insert "Alpha" — sorts before "Bravo", so "Charlie" shifts from
+        // index 1 to index 2.
+        record(&mut app, JournalKey::Material { seed: 4 }, "Alpha", 4);
+        app.update();
+
+        let state = app.world().resource::<JournalUiState>();
+        assert_eq!(
+            state.selected_index, 2,
+            "selection must follow Charlie to its new sort position"
+        );
+    }
+
+    /// Deleting the currently selected entry must move the highlight to
+    /// the entry now occupying that sort slot — the nearest remaining
+    /// entry in alphabetical order.
+    #[test]
+    fn deleting_selected_entry_selects_nearest_by_sort_position() {
+        let mut app = make_panel_app(15);
+
+        record(&mut app, JournalKey::Material { seed: 1 }, "Alpha", 1);
+        record(&mut app, JournalKey::Material { seed: 2 }, "Bravo", 2);
+        record(&mut app, JournalKey::Material { seed: 3 }, "Charlie", 3);
+        record(&mut app, JournalKey::Material { seed: 4 }, "Delta", 4);
+        app.update();
+
+        // Select "Bravo" at index 1.
+        app.world_mut()
+            .resource_mut::<JournalUiState>()
+            .selected_index = 1;
+        app.update();
+
+        // Delete "Bravo".  Sorted list becomes [Alpha, Charlie, Delta].
+        // "Charlie" now occupies the old slot (index 1) — that is the
+        // nearest entry by sort position.
+        delete(&mut app, &JournalKey::Material { seed: 2 });
+        app.update();
+
+        let state = app.world().resource::<JournalUiState>();
+        assert_eq!(
+            state.selected_index, 1,
+            "highlight must land on the entry now at the deleted slot"
+        );
+
+        // And the tracker must have re-anchored onto Charlie so further
+        // inserts/deletions follow the right subject.
+        let tracker = app.world().resource::<JournalSelectionTracker>();
+        assert_eq!(
+            tracker.key,
+            Some(JournalKey::Material { seed: 3 }),
+            "tracker must re-anchor onto the nearest entry"
+        );
+    }
+
+    /// Deleting the *last* entry while it is selected must fall back to
+    /// the new last entry rather than panic or leave `selected_index`
+    /// out of bounds.
+    #[test]
+    fn deleting_last_entry_while_selected_falls_back_to_new_last() {
+        let mut app = make_panel_app(15);
+
+        record(&mut app, JournalKey::Material { seed: 1 }, "Alpha", 1);
+        record(&mut app, JournalKey::Material { seed: 2 }, "Bravo", 2);
+        record(&mut app, JournalKey::Material { seed: 3 }, "Charlie", 3);
+        app.update();
+
+        // Select "Charlie" — the last entry, index 2.
+        app.world_mut()
+            .resource_mut::<JournalUiState>()
+            .selected_index = 2;
+        app.update();
+
+        // Delete "Charlie".  Sorted list becomes [Alpha, Bravo].  There
+        // is no entry at the old slot (index 2), so the nearest valid
+        // entry is the new last one (index 1, "Bravo").
+        delete(&mut app, &JournalKey::Material { seed: 3 });
+        app.update();
+
+        let state = app.world().resource::<JournalUiState>();
+        assert_eq!(
+            state.selected_index, 1,
+            "highlight must clamp to the new last entry"
+        );
+        let tracker = app.world().resource::<JournalSelectionTracker>();
+        assert_eq!(
+            tracker.key,
+            Some(JournalKey::Material { seed: 2 }),
+            "tracker must re-anchor onto Bravo"
+        );
+    }
+
+    /// Deleting every entry while the panel is open must reset the
+    /// tracker so a later first observation does not snap selection
+    /// onto a key that no longer matches the current contents.
+    #[test]
+    fn emptying_journal_resets_tracker_then_re_anchors_on_repopulation() {
+        let mut app = make_panel_app(15);
+
+        record(&mut app, JournalKey::Material { seed: 1 }, "Alpha", 1);
+        record(&mut app, JournalKey::Material { seed: 2 }, "Bravo", 2);
+        app.update();
+
+        app.world_mut()
+            .resource_mut::<JournalUiState>()
+            .selected_index = 1;
+        app.update();
+
+        // Delete both entries.
+        delete(&mut app, &JournalKey::Material { seed: 1 });
+        delete(&mut app, &JournalKey::Material { seed: 2 });
+        app.update();
+
+        let tracker = app.world().resource::<JournalSelectionTracker>();
+        assert!(
+            tracker.key.is_none(),
+            "tracker must reset to None on empty journal"
+        );
+
+        // Repopulate with a different key.  Selection must anchor onto
+        // the new entry rather than wait for a (deleted) prior key.
+        record(&mut app, JournalKey::Material { seed: 99 }, "Charlie", 10);
+        app.update();
+
+        let state = app.world().resource::<JournalUiState>();
+        let tracker = app.world().resource::<JournalSelectionTracker>();
+        assert_eq!(state.selected_index, 0);
+        assert_eq!(
+            tracker.key,
+            Some(JournalKey::Material { seed: 99 }),
+            "tracker must anchor onto the new sole entry"
+        );
+    }
+
+    /// Deleting an entry that sorts *before* the selection must shift
+    /// `selected_index` down so the highlight stays pinned on the same
+    /// subject — the symmetric counterpart to the "insert before"
+    /// behaviour.
+    #[test]
+    fn selection_follows_subject_when_entry_deleted_before_it() {
+        let mut app = make_panel_app(15);
+
+        record(&mut app, JournalKey::Material { seed: 1 }, "Alpha", 1);
+        record(&mut app, JournalKey::Material { seed: 2 }, "Bravo", 2);
+        record(&mut app, JournalKey::Material { seed: 3 }, "Charlie", 3);
+        app.update();
+
+        // Select "Charlie" at index 2.
+        app.world_mut()
+            .resource_mut::<JournalUiState>()
+            .selected_index = 2;
+        app.update();
+
+        // Delete "Alpha".  Sorted list becomes [Bravo, Charlie].
+        // "Charlie" now sits at index 1.
+        delete(&mut app, &JournalKey::Material { seed: 1 });
+        app.update();
+
+        let state = app.world().resource::<JournalUiState>();
+        assert_eq!(
+            state.selected_index, 1,
+            "selection must follow Charlie to its new sort position after deletion before it"
+        );
     }
 }
