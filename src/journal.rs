@@ -3920,4 +3920,120 @@ mod tests {
             state.entries_per_page,
         );
     }
+
+    /// Hammers the full `journal_navigation` system with a long, deterministic
+    /// sequence of every navigation key from a variety of starting positions
+    /// and asserts that the bounds invariants hold after every single press:
+    ///
+    /// * `selected_index < entry_count`
+    /// * `scroll_offset + entries_per_page` strictly greater than
+    ///   `selected_index` (i.e. selection always within the visible window)
+    /// * `scroll_offset <= selected_index` (selection not above the window)
+    ///
+    /// This is the integration-level "navigation does not exceed bounds"
+    /// guarantee — point tests cover individual extremes; this test covers
+    /// arbitrary sequences against the live system to catch regressions
+    /// where any single key handler could silently overshoot.
+    #[test]
+    fn navigation_never_exceeds_bounds_under_key_sequence() {
+        let entry_count: usize = 25;
+        let entries_per_page: usize = 7;
+
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.init_resource::<ButtonInput<KeyCode>>();
+        app.insert_resource(JournalUiState {
+            visible: true,
+            selected_index: 0,
+            scroll_offset: 0,
+            entries_per_page,
+        });
+        app.add_systems(Update, journal_navigation);
+
+        let mut journal = Journal::default();
+        for i in 0..entry_count {
+            journal.record(
+                JournalKey::Material {
+                    seed: i.try_into().expect("entry index fits in u64"),
+                },
+                &format!("Mat-{i:03}"),
+                Observation {
+                    category: ObservationCategory::SurfaceAppearance,
+                    confidence: ConfidenceLevel::Tentative,
+                    description: format!("Obs {i}"),
+                    recorded_at: 0,
+                },
+            );
+        }
+        app.world_mut().spawn((Player, journal));
+
+        // A deterministic sequence covering every navigation key, repeated
+        // and interleaved so the cumulative position lands at the extremes,
+        // mid-page, and across page boundaries.  Repeating the full sequence
+        // four times exercises overshoot from both ends multiple times.
+        let key_sequence = [
+            KeyCode::ArrowDown,
+            KeyCode::ArrowDown,
+            KeyCode::ArrowDown,
+            KeyCode::PageDown,
+            KeyCode::PageDown,
+            KeyCode::ArrowDown,
+            KeyCode::End,
+            KeyCode::ArrowDown,
+            KeyCode::PageDown,
+            KeyCode::ArrowUp,
+            KeyCode::PageUp,
+            KeyCode::Home,
+            KeyCode::ArrowUp,
+            KeyCode::PageUp,
+            KeyCode::ArrowUp,
+        ];
+
+        for repeat in 0..4 {
+            for (step, key) in key_sequence.iter().enumerate() {
+                app.world_mut()
+                    .resource_mut::<ButtonInput<KeyCode>>()
+                    .clear();
+                app.world_mut()
+                    .resource_mut::<ButtonInput<KeyCode>>()
+                    .press(*key);
+                app.update();
+
+                let state = app.world().resource::<JournalUiState>();
+                assert!(
+                    state.selected_index < entry_count,
+                    "selected_index out of bounds after repeat {repeat} step {step} key {key:?} \
+                     (selected={}, entry_count={})",
+                    state.selected_index,
+                    entry_count,
+                );
+                assert!(
+                    state.scroll_offset <= state.selected_index,
+                    "scroll_offset above selection after repeat {repeat} step {step} key {key:?} \
+                     (selected={}, scroll_offset={})",
+                    state.selected_index,
+                    state.scroll_offset,
+                );
+                assert!(
+                    state.selected_index < state.scroll_offset + state.entries_per_page,
+                    "selection scrolled out of visible window after repeat {repeat} step {step} \
+                     key {key:?} (selected={}, scroll_offset={}, entries_per_page={})",
+                    state.selected_index,
+                    state.scroll_offset,
+                    state.entries_per_page,
+                );
+                // scroll_offset itself must never exceed the last possible
+                // first-visible-row (entry_count - entries_per_page when the
+                // list is longer than a page; 0 otherwise).
+                let max_scroll = entry_count.saturating_sub(entries_per_page);
+                assert!(
+                    state.scroll_offset <= max_scroll,
+                    "scroll_offset past end-of-list after repeat {repeat} step {step} key {key:?} \
+                     (scroll_offset={}, max_scroll={})",
+                    state.scroll_offset,
+                    max_scroll,
+                );
+            }
+        }
+    }
 }
