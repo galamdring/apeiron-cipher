@@ -163,21 +163,20 @@ fn attach_carry_feedback_state(
 fn update_carry_camera_bob(
     time: Res<Time>,
     config: Res<CarryConfig>,
-    carry_movement: Res<CarryMovementState>,
     cursor_options: Single<&bevy::window::CursorOptions>,
-    player_query: Query<&ActionState<InputAction>, With<Player>>,
+    player_query: Query<(&ActionState<InputAction>, &CarryMovementState), With<Player>>,
     mut camera_query: Query<(&mut Transform, &mut CameraBobState), With<PlayerCamera>>,
 ) {
     let Ok((mut camera_transform, mut bob_state)) = camera_query.single_mut() else {
         return;
     };
 
-    let Ok(action_state) = player_query.single() else {
+    let Ok((action_state, carry_movement)) = player_query.single() else {
         camera_transform.translation = Vec3::ZERO;
         return;
     };
 
-    let is_moving = is_player_moving(cursor_options.grab_mode, action_state, &carry_movement);
+    let is_moving = is_player_moving(cursor_options.grab_mode, action_state, carry_movement);
 
     if !is_moving {
         bob_state.phase_radians = 0.0;
@@ -219,15 +218,21 @@ fn emit_weighted_footsteps(
     time: Res<Time>,
     config: Res<CarryConfig>,
     cue_assets: Res<CarryCueAssets>,
-    carry_movement: Res<CarryMovementState>,
     cursor_options: Single<&bevy::window::CursorOptions>,
-    mut player_query: Query<(&ActionState<InputAction>, &mut FootstepCueState), With<Player>>,
+    mut player_query: Query<
+        (
+            &ActionState<InputAction>,
+            &mut FootstepCueState,
+            &CarryMovementState,
+        ),
+        With<Player>,
+    >,
 ) {
-    let Ok((action_state, mut footstep_state)) = player_query.single_mut() else {
+    let Ok((action_state, mut footstep_state, carry_movement)) = player_query.single_mut() else {
         return;
     };
 
-    let is_moving = is_player_moving(cursor_options.grab_mode, action_state, &carry_movement);
+    let is_moving = is_player_moving(cursor_options.grab_mode, action_state, carry_movement);
 
     if !is_moving {
         // Reset to half the interval so the first step after resuming movement
@@ -278,19 +283,18 @@ fn emit_weighted_footsteps(
 /// entities right at the threshold.
 fn update_breathing_cue(
     config: Res<CarryConfig>,
-    carry_movement: Res<CarryMovementState>,
     cursor_options: Single<&bevy::window::CursorOptions>,
-    player_query: Query<&ActionState<InputAction>, With<Player>>,
+    player_query: Query<(&ActionState<InputAction>, &CarryMovementState), With<Player>>,
     mut sink_query: Query<&mut AudioSink, With<BreathingCue>>,
 ) {
     let Ok(mut sink) = sink_query.single_mut() else {
         return;
     };
-    let Ok(action_state) = player_query.single() else {
+    let Ok((action_state, carry_movement)) = player_query.single() else {
         return;
     };
 
-    let is_moving = is_player_moving(cursor_options.grab_mode, action_state, &carry_movement);
+    let is_moving = is_player_moving(cursor_options.grab_mode, action_state, carry_movement);
 
     if !is_moving {
         sink.set_volume(Volume::Linear(0.0));
