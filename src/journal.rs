@@ -26,21 +26,12 @@ use crate::player::{Player, cursor_is_captured, spawn_player};
 /// trade, language) add variants here without touching existing match
 /// arms or storage structures.
 ///
-/// ## Adding a new variant
-///
-/// `display_label` and `shows_latest_only` use exhaustive `match`, so the
-/// compiler will force you to handle the new variant in those methods.
-/// `display_order()` iterates *all* variants via `strum::IntoEnumIterator`,
-/// so a new variant is automatically picked up by the detail-panel
-/// renderer in declaration order — there is no separate hand-maintained
-/// ordering list to update.
-///
-/// The default for `shows_latest_only` is **history-accumulating**: a new
-/// variant retains every distinct observation rather than collapsing to
-/// the most recent one. Override this in `shows_latest_only` only when a
-/// category genuinely converges on a single best reading over time
-/// (e.g. thermal behaviour, perceived weight) — the safer default
-/// preserves player evidence rather than discarding it.
+/// **Display ordering:** the *declaration order* of the variants below is
+/// the order in which their groups appear in the journal detail panel.
+/// Iteration is driven by [`strum::EnumIter`] (see [`Self::display_order`])
+/// so adding a new variant automatically makes it visible in the UI in its
+/// declared position — there is no separate hand-maintained list that can
+/// drift out of sync with the enum.
 #[derive(
     Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, strum::EnumIter,
 )]
@@ -61,12 +52,14 @@ pub enum ObservationCategory {
 impl ObservationCategory {
     /// Canonical display order for category groups in the detail panel.
     ///
-    /// Returns every variant of [`ObservationCategory`] in enum-declaration
-    /// order. Driven by `strum::EnumIter` so adding a new variant
-    /// automatically extends the rendered detail panel without touching
-    /// any hand-maintained ordering table.
-    fn display_order() -> impl Iterator<Item = ObservationCategory> {
-        <ObservationCategory as IntoEnumIterator>::iter()
+    /// Returns variants in the order they are declared on the enum, driven
+    /// by [`strum::EnumIter`].  This is the single source of truth used by
+    /// [`build_detail_spans`]; adding a new variant to the enum makes it
+    /// appear in the detail panel automatically — there is no separate
+    /// list to update and therefore no way to silently hide a new
+    /// category from the UI.
+    fn display_order() -> impl Iterator<Item = Self> {
+        Self::iter()
     }
 
     /// Player-facing label used as a group header in the detail panel.
@@ -83,17 +76,24 @@ impl ObservationCategory {
     /// Whether the detail panel shows only the most recent observation
     /// for this category rather than the full history.
     ///
-    /// Thermal and Weight observations converge on a single best reading
-    /// over time, so only the latest is relevant. Other categories
-    /// accumulate distinct observations worth preserving.
+    /// Returning `true` means "this category converges on a single best
+    /// reading" — repeated observations supersede earlier ones, so only
+    /// the latest is worth showing (e.g. Thermal and Weight, where each
+    /// new measurement refines the player's understanding of the same
+    /// underlying property).
     ///
-    /// **New variants default to history-accumulating** (this method
-    /// returns `false` for any variant not explicitly listed in the
-    /// `matches!` arm). That is the safer default: it preserves every
-    /// distinct observation the player records rather than silently
-    /// discarding earlier evidence in favour of the most recent reading.
-    /// Only opt a new variant into `true` when it genuinely converges on
-    /// a single best value over time.
+    /// Returning `false` means "this category accumulates distinct
+    /// observations worth preserving" — each new entry is a separate
+    /// finding, not a refinement of an earlier one (e.g. surface
+    /// appearance facets, fabrication outputs, and location notes are all
+    /// independently meaningful and the journal should remember each
+    /// one).
+    ///
+    /// **New variants default to accumulating history** because the safer
+    /// failure mode is "the journal remembers too much" rather than
+    /// "the journal silently drops observations the player worked for."
+    /// Override only when a category genuinely has a single converging
+    /// reading.
     fn shows_latest_only(&self) -> bool {
         matches!(
             self,
@@ -101,7 +101,6 @@ impl ObservationCategory {
         )
     }
 }
-
 
 /// A single observation about a journal subject, timestamped.
 ///
@@ -152,35 +151,37 @@ pub enum JournalKey {
 
 pub struct JournalPlugin;
 
-/// System sets that codify the journal pipeline ordering.
+/// Public system set ordering for the journal pipeline.
 ///
-/// The ordering `Input → Navigation → Panels → Render` is **load-bearing**,
-/// not cosmetic.  [`compute_journal_panels`] detects "the user did not
-/// navigate this frame" by comparing the live `selected_index` /
-/// `scroll_offset` against the values [`JournalSelectionTracker`] recorded
-/// at the end of the previous frame.  If anything mutates
-/// `JournalUiState`'s navigation fields between [`Self::Navigation`] and
-/// [`Self::Panels`], the tracker will misinterpret the change as user
-/// navigation and re-anchor the selection incorrectly.
+/// `JournalSelectionTracker` reconciliation depends on detecting whether
+/// `JournalUiState::selected_index` changed *between frames* due to user
+/// navigation versus *within a frame* due to entries shifting.  That
+/// detection requires a strict order:
 ///
-/// Expressing the ordering as a [`SystemSet`] (rather than only via
-/// per-system `.after(...)` chains) means new systems that touch
-/// `JournalUiState` can be slotted into the correct phase by membership
-/// rather than by remembering to chain after a specific function name.
-#[derive(SystemSet, Debug, Hash, PartialEq, Eq, Clone, Copy)]
-pub enum JournalSystems {
-    /// Read raw input and emit `ToggleJournalIntent`.
-    Input,
-    /// Apply visibility toggles and consume keyboard navigation.  Systems
-    /// in this set are the **only** ones permitted to write to
-    /// `JournalUiState`'s navigation fields.
-    Navigation,
-    /// Apply pending observation messages and recompute cached panel text.
-    /// Systems in this set must run after [`Self::Navigation`] so the
-    /// selection tracker sees a stable `selected_index`/`scroll_offset`.
-    Panels,
-    /// Mirror the cached panel text into Bevy UI nodes.
-    Render,
+/// 1. [`JournalSet::Navigate`] — exclusive owner of in-frame
+///    `selected_index` mutation in response to player input.
+/// 2. [`JournalSet::Compute`] — reads the post-navigation index, runs
+///    selection-survival reconciliation against the tracker, clamps to
+///    bounds, and writes the render cache + tracker snapshot.
+/// 3. [`JournalSet::Sync`] — pushes the cached output to the UI.
+///
+/// Any future system that touches `JournalUiState` from outside this
+/// module **must** be ordered inside `JournalSet::Navigate` (or strictly
+/// before `Compute`), otherwise the tracker will misinterpret a same-
+/// frame index change as user navigation and re-anchor incorrectly.
+/// Field privacy on [`JournalUiState`] makes the violation hard to
+/// commit by accident; this set makes the ordering contract explicit
+/// for the cases that legitimately need write access.
+#[derive(SystemSet, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum JournalSet {
+    /// User-input navigation that mutates `JournalUiState::selected_index`
+    /// or `scroll_offset`.  Must finish before `Compute`.
+    Navigate,
+    /// Selection-survival reconciliation, bounds clamping, and render
+    /// cache population.  Must run after `Navigate` and before `Sync`.
+    Compute,
+    /// Pushes the render cache into the Bevy UI text nodes.
+    Sync,
 }
 
 impl Plugin for JournalPlugin {
@@ -192,13 +193,7 @@ impl Plugin for JournalPlugin {
             .init_resource::<JournalRenderCache>()
             .configure_sets(
                 Update,
-                (
-                    JournalSystems::Input,
-                    JournalSystems::Navigation,
-                    JournalSystems::Panels,
-                    JournalSystems::Render,
-                )
-                    .chain(),
+                (JournalSet::Navigate, JournalSet::Compute, JournalSet::Sync).chain(),
             )
             .add_systems(
                 Startup,
@@ -210,14 +205,16 @@ impl Plugin for JournalPlugin {
             .add_systems(
                 Update,
                 (
-                    emit_toggle_journal_intent.in_set(JournalSystems::Input),
-                    (toggle_journal_visibility, journal_navigation)
-                        .chain()
-                        .in_set(JournalSystems::Navigation),
-                    (apply_observations, compute_journal_panels)
-                        .chain()
-                        .in_set(JournalSystems::Panels),
-                    sync_journal_ui.in_set(JournalSystems::Render),
+                    emit_toggle_journal_intent.in_set(JournalSet::Navigate),
+                    toggle_journal_visibility
+                        .in_set(JournalSet::Navigate)
+                        .after(emit_toggle_journal_intent),
+                    journal_navigation
+                        .in_set(JournalSet::Navigate)
+                        .after(toggle_journal_visibility),
+                    apply_observations.in_set(JournalSet::Navigate),
+                    compute_journal_panels.in_set(JournalSet::Compute),
+                    sync_journal_ui.in_set(JournalSet::Sync),
                 ),
             );
     }
@@ -413,55 +410,30 @@ impl Journal {
 
 /// Tracks the journal panel's visibility and navigation state.
 ///
-/// `selected_index` — which entry in the sorted entry list the player has
-/// highlighted.  `scroll_offset` — the first visible entry index when the
-/// list is longer than one page.  `entries_per_page` — how many entry rows
-/// fit in the left-hand list panel (data-driven default: 15).
+/// Fields are deliberately **private**.  External systems must go through
+/// the accessor and mutator methods so the navigation invariants
+/// (`selected_index < entry_count`, selection inside the visible window)
+/// stay enforced — making the fields public would let any system stomp
+/// the state and produce a one-frame window where indices are out of
+/// bounds before [`Self::clamp_to_entry_count`] gets a chance to run.
 ///
-/// Scroll position and selection survive close/reopen — toggling visibility
-/// does **not** reset navigation fields.
+/// Within this module the navigation systems still touch the fields
+/// directly: they are the *owners* of the navigation invariant and run
+/// in a fixed order (`journal_navigation` → `compute_journal_panels`)
+/// that re-establishes the invariant before any reader sees the state.
 ///
-/// ## Invariants and ordering
-///
-/// All navigation fields are private. External systems mutate them via
-/// the `set_*` accessors, which clamp inputs against a known entry count
-/// and then call [`Self::clamp_to_entry_count`] to keep `selected_index`
-/// inside the visible scroll window. This guarantees that
-/// `build_entry_list_lines` and `build_detail_spans` never index out of
-/// range, even mid-frame between systems.
-///
-/// ## System ordering
-///
-/// `JournalUiState`'s navigation fields must be mutated only inside
-/// `journal_navigation` (the keyboard input system). The downstream
-/// system [`compute_journal_panels`] depends on detecting "the user did
-/// not navigate this frame" by comparing the live `selected_index` /
-/// `scroll_offset` against the values [`JournalSelectionTracker`]
-/// recorded at the end of the previous frame. If another system mutates
-/// `selected_index` after `journal_navigation` runs and before
-/// `compute_journal_panels` runs, the tracker will misinterpret the
-/// change as user navigation and re-anchor incorrectly. The plugin
-/// builds an explicit `journal_navigation → compute_journal_panels`
-/// ordering to enforce this; new systems that touch these fields must
-/// fit into that ordering or the selection-survival logic will break.
+/// Scroll position and selection survive close/reopen — toggling
+/// visibility does **not** reset navigation fields.
 #[derive(Resource)]
 pub struct JournalUiState {
     /// Whether the journal overlay is currently shown.
-    pub visible: bool,
+    visible: bool,
     /// Index of the currently highlighted entry in the sorted entry list.
-    /// Private so all writes go through [`Self::set_selected_index`] /
-    /// [`Self::clamp_to_entry_count`], which preserve the invariant
-    /// `selected_index < entry_count` (or `0` when the journal is empty).
     selected_index: usize,
     /// Index of the first entry visible in the left-hand list panel.
-    /// Private for the same reason as `selected_index` — writes must go
-    /// through the accessors so the visible window stays consistent with
-    /// the selection.
     scroll_offset: usize,
     /// Maximum number of entry rows displayed per page.  Loaded from
     /// configuration; falls back to `Self::DEFAULT_ENTRIES_PER_PAGE`.
-    /// Private because changing the page size mid-session would otherwise
-    /// require re-clamping the scroll offset.
     entries_per_page: usize,
 }
 
@@ -469,37 +441,43 @@ impl JournalUiState {
     /// Sensible default when no configuration override is provided.
     const DEFAULT_ENTRIES_PER_PAGE: usize = 15;
 
-    /// Read-only view of the currently highlighted entry index.
+    /// Whether the journal overlay is currently visible.
+    ///
+    /// Read-only accessor for systems outside this module.
+    #[allow(dead_code)]
+    pub fn is_visible(&self) -> bool {
+        self.visible
+    }
+
+    /// Currently highlighted entry index in the sorted entry list.
+    ///
+    /// Always within `[0, entry_count)` after `compute_journal_panels`
+    /// runs (see `clamp_to_entry_count`).
+    #[allow(dead_code)]
     pub fn selected_index(&self) -> usize {
         self.selected_index
     }
 
-    /// Read-only view of the first visible entry index.
+    /// Index of the first entry visible in the left-hand list panel.
+    #[allow(dead_code)]
     pub fn scroll_offset(&self) -> usize {
         self.scroll_offset
     }
 
-    /// Read-only view of the configured page size.
+    /// Maximum number of entry rows displayed per page.
+    #[allow(dead_code)]
     pub fn entries_per_page(&self) -> usize {
         self.entries_per_page
     }
 
-    /// Set the selected entry index, clamping to `[0, entry_count - 1]`
-    /// and then re-anchoring `scroll_offset` so the selection remains
-    /// inside the visible window.
+    /// Show or hide the journal overlay.
     ///
-    /// `entry_count == 0` resets both `selected_index` and `scroll_offset`
-    /// to `0`.
-    pub fn set_selected_index(&mut self, index: usize, entry_count: usize) {
-        self.selected_index = index;
-        self.clamp_to_entry_count(entry_count);
-    }
-
-    /// Set the first visible entry index, clamping the scroll window to
-    /// fit inside the entry list and keeping the current selection visible.
-    pub fn set_scroll_offset(&mut self, offset: usize, entry_count: usize) {
-        self.scroll_offset = offset;
-        self.clamp_to_entry_count(entry_count);
+    /// Navigation fields (`selected_index`, `scroll_offset`) are
+    /// intentionally preserved across visibility toggles so the player
+    /// returns to the same view they left.
+    #[allow(dead_code)]
+    pub fn set_visible(&mut self, visible: bool) {
+        self.visible = visible;
     }
 
     /// Clamp `selected_index` and `scroll_offset` so they stay within valid
@@ -1221,9 +1199,9 @@ fn build_detail_spans(entries: &[&JournalEntry], state: &JournalUiState) -> Vec<
 
     // Iterate categories in canonical display order, emitting a group
     // header followed by the observations for each non-empty category.
-    // `display_order()` walks every variant of `ObservationCategory` via
-    // `strum::EnumIter`, so adding a new variant automatically extends
-    // this loop without any hand-maintained ordering table to update.
+    // The order is driven by `ObservationCategory::display_order` (backed
+    // by `strum::EnumIter`) so a new variant added to the enum is
+    // automatically rendered here in its declared position.
     for category in ObservationCategory::display_order() {
         let observations = entry.observations_by_category(&category);
         if observations.is_empty() {

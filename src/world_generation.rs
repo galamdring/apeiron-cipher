@@ -1596,15 +1596,15 @@ fn update_active_chunk_neighborhood(
     let center_chunk =
         world_position_to_chunk_coord(player_position_xz, profile.chunk_size_world_units);
 
-    // Early-out: skip recomputation when the player hasn't changed chunks.
-    // This avoids per-frame Vec allocation and prevents Bevy change
-    // detection from firing on `ActiveChunkNeighborhood` every frame, which
-    // would in turn trigger every downstream system gated on
-    // `active_chunks.is_changed()`.
+    // Early-out: skip recomputation when the player has not moved into a
+    // new chunk.  Without this guard, every frame would allocate a fresh
+    // `Vec<ChunkCoord>` for `active_chunks.chunks` and stamp the resource
+    // as changed, causing every downstream system that reacts to
+    // `ActiveChunkNeighborhood` change detection to fire on every frame
+    // instead of only on chunk transitions.
     if active_chunks.center_chunk == Some(center_chunk) {
         return;
     }
-
 
     let center_chunk_origin_xz = chunk_origin_xz(center_chunk, profile.chunk_size_world_units);
     let center_chunk_generation_key = derive_chunk_generation_key(&profile, center_chunk);
@@ -1631,13 +1631,13 @@ pub fn world_position_to_chunk_coord(
     position_xz: PositionXZ,
     chunk_size_world_units: f32,
 ) -> ChunkCoord {
-    // `chunk_size_world_units` should be positive — this is enforced at
-    // config-load time. The `debug_assert!` catches violations early in
-    // development. The runtime fallback is defence in depth: an `f32` may
-    // be exactly `0.0` (or NaN, or negative due to a bug elsewhere) even
-    // though it cannot logically be, and we must not let a release build
-    // divide by zero and propagate `NaN`/`Inf` into chunk coordinates and
-    // every downstream system.
+    // Defense in depth.  Config validation rejects non-positive chunk
+    // sizes at load time, so a zero or negative value here means an
+    // upstream bug.  In debug builds we want the panic to surface
+    // immediately; in release builds we still need to avoid a divide-by-
+    // zero (which would yield `NaN`/`Inf` chunk coordinates and silently
+    // corrupt every system that consumes them) so we clamp to a safe
+    // minimum of 1.0 and log the bug.
     debug_assert!(
         chunk_size_world_units > 0.0,
         "chunk size must be positive to derive chunk coordinates, got {chunk_size_world_units}"
@@ -1645,10 +1645,7 @@ pub fn world_position_to_chunk_coord(
     let chunk_size = if chunk_size_world_units > 0.0 {
         chunk_size_world_units
     } else {
-        error!(
-            "chunk_size_world_units was {chunk_size_world_units}, clamping to 1.0 to avoid \
-             division by zero. This indicates a config or upstream bug."
-        );
+        error!("chunk_size_world_units was {chunk_size_world_units}, clamping to 1.0");
         1.0
     };
 
