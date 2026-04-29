@@ -43,15 +43,40 @@ pub enum StarRegistryError {
     /// Registry contains no star types.
     Empty,
     /// Two star types share the same `StarType` variant.
-    DuplicateType { index: usize, star_type: StarType },
+    DuplicateType {
+        /// Position of the duplicate entry in the registry list.
+        index: usize,
+        /// The star type variant that appears more than once.
+        star_type: StarType,
+    },
     /// Weight is not positive and finite.
-    InvalidWeight { label: String, value: f32 },
+    InvalidWeight {
+        /// Human-readable label identifying the star type entry.
+        label: String,
+        /// The invalid weight value that was provided.
+        value: f32,
+    },
     /// Luminosity bounds are invalid (non-finite, non-positive min, or inverted).
-    InvalidLuminosity { label: String, detail: String },
+    InvalidLuminosity {
+        /// Human-readable label identifying the star type entry.
+        label: String,
+        /// Description of why the luminosity bounds are invalid.
+        detail: String,
+    },
     /// Temperature bounds are invalid (zero min or inverted).
-    InvalidTemperature { label: String, detail: String },
+    InvalidTemperature {
+        /// Human-readable label identifying the star type entry.
+        label: String,
+        /// Description of why the temperature bounds are invalid.
+        detail: String,
+    },
     /// Mass bounds are invalid (non-finite, non-positive min, or inverted).
-    InvalidMass { label: String, detail: String },
+    InvalidMass {
+        /// Human-readable label identifying the star type entry.
+        label: String,
+        /// Description of why the mass bounds are invalid.
+        detail: String,
+    },
 }
 
 impl std::fmt::Display for StarRegistryError {
@@ -80,17 +105,39 @@ impl std::error::Error for StarRegistryError {}
 #[derive(Clone, Debug, PartialEq)]
 pub enum OrbitalConfigError {
     /// `planet_count_min` is less than 1.
-    PlanetCountMinTooLow { value: u32 },
+    PlanetCountMinTooLow {
+        /// The invalid minimum planet count that was provided.
+        value: u32,
+    },
     /// `planet_count_min` exceeds `planet_count_max`.
-    PlanetCountRangeInverted { min: u32, max: u32 },
+    PlanetCountRangeInverted {
+        /// The minimum planet count that exceeds the maximum.
+        min: u32,
+        /// The maximum planet count that is less than the minimum.
+        max: u32,
+    },
     /// `inner_orbit_au` is not positive or not finite.
-    InvalidInnerOrbit { value: f32 },
+    InvalidInnerOrbit {
+        /// The invalid inner orbit distance in AU.
+        value: f32,
+    },
     /// `outer_orbit_au` is not finite.
-    InvalidOuterOrbit { value: f32 },
+    InvalidOuterOrbit {
+        /// The invalid outer orbit distance in AU.
+        value: f32,
+    },
     /// `inner_orbit_au >= outer_orbit_au`.
-    OrbitRangeInverted { inner: f32, outer: f32 },
+    OrbitRangeInverted {
+        /// The inner orbit distance in AU that is not less than the outer.
+        inner: f32,
+        /// The outer orbit distance in AU that is not greater than the inner.
+        outer: f32,
+    },
     /// `min_separation_au` is not positive or not finite.
-    InvalidSeparation { value: f32 },
+    InvalidSeparation {
+        /// The invalid minimum separation distance in AU.
+        value: f32,
+    },
 }
 
 impl std::fmt::Display for OrbitalConfigError {
@@ -133,17 +180,37 @@ impl std::error::Error for OrbitalConfigError {}
 #[derive(Clone, Debug, PartialEq)]
 pub enum PlanetEnvConfigError {
     /// `temp_base_k` is not positive or not finite.
-    InvalidTempBase { value: f32 },
+    InvalidTempBase {
+        /// The invalid base temperature in Kelvin.
+        value: f32,
+    },
     /// `temp_variation_fraction` is outside `[0.0, 1.0)` or not finite.
-    InvalidTempVariation { value: f32 },
+    InvalidTempVariation {
+        /// The invalid temperature variation fraction.
+        value: f32,
+    },
     /// `atmosphere_inner_penalty` is outside `(0.0, 1.0]` or not finite.
-    InvalidAtmospherePenalty { value: f32 },
+    InvalidAtmospherePenalty {
+        /// The invalid atmosphere inner-orbit penalty factor.
+        value: f32,
+    },
     /// `gravity_min` is not positive or not finite.
-    InvalidGravityMin { value: f32 },
+    InvalidGravityMin {
+        /// The invalid minimum surface gravity value.
+        value: f32,
+    },
     /// `gravity_max` is not finite.
-    InvalidGravityMax { value: f32 },
+    InvalidGravityMax {
+        /// The invalid maximum surface gravity value.
+        value: f32,
+    },
     /// `gravity_min >= gravity_max`.
-    GravityRangeInverted { min: f32, max: f32 },
+    GravityRangeInverted {
+        /// The minimum gravity that is not less than the maximum.
+        min: f32,
+        /// The maximum gravity that is not greater than the minimum.
+        max: f32,
+    },
 }
 
 impl std::fmt::Display for PlanetEnvConfigError {

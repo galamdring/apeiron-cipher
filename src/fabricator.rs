@@ -21,6 +21,7 @@ use crate::materials::{
 };
 use crate::scene::{FabricatorSceneConfig, FurnitureConfig, Workbench};
 
+/// Registers the fabricator workbench systems for combining materials.
 pub struct FabricatorPlugin;
 
 impl Plugin for FabricatorPlugin {
@@ -42,6 +43,7 @@ impl Plugin for FabricatorPlugin {
 // ── Messages ────────────────────────────────────────────────────────────
 
 #[derive(Message)]
+/// Message requesting the fabricator to begin processing its input slots.
 pub struct ActivateIntent;
 
 // ── State ───────────────────────────────────────────────────────────────
@@ -61,17 +63,22 @@ enum FabricatorState {
 /// `material` holds the entity of the material currently seated in this slot.
 #[derive(Component, Debug)]
 pub struct InputSlot {
+    /// Numeric identifier distinguishing slot 0 from slot 1.
     // Used in debug logging and future UI to identify which slot is which.
     #[allow(dead_code)]
     pub index: usize,
+    /// Entity of the material currently placed in this slot, if any.
     pub material: Option<Entity>,
+    /// World-space Y coordinate of the top surface of this slot.
     pub top_y: f32,
 }
 
 /// Marks the fabricator output receptacle where the combined material appears.
 #[derive(Component, Debug)]
 pub struct OutputSlot {
+    /// Entity of the material currently placed in the output slot, if any.
     pub material: Option<Entity>,
+    /// World-space Y coordinate of the top surface of this slot.
     pub top_y: f32,
 }
 

@@ -18,6 +18,7 @@ use std::path::Path;
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 
+/// Loads combination rules from TOML config for material pair interactions.
 pub struct CombinationPlugin;
 
 impl Plugin for CombinationPlugin {
@@ -30,15 +31,30 @@ impl Plugin for CombinationPlugin {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type")]
+/// How a single material property is combined when two materials are mixed.
 pub enum PropertyRule {
-    Blend { weight_a: f32, weight_b: f32 },
+    /// Weighted average of the two input values.
+    Blend {
+        /// Weight applied to the first input.
+        weight_a: f32,
+        /// Weight applied to the second input.
+        weight_b: f32,
+    },
+    /// Takes the higher of the two input values.
     Max,
+    /// Takes the lower of the two input values.
     Min,
-    Catalyze { multiplier: f32 },
+    /// Multiplies the higher input value by a factor, clamped to 1.0.
+    Catalyze {
+        /// Scale factor applied to the dominant input.
+        multiplier: f32,
+    },
+    /// Failed experiment — always produces 0.1.
     Inert,
 }
 
 impl PropertyRule {
+    /// Computes the output value from two input property values using this rule.
     pub fn apply(&self, a: f32, b: f32) -> f32 {
         match self {
             PropertyRule::Blend { weight_a, weight_b } => {
@@ -68,11 +84,17 @@ impl Default for PropertyRule {
 // ── Rule set for a material pair ────────────────────────────────────────
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+/// Per-property combination rules for a specific material pair.
 pub struct PairRuleSet {
+    /// Rule applied to density when combining this pair.
     pub density: PropertyRule,
+    /// Rule applied to thermal resistance when combining this pair.
     pub thermal_resistance: PropertyRule,
+    /// Rule applied to reactivity when combining this pair.
     pub reactivity: PropertyRule,
+    /// Rule applied to conductivity when combining this pair.
     pub conductivity: PropertyRule,
+    /// Rule applied to toxicity when combining this pair.
     pub toxicity: PropertyRule,
 }
 
@@ -140,7 +162,9 @@ fn pair_key(a: &str, b: &str) -> (String, String) {
 /// Loaded combination rules, keyed by sorted material name pairs.
 #[derive(Resource, Debug, Default)]
 pub struct CombinationRules {
+    /// Fallback rule used when no pair-specific entry exists.
     pub default_rule: PropertyRule,
+    /// Per-pair overrides keyed by alphabetically sorted material name tuples.
     pub pair_rules: HashMap<(String, String), PairRuleSet>,
 }
 
