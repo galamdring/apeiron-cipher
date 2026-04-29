@@ -45,98 +45,60 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  # ── Step 2: build native binaries (only when a release was created) ────
-  build-native:
-    name: Build ${{ matrix.target }}
+  # ── Step 2: build native binaries (one job per platform) ───────────────
+  build-windows:
+    name: Build Windows
     needs: [semantic-release]
     if: needs.semantic-release.outputs.new_release_published == 'true'
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - target: x86_64-pc-windows-msvc
-            os: windows-latest
-            ext: .exe
-          - target: x86_64-apple-darwin
-            os: macos-latest
-            ext: ""
-          - target: aarch64-apple-darwin
-            os: macos-latest
-            ext: ""
-          - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
-            ext: ""
-          - target: aarch64-unknown-linux-gnu
-            os: ubuntu-latest
-            ext: ""
-            cross: true
+    uses: ./.github/workflows/build-native-target.yml
+    with:
+      target: x86_64-pc-windows-msvc
+      os: windows-latest
+      ext: .exe
+      version: ${{ needs.semantic-release.outputs.new_release_version }}
 
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+  build-macos-x86:
+    name: Build macOS x86_64
+    needs: [semantic-release]
+    if: needs.semantic-release.outputs.new_release_published == 'true'
+    uses: ./.github/workflows/build-native-target.yml
+    with:
+      target: x86_64-apple-darwin
+      os: macos-latest
+      version: ${{ needs.semantic-release.outputs.new_release_version }}
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
+  build-macos-arm:
+    name: Build macOS ARM64
+    needs: [semantic-release]
+    if: needs.semantic-release.outputs.new_release_published == 'true'
+    uses: ./.github/workflows/build-native-target.yml
+    with:
+      target: aarch64-apple-darwin
+      os: macos-latest
+      version: ${{ needs.semantic-release.outputs.new_release_version }}
 
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.target }}
+  build-linux-x86:
+    name: Build Linux x86_64
+    needs: [semantic-release]
+    if: needs.semantic-release.outputs.new_release_published == 'true'
+    uses: ./.github/workflows/build-native-target.yml
+    with:
+      target: x86_64-unknown-linux-gnu
+      os: ubuntu-latest
+      version: ${{ needs.semantic-release.outputs.new_release_version }}
 
-      - name: Install Linux dependencies
-        if: runner.os == 'Linux' && !matrix.cross
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libudev-dev \
-            libasound2-dev \
-            libwayland-dev \
-            libxkbcommon-dev
+  build-linux-arm:
+    name: Build Linux ARM64
+    needs: [semantic-release]
+    if: needs.semantic-release.outputs.new_release_published == 'true'
+    uses: ./.github/workflows/build-native-target.yml
+    with:
+      target: aarch64-unknown-linux-gnu
+      os: ubuntu-latest
+      cross: true
+      version: ${{ needs.semantic-release.outputs.new_release_version }}
 
-      - name: Install cross (ARM64 Linux)
-        if: matrix.cross
-        run: cargo install cross --git https://github.com/cross-rs/cross
-
-      - name: Build with cargo
-        if: ${{ !matrix.cross }}
-        run: cargo build --release --target ${{ matrix.target }}
-
-      - name: Build with cross
-        if: matrix.cross
-        run: cross build --release --target ${{ matrix.target }}
-
-      - name: Package (Unix)
-        if: runner.os != 'Windows'
-        run: |
-          VERSION="v${{ needs.semantic-release.outputs.new_release_version }}"
-          STAGING="${{ env.BINARY_NAME }}-${VERSION}-${{ matrix.target }}"
-          mkdir -p "$STAGING"
-          cp "target/${{ matrix.target }}/release/${{ env.BINARY_NAME }}${{ matrix.ext }}" "$STAGING/"
-          cp -r assets "$STAGING/"
-          tar czf "${STAGING}.tar.gz" "$STAGING"
-          echo "ASSET=${STAGING}.tar.gz" >> "$GITHUB_ENV"
-
-      - name: Package (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $version = "v${{ needs.semantic-release.outputs.new_release_version }}"
-          $staging = "${{ env.BINARY_NAME }}-${version}-${{ matrix.target }}"
-          New-Item -ItemType Directory -Path $staging
-          Copy-Item "target/${{ matrix.target }}/release/${{ env.BINARY_NAME }}${{ matrix.ext }}" $staging
-          Copy-Item -Recurse assets $staging
-          Compress-Archive -Path $staging -DestinationPath "${staging}.zip"
-          echo "ASSET=${staging}.zip" | Out-File -FilePath $env:GITHUB_ENV -Append
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.target }}
-          path: ${{ env.ASSET }}
-
-  # ── Step 3: build WASM (only when a release was created) ───────────────
+  # ── Step 3: build WASM ─────────────────────────────────────────────────
   build-wasm:
     name: Build WASM
     needs: [semantic-release]
@@ -212,10 +174,20 @@ jobs:
           name: wasm
           path: ${{ env.ASSET }}
 
-  # ── Step 4: attach build artifacts to the GitHub release ───────────────
+  # ── Step 4: attach whatever built successfully to the GitHub release ───
   upload-assets:
     name: Upload Release Assets
-    needs: [semantic-release, build-native, build-wasm]
+    needs:
+      - semantic-release
+      - build-windows
+      - build-macos-x86
+      - build-macos-arm
+      - build-linux-x86
+      - build-linux-arm
+      - build-wasm
+    if: |
+      !cancelled() &&
+      needs.semantic-release.outputs.new_release_published == 'true'
     runs-on: ubuntu-latest
 
     steps:
