@@ -59,6 +59,38 @@ impl Plugin for MaterialPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(PreStartup, load_material_catalog)
             .add_systems(PostStartup, spawn_material_objects);
+
+        // In debug builds, run a per-frame assertion that no GameMaterial entity
+        // has more than one of the three mutually-exclusive location markers:
+        // MaterialObject (in world), HeldItem (held by player), InCarry (stashed).
+        #[cfg(debug_assertions)]
+        app.add_systems(PostUpdate, assert_material_state_exclusivity);
+    }
+}
+
+/// Debug-only system that panics if any [`GameMaterial`] entity has more than
+/// one of [`MaterialObject`], [`HeldItem`](crate::interaction::HeldItem), or
+/// [`InCarry`](crate::carry::InCarry). These three markers represent mutually
+/// exclusive physical locations for a material entity.
+#[cfg(debug_assertions)]
+#[allow(clippy::type_complexity)] // Debug validation query — clarity over brevity.
+fn assert_material_state_exclusivity(
+    query: Query<(
+        Entity,
+        &GameMaterial,
+        Has<MaterialObject>,
+        Has<crate::interaction::HeldItem>,
+        Has<crate::carry::InCarry>,
+    )>,
+) {
+    for (entity, material, in_world, held, stashed) in &query {
+        let count = in_world as u8 + held as u8 + stashed as u8;
+        assert!(
+            count <= 1,
+            "Entity {entity:?} ({}) has {count} location markers (MaterialObject={in_world}, \
+             HeldItem={held}, InCarry={stashed}). These must be mutually exclusive.",
+            material.name,
+        );
     }
 }
 

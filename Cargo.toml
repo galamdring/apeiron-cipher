@@ -12,6 +12,10 @@ leafwing-input-manager = "0.20.0"
 serde = { version = "1.0.228", features = ["derive"] }
 # TOML parser — used for player-editable config files
 toml = "1.0.7"
+# Compile-time enum iteration — used to drive ObservationCategory display
+# order from the enum definition itself, so adding a new variant cannot
+# silently hide that category from the journal UI.
+strum = { version = "0.27", features = ["derive"] }
 
 [dev-dependencies]
 # JSON serializer — used in tests to verify serde round-tripping

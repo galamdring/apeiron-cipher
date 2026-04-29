@@ -1596,9 +1596,12 @@ fn update_active_chunk_neighborhood(
     let center_chunk =
         world_position_to_chunk_coord(player_position_xz, profile.chunk_size_world_units);
 
-    // Early-out: skip recomputation when the player hasn't changed chunks.
-    // This avoids per-frame Vec allocation and prevents Bevy change detection
-    // from firing on ActiveChunkNeighborhood every frame.
+    // Early-out: skip recomputation when the player has not moved into a
+    // new chunk.  Without this guard, every frame would allocate a fresh
+    // `Vec<ChunkCoord>` for `active_chunks.chunks` and stamp the resource
+    // as changed, causing every downstream system that reacts to
+    // `ActiveChunkNeighborhood` change detection to fire on every frame
+    // instead of only on chunk transitions.
     if active_chunks.center_chunk == Some(center_chunk) {
         return;
     }
@@ -1628,8 +1631,17 @@ pub fn world_position_to_chunk_coord(
     position_xz: PositionXZ,
     chunk_size_world_units: f32,
 ) -> ChunkCoord {
-    // Clamp to minimum 1.0 to prevent division by zero in release builds.
-    // Validation at config load should prevent this, but defense in depth.
+    // Defense in depth.  Config validation rejects non-positive chunk
+    // sizes at load time, so a zero or negative value here means an
+    // upstream bug.  In debug builds we want the panic to surface
+    // immediately; in release builds we still need to avoid a divide-by-
+    // zero (which would yield `NaN`/`Inf` chunk coordinates and silently
+    // corrupt every system that consumes them) so we clamp to a safe
+    // minimum of 1.0 and log the bug.
+    debug_assert!(
+        chunk_size_world_units > 0.0,
+        "chunk size must be positive to derive chunk coordinates, got {chunk_size_world_units}"
+    );
     let chunk_size = if chunk_size_world_units > 0.0 {
         chunk_size_world_units
     } else {
