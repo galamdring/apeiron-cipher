@@ -25,6 +25,9 @@ on:
         type: string
         default: apeiron-cipher
 
+permissions:
+  contents: read
+
 jobs:
   build:
     name: Build ${{ inputs.target }}
