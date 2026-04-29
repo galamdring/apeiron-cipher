@@ -15,6 +15,7 @@
 //! tuning, future persistence, and future progression, so the data boundaries need
 //! to be obvious before later stories start mutating them.
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
@@ -406,7 +407,7 @@ pub struct CarryConfig {
     pub weight_descriptions: Vec<WeightDescriptionBand>,
     #[serde(default)]
     pub weight_cues: CarryCueConfig,
-    #[serde(default)]
+    #[serde(default = "default_profiles_config")]
     pub profiles: CarryProfilesConfig,
 }
 
@@ -424,7 +425,7 @@ impl Default for CarryConfig {
             cycle_order: CarryCycleOrder::default(),
             weight_descriptions: default_weight_descriptions(),
             weight_cues: CarryCueConfig::default(),
-            profiles: CarryProfilesConfig::default(),
+            profiles: default_profiles_config(),
         }
     }
 }
@@ -445,10 +446,11 @@ fn default_hold_offset() -> [f32; 3] {
 ///
 /// Stored as an enum (rather than a free-form string) so the config
 /// loader cannot end up pointing at a profile name that no profile in
-/// [`CarryProfilesConfig`] actually defines.  Adding a new profile means
-/// adding a variant here, a field on `CarryProfilesConfig`, and an arm
-/// in [`ActiveCarryProfile::from_config`] — the compiler enforces all
-/// three at once.
+/// [`CarryConfig::profiles`] actually defines.  Adding a new profile means
+/// adding a variant here, a keyed entry in the `[profiles]` TOML table,
+/// and (if the variant has special runtime semantics) handling in
+/// [`ActiveCarryProfile::from_config`] — the compiler enforces the first
+/// two via serde, and the HashMap lookup handles resolution automatically.
 ///
 /// `serde` uses snake_case so `carry.toml` keeps the existing
 /// `active_profile = "default"` / `"relaxed"` / `"creative"` spellings.
@@ -456,7 +458,7 @@ fn default_hold_offset() -> [f32; 3] {
 /// [`Self::Default`] via `#[serde(other)]` rather than failing the
 /// whole load — the same lenient behaviour the previous string-based
 /// match had.
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum CarryProfileSelection {
     /// Standard difficulty: hard capacity limit, normal stamina drain.
@@ -740,24 +742,24 @@ pub enum CarryCycleOrder {
     Lifo,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct CarryProfilesConfig {
-    #[serde(default = "default_profile_config")]
-    pub default: CarryProfileConfig,
-    #[serde(default = "relaxed_profile_config")]
-    pub relaxed: CarryProfileConfig,
-    #[serde(default = "creative_profile_config")]
-    pub creative: CarryProfileConfig,
-}
+/// Carry tuning profiles keyed by [`CarryProfileSelection`].
+///
+/// Adding a new profile requires only a new enum variant on
+/// [`CarryProfileSelection`] and a corresponding `[profiles.<name>]`
+/// section in the TOML config — no code changes to this type.
+/// The HashMap is serialized/deserialized as a TOML table whose keys
+/// are the snake_case enum variant names (e.g. `[profiles.default]`,
+/// `[profiles.relaxed]`, `[profiles.creative]`).
+pub type CarryProfilesConfig = HashMap<CarryProfileSelection, CarryProfileConfig>;
 
-impl Default for CarryProfilesConfig {
-    fn default() -> Self {
-        Self {
-            default: default_profile_config(),
-            relaxed: relaxed_profile_config(),
-            creative: creative_profile_config(),
-        }
-    }
+/// Builds the default set of carry profiles: `Default`, `Relaxed`, and
+/// `Creative`, each with their tuning constants.
+fn default_profiles_config() -> CarryProfilesConfig {
+    let mut map = HashMap::new();
+    map.insert(CarryProfileSelection::Default, default_profile_config());
+    map.insert(CarryProfileSelection::Relaxed, relaxed_profile_config());
+    map.insert(CarryProfileSelection::Creative, creative_profile_config());
+    map
 }
 
 /// One difficulty/mode profile's carry consequences.
@@ -910,22 +912,21 @@ impl Default for ActiveCarryProfile {
 
 impl ActiveCarryProfile {
     fn from_config(config: &CarryConfig) -> Self {
-        // `Unknown` falls back to the default tuning, mirroring the
-        // previous string-based `_ =>` branch.  Keeping the selection
-        // value as-recorded preserves the diagnostic information so a
-        // misconfigured TOML file is still visible in logs/state dumps.
-        let tuning = match config.active_profile {
-            CarryProfileSelection::Relaxed => config.profiles.relaxed.clone(),
-            CarryProfileSelection::Creative => config.profiles.creative.clone(),
-            CarryProfileSelection::Default | CarryProfileSelection::Unknown => {
-                config.profiles.default.clone()
-            }
-        };
+        // Look up the selected profile in the HashMap.  `Unknown` maps to
+        // whatever entry the HashMap holds for that key — which will be
+        // `None` since `Unknown` is never inserted by default — so it
+        // falls back to the default tuning.  This mirrors the previous
+        // string-based `_ =>` branch while keeping diagnostic information
+        // (the recorded selection) intact for logs and state dumps.
+        let selection = config.active_profile;
+        let tuning = config
+            .profiles
+            .get(&selection)
+            .or_else(|| config.profiles.get(&CarryProfileSelection::Default))
+            .cloned()
+            .unwrap_or_else(default_profile_config);
 
-        Self {
-            selection: config.active_profile,
-            tuning,
-        }
+        Self { selection, tuning }
     }
 }
 
@@ -1626,7 +1627,9 @@ exponent = 1.0
         assert!(config.grant_starting_device);
         assert_eq!(config.cycle_order, CarryCycleOrder::Lifo);
         assert_eq!(
-            config.profiles.relaxed.speed_curve.kind,
+            config.profiles[&CarryProfileSelection::Relaxed]
+                .speed_curve
+                .kind,
             CarryCurveKind::Exponential
         );
     }
