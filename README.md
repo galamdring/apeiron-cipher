@@ -1,5 +1,17 @@
 # Apeiron Cipher
 
+[![CI](https://github.com/galamdring/apeiron-cipher/actions/workflows/rust.yml/badge.svg)](https://github.com/galamdring/apeiron-cipher/actions/workflows/rust.yml)
+[![Release](https://github.com/galamdring/apeiron-cipher/actions/workflows/release-game.yml/badge.svg)](https://github.com/galamdring/apeiron-cipher/actions/workflows/release-game.yml)
+
+| Platform | Status |
+|----------|--------|
+| Windows | [![Build Windows](https://github.com/galamdring/apeiron-cipher/actions/workflows/release-game.yml/badge.svg?job=Build+Windows)](https://github.com/galamdring/apeiron-cipher/actions/workflows/release-game.yml) |
+| macOS x86_64 | [![Build macOS x86_64](https://github.com/galamdring/apeiron-cipher/actions/workflows/release-game.yml/badge.svg?job=Build+macOS+x86_64)](https://github.com/galamdring/apeiron-cipher/actions/workflows/release-game.yml) |
+| macOS ARM64 | [![Build macOS ARM64](https://github.com/galamdring/apeiron-cipher/actions/workflows/release-game.yml/badge.svg?job=Build+macOS+ARM64)](https://github.com/galamdring/apeiron-cipher/actions/workflows/release-game.yml) |
+| Linux x86_64 | [![Build Linux x86_64](https://github.com/galamdring/apeiron-cipher/actions/workflows/release-game.yml/badge.svg?job=Build+Linux+x86_64)](https://github.com/galamdring/apeiron-cipher/actions/workflows/release-game.yml) |
+| Linux ARM64 | [![Build Linux ARM64](https://github.com/galamdring/apeiron-cipher/actions/workflows/release-game.yml/badge.svg?job=Build+Linux+ARM64)](https://github.com/galamdring/apeiron-cipher/actions/workflows/release-game.yml) |
+| WASM | [![Build WASM](https://github.com/galamdring/apeiron-cipher/actions/workflows/release-game.yml/badge.svg?job=Build+WASM)](https://github.com/galamdring/apeiron-cipher/actions/workflows/release-game.yml) |
+
 A procedurally generated open universe sandbox where knowledge is the only
 progression that matters. Built with [Bevy](https://bevyengine.org/).
 

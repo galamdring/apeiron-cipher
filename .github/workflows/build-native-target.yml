@@ -1,0 +1,95 @@
+name: Build Native Target
+
+on:
+  workflow_call:
+    inputs:
+      target:
+        required: true
+        type: string
+      os:
+        required: true
+        type: string
+      ext:
+        required: false
+        type: string
+        default: ""
+      cross:
+        required: false
+        type: boolean
+        default: false
+      version:
+        required: true
+        type: string
+      binary_name:
+        required: false
+        type: string
+        default: apeiron-cipher
+
+jobs:
+  build:
+    name: Build ${{ inputs.target }}
+    runs-on: ${{ inputs.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ inputs.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ inputs.target }}
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux' && !inputs.cross
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libudev-dev \
+            libasound2-dev \
+            libwayland-dev \
+            libxkbcommon-dev
+
+      - name: Install cross
+        if: inputs.cross
+        run: cargo install cross --git https://github.com/cross-rs/cross
+
+      - name: Build with cargo
+        if: ${{ !inputs.cross }}
+        run: cargo build --release --target ${{ inputs.target }}
+
+      - name: Build with cross
+        if: inputs.cross
+        run: cross build --release --target ${{ inputs.target }}
+
+      - name: Package (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          VERSION="v${{ inputs.version }}"
+          STAGING="${{ inputs.binary_name }}-${VERSION}-${{ inputs.target }}"
+          mkdir -p "$STAGING"
+          cp "target/${{ inputs.target }}/release/${{ inputs.binary_name }}${{ inputs.ext }}" "$STAGING/"
+          cp -r assets "$STAGING/"
+          tar czf "${STAGING}.tar.gz" "$STAGING"
+          echo "ASSET=${STAGING}.tar.gz" >> "$GITHUB_ENV"
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $version = "v${{ inputs.version }}"
+          $staging = "${{ inputs.binary_name }}-${version}-${{ inputs.target }}"
+          New-Item -ItemType Directory -Path $staging
+          Copy-Item "target/${{ inputs.target }}/release/${{ inputs.binary_name }}${{ inputs.ext }}" $staging
+          Copy-Item -Recurse assets $staging
+          Compress-Archive -Path $staging -DestinationPath "${staging}.zip"
+          echo "ASSET=${staging}.zip" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.target }}
+          path: ${{ env.ASSET }}
