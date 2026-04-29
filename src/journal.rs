@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 use bevy::prelude::*;
 use leafwing_input_manager::prelude::*;
 use serde::{Deserialize, Serialize};
+use strum::IntoEnumIterator;
 
 use crate::input::InputAction;
 use crate::observation::ConfidenceLevel;
@@ -24,7 +25,25 @@ use crate::player::{Player, cursor_is_captured, spawn_player};
 /// accumulate about a journal subject. New game systems (navigation,
 /// trade, language) add variants here without touching existing match
 /// arms or storage structures.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+///
+/// ## Adding a new variant
+///
+/// `display_label` and `shows_latest_only` use exhaustive `match`, so the
+/// compiler will force you to handle the new variant in those methods.
+/// `display_order()` iterates *all* variants via `strum::IntoEnumIterator`,
+/// so a new variant is automatically picked up by the detail-panel
+/// renderer in declaration order — there is no separate hand-maintained
+/// ordering list to update.
+///
+/// The default for `shows_latest_only` is **history-accumulating**: a new
+/// variant retains every distinct observation rather than collapsing to
+/// the most recent one. Override this in `shows_latest_only` only when a
+/// category genuinely converges on a single best reading over time
+/// (e.g. thermal behaviour, perceived weight) — the safer default
+/// preserves player evidence rather than discarding it.
+#[derive(
+    Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, strum::EnumIter,
+)]
 pub enum ObservationCategory {
     /// Visual or tactile surface properties noticed on first examination.
     SurfaceAppearance,
@@ -39,19 +58,17 @@ pub enum ObservationCategory {
     // Future: LanguageFragment, CulturalBehavior, TradePrice, etc.
 }
 
-/// Canonical display order for category groups in the detail panel.
-///
-/// This determines the visual ordering of category sections and ensures
-/// new categories are rendered in a predictable position.
-const CATEGORY_DISPLAY_ORDER: &[ObservationCategory] = &[
-    ObservationCategory::SurfaceAppearance,
-    ObservationCategory::ThermalBehavior,
-    ObservationCategory::Weight,
-    ObservationCategory::FabricationResult,
-    ObservationCategory::LocationNote,
-];
-
 impl ObservationCategory {
+    /// Canonical display order for category groups in the detail panel.
+    ///
+    /// Returns every variant of [`ObservationCategory`] in enum-declaration
+    /// order. Driven by `strum::EnumIter` so adding a new variant
+    /// automatically extends the rendered detail panel without touching
+    /// any hand-maintained ordering table.
+    fn display_order() -> impl Iterator<Item = ObservationCategory> {
+        <ObservationCategory as IntoEnumIterator>::iter()
+    }
+
     /// Player-facing label used as a group header in the detail panel.
     fn display_label(&self) -> &'static str {
         match self {
@@ -69,6 +86,14 @@ impl ObservationCategory {
     /// Thermal and Weight observations converge on a single best reading
     /// over time, so only the latest is relevant. Other categories
     /// accumulate distinct observations worth preserving.
+    ///
+    /// **New variants default to history-accumulating** (this method
+    /// returns `false` for any variant not explicitly listed in the
+    /// `matches!` arm). That is the safer default: it preserves every
+    /// distinct observation the player records rather than silently
+    /// discarding earlier evidence in favour of the most recent reading.
+    /// Only opt a new variant into `true` when it genuinely converges on
+    /// a single best value over time.
     fn shows_latest_only(&self) -> bool {
         matches!(
             self,
@@ -76,6 +101,7 @@ impl ObservationCategory {
         )
     }
 }
+
 
 /// A single observation about a journal subject, timestamped.
 ///
@@ -126,6 +152,37 @@ pub enum JournalKey {
 
 pub struct JournalPlugin;
 
+/// System sets that codify the journal pipeline ordering.
+///
+/// The ordering `Input → Navigation → Panels → Render` is **load-bearing**,
+/// not cosmetic.  [`compute_journal_panels`] detects "the user did not
+/// navigate this frame" by comparing the live `selected_index` /
+/// `scroll_offset` against the values [`JournalSelectionTracker`] recorded
+/// at the end of the previous frame.  If anything mutates
+/// `JournalUiState`'s navigation fields between [`Self::Navigation`] and
+/// [`Self::Panels`], the tracker will misinterpret the change as user
+/// navigation and re-anchor the selection incorrectly.
+///
+/// Expressing the ordering as a [`SystemSet`] (rather than only via
+/// per-system `.after(...)` chains) means new systems that touch
+/// `JournalUiState` can be slotted into the correct phase by membership
+/// rather than by remembering to chain after a specific function name.
+#[derive(SystemSet, Debug, Hash, PartialEq, Eq, Clone, Copy)]
+pub enum JournalSystems {
+    /// Read raw input and emit `ToggleJournalIntent`.
+    Input,
+    /// Apply visibility toggles and consume keyboard navigation.  Systems
+    /// in this set are the **only** ones permitted to write to
+    /// `JournalUiState`'s navigation fields.
+    Navigation,
+    /// Apply pending observation messages and recompute cached panel text.
+    /// Systems in this set must run after [`Self::Navigation`] so the
+    /// selection tracker sees a stable `selected_index`/`scroll_offset`.
+    Panels,
+    /// Mirror the cached panel text into Bevy UI nodes.
+    Render,
+}
+
 impl Plugin for JournalPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<RecordObservation>()
@@ -133,6 +190,16 @@ impl Plugin for JournalPlugin {
             .init_resource::<JournalUiState>()
             .init_resource::<JournalSelectionTracker>()
             .init_resource::<JournalRenderCache>()
+            .configure_sets(
+                Update,
+                (
+                    JournalSystems::Input,
+                    JournalSystems::Navigation,
+                    JournalSystems::Panels,
+                    JournalSystems::Render,
+                )
+                    .chain(),
+            )
             .add_systems(
                 Startup,
                 (
@@ -143,14 +210,14 @@ impl Plugin for JournalPlugin {
             .add_systems(
                 Update,
                 (
-                    emit_toggle_journal_intent,
-                    toggle_journal_visibility.after(emit_toggle_journal_intent),
-                    journal_navigation.after(toggle_journal_visibility),
-                    apply_observations,
-                    compute_journal_panels
-                        .after(apply_observations)
-                        .after(journal_navigation),
-                    sync_journal_ui.after(compute_journal_panels),
+                    emit_toggle_journal_intent.in_set(JournalSystems::Input),
+                    (toggle_journal_visibility, journal_navigation)
+                        .chain()
+                        .in_set(JournalSystems::Navigation),
+                    (apply_observations, compute_journal_panels)
+                        .chain()
+                        .in_set(JournalSystems::Panels),
+                    sync_journal_ui.in_set(JournalSystems::Render),
                 ),
             );
     }
@@ -353,22 +420,87 @@ impl Journal {
 ///
 /// Scroll position and selection survive close/reopen — toggling visibility
 /// does **not** reset navigation fields.
+///
+/// ## Invariants and ordering
+///
+/// All navigation fields are private. External systems mutate them via
+/// the `set_*` accessors, which clamp inputs against a known entry count
+/// and then call [`Self::clamp_to_entry_count`] to keep `selected_index`
+/// inside the visible scroll window. This guarantees that
+/// `build_entry_list_lines` and `build_detail_spans` never index out of
+/// range, even mid-frame between systems.
+///
+/// ## System ordering
+///
+/// `JournalUiState`'s navigation fields must be mutated only inside
+/// `journal_navigation` (the keyboard input system). The downstream
+/// system [`compute_journal_panels`] depends on detecting "the user did
+/// not navigate this frame" by comparing the live `selected_index` /
+/// `scroll_offset` against the values [`JournalSelectionTracker`]
+/// recorded at the end of the previous frame. If another system mutates
+/// `selected_index` after `journal_navigation` runs and before
+/// `compute_journal_panels` runs, the tracker will misinterpret the
+/// change as user navigation and re-anchor incorrectly. The plugin
+/// builds an explicit `journal_navigation → compute_journal_panels`
+/// ordering to enforce this; new systems that touch these fields must
+/// fit into that ordering or the selection-survival logic will break.
 #[derive(Resource)]
 pub struct JournalUiState {
     /// Whether the journal overlay is currently shown.
     pub visible: bool,
     /// Index of the currently highlighted entry in the sorted entry list.
-    pub selected_index: usize,
+    /// Private so all writes go through [`Self::set_selected_index`] /
+    /// [`Self::clamp_to_entry_count`], which preserve the invariant
+    /// `selected_index < entry_count` (or `0` when the journal is empty).
+    selected_index: usize,
     /// Index of the first entry visible in the left-hand list panel.
-    pub scroll_offset: usize,
+    /// Private for the same reason as `selected_index` — writes must go
+    /// through the accessors so the visible window stays consistent with
+    /// the selection.
+    scroll_offset: usize,
     /// Maximum number of entry rows displayed per page.  Loaded from
     /// configuration; falls back to `Self::DEFAULT_ENTRIES_PER_PAGE`.
-    pub entries_per_page: usize,
+    /// Private because changing the page size mid-session would otherwise
+    /// require re-clamping the scroll offset.
+    entries_per_page: usize,
 }
 
 impl JournalUiState {
     /// Sensible default when no configuration override is provided.
     const DEFAULT_ENTRIES_PER_PAGE: usize = 15;
+
+    /// Read-only view of the currently highlighted entry index.
+    pub fn selected_index(&self) -> usize {
+        self.selected_index
+    }
+
+    /// Read-only view of the first visible entry index.
+    pub fn scroll_offset(&self) -> usize {
+        self.scroll_offset
+    }
+
+    /// Read-only view of the configured page size.
+    pub fn entries_per_page(&self) -> usize {
+        self.entries_per_page
+    }
+
+    /// Set the selected entry index, clamping to `[0, entry_count - 1]`
+    /// and then re-anchoring `scroll_offset` so the selection remains
+    /// inside the visible window.
+    ///
+    /// `entry_count == 0` resets both `selected_index` and `scroll_offset`
+    /// to `0`.
+    pub fn set_selected_index(&mut self, index: usize, entry_count: usize) {
+        self.selected_index = index;
+        self.clamp_to_entry_count(entry_count);
+    }
+
+    /// Set the first visible entry index, clamping the scroll window to
+    /// fit inside the entry list and keeping the current selection visible.
+    pub fn set_scroll_offset(&mut self, offset: usize, entry_count: usize) {
+        self.scroll_offset = offset;
+        self.clamp_to_entry_count(entry_count);
+    }
 
     /// Clamp `selected_index` and `scroll_offset` so they stay within valid
     /// bounds for the given total entry count.  Called after any navigation
@@ -1089,8 +1221,11 @@ fn build_detail_spans(entries: &[&JournalEntry], state: &JournalUiState) -> Vec<
 
     // Iterate categories in canonical display order, emitting a group
     // header followed by the observations for each non-empty category.
-    for category in CATEGORY_DISPLAY_ORDER {
-        let observations = entry.observations_by_category(category);
+    // `display_order()` walks every variant of `ObservationCategory` via
+    // `strum::EnumIter`, so adding a new variant automatically extends
+    // this loop without any hand-maintained ordering table to update.
+    for category in ObservationCategory::display_order() {
+        let observations = entry.observations_by_category(&category);
         if observations.is_empty() {
             continue;
         }

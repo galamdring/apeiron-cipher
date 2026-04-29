@@ -261,10 +261,25 @@ impl CarryState {
         Some(removed)
     }
 
-    /// Check whether there is room to stash one more material given the current
-    /// weight and capacity rules.  Delegates to [`Self::can_accept`].
+    /// Returns true when the carry container can accept one more item of
+    /// the given material's weight under the current capacity rules.
+    ///
+    /// When `hard_limit_enabled` is false the container always accepts —
+    /// soft-limit feedback (visible strain, slow movement, etc.) is
+    /// handled by separate systems rather than by gating the stash here.
+    /// When the hard limit is enabled the item is rejected if it would
+    /// push `current_weight` past `effective_capacity`. An `f32::EPSILON`
+    /// tolerance keeps floating-point rounding from spuriously rejecting
+    /// items that sit exactly on the capacity boundary.
+    ///
+    /// This is the single source of truth for "may a material be added to
+    /// carry?" — pickup, stash, and cycle flows all consult this method
+    /// rather than re-implementing the comparison.
     pub fn can_stash(&self, material: &GameMaterial) -> bool {
-        self.can_accept(material.density.value)
+        if !self.hard_limit_enabled {
+            return true;
+        }
+        self.current_weight + material.density.value <= self.effective_capacity + f32::EPSILON
     }
 
     /// Select which carried entity should be returned next when cycling or dropping.
@@ -280,20 +295,6 @@ impl CarryState {
         }
     }
 
-    /// Returns true when the carry container can accept an item of the given weight.
-    ///
-    /// When `hard_limit_enabled` is true, the item is rejected if it would push
-    /// `current_weight` above `effective_capacity`. When hard limits are off, the
-    /// container always accepts (soft-limit feedback is handled elsewhere).
-    ///
-    /// Includes an `f32::EPSILON` tolerance so that floating-point rounding
-    /// near exact capacity doesn't spuriously reject items.
-    pub(crate) fn can_accept(&self, weight: f32) -> bool {
-        if !self.hard_limit_enabled {
-            return true;
-        }
-        self.current_weight + weight <= self.effective_capacity + f32::EPSILON
-    }
 
     /// Remove a carried item by entity without needing the material reference.
     ///
@@ -377,8 +378,8 @@ pub struct CarryConfig {
     /// so artists can tweak the hold position without recompiling.
     #[serde(default = "default_hold_offset")]
     pub hold_offset: [f32; 3],
-    #[serde(default = "default_active_profile")]
-    pub active_profile: String,
+    #[serde(default)]
+    pub active_profile: CarryProfileKind,
     #[serde(default = "default_starting_capacity")]
     pub starting_capacity: f32,
     #[serde(default = "default_starting_strength")]
@@ -405,7 +406,7 @@ impl Default for CarryConfig {
     fn default() -> Self {
         Self {
             hold_offset: default_hold_offset(),
-            active_profile: default_active_profile(),
+            active_profile: CarryProfileKind::default(),
             starting_capacity: default_starting_capacity(),
             starting_strength: default_starting_strength(),
             growth_rate: default_growth_rate(),
@@ -432,8 +433,22 @@ fn default_hold_offset() -> [f32; 3] {
     [0.2, -0.15, -0.5]
 }
 
-fn default_active_profile() -> String {
-    "default".into()
+/// Which named profile in [`CarryProfilesConfig`] is currently active.
+///
+/// Modeled as an enum (rather than a bare `String`) so that selecting a
+/// profile is type-checked at compile time and at config load time
+/// (`serde` rejects unknown variants). Adding a new profile is therefore
+/// a coordinated change: a new variant here, a new field on
+/// [`CarryProfilesConfig`], and an arm in
+/// [`ActiveCarryProfile::from_config`] — the compiler enforces that all
+/// three exist.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CarryProfileKind {
+    #[default]
+    Default,
+    Relaxed,
+    Creative,
 }
 
 fn default_starting_capacity() -> f32 {
@@ -844,14 +859,14 @@ pub enum CarryCurveKind {
 /// caller re-implement "which profile name did the config select?" logic.
 #[derive(Clone, Debug, Resource, PartialEq)]
 struct ActiveCarryProfile {
-    pub profile_name: String,
+    pub profile_kind: CarryProfileKind,
     pub tuning: CarryProfileConfig,
 }
 
 impl Default for ActiveCarryProfile {
     fn default() -> Self {
         Self {
-            profile_name: default_active_profile(),
+            profile_kind: CarryProfileKind::default(),
             tuning: default_profile_config(),
         }
     }
@@ -859,14 +874,18 @@ impl Default for ActiveCarryProfile {
 
 impl ActiveCarryProfile {
     fn from_config(config: &CarryConfig) -> Self {
-        let tuning = match config.active_profile.as_str() {
-            "relaxed" => config.profiles.relaxed.clone(),
-            "creative" => config.profiles.creative.clone(),
-            _ => config.profiles.default.clone(),
+        // Exhaustive match: adding a new `CarryProfileKind` variant forces
+        // a corresponding profile lookup here at compile time, so a
+        // typo'd or missing profile cannot silently fall through to
+        // `default`.
+        let tuning = match config.active_profile {
+            CarryProfileKind::Default => config.profiles.default.clone(),
+            CarryProfileKind::Relaxed => config.profiles.relaxed.clone(),
+            CarryProfileKind::Creative => config.profiles.creative.clone(),
         };
 
         Self {
-            profile_name: config.active_profile.clone(),
+            profile_kind: config.active_profile,
             tuning,
         }
     }
@@ -1015,7 +1034,7 @@ fn update_carry_strength(
     config: Res<CarryConfig>,
     mut player_query: Query<(&CarryState, &mut CarryStrength), With<Player>>,
 ) {
-    if active_profile.profile_name == "creative" {
+    if active_profile.profile_kind == CarryProfileKind::Creative {
         return;
     }
 
@@ -1429,12 +1448,9 @@ fn process_cycle_carry_intent(
         let held_info = held_query
             .iter()
             .next()
-            .map(|(entity, material)| (entity, material.density.value));
-        if let Some((held_entity, held_density)) = held_info {
-            if carry_state.hard_limit_enabled
-                && (carry_state.current_weight + held_density)
-                    > (carry_state.effective_capacity + f32::EPSILON)
-            {
+            .map(|(entity, material)| (entity, material.clone()));
+        if let Some((held_entity, held_material)) = held_item.as_ref() {
+            if !carry_state.can_stash(held_material) {
                 continue;
             }
             // Re-acquire the material ref — entity is still alive, query is
@@ -1518,7 +1534,7 @@ mod tests {
     #[test]
     fn carry_config_defaults_are_valid() {
         let config = CarryConfig::default();
-        assert_eq!(config.active_profile, "default");
+        assert_eq!(config.active_profile, CarryProfileKind::Default);
         assert_eq!(config.starting_capacity, 5.0);
         assert_eq!(config.cycle_order, CarryCycleOrder::Fifo);
     }
@@ -1551,7 +1567,7 @@ exponent = 1.0
 "#;
 
         let config: CarryConfig = toml::from_str(toml).expect("carry.toml should parse");
-        assert_eq!(config.active_profile, "relaxed");
+        assert_eq!(config.active_profile, CarryProfileKind::Relaxed);
         assert_eq!(config.starting_capacity, 2.5);
         assert_eq!(
             config.carry_device_item_key.as_deref(),
@@ -1566,15 +1582,44 @@ exponent = 1.0
     }
 
     #[test]
-    fn active_profile_falls_back_to_default_when_unknown() {
-        let config = CarryConfig {
-            active_profile: "mystery".into(),
-            ..CarryConfig::default()
-        };
+    fn active_profile_resolves_each_known_kind() {
+        // Each `CarryProfileKind` variant must resolve to its matching
+        // tuning profile in `CarryProfilesConfig`. The compiler enforces
+        // exhaustiveness in `ActiveCarryProfile::from_config`, but this
+        // test pins down the actual mapping.
+        let config = CarryConfig::default();
 
-        let active = ActiveCarryProfile::from_config(&config);
-        assert_eq!(active.profile_name, "mystery");
-        assert_eq!(active.tuning, default_profile_config());
+        for kind in [
+            CarryProfileKind::Default,
+            CarryProfileKind::Relaxed,
+            CarryProfileKind::Creative,
+        ] {
+            let scoped = CarryConfig {
+                active_profile: kind,
+                ..config.clone()
+            };
+            let active = ActiveCarryProfile::from_config(&scoped);
+            assert_eq!(active.profile_kind, kind);
+            let expected = match kind {
+                CarryProfileKind::Default => &config.profiles.default,
+                CarryProfileKind::Relaxed => &config.profiles.relaxed,
+                CarryProfileKind::Creative => &config.profiles.creative,
+            };
+            assert_eq!(active.tuning, *expected);
+        }
+    }
+
+    #[test]
+    fn active_profile_serde_rejects_unknown_kind() {
+        // Unknown profile names must fail at config-load time rather than
+        // silently fall back to default. This is the safety guarantee that
+        // motivated the move from `String` to `CarryProfileKind`.
+        let toml = r#"active_profile = "mystery""#;
+        let result: Result<CarryConfig, _> = toml::from_str(toml);
+        assert!(
+            result.is_err(),
+            "unknown profile kind must be rejected by deserialisation"
+        );
     }
 
     #[test]
@@ -1671,24 +1716,28 @@ exponent = 1.0
     }
 
     #[test]
-    fn can_accept_allows_within_capacity() {
+    fn can_stash_allows_within_capacity() {
         let state = CarryState::new(5.0, true);
-        assert!(state.can_accept(4.9));
-        assert!(state.can_accept(5.0));
+        let light = material_with_density(4.9);
+        let exact = material_with_density(5.0);
+        assert!(state.can_stash(&light));
+        assert!(state.can_stash(&exact));
     }
 
     #[test]
-    fn can_accept_rejects_over_capacity_when_hard_limit_enabled() {
+    fn can_stash_rejects_over_capacity_when_hard_limit_enabled() {
         let mut state = CarryState::new(5.0, true);
         state.current_weight = 4.5;
-        assert!(!state.can_accept(0.6));
+        let too_heavy = material_with_density(0.6);
+        assert!(!state.can_stash(&too_heavy));
     }
 
     #[test]
-    fn can_accept_allows_over_capacity_when_hard_limit_disabled() {
+    fn can_stash_allows_over_capacity_when_hard_limit_disabled() {
         let mut state = CarryState::new(5.0, false);
         state.current_weight = 4.5;
-        assert!(state.can_accept(10.0));
+        let very_heavy = material_with_density(10.0);
+        assert!(state.can_stash(&very_heavy));
     }
 
     #[test]
