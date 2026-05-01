@@ -560,7 +560,7 @@ fn sync_active_exterior_chunks(
         );
         trace!(
             chunk = ?chunk,
-            biome = %chunk_biome.biome_key,
+            biome = ?chunk_biome.biome_type,
             "derived biome for chunk"
         );
 

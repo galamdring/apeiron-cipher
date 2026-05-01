@@ -649,24 +649,24 @@ fn biome_derivation_is_deterministic() {
     let a = derive_chunk_biome(&profile, &registry, coord, None);
     let b = derive_chunk_biome(&profile, &registry, coord, None);
 
-    assert_eq!(a.biome_key, b.biome_key);
+    assert_eq!(a.biome_type, b.biome_type);
     assert_eq!(a.ground_color, b.ground_color);
     assert_eq!(a.density_modifier, b.density_modifier);
 }
 
 #[test]
 fn all_three_biomes_reachable() {
-    // Scan a large set of coords and verify all three biome keys appear.
+    // Scan a large set of coords and verify all three biome types appear.
     // The noise field is coherent, so with enough samples we should hit
     // all defined ranges.
     let profile = WorldProfile::from_config(&sample_config()).unwrap();
     let registry = BiomeRegistry::default();
 
-    let mut found: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut found: std::collections::HashSet<BiomeType> = std::collections::HashSet::new();
     for x in -50..50 {
         for z in -50..50 {
             let biome = derive_chunk_biome(&profile, &registry, ChunkCoord::new(x, z), None);
-            found.insert(biome.biome_key.clone());
+            found.insert(biome.biome_type);
             if found.len() == 3 {
                 break;
             }
@@ -677,16 +677,16 @@ fn all_three_biomes_reachable() {
     }
 
     assert!(
-        found.contains("scorched_flats"),
-        "scorched_flats not found in 100×100 scan, found: {found:?}"
+        found.contains(&BiomeType::ScorchedFlats),
+        "ScorchedFlats not found in 100×100 scan, found: {found:?}"
     );
     assert!(
-        found.contains("mineral_steppe"),
-        "mineral_steppe not found in 100×100 scan, found: {found:?}"
+        found.contains(&BiomeType::MineralSteppe),
+        "MineralSteppe not found in 100×100 scan, found: {found:?}"
     );
     assert!(
-        found.contains("frost_shelf"),
-        "frost_shelf not found in 100×100 scan, found: {found:?}"
+        found.contains(&BiomeType::FrostShelf),
+        "FrostShelf not found in 100×100 scan, found: {found:?}"
     );
 }
 
@@ -699,11 +699,11 @@ fn fallback_biome_used_when_no_range_matches() {
         noise_scale_chunks: 12.0,
         temperature_noise_channel: 0xB10E_0001_0000_0001,
         moisture_noise_channel: 0xB10E_0001_0000_0002,
-        fallback_biome_key: "fallback_test".to_string(),
+        fallback_biome_type: BiomeType::MineralSteppe,
         biomes: vec![
             // Impossibly narrow range — almost nothing will match.
             BiomeDefinition {
-                key: "narrow".to_string(),
+                biome_type: BiomeType::ScorchedFlats,
                 temperature_min: 0.999,
                 temperature_max: 1.0,
                 temperature_abs_min_k: None,
@@ -717,7 +717,7 @@ fn fallback_biome_used_when_no_range_matches() {
             },
             // Fallback biome.
             BiomeDefinition {
-                key: "fallback_test".to_string(),
+                biome_type: BiomeType::MineralSteppe,
                 temperature_min: 0.0,
                 temperature_max: 0.0,
                 temperature_abs_min_k: None,
@@ -736,7 +736,7 @@ fn fallback_biome_used_when_no_range_matches() {
     let mut found_fallback = false;
     for x in 0..20 {
         let biome = derive_chunk_biome(&profile, &registry, ChunkCoord::new(x, 0), None);
-        if biome.biome_key == "fallback_test" {
+        if biome.biome_type == BiomeType::MineralSteppe {
             found_fallback = true;
             assert_eq!(
                 biome.density_modifier, 0.5,
@@ -784,10 +784,10 @@ fn biome_registry_toml_round_trip() {
         toml::from_str(&toml_str).expect("BiomeRegistry should parse from TOML");
 
     assert_eq!(parsed.biomes.len(), registry.biomes.len());
-    assert_eq!(parsed.fallback_biome_key, registry.fallback_biome_key);
+    assert_eq!(parsed.fallback_biome_type, registry.fallback_biome_type);
     assert_eq!(parsed.noise_scale_chunks, registry.noise_scale_chunks);
     for (a, b) in registry.biomes.iter().zip(parsed.biomes.iter()) {
-        assert_eq!(a.key, b.key);
+        assert_eq!(a.biome_type, b.biome_type);
         assert_eq!(a.temperature_min, b.temperature_min);
         assert_eq!(a.temperature_max, b.temperature_max);
         assert_eq!(a.density_modifier, b.density_modifier);
@@ -809,7 +809,7 @@ fn biome_registry_toml_round_trip_with_palette_entries() {
     // Inject palette entries into the first biome (or add a biome if none exist).
     if registry.biomes.is_empty() {
         registry.biomes.push(BiomeDefinition {
-            key: "test_biome".to_string(),
+            biome_type: BiomeType::MineralSteppe,
             temperature_min: 0.0,
             temperature_max: 1.0,
             temperature_abs_min_k: None,
@@ -873,8 +873,8 @@ fn biome_toml_round_trip_empty_palette() {
     for (a, b) in registry.biomes.iter().zip(parsed.biomes.iter()) {
         assert!(
             b.material_palette.is_empty(),
-            "biome '{}' palette should be empty after round-trip",
-            a.key,
+            "biome '{:?}' palette should be empty after round-trip",
+            a.biome_type,
         );
     }
 }
@@ -887,8 +887,13 @@ fn biome_toml_round_trip_shared_seed_across_biomes() {
 
     // Ensure at least two biomes exist.
     while registry.biomes.len() < 2 {
+        let bt = if registry.biomes.is_empty() {
+            BiomeType::ScorchedFlats
+        } else {
+            BiomeType::MineralSteppe
+        };
         registry.biomes.push(BiomeDefinition {
-            key: format!("synth_biome_{}", registry.biomes.len()),
+            biome_type: bt,
             temperature_min: 0.0,
             temperature_max: 1.0,
             temperature_abs_min_k: None,
@@ -946,8 +951,8 @@ fn biome_toml_parses_shipped_asset_file() {
         for entry in &biome.material_palette {
             assert!(
                 entry.selection_weight > 0.0,
-                "biome '{}' has palette entry with non-positive weight {}",
-                biome.key,
+                "biome '{:?}' has palette entry with non-positive weight {}",
+                biome.biome_type,
                 entry.selection_weight,
             );
         }
@@ -976,7 +981,7 @@ fn biome_derivation_wraps_torus_correctly() {
     let a = derive_chunk_biome(&profile, &registry, raw, None);
     let b = derive_chunk_biome(&profile, &registry, wrapped, None);
 
-    assert_eq!(a.biome_key, b.biome_key);
+    assert_eq!(a.biome_type, b.biome_type);
     assert_eq!(a.ground_color, b.ground_color);
 }
 
@@ -991,7 +996,7 @@ fn empty_registry_returns_hardcoded_neutral_default() {
     let profile = WorldProfile::from_config(&config).unwrap();
     let registry = BiomeRegistry {
         biomes: vec![],
-        fallback_biome_key: "nonexistent".to_string(),
+        fallback_biome_type: BiomeType::FrostShelf,
         noise_scale_chunks: 10.0,
         temperature_noise_channel: 0xB10E_0001_0000_0001,
         moisture_noise_channel: 0xB10E_0001_0000_0002,
@@ -1000,7 +1005,7 @@ fn empty_registry_returns_hardcoded_neutral_default() {
     let result = derive_chunk_biome(&profile, &registry, ChunkCoord::new(0, 0), None);
 
     // Should get the hardcoded neutral default values.
-    assert_eq!(result.biome_key, "nonexistent");
+    assert_eq!(result.biome_type, BiomeType::FrostShelf);
     assert_eq!(result.ground_color, [0.26, 0.3, 0.22]);
     assert_eq!(result.density_modifier, 1.0);
     assert!(result.deposit_weight_modifiers.is_empty());
@@ -1018,7 +1023,7 @@ fn fallback_key_missing_from_registry_returns_hardcoded_default() {
     // will match any real noise sample.
     let registry = BiomeRegistry {
         biomes: vec![BiomeDefinition {
-            key: "impossible".to_string(),
+            biome_type: BiomeType::ScorchedFlats,
             temperature_min: -999.0,
             temperature_max: -998.0,
             temperature_abs_min_k: None,
@@ -1030,7 +1035,7 @@ fn fallback_key_missing_from_registry_returns_hardcoded_default() {
             deposit_weight_modifiers: HashMap::new(),
             material_palette: Vec::new(),
         }],
-        fallback_biome_key: "does_not_exist".to_string(),
+        fallback_biome_type: BiomeType::FrostShelf,
         noise_scale_chunks: 10.0,
         temperature_noise_channel: 0xB10E_0001_0000_0001,
         moisture_noise_channel: 0xB10E_0001_0000_0002,
@@ -1039,7 +1044,7 @@ fn fallback_key_missing_from_registry_returns_hardcoded_default() {
     let result = derive_chunk_biome(&profile, &registry, ChunkCoord::new(5, 5), None);
 
     // Must get the hardcoded neutral, not panic.
-    assert_eq!(result.biome_key, "does_not_exist");
+    assert_eq!(result.biome_type, BiomeType::FrostShelf);
     assert_eq!(result.ground_color, [0.26, 0.3, 0.22]);
     assert_eq!(result.density_modifier, 1.0);
 }
@@ -1054,8 +1059,8 @@ fn chunk_biome_includes_correct_palette_for_each_biome_type() {
     let profile = WorldProfile::from_config(&sample_config()).unwrap();
     let registry = BiomeRegistry::default();
 
-    // Build expected palettes from the registry, keyed by biome key.
-    let expected: HashMap<String, Vec<(u64, f32)>> = registry
+    // Build expected palettes from the registry, keyed by biome type.
+    let expected: HashMap<BiomeType, Vec<(u64, f32)>> = registry
         .biomes
         .iter()
         .map(|b| {
@@ -1064,21 +1069,21 @@ fn chunk_biome_includes_correct_palette_for_each_biome_type() {
                 .iter()
                 .map(|p| (p.material_seed, p.selection_weight))
                 .collect::<Vec<_>>();
-            (b.key.clone(), palette)
+            (b.biome_type, palette)
         })
         .collect();
 
     // Track which biomes we have verified so we can assert full coverage.
-    let mut verified: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut verified: std::collections::HashSet<BiomeType> = std::collections::HashSet::new();
 
     for x in -50..50 {
         for z in -50..50 {
             let biome = derive_chunk_biome(&profile, &registry, ChunkCoord::new(x, z), None);
 
-            let Some(expected_palette) = expected.get(&biome.biome_key) else {
+            let Some(expected_palette) = expected.get(&biome.biome_type) else {
                 panic!(
-                    "derive_chunk_biome returned unknown biome key '{}'",
-                    biome.biome_key
+                    "derive_chunk_biome returned unknown biome type '{:?}'",
+                    biome.biome_type
                 );
             };
 
@@ -1090,11 +1095,11 @@ fn chunk_biome_includes_correct_palette_for_each_biome_type() {
 
             assert_eq!(
                 &actual, expected_palette,
-                "palette mismatch for biome '{}' at chunk ({}, {})",
-                biome.biome_key, x, z
+                "palette mismatch for biome '{:?}' at chunk ({}, {})",
+                biome.biome_type, x, z
             );
 
-            verified.insert(biome.biome_key);
+            verified.insert(biome.biome_type);
             if verified.len() == expected.len() {
                 break;
             }
@@ -1108,7 +1113,7 @@ fn chunk_biome_includes_correct_palette_for_each_biome_type() {
     for key in expected.keys() {
         assert!(
             verified.contains(key),
-            "biome '{key}' was never reached in 100×100 scan — cannot verify its palette"
+            "biome '{key:?}' was never reached in 100×100 scan — cannot verify its palette"
         );
     }
 }
@@ -1132,11 +1137,11 @@ fn chunk_biome_fallback_carries_fallback_palette() {
         noise_scale_chunks: 12.0,
         temperature_noise_channel: 0xB10E_0001_0000_0001,
         moisture_noise_channel: 0xB10E_0001_0000_0002,
-        fallback_biome_key: "fb".to_string(),
+        fallback_biome_type: BiomeType::MineralSteppe,
         biomes: vec![
             // Impossibly narrow range — almost nothing will match.
             BiomeDefinition {
-                key: "narrow".to_string(),
+                biome_type: BiomeType::ScorchedFlats,
                 temperature_min: 0.999,
                 temperature_max: 1.0,
                 temperature_abs_min_k: None,
@@ -1149,7 +1154,7 @@ fn chunk_biome_fallback_carries_fallback_palette() {
                 material_palette: Vec::new(),
             },
             BiomeDefinition {
-                key: "fb".to_string(),
+                biome_type: BiomeType::MineralSteppe,
                 temperature_min: 0.0,
                 temperature_max: 0.0,
                 temperature_abs_min_k: None,
@@ -1168,7 +1173,7 @@ fn chunk_biome_fallback_carries_fallback_palette() {
     let mut found = false;
     for x in 0..20 {
         let biome = derive_chunk_biome(&profile, &registry, ChunkCoord::new(x, 0), None);
-        if biome.biome_key == "fb" {
+        if biome.biome_type == BiomeType::MineralSteppe {
             assert_eq!(
                 biome.material_palette.len(),
                 fallback_palette.len(),
@@ -1195,7 +1200,7 @@ fn chunk_biome_hardcoded_default_has_reasonable_palette() {
     // palette so that deposits can be generated even without biomes.toml.
     let profile = WorldProfile::from_config(&sample_config()).unwrap();
     let registry = BiomeRegistry {
-        fallback_biome_key: "does_not_exist".to_string(),
+        fallback_biome_type: BiomeType::FrostShelf,
         biomes: Vec::new(),
         noise_scale_chunks: 12.0,
         temperature_noise_channel: 0xB10E_0001_0000_0001,
@@ -1224,13 +1229,13 @@ fn chunk_biome_hardcoded_default_has_reasonable_palette() {
 /// for testing planet environment integration.
 fn abs_temp_registry() -> BiomeRegistry {
     BiomeRegistry {
-        fallback_biome_key: "neutral_biome".to_string(),
+        fallback_biome_type: BiomeType::MineralSteppe,
         noise_scale_chunks: 12.0,
         temperature_noise_channel: 0xB10E_0001_0000_0001,
         moisture_noise_channel: 0xB10E_0001_0000_0002,
         biomes: vec![
             BiomeDefinition {
-                key: "hot_biome".to_string(),
+                biome_type: BiomeType::ScorchedFlats,
                 temperature_min: 0.6,
                 temperature_max: 1.0,
                 temperature_abs_min_k: Some(350.0),
@@ -1243,7 +1248,7 @@ fn abs_temp_registry() -> BiomeRegistry {
                 material_palette: Vec::new(),
             },
             BiomeDefinition {
-                key: "cold_biome".to_string(),
+                biome_type: BiomeType::FrostShelf,
                 temperature_min: 0.0,
                 temperature_max: 0.5,
                 temperature_abs_min_k: Some(50.0),
@@ -1259,7 +1264,7 @@ fn abs_temp_registry() -> BiomeRegistry {
             // full normalized range so it catches anything filtered out by
             // absolute temperature checks on the other biomes.
             BiomeDefinition {
-                key: "neutral_biome".to_string(),
+                biome_type: BiomeType::MineralSteppe,
                 temperature_min: 0.0,
                 temperature_max: 1.0,
                 temperature_abs_min_k: None,
@@ -1287,9 +1292,10 @@ fn planet_env_none_uses_normalized_matching_only() {
     for x in 0..20 {
         let biome = derive_chunk_biome(&profile, &registry, ChunkCoord::new(x, 0), None);
         assert!(
-            biome.biome_key == "hot_biome" || biome.biome_key == "cold_biome",
-            "unexpected biome: {}",
-            biome.biome_key,
+            biome.biome_type == BiomeType::ScorchedFlats
+                || biome.biome_type == BiomeType::FrostShelf,
+            "unexpected biome: {:?}",
+            biome.biome_type,
         );
     }
 }
@@ -1315,7 +1321,8 @@ fn planet_env_hot_planet_filters_cold_biome() {
         // On a 400–700 K planet, the absolute temp is always >= 400 K.
         // The cold biome requires abs <= 220 K, so it must never appear.
         assert_ne!(
-            biome.biome_key, "cold_biome",
+            biome.biome_type,
+            BiomeType::FrostShelf,
             "cold biome should not appear on a 400–700 K planet (chunk x={x})",
         );
     }
@@ -1339,7 +1346,8 @@ fn planet_env_cold_planet_filters_hot_biome() {
     for x in 0..50 {
         let biome = derive_chunk_biome(&profile, &registry, ChunkCoord::new(x, x), Some(&cold_env));
         assert_ne!(
-            biome.biome_key, "hot_biome",
+            biome.biome_type,
+            BiomeType::ScorchedFlats,
             "hot biome should not appear on a 30–100 K planet (chunk x={x})",
         );
     }
@@ -1361,7 +1369,7 @@ fn planet_env_deterministic() {
     let a = derive_chunk_biome(&profile, &registry, coord, Some(&env));
     let b = derive_chunk_biome(&profile, &registry, coord, Some(&env));
     assert_eq!(
-        a.biome_key, b.biome_key,
+        a.biome_type, b.biome_type,
         "same inputs must produce same biome"
     );
 }
@@ -1390,24 +1398,25 @@ fn hot_planet_biomes_differ_from_cold_planet_biomes() {
         in_habitable_zone: false,
     };
 
-    let mut hot_biomes: Vec<String> = Vec::new();
-    let mut cold_biomes: Vec<String> = Vec::new();
+    let mut hot_biomes: Vec<BiomeType> = Vec::new();
+    let mut cold_biomes: Vec<BiomeType> = Vec::new();
 
     for x in 0..100 {
         let coord = ChunkCoord::new(x, x * 3);
-        hot_biomes.push(derive_chunk_biome(&profile, &registry, coord, Some(&hot_env)).biome_key);
-        cold_biomes.push(derive_chunk_biome(&profile, &registry, coord, Some(&cold_env)).biome_key);
+        hot_biomes.push(derive_chunk_biome(&profile, &registry, coord, Some(&hot_env)).biome_type);
+        cold_biomes
+            .push(derive_chunk_biome(&profile, &registry, coord, Some(&cold_env)).biome_type);
     }
 
     // The hot planet must never produce the cold biome (abs max 220 K)
     // and the cold planet must never produce the hot biome (abs min 350 K).
     assert!(
-        !hot_biomes.contains(&"cold_biome".to_string()),
-        "hot planet should not contain cold_biome",
+        !hot_biomes.contains(&BiomeType::FrostShelf),
+        "hot planet should not contain FrostShelf",
     );
     assert!(
-        !cold_biomes.contains(&"hot_biome".to_string()),
-        "cold planet should not contain hot_biome",
+        !cold_biomes.contains(&BiomeType::ScorchedFlats),
+        "cold planet should not contain ScorchedFlats",
     );
 
     // The distributions must actually differ — at least one coordinate
@@ -1465,17 +1474,17 @@ fn hot_planet_skews_toward_scorched_flats_over_frost_shelf() {
     for x in 0..sample_count {
         let coord = ChunkCoord::new(x, x * 7 + 3);
 
-        let hot_biome = derive_chunk_biome(&profile, &registry, coord, Some(&hot_env)).biome_key;
-        if hot_biome == "scorched_flats" {
+        let hot_biome = derive_chunk_biome(&profile, &registry, coord, Some(&hot_env)).biome_type;
+        if hot_biome == BiomeType::ScorchedFlats {
             hot_scorched += 1;
-        } else if hot_biome == "frost_shelf" {
+        } else if hot_biome == BiomeType::FrostShelf {
             hot_frost += 1;
         }
 
-        let cold_biome = derive_chunk_biome(&profile, &registry, coord, Some(&cold_env)).biome_key;
-        if cold_biome == "scorched_flats" {
+        let cold_biome = derive_chunk_biome(&profile, &registry, coord, Some(&cold_env)).biome_type;
+        if cold_biome == BiomeType::ScorchedFlats {
             cold_scorched += 1;
-        } else if cold_biome == "frost_shelf" {
+        } else if cold_biome == BiomeType::FrostShelf {
             cold_frost += 1;
         }
     }
@@ -2413,8 +2422,8 @@ fn full_chain_determinism_system_seed_to_biome_at_origin() {
     );
 
     assert_eq!(
-        biome_a.biome_key, biome_b.biome_key,
-        "biome key at origin must be deterministic"
+        biome_a.biome_type, biome_b.biome_type,
+        "biome type at origin must be deterministic"
     );
     assert_eq!(
         biome_a.ground_color, biome_b.ground_color,
@@ -2425,13 +2434,11 @@ fn full_chain_determinism_system_seed_to_biome_at_origin() {
         "biome density modifier at origin must be deterministic"
     );
 
-    // Verify the biome key is a non-empty string — a truly exercised
-    // pipeline must resolve to a concrete biome, not silently fall through
-    // to an empty default.
-    assert!(
-        !biome_a.biome_key.is_empty(),
-        "biome at origin must resolve to a named biome"
-    );
+    // Verify the biome key is a concrete biome — a truly exercised
+    // pipeline must resolve to a concrete biome, not silently fall through.
+    // (BiomeType is an enum, so this is always satisfied — kept for
+    // documentation value.)
+    let _ = biome_a.biome_type;
 
     // Verify the chunk generation key is also deterministic through
     // the full chain.
@@ -2737,21 +2744,21 @@ fn system_derived_world_generates_biomes_influenced_by_planet_temperature() {
 
     // Collect biome keys across a grid of chunks using the system-derived
     // planet environment (the full-chain path).
-    let mut biomes_with_env: Vec<String> = Vec::new();
+    let mut biomes_with_env: Vec<BiomeType> = Vec::new();
     for x in 0..100_i32 {
         let coord = ChunkCoord::new(x, x.wrapping_mul(7));
         let biome = derive_chunk_biome(&profile, &registry, coord, Some(env));
-        biomes_with_env.push(biome.biome_key);
+        biomes_with_env.push(biome.biome_type);
     }
 
-    // Collect biome keys for the same chunks without a planet environment
+    // Collect biome types for the same chunks without a planet environment
     // (override / no-context mode). Without absolute Kelvin filtering,
     // all biomes that match normalized ranges can appear.
-    let mut biomes_without_env: Vec<String> = Vec::new();
+    let mut biomes_without_env: Vec<BiomeType> = Vec::new();
     for x in 0..100_i32 {
         let coord = ChunkCoord::new(x, x.wrapping_mul(7));
         let biome = derive_chunk_biome(&profile, &registry, coord, None);
-        biomes_without_env.push(biome.biome_key);
+        biomes_without_env.push(biome.biome_type);
     }
 
     // The planet temperature must actually influence biome selection:
@@ -2793,7 +2800,7 @@ fn system_derived_world_generates_biomes_influenced_by_planet_temperature() {
             Some(&ctx_again.planet_environment),
         );
         assert_eq!(
-            biome_a.biome_key, biome_b.biome_key,
+            biome_a.biome_type, biome_b.biome_type,
             "biome at chunk ({}, {}) must be deterministic across identical derivations",
             coord.x, coord.z,
         );
@@ -2861,7 +2868,7 @@ fn override_mode_biome_generation_no_regression() {
     );
 
     let registry = BiomeRegistry::default();
-    let mut found_biomes: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut found_biomes: std::collections::HashSet<BiomeType> = std::collections::HashSet::new();
 
     // Scan a wide grid and assert byte-identical biome results between
     // the two independently-constructed profiles.
@@ -2875,8 +2882,8 @@ fn override_mode_biome_generation_no_regression() {
             let biome_b = derive_chunk_biome(&profile_b, &registry, coord, None);
 
             assert_eq!(
-                biome_a.biome_key, biome_b.biome_key,
-                "biome key mismatch at chunk ({x}, {z})"
+                biome_a.biome_type, biome_b.biome_type,
+                "biome type mismatch at chunk ({x}, {z})"
             );
             assert_eq!(
                 biome_a.ground_color, biome_b.ground_color,
@@ -2887,22 +2894,22 @@ fn override_mode_biome_generation_no_regression() {
                 "density_modifier mismatch at chunk ({x}, {z})"
             );
 
-            found_biomes.insert(biome_a.biome_key);
+            found_biomes.insert(biome_a.biome_type);
         }
     }
 
     // All three default biomes must still be reachable — a regression
     // that silently shifted noise offsets would collapse biome variety.
     assert!(
-        found_biomes.contains("scorched_flats"),
-        "scorched_flats must be reachable in override mode, found: {found_biomes:?}"
+        found_biomes.contains(&BiomeType::ScorchedFlats),
+        "ScorchedFlats must be reachable in override mode, found: {found_biomes:?}"
     );
     assert!(
-        found_biomes.contains("mineral_steppe"),
-        "mineral_steppe must be reachable in override mode, found: {found_biomes:?}"
+        found_biomes.contains(&BiomeType::MineralSteppe),
+        "MineralSteppe must be reachable in override mode, found: {found_biomes:?}"
     );
     assert!(
-        found_biomes.contains("frost_shelf"),
-        "frost_shelf must be reachable in override mode, found: {found_biomes:?}"
+        found_biomes.contains(&BiomeType::FrostShelf),
+        "FrostShelf must be reachable in override mode, found: {found_biomes:?}"
     );
 }

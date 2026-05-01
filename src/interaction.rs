@@ -28,7 +28,7 @@ use crate::fabricator::{ActivateIntent, InputSlot, OutputSlot};
 use crate::input::InputAction;
 use crate::journal::{JournalKey, Observation, ObservationCategory, RecordObservation};
 use crate::materials::{GameMaterial, MATERIAL_SURFACE_GAP, MaterialObject, PropertyVisibility};
-use crate::observation::{ConfidenceLevel, ConfidenceTracker};
+use crate::observation::{ConfidenceLevel, ConfidenceTracker, PropertyName};
 use crate::player::{Player, PlayerCamera, cursor_is_captured};
 use crate::scene::{PlayerSceneConfig, Surface};
 use crate::world_generation::{PlanetSurface, WorldGenerationConfig, WorldProfile};
@@ -880,7 +880,7 @@ fn append_prop(
 }
 
 fn append_thermal_prop(lines: &mut Vec<String>, mat: &GameMaterial, tracker: &ConfidenceTracker) {
-    let seed_has_thermal_knowledge = tracker.count(mat.seed, "thermal_resistance") > 0;
+    let seed_has_thermal_knowledge = tracker.count(mat.seed, PropertyName::ThermalResistance) > 0;
     match mat.thermal_resistance.visibility {
         PropertyVisibility::Hidden if !seed_has_thermal_knowledge => {
             lines.push("Heat response: ???".to_string())
@@ -888,7 +888,7 @@ fn append_thermal_prop(lines: &mut Vec<String>, mat: &GameMaterial, tracker: &Co
         PropertyVisibility::Hidden
         | PropertyVisibility::Observable
         | PropertyVisibility::Revealed => {
-            let confidence = tracker.level(mat.seed, "thermal_resistance");
+            let confidence = tracker.level(mat.seed, PropertyName::ThermalResistance);
             let description =
                 describe_thermal_observation(mat.thermal_resistance.value, confidence);
             lines.push(format!("Heat response: {description}"));
@@ -981,13 +981,13 @@ mod tests {
         let tentative = build_examine_text(&mat, &tracker);
         assert!(tentative.contains("Heat response: Seemed to hold together under heat"));
 
-        tracker.record(mat.seed, "thermal_resistance");
-        tracker.record(mat.seed, "thermal_resistance");
+        tracker.record(mat.seed, PropertyName::ThermalResistance);
+        tracker.record(mat.seed, PropertyName::ThermalResistance);
         let observed = build_examine_text(&mat, &tracker);
         assert!(observed.contains("Heat response: Hold together under heat"));
 
-        tracker.record(mat.seed, "thermal_resistance");
-        tracker.record(mat.seed, "thermal_resistance");
+        tracker.record(mat.seed, PropertyName::ThermalResistance);
+        tracker.record(mat.seed, PropertyName::ThermalResistance);
         let confident = build_examine_text(&mat, &tracker);
         assert!(confident.contains("Heat response: Reliably hold together under heat"));
     }
@@ -996,7 +996,7 @@ mod tests {
     fn examine_text_uses_seed_level_thermal_knowledge_even_if_entity_is_hidden() {
         let mat = test_material();
         let mut tracker = ConfidenceTracker::default();
-        tracker.record(mat.seed, "thermal_resistance");
+        tracker.record(mat.seed, PropertyName::ThermalResistance);
 
         let text = build_examine_text(&mat, &tracker);
         assert!(!text.contains("Heat response: ???"));

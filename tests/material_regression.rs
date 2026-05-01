@@ -8,7 +8,7 @@ mod scenarios;
 
 use apeiron_cipher::materials::{MaterialCatalog, derive_material_from_seed};
 use apeiron_cipher::world_generation::{
-    BiomeRegistry, ChunkCoord, PaletteMaterial, WorldGenerationConfig, WorldProfile,
+    BiomeRegistry, BiomeType, ChunkCoord, PaletteMaterial, WorldGenerationConfig, WorldProfile,
     derive_chunk_biome,
 };
 use std::collections::{HashMap, HashSet};
@@ -174,7 +174,7 @@ fn different_biomes_produce_different_material_sets() {
     let registry = BiomeRegistry::default();
 
     // Sample many chunks and collect material palettes per biome.
-    let mut biome_seeds: HashMap<String, HashSet<u64>> = HashMap::new();
+    let mut biome_seeds: HashMap<BiomeType, HashSet<u64>> = HashMap::new();
 
     for x in -50..50 {
         for z in -50..50 {
@@ -185,7 +185,7 @@ fn different_biomes_produce_different_material_sets() {
                 .map(|p| p.material_seed)
                 .collect();
             biome_seeds
-                .entry(biome.biome_key.clone())
+                .entry(biome.biome_type)
                 .or_default()
                 .extend(seeds);
         }
@@ -224,16 +224,14 @@ fn all_palette_entries_appear_across_many_chunks() {
     let registry = BiomeRegistry::default();
 
     // For each biome, track which palette seeds we actually see.
-    let mut seen_per_biome: HashMap<String, HashSet<u64>> = HashMap::new();
-    let mut expected_per_biome: HashMap<String, HashSet<u64>> = HashMap::new();
+    let mut seen_per_biome: HashMap<BiomeType, HashSet<u64>> = HashMap::new();
+    let mut expected_per_biome: HashMap<BiomeType, HashSet<u64>> = HashMap::new();
 
     for x in -50..50 {
         for z in -50..50 {
             let biome = derive_chunk_biome(&profile, &registry, ChunkCoord::new(x, z), None);
-            let expected = expected_per_biome
-                .entry(biome.biome_key.clone())
-                .or_default();
-            let seen = seen_per_biome.entry(biome.biome_key.clone()).or_default();
+            let expected = expected_per_biome.entry(biome.biome_type).or_default();
+            let seen = seen_per_biome.entry(biome.biome_type).or_default();
 
             for p in &biome.material_palette {
                 expected.insert(p.material_seed);
@@ -251,7 +249,7 @@ fn all_palette_entries_appear_across_many_chunks() {
         for seed in expected {
             assert!(
                 seen.contains(seed),
-                "biome '{biome_key}': palette seed {seed:#x} never appeared \
+                "biome '{biome_key:?}': palette seed {seed:#x} never appeared \
                  across 10,000 chunks"
             );
         }
@@ -371,13 +369,13 @@ fn biome_ground_colors_are_valid_and_distinct_across_biome_types() {
     let registry = BiomeRegistry::default();
 
     // Sample a large grid of chunks to collect biome→color mappings.
-    let mut biome_colors: HashMap<String, Vec<[f32; 3]>> = HashMap::new();
+    let mut biome_colors: HashMap<BiomeType, Vec<[f32; 3]>> = HashMap::new();
 
     for x in -50..50 {
         for z in -50..50 {
             let biome = derive_chunk_biome(&profile, &registry, ChunkCoord { x, z }, None);
             biome_colors
-                .entry(biome.biome_key.clone())
+                .entry(biome.biome_type)
                 .or_default()
                 .push(biome.ground_color);
         }
@@ -394,7 +392,7 @@ fn biome_ground_colors_are_valid_and_distinct_across_biome_types() {
             for (i, &c) in color.iter().enumerate() {
                 assert!(
                     (0.0..=1.0).contains(&c),
-                    "biome '{}' has invalid color component [{}] = {} (must be 0.0..=1.0)",
+                    "biome '{:?}' has invalid color component [{}] = {} (must be 0.0..=1.0)",
                     key,
                     i,
                     c
@@ -410,7 +408,7 @@ fn biome_ground_colors_are_valid_and_distinct_across_biome_types() {
         for color in &colors[1..] {
             assert_eq!(
                 &first, color,
-                "biome '{}' has inconsistent ground colors across chunks",
+                "biome '{:?}' has inconsistent ground colors across chunks",
                 key
             );
         }

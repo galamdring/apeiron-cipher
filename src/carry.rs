@@ -19,6 +19,8 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
+use crate::observation::PropertyName;
+
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -1367,8 +1369,8 @@ pub fn record_weight_observation(
     journal_writer: &mut MessageWriter<RecordObservation>,
     planet_seed: Option<u64>,
 ) {
-    tracker.record(material.seed, "weight");
-    let confidence = tracker.level(material.seed, "weight");
+    tracker.record(material.seed, PropertyName::Density);
+    let confidence = tracker.level(material.seed, PropertyName::Density);
     let description = describe_weight_observation(
         material.density.value,
         carry_strength,

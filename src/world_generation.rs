@@ -51,6 +51,24 @@ use crate::solar_system::{
     derive_planet_environment, derive_star_profile,
 };
 
+/// Canonical biome identities.
+///
+/// Each variant corresponds to a biome definition in `biomes.toml` and
+/// serializes as snake_case strings for TOML/JSON compatibility.
+///
+/// Adding a new biome type requires both a new variant here and a corresponding
+/// entry in `biomes.toml` with a matching key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BiomeType {
+    /// Hot, arid desert with exposed mineral veins. High ferrite content.
+    ScorchedFlats,
+    /// Temperate grassland with balanced mineral distribution. The default biome.
+    MineralSteppe,
+    /// Cold, icy regions with crystalline deposits. High prismate content.
+    FrostShelf,
+}
+
 // ── Surface Query Abstraction (Story 5.3) ────────────────────────────────
 //
 // WHY THIS IS PURE RUST AND NOT AN ECS QUERY:
@@ -1703,8 +1721,8 @@ pub struct BiomeRegistry {
     pub moisture_noise_channel: u64,
     /// Key of the biome used when a chunk's (temperature, moisture) pair does
     /// not fall within any defined biome's range.
-    #[serde(default = "default_fallback_biome_key")]
-    pub fallback_biome_key: String,
+    #[serde(default = "default_fallback_biome_type")]
+    pub fallback_biome_type: BiomeType,
     /// Ordered list of biome definitions. The first matching biome wins when
     /// ranges overlap.
     #[serde(default)]
@@ -1720,8 +1738,8 @@ fn default_temperature_noise_channel() -> u64 {
 fn default_moisture_noise_channel() -> u64 {
     0xB10E_0001_0000_0002
 }
-fn default_fallback_biome_key() -> String {
-    "mineral_steppe".to_string()
+fn default_fallback_biome_type() -> BiomeType {
+    BiomeType::MineralSteppe
 }
 
 /// Reasonable default material palette for the hardcoded neutral fallback biome.
@@ -1769,7 +1787,7 @@ impl Default for BiomeRegistry {
             noise_scale_chunks: default_biome_noise_scale_chunks(),
             temperature_noise_channel: default_temperature_noise_channel(),
             moisture_noise_channel: default_moisture_noise_channel(),
-            fallback_biome_key: default_fallback_biome_key(),
+            fallback_biome_type: default_fallback_biome_type(),
             biomes: default_biome_definitions(),
         }
     }
@@ -1807,8 +1825,8 @@ pub struct PaletteMaterial {
 /// moisture ranges contain the chunk's sampled values.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BiomeDefinition {
-    /// Unique key identifying this biome (e.g., `"scorched_flats"`).
-    pub key: String,
+    /// Canonical biome type identifying this biome.
+    pub biome_type: BiomeType,
     /// Minimum temperature value (0.0–1.0) for this biome's range.
     pub temperature_min: f32,
     /// Maximum temperature value (0.0–1.0) for this biome's range.
@@ -1871,7 +1889,7 @@ fn one_f32() -> f32 {
 fn default_biome_definitions() -> Vec<BiomeDefinition> {
     vec![
         BiomeDefinition {
-            key: "scorched_flats".to_string(),
+            biome_type: BiomeType::ScorchedFlats,
             temperature_min: 0.6,
             temperature_max: 1.0,
             temperature_abs_min_k: Some(350.0),
@@ -1913,7 +1931,7 @@ fn default_biome_definitions() -> Vec<BiomeDefinition> {
             ],
         },
         BiomeDefinition {
-            key: "mineral_steppe".to_string(),
+            biome_type: BiomeType::MineralSteppe,
             temperature_min: 0.3,
             temperature_max: 0.7,
             temperature_abs_min_k: Some(220.0),
@@ -1926,7 +1944,7 @@ fn default_biome_definitions() -> Vec<BiomeDefinition> {
             material_palette: default_fallback_material_palette(),
         },
         BiomeDefinition {
-            key: "frost_shelf".to_string(),
+            biome_type: BiomeType::FrostShelf,
             temperature_min: 0.0,
             temperature_max: 0.4,
             temperature_abs_min_k: Some(50.0),
@@ -1978,8 +1996,8 @@ fn default_biome_definitions() -> Vec<BiomeDefinition> {
 /// Component or Resource.
 #[derive(Clone, Debug)]
 pub struct ChunkBiome {
-    /// The biome key (e.g., `"scorched_flats"`).
-    pub biome_key: String,
+    /// The biome type for this chunk.
+    pub biome_type: BiomeType,
     /// RGB ground color for this chunk's ground tile.
     pub ground_color: [f32; 3],
     /// Density modifier applied to the deposit spawn threshold.
@@ -2084,7 +2102,7 @@ pub fn derive_chunk_biome(
         }
 
         return ChunkBiome {
-            biome_key: biome_def.key.clone(),
+            biome_type: biome_def.biome_type,
             ground_color: biome_def.ground_color,
             density_modifier: biome_def.density_modifier,
             deposit_weight_modifiers: biome_def.deposit_weight_modifiers.clone(),
@@ -2096,10 +2114,10 @@ pub fn derive_chunk_biome(
     if let Some(fallback) = registry
         .biomes
         .iter()
-        .find(|b| b.key == registry.fallback_biome_key)
+        .find(|b| b.biome_type == registry.fallback_biome_type)
     {
         return ChunkBiome {
-            biome_key: fallback.key.clone(),
+            biome_type: fallback.biome_type,
             ground_color: fallback.ground_color,
             density_modifier: fallback.density_modifier,
             deposit_weight_modifiers: fallback.deposit_weight_modifiers.clone(),
@@ -2111,11 +2129,11 @@ pub fn derive_chunk_biome(
     // This should never happen with a well-formed biomes.toml, but we must
     // not panic in generation code.
     warn!(
-        "Biome fallback key '{}' not found in registry; using hardcoded neutral default",
-        registry.fallback_biome_key
+        "Biome fallback type '{:?}' not found in registry; using hardcoded neutral default",
+        registry.fallback_biome_type
     );
     ChunkBiome {
-        biome_key: registry.fallback_biome_key.clone(),
+        biome_type: registry.fallback_biome_type,
         ground_color: [0.26, 0.3, 0.22],
         density_modifier: 1.0,
         deposit_weight_modifiers: HashMap::new(),

@@ -7,7 +7,7 @@
 #
 # Ranges are allowed to overlap — the first matching biome in file order wins.
 # Any (temperature, moisture) pair that falls outside all defined ranges
-# resolves to the `fallback_biome_key`.
+# resolves to the `fallback_biome_type`.
 
 # ── Global noise parameters ──────────────────────────────────────────────
 
@@ -21,14 +21,14 @@ noise_scale_chunks = 12.0
 temperature_noise_channel = 0xB10E_0001_0000_0001
 moisture_noise_channel    = 0xB10E_0001_0000_0002
 
-# Key of the biome used when a chunk's (temperature, moisture) pair does not
+# Biome type used when a chunk's (temperature, moisture) pair does not
 # match any defined biome range.
-fallback_biome_key = "mineral_steppe"
+fallback_biome_type = "mineral_steppe"
 
 # ── Biome definitions ────────────────────────────────────────────────────
 
 [[biomes]]
-key = "scorched_flats"
+biome_type = "scorched_flats"
 temperature_min = 0.6
 temperature_max = 1.0
 temperature_abs_min_k = 350.0
@@ -71,7 +71,7 @@ material_seed = 1009  # Silite — rare in hot regions
 selection_weight = 0.3
 
 [[biomes]]
-key = "mineral_steppe"
+biome_type = "mineral_steppe"
 temperature_min = 0.3
 temperature_max = 0.7
 temperature_abs_min_k = 220.0
@@ -116,7 +116,7 @@ material_seed = 1010  # Phosphite — occasional find
 selection_weight = 0.8
 
 [[biomes]]
-key = "frost_shelf"
+biome_type = "frost_shelf"
 temperature_min = 0.0
 temperature_max = 0.4
 temperature_abs_min_k = 50.0
