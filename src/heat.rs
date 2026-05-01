@@ -564,4 +564,117 @@ mod tests {
             PropertyVisibility::Revealed
         );
     }
+
+    /// Story 10.3 / Phase 2 Task 4: when the player has a `WorldProfile`
+    /// in scope, thermal observations recorded by `reveal_thermal_property`
+    /// must stamp the current planet seed onto the `JournalKey::Material`
+    /// they emit.  This is the wiring that lets the journal's
+    /// "current planet" filter (Story 10.3) match entries against the
+    /// player's present location without re-deriving provenance from
+    /// observation history.
+    #[test]
+    fn thermal_observation_records_current_planet_seed_from_world_profile() {
+        use crate::world_generation::{PlanetSeed, WorldGenerationConfig, WorldProfile};
+        use bevy::prelude::Messages;
+
+        // Build a `WorldProfile` with an explicit, non-default planet seed
+        // so the assertion fails loudly if the system silently substitutes
+        // a default or sentinel value.
+        let expected_seed: u64 = 0xC0FF_EE42;
+        let config = WorldGenerationConfig {
+            planet_seed: Some(expected_seed),
+            ..WorldGenerationConfig::default()
+        };
+        let profile = WorldProfile::from_config(&config)
+            .expect("from_config should succeed with explicit planet_seed");
+        assert_eq!(
+            profile.planet_seed,
+            PlanetSeed(expected_seed),
+            "test setup precondition: WorldProfile must carry the seed we asked for"
+        );
+
+        let mut app = App::new();
+        app.add_message::<RecordObservation>();
+        app.insert_resource(HeatSourceConfig::default());
+        app.insert_resource(ConfidenceTracker::default());
+        app.insert_resource(profile);
+        app.add_systems(Update, reveal_thermal_property);
+
+        app.world_mut().spawn((
+            MaterialObject,
+            test_material(7),
+            HeatExposure {
+                elapsed: 5.0,
+                in_zone: true,
+            },
+        ));
+
+        app.update();
+
+        let mut messages = app
+            .world_mut()
+            .resource_mut::<Messages<RecordObservation>>();
+        let recorded: Vec<RecordObservation> = messages.drain().collect();
+        assert_eq!(
+            recorded.len(),
+            1,
+            "exactly one thermal observation should be recorded for one revealed entity"
+        );
+        match &recorded[0].key {
+            JournalKey::Material { seed, planet_seed } => {
+                assert_eq!(*seed, 7, "material seed should match the test material");
+                assert_eq!(
+                    *planet_seed,
+                    Some(expected_seed),
+                    "observation must capture the WorldProfile's planet seed so the journal's current-planet filter can match it"
+                );
+            }
+            other => panic!("expected JournalKey::Material, got {other:?}"),
+        }
+    }
+
+    /// Story 10.3 / Phase 2 Task 4: when no `WorldProfile` is in scope
+    /// (early bring-up, ad-hoc integration tests, future non-planetary
+    /// observation sites) the recorded `planet_seed` must stay `None`
+    /// rather than defaulting to a sentinel — see
+    /// `JournalKey::Material::planet_seed`'s docs for why "unknown
+    /// provenance" is kept explicit.
+    #[test]
+    fn thermal_observation_records_none_planet_seed_without_world_profile() {
+        use bevy::prelude::Messages;
+
+        let mut app = App::new();
+        app.add_message::<RecordObservation>();
+        app.insert_resource(HeatSourceConfig::default());
+        app.insert_resource(ConfidenceTracker::default());
+        // Deliberately do *not* insert WorldProfile.
+        app.add_systems(Update, reveal_thermal_property);
+
+        app.world_mut().spawn((
+            MaterialObject,
+            test_material(11),
+            HeatExposure {
+                elapsed: 5.0,
+                in_zone: true,
+            },
+        ));
+
+        app.update();
+
+        let mut messages = app
+            .world_mut()
+            .resource_mut::<Messages<RecordObservation>>();
+        let recorded: Vec<RecordObservation> = messages.drain().collect();
+        assert_eq!(recorded.len(), 1);
+        match &recorded[0].key {
+            JournalKey::Material { seed, planet_seed } => {
+                assert_eq!(*seed, 11);
+                assert_eq!(
+                    *planet_seed, None,
+                    "without a WorldProfile, planet_seed must be None — never a sentinel"
+                );
+            }
+            other => panic!("expected JournalKey::Material, got {other:?}"),
+        }
+    }
 }

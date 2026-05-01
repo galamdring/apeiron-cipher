@@ -2207,4 +2207,66 @@ exponent = 1.0
 
         assert_eq!(text, "Straining under the weight");
     }
+
+    /// Story 10.3 / Phase 2 Task 4: `record_weight_observation` is the
+    /// shared sink for every carry-path weight observation (stash, swap,
+    /// standalone observe, cycle).  It must stamp its caller-supplied
+    /// `planet_seed` directly onto the emitted `JournalKey::Material` so
+    /// the journal's "current planet" filter can later match the entry
+    /// against the player's `WorldProfile::planet_seed`.  Verifying the
+    /// pure function here pins the contract that every system call site
+    /// (which all read `world_profile.as_deref().map(|p| p.planet_seed.0)`
+    /// before calling) relies on.
+    #[test]
+    fn record_weight_observation_stamps_supplied_planet_seed_on_key() {
+        use bevy::prelude::Messages;
+
+        // Run the function twice — once with a known planet seed and once
+        // with `None` — and assert the recorded key faithfully reflects
+        // each input.  We drive it through a Bevy one-shot system because
+        // `record_weight_observation` takes a real `MessageWriter`, which
+        // can only be obtained from a `World`.
+        fn drive(
+            inputs: bevy::ecs::system::In<(GameMaterial, Option<u64>)>,
+            mut writer: MessageWriter<RecordObservation>,
+        ) {
+            let (mat, seed) = inputs.0;
+            let mut tracker = ConfidenceTracker::default();
+            let cfg = CarryConfig::default();
+            record_weight_observation(&mat, 1.0, &cfg, &mut tracker, &mut writer, seed);
+        }
+
+        let material = material_with_density(0.8);
+
+        for (label, supplied, expected) in [
+            (
+                "with current planet",
+                Some(0xDEAD_BEEFu64),
+                Some(0xDEAD_BEEFu64),
+            ),
+            ("without WorldProfile", None, None),
+        ] {
+            let mut app = App::new();
+            app.add_message::<RecordObservation>();
+            app.world_mut()
+                .run_system_cached_with(drive, (material.clone(), supplied))
+                .expect("one-shot system should run");
+
+            let mut messages = app
+                .world_mut()
+                .resource_mut::<Messages<RecordObservation>>();
+            let recorded: Vec<RecordObservation> = messages.drain().collect();
+            assert_eq!(recorded.len(), 1, "{label}: expected one observation");
+            match &recorded[0].key {
+                JournalKey::Material { seed, planet_seed } => {
+                    assert_eq!(*seed, material.seed, "{label}: material seed must match");
+                    assert_eq!(
+                        *planet_seed, expected,
+                        "{label}: recorded planet_seed must equal the supplied value (no sentinel substitution)"
+                    );
+                }
+                other => panic!("{label}: expected JournalKey::Material, got {other:?}"),
+            }
+        }
+    }
 }
