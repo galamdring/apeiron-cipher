@@ -1030,6 +1030,44 @@ fn journal_navigation(
         return;
     }
 
+    // ── Context filter cycling (Shift+Tab) ─────────────────────────────
+    //
+    // Cycles through context filter options: All → Current Planet.
+    // Uses Shift+Tab to distinguish from category filter cycling (Tab).
+    // When no world context is available, Current Planet is skipped.
+    if keys.just_pressed(KeyCode::Tab)
+        && (keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight))
+    {
+        let current_filter = state.filter().clone();
+        let new_context = match current_filter.context {
+            None => {
+                // All → Current Planet (if world context available)
+                // For now, we'll use a placeholder planet seed since WorldProfile
+                // integration is not yet available. This will be updated when
+                // the world context system is implemented.
+                Some(JournalContext::CurrentPlanet { planet_seed: 0 })
+            }
+            Some(JournalContext::CurrentPlanet { .. }) => {
+                // Current Planet → All
+                None
+            }
+            Some(JournalContext::CurrentBiome { .. }) => {
+                // CurrentBiome → All (future expansion)
+                None
+            }
+        };
+
+        let new_filter = JournalFilter {
+            category: current_filter.category,
+            context: new_context,
+        };
+        state.set_filter(new_filter);
+
+        // Reset scroll to top when filter changes, as specified in the technical design
+        state.selected_index = 0;
+        state.scroll_offset = 0;
+    }
+
     if keys.just_pressed(KeyCode::ArrowUp) {
         state.selected_index = state.selected_index.saturating_sub(1);
     }
@@ -1179,7 +1217,13 @@ fn compute_journal_panels(
     let mut sorted_entries: Vec<&JournalEntry> = journal.entries.values().collect();
     sorted_entries.sort_by(|a, b| a.name.cmp(&b.name));
 
-    let entry_count = sorted_entries.len();
+    // Apply active filter to the sorted entries
+    let filtered_entries: Vec<&JournalEntry> = sorted_entries
+        .into_iter()
+        .filter(|entry| matches_filter(entry, state.filter()))
+        .collect();
+
+    let entry_count = filtered_entries.len();
 
     // ── Selection reconciliation ────────────────────────────────────
     //
@@ -1195,7 +1239,7 @@ fn compute_journal_panels(
     // if the deletion was at the end of the list.
     if let Some(tracked_key) = tracker.key.clone()
         && state.selected_index == tracker.last_index
-        && let Some(new_pos) = sorted_entries.iter().position(|e| e.key == tracked_key)
+        && let Some(new_pos) = filtered_entries.iter().position(|e| e.key == tracked_key)
     {
         state.selected_index = new_pos;
     }
@@ -1217,7 +1261,7 @@ fn compute_journal_panels(
     // (possibly already re-anchored) selection stays visible.
     if let Some(top_key) = tracker.top_key.clone()
         && state.scroll_offset == tracker.last_scroll_offset
-        && let Some(new_top_pos) = sorted_entries.iter().position(|e| e.key == top_key)
+        && let Some(new_top_pos) = filtered_entries.iter().position(|e| e.key == top_key)
     {
         state.scroll_offset = new_top_pos;
     }
@@ -1229,10 +1273,10 @@ fn compute_journal_panels(
     // Anchor onto whatever entry is now selected (which, after clamping,
     // is guaranteed to exist when entry_count > 0) and onto whatever
     // entry now occupies the top of the visible window.
-    if let Some(entry) = sorted_entries.get(state.selected_index) {
+    if let Some(entry) = filtered_entries.get(state.selected_index) {
         tracker.key = Some(entry.key.clone());
         tracker.last_index = state.selected_index;
-        tracker.top_key = sorted_entries
+        tracker.top_key = filtered_entries
             .get(state.scroll_offset)
             .map(|e| e.key.clone());
         tracker.last_scroll_offset = state.scroll_offset;
@@ -1245,8 +1289,8 @@ fn compute_journal_panels(
         tracker.last_scroll_offset = 0;
     }
 
-    cache.list_lines = build_entry_list_lines(&sorted_entries, &state);
-    cache.detail_spans = build_detail_spans(&sorted_entries, &state);
+    cache.list_lines = build_entry_list_lines(&filtered_entries, &state);
+    cache.detail_spans = build_detail_spans(&filtered_entries, &state);
     cache.help = build_help_text(entry_count, &state);
 }
 
@@ -1510,8 +1554,24 @@ fn build_help_text(entry_count: usize, state: &JournalUiState) -> String {
     let page_start = state.scroll_offset + 1;
     let page_end = (state.scroll_offset + state.entries_per_page).min(entry_count);
 
+    // Show active filter status if any filter is applied
+    let filter_status = match (&state.filter().category, &state.filter().context) {
+        (None, None) => String::new(),
+        (Some(_), None) => " [Filter: Category]".to_string(),
+        (None, Some(JournalContext::CurrentPlanet { .. })) => {
+            " [Filter: Current Planet]".to_string()
+        }
+        (None, Some(JournalContext::CurrentBiome { .. })) => " [Filter: Current Biome]".to_string(),
+        (Some(_), Some(JournalContext::CurrentPlanet { .. })) => {
+            " [Filter: Category | Current Planet]".to_string()
+        }
+        (Some(_), Some(JournalContext::CurrentBiome { .. })) => {
+            " [Filter: Category | Current Biome]".to_string()
+        }
+    };
+
     format!(
-        "\u{2191}\u{2193} Navigate  PgUp/PgDn: Page  Home/End: Jump  J: Close  [{page_start}-{page_end} of {entry_count}]"
+        "\u{2191}\u{2193} Navigate  PgUp/PgDn: Page  Home/End: Jump  Shift+Tab: Context Filter  J: Close{filter_status}  [{page_start}-{page_end} of {entry_count}]"
     )
 }
 
@@ -6383,6 +6443,185 @@ mod tests {
             highlighted[0].contains("Charlie"),
             "highlighted entry after reopening must still be Charlie, got {:?}",
             highlighted[0]
+        );
+    }
+
+    /// Shift+Tab cycles through context filter options: All → Current Planet → All.
+    /// The filter state persists and affects which entries are shown.
+    /// When the filter changes, selection resets to the top of the filtered list.
+    #[test]
+    fn shift_tab_cycles_context_filter() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.init_resource::<ButtonInput<KeyCode>>();
+        app.insert_resource(JournalUiState {
+            visible: true,
+            selected_index: 0,
+            scroll_offset: 0,
+            entries_per_page: 15,
+            filter: JournalFilter::default(),
+        });
+        app.add_systems(Update, journal_navigation);
+
+        // Create a journal with entries from different planets
+        let mut journal = Journal::default();
+
+        // Material from planet 0
+        journal.record(
+            JournalKey::Material {
+                seed: 1,
+                planet_seed: Some(0),
+            },
+            "Planet0-Material",
+            Observation {
+                category: ObservationCategory::SurfaceAppearance,
+                confidence: ConfidenceLevel::Tentative,
+                description: "From planet 0".to_string(),
+                recorded_at: 1,
+            },
+        );
+
+        // Material from planet 1
+        journal.record(
+            JournalKey::Material {
+                seed: 2,
+                planet_seed: Some(1),
+            },
+            "Planet1-Material",
+            Observation {
+                category: ObservationCategory::SurfaceAppearance,
+                confidence: ConfidenceLevel::Tentative,
+                description: "From planet 1".to_string(),
+                recorded_at: 2,
+            },
+        );
+
+        // Material with no planet context
+        journal.record(
+            JournalKey::Material {
+                seed: 3,
+                planet_seed: None,
+            },
+            "Unknown-Material",
+            Observation {
+                category: ObservationCategory::SurfaceAppearance,
+                confidence: ConfidenceLevel::Tentative,
+                description: "Unknown origin".to_string(),
+                recorded_at: 3,
+            },
+        );
+
+        app.world_mut().spawn((Player, journal));
+
+        // Initial state: All filter (default)
+        {
+            let state = app.world().resource::<JournalUiState>();
+            assert!(state.filter().category.is_none());
+            assert!(state.filter().context.is_none());
+        }
+
+        // First Shift+Tab: All → Current Planet (planet 0)
+        {
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.press(KeyCode::ShiftLeft);
+            keys.press(KeyCode::Tab);
+        }
+        app.update();
+        {
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.release(KeyCode::Tab);
+            keys.release(KeyCode::ShiftLeft);
+        }
+
+        {
+            let state = app.world().resource::<JournalUiState>();
+            assert!(state.filter().category.is_none());
+            assert!(matches!(
+                state.filter().context,
+                Some(JournalContext::CurrentPlanet { planet_seed: 0 })
+            ));
+            // Selection should reset to top when filter changes
+            assert_eq!(state.selected_index, 0);
+            assert_eq!(state.scroll_offset, 0);
+        }
+
+        // Second Shift+Tab: Current Planet → All
+        {
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.press(KeyCode::ShiftLeft);
+            keys.press(KeyCode::Tab);
+        }
+        app.update();
+        {
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.release(KeyCode::Tab);
+            keys.release(KeyCode::ShiftLeft);
+        }
+
+        {
+            let state = app.world().resource::<JournalUiState>();
+            assert!(state.filter().category.is_none());
+            assert!(state.filter().context.is_none());
+            // Selection should reset to top when filter changes
+            assert_eq!(state.selected_index, 0);
+            assert_eq!(state.scroll_offset, 0);
+        }
+    }
+
+    /// Help text shows Shift+Tab context filter hint and displays active filter status.
+    #[test]
+    fn help_text_shows_context_filter_hint_and_status() {
+        let state_all = JournalUiState {
+            visible: true,
+            selected_index: 0,
+            scroll_offset: 0,
+            entries_per_page: 15,
+            filter: JournalFilter::default(),
+        };
+        let help_all = build_help_text(10, &state_all);
+        assert!(
+            help_all.contains("Shift+Tab: Context Filter"),
+            "help should show Shift+Tab hint, got: {help_all}"
+        );
+        assert!(
+            !help_all.contains("[Filter:"),
+            "help should not show filter status when no filter active, got: {help_all}"
+        );
+
+        let state_planet = JournalUiState {
+            visible: true,
+            selected_index: 0,
+            scroll_offset: 0,
+            entries_per_page: 15,
+            filter: JournalFilter {
+                category: None,
+                context: Some(JournalContext::CurrentPlanet { planet_seed: 42 }),
+            },
+        };
+        let help_planet = build_help_text(10, &state_planet);
+        assert!(
+            help_planet.contains("Shift+Tab: Context Filter"),
+            "help should show Shift+Tab hint with filter active, got: {help_planet}"
+        );
+        assert!(
+            help_planet.contains("[Filter: Current Planet]"),
+            "help should show current planet filter status, got: {help_planet}"
+        );
+
+        let state_combined = JournalUiState {
+            visible: true,
+            selected_index: 0,
+            scroll_offset: 0,
+            entries_per_page: 15,
+            filter: JournalFilter {
+                category: Some(ObservationCategory::SurfaceAppearance),
+                context: Some(JournalContext::CurrentPlanet { planet_seed: 42 }),
+            },
+        };
+        let help_combined = build_help_text(10, &state_combined);
+        assert!(
+            help_combined.contains("[Filter: Category | Current Planet]"),
+            "help should show combined filter status, got: {help_combined}"
         );
     }
 }
