@@ -1090,6 +1090,53 @@ fn journal_navigation(
         state.scroll_offset = 0;
     }
 
+    // ── Category filter cycling (Tab) ──────────────────────────────────────
+    //
+    // Cycles through category filter options: All → SurfaceAppearance → ThermalBehavior → Weight → FabricationResult.
+    // Uses Tab without Shift to distinguish from context filter cycling (Shift+Tab).
+    if keys.just_pressed(KeyCode::Tab)
+        && !keys.pressed(KeyCode::ShiftLeft)
+        && !keys.pressed(KeyCode::ShiftRight)
+    {
+        let current_filter = state.filter().clone();
+        let new_category = match current_filter.category {
+            None => {
+                // All → SurfaceAppearance
+                Some(ObservationCategory::SurfaceAppearance)
+            }
+            Some(ObservationCategory::SurfaceAppearance) => {
+                // SurfaceAppearance → ThermalBehavior
+                Some(ObservationCategory::ThermalBehavior)
+            }
+            Some(ObservationCategory::ThermalBehavior) => {
+                // ThermalBehavior → Weight
+                Some(ObservationCategory::Weight)
+            }
+            Some(ObservationCategory::Weight) => {
+                // Weight → FabricationResult
+                Some(ObservationCategory::FabricationResult)
+            }
+            Some(ObservationCategory::FabricationResult) => {
+                // FabricationResult → All
+                None
+            }
+            Some(ObservationCategory::LocationNote) => {
+                // LocationNote → All (for future expansion)
+                None
+            }
+        };
+
+        let new_filter = JournalFilter {
+            category: new_category,
+            context: current_filter.context,
+        };
+        state.set_filter(new_filter);
+
+        // Reset scroll to top when filter changes, as specified in the technical design
+        state.selected_index = 0;
+        state.scroll_offset = 0;
+    }
+
     if keys.just_pressed(KeyCode::ArrowUp) {
         state.selected_index = state.selected_index.saturating_sub(1);
     }
@@ -6606,6 +6653,202 @@ mod tests {
             let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
             keys.release(KeyCode::Tab);
             keys.release(KeyCode::ShiftLeft);
+        }
+
+        {
+            let state = app.world().resource::<JournalUiState>();
+            assert!(state.filter().category.is_none());
+            assert!(state.filter().context.is_none());
+            // Selection should reset to top when filter changes
+            assert_eq!(state.selected_index, 0);
+            assert_eq!(state.scroll_offset, 0);
+        }
+    }
+
+    /// Tab cycles through category filter options: All → SurfaceAppearance → ThermalBehavior → Weight → FabricationResult → All.
+    /// The filter state persists and affects which entries are shown.
+    /// When the filter changes, selection resets to the top of the filtered list.
+    #[test]
+    fn tab_cycles_category_filter() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.init_resource::<ButtonInput<KeyCode>>();
+        app.insert_resource(JournalUiState {
+            visible: true,
+            selected_index: 0,
+            scroll_offset: 0,
+            entries_per_page: 15,
+            filter: JournalFilter::default(),
+        });
+        app.add_systems(Update, journal_navigation);
+
+        // Create a journal with entries to test filtering
+        let mut journal = Journal::default();
+
+        // Add a material entry with SurfaceAppearance observation
+        journal.record(
+            JournalKey::Material {
+                seed: 1,
+                planet_seed: Some(0),
+            },
+            "Surface-Material",
+            Observation {
+                category: ObservationCategory::SurfaceAppearance,
+                confidence: ConfidenceLevel::Tentative,
+                description: "Smooth metallic surface".to_string(),
+                recorded_at: 1,
+            },
+        );
+
+        // Add a material entry with ThermalBehavior observation
+        journal.record(
+            JournalKey::Material {
+                seed: 2,
+                planet_seed: Some(0),
+            },
+            "Thermal-Material",
+            Observation {
+                category: ObservationCategory::ThermalBehavior,
+                confidence: ConfidenceLevel::Observed,
+                description: "Warm to the touch".to_string(),
+                recorded_at: 2,
+            },
+        );
+
+        // Add a material entry with Weight observation
+        journal.record(
+            JournalKey::Material {
+                seed: 3,
+                planet_seed: Some(0),
+            },
+            "Heavy-Material",
+            Observation {
+                category: ObservationCategory::Weight,
+                confidence: ConfidenceLevel::Confident,
+                description: "Heavy material".to_string(),
+                recorded_at: 3,
+            },
+        );
+
+        // Add a fabrication entry with FabricationResult observation
+        journal.record(
+            JournalKey::Fabrication { output_seed: 4 },
+            "Alloy-Fabrication",
+            Observation {
+                category: ObservationCategory::FabricationResult,
+                confidence: ConfidenceLevel::Confident,
+                description: "Successfully fabricated alloy".to_string(),
+                recorded_at: 4,
+            },
+        );
+
+        app.world_mut().spawn((Player, journal));
+
+        // Initial state: All filter (no restrictions)
+        {
+            let state = app.world().resource::<JournalUiState>();
+            assert!(state.filter().category.is_none());
+            assert!(state.filter().context.is_none());
+        }
+
+        // First Tab: All → SurfaceAppearance
+        {
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.press(KeyCode::Tab);
+        }
+        app.update();
+        {
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.release(KeyCode::Tab);
+        }
+
+        {
+            let state = app.world().resource::<JournalUiState>();
+            assert_eq!(
+                state.filter().category,
+                Some(ObservationCategory::SurfaceAppearance)
+            );
+            assert!(state.filter().context.is_none());
+            // Selection should reset to top when filter changes
+            assert_eq!(state.selected_index, 0);
+            assert_eq!(state.scroll_offset, 0);
+        }
+
+        // Second Tab: SurfaceAppearance → ThermalBehavior
+        {
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.press(KeyCode::Tab);
+        }
+        app.update();
+        {
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.release(KeyCode::Tab);
+        }
+
+        {
+            let state = app.world().resource::<JournalUiState>();
+            assert_eq!(
+                state.filter().category,
+                Some(ObservationCategory::ThermalBehavior)
+            );
+            assert!(state.filter().context.is_none());
+            // Selection should reset to top when filter changes
+            assert_eq!(state.selected_index, 0);
+            assert_eq!(state.scroll_offset, 0);
+        }
+
+        // Third Tab: ThermalBehavior → Weight
+        {
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.press(KeyCode::Tab);
+        }
+        app.update();
+        {
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.release(KeyCode::Tab);
+        }
+
+        {
+            let state = app.world().resource::<JournalUiState>();
+            assert_eq!(state.filter().category, Some(ObservationCategory::Weight));
+            assert!(state.filter().context.is_none());
+            // Selection should reset to top when filter changes
+            assert_eq!(state.selected_index, 0);
+            assert_eq!(state.scroll_offset, 0);
+        }
+
+        // Fourth Tab: Weight → FabricationResult
+        {
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.press(KeyCode::Tab);
+        }
+        app.update();
+        {
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.release(KeyCode::Tab);
+        }
+
+        {
+            let state = app.world().resource::<JournalUiState>();
+            assert_eq!(
+                state.filter().category,
+                Some(ObservationCategory::FabricationResult)
+            );
+            assert!(state.filter().context.is_none());
+            // Selection should reset to top when filter changes
+            assert_eq!(state.selected_index, 0);
+            assert_eq!(state.scroll_offset, 0);
+        }
+
+        // Fifth Tab: FabricationResult → All
+        {
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.press(KeyCode::Tab);
+        }
+        app.update();
+        {
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.release(KeyCode::Tab);
         }
 
         {
