@@ -1,14 +1,28 @@
-# SUMMARY.md
+# Summary
 
 ## What changed
-- **Added Tab category filter cycling implementation** in `src/journal.rs` (lines 1093-1130): Implemented the missing Tab key handling to cycle through category filters: All → SurfaceAppearance → ThermalBehavior → Weight → FabricationResult → All
-- **Added comprehensive test** in `src/journal.rs` (lines 6665-6850): Created `tab_cycles_category_filter` test that verifies Tab cycling works correctly through all category filter states with proper state resets
+
+- **Modified `build_detail_spans` function** in `src/journal.rs` to accept a new `has_any_entries: bool` parameter that distinguishes between an empty journal and a filter that produces no results
+- **Updated the call site** in `compute_journal_panels` to pass `!journal.entries.is_empty()` as the `has_any_entries` parameter
+- **Updated all test calls** to `build_detail_spans` throughout the test suite to include the new parameter with appropriate values
+- **Added a new test** `detail_filtered_empty_shows_no_matching_entries` to verify the new functionality
 
 ## Why
-The Tab category filter cycling functionality was missing from the journal navigation system. While Shift+Tab for context filter cycling was implemented, the Tab (without Shift) functionality for category filtering was referenced in comments but never actually implemented. This was identified as Phase 3, Task 8 in Epic 10 Story 10.3: "Test: Tab cycles through filters" - the test was missing because the underlying functionality was incomplete.
+
+The task required showing "No matching entries" when a filter produces empty results, rather than the existing "No observations yet." message. The previous implementation couldn't distinguish between:
+
+1. **Empty journal** (no entries at all) → should show "No observations yet."
+2. **Filter produces no results** (journal has entries but none match the filter) → should show "No matching entries"
+
+The new `has_any_entries` parameter allows the function to make this distinction:
+- When `entries.is_empty() && !has_any_entries` → "No observations yet."
+- When `entries.is_empty() && has_any_entries` → "No matching entries"
 
 ## Testing
-- **Added test**: `tab_cycles_category_filter` - Tests the complete cycle: All → SurfaceAppearance → ThermalBehavior → Weight → FabricationResult → All
-- **Verified existing tests**: All 100 journal tests continue to pass
-- **Full test suite**: All 575 tests pass with `make check`
-- **Test coverage**: The new test verifies filter state changes, selection/scroll resets, and proper cycling through all category variants including LocationNote (for future expansion)
+
+- **Added new test**: `detail_filtered_empty_shows_no_matching_entries` verifies that when `has_any_entries = true` and `entries` is empty, the function returns "No matching entries"
+- **Updated existing test**: `detail_empty_journal_shows_placeholder` now correctly passes `has_any_entries = false` to verify the "No observations yet." case
+- **Updated all other test calls**: All existing tests that call `build_detail_spans` have been updated with appropriate `has_any_entries` values based on their test context
+- **Logic verification**: Created and ran a standalone test to verify the conditional logic works correctly for all three scenarios
+
+The implementation satisfies the Story 10.3 acceptance criterion: "No filter results shows 'No matching entries' rather than empty panel".

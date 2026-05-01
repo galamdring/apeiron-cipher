@@ -1364,7 +1364,7 @@ fn compute_journal_panels(
 
     cache.filter_bar = build_filter_bar_text(state.filter());
     cache.list_lines = build_entry_list_lines(&filtered_entries, &state);
-    cache.detail_spans = build_detail_spans(&filtered_entries, &state);
+    cache.detail_spans = build_detail_spans(&filtered_entries, &state, !journal.entries.is_empty());
     cache.help = build_help_text(entry_count, &state);
 }
 
@@ -1566,10 +1566,19 @@ fn build_entry_list_text(entries: &[&JournalEntry], state: &JournalUiState) -> S
 /// labels ("Surface:", "Heat:", etc.) use an amber accent, while observation
 /// descriptions use the normal body color.  If no entries exist, a single
 /// placeholder span is returned.
-fn build_detail_spans(entries: &[&JournalEntry], state: &JournalUiState) -> Vec<DetailSpan> {
+///
+/// The `has_any_entries` parameter distinguishes between an empty journal
+/// (shows "No observations yet.") and a filter that produces no results
+/// (shows "No matching entries").
+fn build_detail_spans(entries: &[&JournalEntry], state: &JournalUiState, has_any_entries: bool) -> Vec<DetailSpan> {
     if entries.is_empty() {
+        let message = if has_any_entries {
+            "No matching entries"
+        } else {
+            "No observations yet."
+        };
         return vec![DetailSpan {
-            text: "No observations yet.".to_string(),
+            text: message.to_string(),
             kind: DetailSpanKind::Placeholder,
         }];
     }
@@ -4092,7 +4101,7 @@ mod tests {
             filter: JournalFilter::default(),
         };
 
-        let detail = detail_spans_to_string(&build_detail_spans(&entries, &state));
+        let detail = detail_spans_to_string(&build_detail_spans(&entries, &state, true));
         assert!(detail.contains("Ferrite"), "detail should show entry name");
         assert!(
             detail.contains("Surface"),
@@ -4108,8 +4117,18 @@ mod tests {
     fn detail_empty_journal_shows_placeholder() {
         let state = JournalUiState::default();
         let entries: Vec<&JournalEntry> = vec![];
-        let detail = detail_spans_to_string(&build_detail_spans(&entries, &state));
+        let detail = detail_spans_to_string(&build_detail_spans(&entries, &state, false));
         assert_eq!(detail, "No observations yet.");
+    }
+
+    #[test]
+    fn detail_filtered_empty_shows_no_matching_entries() {
+        let state = JournalUiState::default();
+        let entries: Vec<&JournalEntry> = vec![];
+        // has_any_entries = true simulates the case where the journal has entries
+        // but the current filter produces no results
+        let detail = detail_spans_to_string(&build_detail_spans(&entries, &state, true));
+        assert_eq!(detail, "No matching entries");
     }
 
     #[test]
@@ -4154,7 +4173,7 @@ mod tests {
             filter: JournalFilter::default(),
         };
 
-        let spans = build_detail_spans(&entries, &state);
+        let spans = build_detail_spans(&entries, &state, true);
         // First span: header with entry name.
         assert_eq!(spans[0].kind, DetailSpanKind::Header);
         assert_eq!(spans[0].text, "Ferrite");
@@ -4178,7 +4197,7 @@ mod tests {
     fn detail_placeholder_span_kind() {
         let state = JournalUiState::default();
         let entries: Vec<&JournalEntry> = vec![];
-        let spans = build_detail_spans(&entries, &state);
+        let spans = build_detail_spans(&entries, &state, false);
         assert_eq!(spans.len(), 1);
         assert_eq!(spans[0].kind, DetailSpanKind::Placeholder);
     }
@@ -4246,7 +4265,7 @@ mod tests {
             entries_per_page: 15,
             filter: JournalFilter::default(),
         };
-        let detail = detail_spans_to_string(&build_detail_spans(&entries, &state));
+        let detail = detail_spans_to_string(&build_detail_spans(&entries, &state, true));
         assert!(detail.contains("Ferrite"), "header should be Ferrite");
         assert!(
             detail.contains("Warm rust tone"),
@@ -4269,7 +4288,7 @@ mod tests {
             entries_per_page: 15,
             filter: JournalFilter::default(),
         };
-        let detail = detail_spans_to_string(&build_detail_spans(&entries, &state));
+        let detail = detail_spans_to_string(&build_detail_spans(&entries, &state, true));
         assert!(detail.contains("Neoite"), "header should be Neoite");
         assert!(
             detail.contains("Surprisingly light"),
@@ -4292,7 +4311,7 @@ mod tests {
             entries_per_page: 15,
             filter: JournalFilter::default(),
         };
-        let detail = detail_spans_to_string(&build_detail_spans(&entries, &state));
+        let detail = detail_spans_to_string(&build_detail_spans(&entries, &state, true));
         assert!(detail.contains("Silite"), "header should be Silite");
         assert!(
             detail.contains("Glassy smooth surface"),
@@ -4376,7 +4395,7 @@ mod tests {
             entries_per_page: 15,
             filter: JournalFilter::default(),
         };
-        let spans = build_detail_spans(&entries, &state);
+        let spans = build_detail_spans(&entries, &state, true);
         let detail = detail_spans_to_string(&spans);
 
         // Should contain the header.
@@ -4679,7 +4698,7 @@ mod tests {
 
         let list = build_entry_list_text(&entries, &state);
         assert!(!list.is_empty());
-        let detail = build_detail_spans(&entries, &state);
+        let detail = build_detail_spans(&entries, &state, true);
         assert!(!detail.is_empty());
         let help = build_help_text(entries.len(), &state);
         assert!(help.contains("of 120"));
