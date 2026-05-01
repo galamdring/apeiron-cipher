@@ -174,6 +174,36 @@ pub enum JournalKey {
     },
 }
 
+impl JournalKey {
+    /// Planet on which the subject identified by this key was first
+    /// observed, when that information is available.
+    ///
+    /// Returns `Some(seed)` for [`JournalKey::Material`] entries that
+    /// were recorded with a planetary world profile in scope, and `None`
+    /// for materials recorded without one (early bring-up, ad-hoc
+    /// integration tests, future non-planetary discovery sites).
+    ///
+    /// [`JournalKey::Fabrication`] entries return `None` because
+    /// fabrications are produced at the player's fabricator and are
+    /// intentionally not tied to a discovery planet — the same recipe
+    /// produces the same output regardless of where it was crafted.  The
+    /// "current planet" filter therefore intentionally hides
+    /// fabrications, which matches the player-mental-model of the
+    /// filter ("show me things tied to where I am") better than
+    /// pretending fabrications belong to whichever planet the player
+    /// happened to be standing on at craft time.
+    ///
+    /// Used by [`matches_filter`] to evaluate
+    /// [`JournalContext::CurrentPlanet`] without re-deriving provenance
+    /// from observation history.
+    pub fn planet_seed(&self) -> Option<u64> {
+        match self {
+            JournalKey::Material { planet_seed, .. } => *planet_seed,
+            JournalKey::Fabrication { .. } => None,
+        }
+    }
+}
+
 // ── Filtering ───────────────────────────────────────────────────────────
 
 /// Contextual scope used to narrow journal entries to those relevant to
@@ -254,6 +284,71 @@ pub struct JournalFilter {
     /// kept.  `None` means "no contextual restriction" (the "All"
     /// context filter).
     pub context: Option<JournalContext>,
+}
+
+/// Predicate evaluating whether a journal entry should be shown under the
+/// active filter.
+///
+/// The two filter dimensions combine with **AND** logic: an entry is
+/// kept when *every* `Some(_)` dimension matches it.  `None` on a
+/// dimension means "no restriction on this dimension" — the
+/// [`JournalFilter::default`] value (both dimensions `None`) therefore
+/// returns `true` for every entry, satisfying the Story 10.3
+/// acceptance criterion that the "All" filter shows everything.
+///
+/// Dimension semantics:
+///
+/// * **Category match** — the entry contains at least one observation
+///   whose [`Observation::category`] equals the requested category.  An
+///   entry with no observations cannot match any category restriction
+///   (the `any` fold returns `false` over an empty iterator), which is
+///   the correct behaviour: an entry with zero observations carries no
+///   evidence of belonging to any category.
+/// * **Context match** — the entry's captured location metadata
+///   matches the requested context.  For
+///   [`JournalContext::CurrentPlanet`] this consults
+///   [`JournalKey::planet_seed`]: an entry matches iff its key recorded
+///   the same planet seed.  Entries whose key has no planet seed
+///   (`None`) are excluded from current-planet filtering — this is by
+///   design (see [`JournalKey::Material::planet_seed`]'s docs):
+///   "unknown provenance" should not silently be assumed to mean
+///   "current planet".
+///
+///   [`JournalContext::CurrentBiome`] is not yet evaluated and
+///   currently returns `true` (no restriction).  Biome provenance is
+///   not captured on [`JournalKey`] today; wiring it up is tracked as a
+///   follow-up so that filter UI cycling can already expose the option
+///   without false-negative behaviour.  When biome capture is added,
+///   this arm changes to compare against the entry's recorded biome
+///   key — no other call site needs to change.
+///
+/// The function is intentionally pure (no `WorldContext` parameter):
+/// the filter already carries the planet seed / biome key it is
+/// matching against, and the entry already carries the metadata being
+/// matched.  Keeping the predicate parameter-light means it can be
+/// dropped into an iterator chain (`entries.filter(|e|
+/// matches_filter(e, &filter))`) without threading additional
+/// resources through the render pipeline.
+pub fn matches_filter(entry: &JournalEntry, filter: &JournalFilter) -> bool {
+    let category_match = filter
+        .category
+        .as_ref()
+        .is_none_or(|cat| entry.observations.keys().any(|entry_cat| entry_cat == cat));
+
+    let context_match = filter.context.as_ref().is_none_or(|ctx| match ctx {
+        JournalContext::CurrentPlanet { planet_seed } => {
+            entry.key.planet_seed() == Some(*planet_seed)
+        }
+        // Biome provenance is not yet captured on JournalKey; until it
+        // is, the biome filter is a no-op (matches everything) rather
+        // than excluding every entry.  Returning `true` here keeps the
+        // UI affordance usable without producing a misleading "no
+        // matching entries" panel for a filter that hasn't been
+        // wired through to the data model yet.
+        JournalContext::CurrentBiome { .. } => true,
+    });
+
+    category_match && context_match
 }
 
 /// Plugin that manages the player journal, recording observations and discoveries.
@@ -1759,6 +1854,280 @@ mod tests {
         };
         assert_eq!(a, b);
         assert_ne!(a, c);
+    }
+
+    // ── matches_filter ─────────────────────────────────────────────
+    //
+    // Helpers for the matches_filter tests below.  Build a small entry
+    // with a single observation so the category dimension can be
+    // exercised independently of the context dimension.
+    fn entry_with_observation(key: JournalKey, category: ObservationCategory) -> JournalEntry {
+        let mut entry = JournalEntry::new(key, "Subject".to_string(), 0);
+        entry.add_observation(Observation {
+            category,
+            confidence: ConfidenceLevel::Tentative,
+            description: "obs".to_string(),
+            recorded_at: 0,
+        });
+        entry
+    }
+
+    #[test]
+    fn matches_filter_default_accepts_every_entry() {
+        // The "All" filter (Default) imposes no restriction on either
+        // dimension; every entry — including one with no observations —
+        // must pass.  This is the Story 10.3 default behaviour.
+        let filter = JournalFilter::default();
+        let entry = JournalEntry::new(
+            JournalKey::Material {
+                seed: 1,
+                planet_seed: None,
+            },
+            "Empty".to_string(),
+            0,
+        );
+        assert!(matches_filter(&entry, &filter));
+
+        let populated = entry_with_observation(
+            JournalKey::Material {
+                seed: 2,
+                planet_seed: Some(99),
+            },
+            ObservationCategory::SurfaceAppearance,
+        );
+        assert!(matches_filter(&populated, &filter));
+    }
+
+    #[test]
+    fn matches_filter_category_only_keeps_matching_entries() {
+        // With only a category restriction set, an entry must contain at
+        // least one observation in that category to pass.
+        let filter = JournalFilter {
+            category: Some(ObservationCategory::ThermalBehavior),
+            context: None,
+        };
+
+        let thermal = entry_with_observation(
+            JournalKey::Material {
+                seed: 1,
+                planet_seed: None,
+            },
+            ObservationCategory::ThermalBehavior,
+        );
+        assert!(matches_filter(&thermal, &filter));
+
+        let surface = entry_with_observation(
+            JournalKey::Material {
+                seed: 2,
+                planet_seed: None,
+            },
+            ObservationCategory::SurfaceAppearance,
+        );
+        assert!(!matches_filter(&surface, &filter));
+    }
+
+    #[test]
+    fn matches_filter_category_rejects_entry_with_no_observations() {
+        // An entry with zero observations carries no evidence of any
+        // category and therefore fails any `Some(category)` restriction.
+        let filter = JournalFilter {
+            category: Some(ObservationCategory::SurfaceAppearance),
+            context: None,
+        };
+        let empty = JournalEntry::new(
+            JournalKey::Material {
+                seed: 1,
+                planet_seed: None,
+            },
+            "Empty".to_string(),
+            0,
+        );
+        assert!(!matches_filter(&empty, &filter));
+    }
+
+    #[test]
+    fn matches_filter_current_planet_uses_key_planet_seed() {
+        // CurrentPlanet matches an entry iff its key's planet_seed
+        // equals the filter's seed.  Entries without a recorded planet
+        // (planet_seed == None) are excluded — "unknown provenance"
+        // must not silently masquerade as "current planet".
+        let filter = JournalFilter {
+            category: None,
+            context: Some(JournalContext::CurrentPlanet { planet_seed: 7 }),
+        };
+
+        let on_planet = entry_with_observation(
+            JournalKey::Material {
+                seed: 1,
+                planet_seed: Some(7),
+            },
+            ObservationCategory::SurfaceAppearance,
+        );
+        assert!(matches_filter(&on_planet, &filter));
+
+        let other_planet = entry_with_observation(
+            JournalKey::Material {
+                seed: 2,
+                planet_seed: Some(8),
+            },
+            ObservationCategory::SurfaceAppearance,
+        );
+        assert!(!matches_filter(&other_planet, &filter));
+
+        let no_planet = entry_with_observation(
+            JournalKey::Material {
+                seed: 3,
+                planet_seed: None,
+            },
+            ObservationCategory::SurfaceAppearance,
+        );
+        assert!(!matches_filter(&no_planet, &filter));
+    }
+
+    #[test]
+    fn matches_filter_current_planet_excludes_fabrications() {
+        // Fabrications are not tied to a discovery planet; the
+        // CurrentPlanet filter therefore intentionally hides them.
+        let filter = JournalFilter {
+            category: None,
+            context: Some(JournalContext::CurrentPlanet { planet_seed: 7 }),
+        };
+        let fab = entry_with_observation(
+            JournalKey::Fabrication { output_seed: 42 },
+            ObservationCategory::FabricationResult,
+        );
+        assert!(!matches_filter(&fab, &filter));
+    }
+
+    #[test]
+    fn matches_filter_combined_uses_and_logic() {
+        // Both dimensions must match.  Verify the four corners of the
+        // 2x2 truth table for an entry on planet 7 with a Surface
+        // observation against a Surface + planet 7 filter.
+        let entry = entry_with_observation(
+            JournalKey::Material {
+                seed: 1,
+                planet_seed: Some(7),
+            },
+            ObservationCategory::SurfaceAppearance,
+        );
+
+        let both_match = JournalFilter {
+            category: Some(ObservationCategory::SurfaceAppearance),
+            context: Some(JournalContext::CurrentPlanet { planet_seed: 7 }),
+        };
+        assert!(matches_filter(&entry, &both_match));
+
+        let category_mismatch = JournalFilter {
+            category: Some(ObservationCategory::ThermalBehavior),
+            context: Some(JournalContext::CurrentPlanet { planet_seed: 7 }),
+        };
+        assert!(!matches_filter(&entry, &category_mismatch));
+
+        let context_mismatch = JournalFilter {
+            category: Some(ObservationCategory::SurfaceAppearance),
+            context: Some(JournalContext::CurrentPlanet { planet_seed: 8 }),
+        };
+        assert!(!matches_filter(&entry, &context_mismatch));
+
+        let both_mismatch = JournalFilter {
+            category: Some(ObservationCategory::ThermalBehavior),
+            context: Some(JournalContext::CurrentPlanet { planet_seed: 8 }),
+        };
+        assert!(!matches_filter(&entry, &both_mismatch));
+    }
+
+    #[test]
+    fn matches_filter_current_biome_is_no_op_until_data_capture() {
+        // Biome provenance is not yet captured on JournalKey; the
+        // CurrentBiome arm therefore matches every entry.  This
+        // documents the intentional placeholder behaviour so a future
+        // change that wires biome capture through can update this test
+        // alongside the implementation.
+        let filter = JournalFilter {
+            category: None,
+            context: Some(JournalContext::CurrentBiome {
+                biome_key: "tundra".to_string(),
+            }),
+        };
+        let entry = entry_with_observation(
+            JournalKey::Material {
+                seed: 1,
+                planet_seed: Some(7),
+            },
+            ObservationCategory::SurfaceAppearance,
+        );
+        assert!(matches_filter(&entry, &filter));
+    }
+
+    #[test]
+    fn journal_key_planet_seed_accessor() {
+        // Material carries an Option<u64>; Fabrication is always None.
+        assert_eq!(
+            JournalKey::Material {
+                seed: 1,
+                planet_seed: Some(42),
+            }
+            .planet_seed(),
+            Some(42)
+        );
+        assert_eq!(
+            JournalKey::Material {
+                seed: 1,
+                planet_seed: None,
+            }
+            .planet_seed(),
+            None
+        );
+        assert_eq!(
+            JournalKey::Fabrication { output_seed: 7 }.planet_seed(),
+            None
+        );
+    }
+
+    #[test]
+    fn matches_filter_handles_500_entries_quickly() {
+        // Story 10.3 acceptance criterion: "Filtering is responsive
+        // with 100+ entries" / "Performance: filtering 500 entries
+        // < 1ms".  The threshold here is generous (10ms) to absorb
+        // noise on loaded CI hardware while still catching pathological
+        // regressions that would land us in the seconds.
+        let entries: Vec<JournalEntry> = (0..500u64)
+            .map(|i| {
+                entry_with_observation(
+                    JournalKey::Material {
+                        seed: i,
+                        planet_seed: Some(i % 4),
+                    },
+                    if i % 2 == 0 {
+                        ObservationCategory::SurfaceAppearance
+                    } else {
+                        ObservationCategory::ThermalBehavior
+                    },
+                )
+            })
+            .collect();
+
+        let filter = JournalFilter {
+            category: Some(ObservationCategory::SurfaceAppearance),
+            context: Some(JournalContext::CurrentPlanet { planet_seed: 2 }),
+        };
+
+        let start = std::time::Instant::now();
+        let kept = entries
+            .iter()
+            .filter(|e| matches_filter(e, &filter))
+            .count();
+        let elapsed = start.elapsed();
+
+        // seed % 4 == 2 yields 125 entries (seeds 2, 6, 10, …, 498);
+        // every such seed is even, so it also satisfies the
+        // SurfaceAppearance category filter.  Hence 125 entries pass.
+        assert_eq!(kept, 125);
+        assert!(
+            elapsed < std::time::Duration::from_millis(10),
+            "matches_filter over 500 entries took {elapsed:?}, expected < 10ms"
+        );
     }
 
     #[test]

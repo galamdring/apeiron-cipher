@@ -1,26 +1,58 @@
-# Story 10.3 — Phase 1, Task 4: Add `JournalFilter` to `JournalUiState`
+# Story 10.3 — Phase 1, Task 5: `matches_filter`
 
 ## What changed
 
-- `src/journal.rs`
-  - Added a private `filter: JournalFilter` field to `JournalUiState`, with documentation explaining why the filter is owned by the long-lived UI resource (so it persists across visibility toggles, satisfying the Story 10.3 acceptance criterion).
-  - Initialized `filter` to `JournalFilter::default()` in `Default for JournalUiState` (the "All" filter — every entry shown — also a Story 10.3 acceptance criterion).
-  - Added two read/write accessors mirroring the style of the other navigation accessors on this resource:
-    - `pub fn filter(&self) -> &JournalFilter` — borrow-returning getter (the filter will be inspected on every render frame, so cloning would be wasted work).
-    - `pub fn set_filter(&mut self, filter: JournalFilter)` — single mutation entry point so future tasks can hook reset-on-change behavior (e.g. resetting `scroll_offset` per the technical design) without finding every call site.
-  - Both accessors are `#[allow(dead_code)]` to match the existing convention on the other public accessors of this resource that are not yet wired into systems (callers arrive in later Phase 1 tasks).
-  - Updated every existing struct-literal construction of `JournalUiState` in the test module to include the new field as `filter: JournalFilter::default()` (the previous behavior — no filtering — is preserved).
-  - Added three new unit tests:
-    - `journal_ui_state_default_filter_is_unrestricted` — locks in the "All" default.
-    - `journal_ui_state_set_filter_replaces_active_filter` — round-trips a non-default filter through the setter/getter.
-    - `journal_ui_state_filter_persists_across_visibility_toggle` — directly exercises the persistence acceptance criterion against the resource.
+- **`src/journal.rs`**:
+  - Added `JournalKey::planet_seed(&self) -> Option<u64>` accessor. Returns
+    the recorded planet seed for `Material` entries and `None` for
+    `Fabrication` entries (fabrications are intentionally excluded from
+    current-planet filtering — they are not tied to a discovery planet).
+  - Added `pub fn matches_filter(entry: &JournalEntry, filter: &JournalFilter) -> bool`.
+    Implements AND-combined filtering across the two `JournalFilter`
+    dimensions: category match (entry has at least one observation in the
+    requested category) and context match (entry's key carries the
+    requested planet seed). Default filter (both dimensions `None`)
+    returns `true` for every entry — the "All" filter required by the
+    Story 10.3 acceptance criteria.
+  - The `WorldContext` parameter sketched in the technical design was
+    omitted: no such type exists in the codebase, and the design's own
+    example body never reads it — the filter already carries every
+    identifier needed to evaluate its arms. Keeping the predicate
+    parameter-light lets future render code drop it directly into
+    `Iterator::filter`.
+  - `JournalContext::CurrentBiome` matches everything for now; biome
+    provenance is not yet captured on `JournalKey`. This is documented
+    inline and covered by a test so the next change that wires biome
+    capture through can update the implementation and test together.
 
 ## Why
 
-Phase 1 of Story 10.3 builds the data foundation before wiring filter UI/logic. Tasks 1–3 defined `JournalFilter`, `JournalContext`, and extended `JournalKey` with planet context. Task 4 places the active filter on `JournalUiState` so subsequent tasks (matching logic, UI cycling, rendering) have a stable, persistent place to read and mutate it from. Field privacy and a setter are used (matching the rest of `JournalUiState`) so the future reset-on-filter-change hook required by the technical design has a single place to live.
+This is Phase 1 Task 5 of Story 10.3 (Contextual Filtering). The
+matching predicate is the foundation that subsequent Phase 1/2 tasks
+(filter cycling input handling, render integration, "No matching entries"
+state) will build on. Implementing it as a plain free function over the
+already-defined `JournalFilter` / `JournalEntry` / `JournalKey` types
+keeps it cheap to reuse from both the rendering pipeline and tests
+without coupling it to ECS plumbing.
 
 ## Testing
 
-- Added three unit tests covering: default filter is unrestricted, setter round-trips, filter persists across visibility toggles.
-- Updated 35 existing test struct literals to include the new field, preserving their original behavior.
-- `make check` passes (fmt, clippy, tests, build).
+Added unit tests in `src/journal.rs` covering:
+
+- Default ("All") filter accepts every entry, including empty ones.
+- Category-only restriction: keeps matching entries, rejects
+  non-matching, rejects entries with zero observations.
+- `CurrentPlanet` context: matches entries whose key carries the same
+  planet seed; rejects different planet seeds; rejects `planet_seed:
+  None` ("unknown provenance" must not silently masquerade as "current
+  planet"); rejects fabrications.
+- Combined category + context: full 2x2 truth table (both match, only
+  category mismatch, only context mismatch, both mismatch).
+- `CurrentBiome` placeholder behaviour (matches everything for now).
+- `JournalKey::planet_seed` accessor for both variants.
+- Performance: filtering 500 entries completes in well under 10ms (the
+  Story 10.3 criterion is < 1ms; the threshold is loose to avoid flakes
+  on loaded CI hardware while still catching pathological regressions).
+
+`make check` passes cleanly (fmt, clippy `-D warnings`, full test suite
+of 568 unit tests + integration tests, build).
