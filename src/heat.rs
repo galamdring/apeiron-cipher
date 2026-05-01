@@ -306,7 +306,10 @@ fn reveal_thermal_property(
                 .entity(entity)
                 .insert(ThermalObservationRecordedThisCycle);
             journal_writer.write(RecordObservation {
-                key: JournalKey::Material { seed: mat.seed },
+                key: JournalKey::Material {
+                    seed: mat.seed,
+                    planet_seed: None,
+                },
                 name: mat.name.clone(),
                 observation: Observation {
                     category: ObservationCategory::ThermalBehavior,

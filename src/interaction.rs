@@ -189,6 +189,7 @@ fn update_interaction_target(
         encounter_writer.write(RecordObservation {
             key: JournalKey::Material {
                 seed: material.seed,
+                planet_seed: None,
             },
             name: material.name.clone(),
             observation: Observation {

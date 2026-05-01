@@ -136,10 +136,35 @@ pub struct Observation {
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum JournalKey {
     /// A raw or discovered material, keyed by its procedural seed.
+    ///
+    /// The optional `planet_seed` records the planet on which this
+    /// material was first observed, so context-aware filters
+    /// (Story 10.3 — "entries relevant to current planet") can match
+    /// entries against the player's [`WorldProfile::planet_seed`]
+    /// without re-deriving provenance from observation history.
+    ///
+    /// `planet_seed` is `None` for entries created in contexts where
+    /// no planetary world profile is in scope (early bring-up, ad-hoc
+    /// integration tests, future non-planetary discovery sites).
+    /// Treating it as `Option<u64>` rather than baking in a sentinel
+    /// keeps the "unknown provenance" case explicit at every match
+    /// site.
+    ///
+    /// Field ordering is `seed` then `planet_seed` so the derived
+    /// `Ord` continues to sort primarily by material identity — the
+    /// existing journal iteration order is preserved when
+    /// `planet_seed` is `None` everywhere, which matches the
+    /// pre-extension behaviour bit-for-bit.
     Material {
         /// The deterministic seed that uniquely identifies this material
         /// within the world generation system.
         seed: u64,
+        /// The planet on which this material was first observed, taken
+        /// from `WorldProfile::planet_seed.0` at observation time.
+        /// `None` indicates the recording site had no planetary context
+        /// available; such entries are excluded from
+        /// [`JournalContext::CurrentPlanet`] filtering.
+        planet_seed: Option<u64>,
     },
     /// The output of a fabrication process, keyed by the resulting
     /// material's seed.
@@ -1438,7 +1463,10 @@ mod tests {
     fn journal_omits_unknown_properties() {
         let mut journal = Journal::default();
         journal.record(
-            JournalKey::Material { seed: 1 },
+            JournalKey::Material {
+                seed: 1,
+                planet_seed: None,
+            },
             "Ferrite",
             Observation {
                 category: ObservationCategory::SurfaceAppearance,
@@ -1476,7 +1504,10 @@ mod tests {
     fn journal_shows_thermal_observation_when_present() {
         let mut journal = Journal::default();
         journal.record(
-            JournalKey::Material { seed: 3 },
+            JournalKey::Material {
+                seed: 3,
+                planet_seed: None,
+            },
             "TestMat",
             Observation {
                 category: ObservationCategory::ThermalBehavior,
@@ -1492,11 +1523,100 @@ mod tests {
 
     #[test]
     fn journal_key_material_equality() {
-        let a = JournalKey::Material { seed: 42 };
-        let b = JournalKey::Material { seed: 42 };
-        let c = JournalKey::Material { seed: 99 };
+        let a = JournalKey::Material {
+            seed: 42,
+            planet_seed: None,
+        };
+        let b = JournalKey::Material {
+            seed: 42,
+            planet_seed: None,
+        };
+        let c = JournalKey::Material {
+            seed: 99,
+            planet_seed: None,
+        };
         assert_eq!(a, b);
         assert_ne!(a, c);
+    }
+
+    /// `planet_seed` participates in `JournalKey::Material` identity: two
+    /// otherwise-identical material keys captured on different planets
+    /// must be distinct so the journal records them as separate entries.
+    /// This is what lets the upcoming context filter (Story 10.3) treat
+    /// "Ferrite seen on Planet A" and "Ferrite seen on Planet B" as
+    /// independent observations.
+    #[test]
+    fn journal_key_material_planet_seed_participates_in_equality() {
+        let unknown = JournalKey::Material {
+            seed: 42,
+            planet_seed: None,
+        };
+        let on_planet_a = JournalKey::Material {
+            seed: 42,
+            planet_seed: Some(1),
+        };
+        let on_planet_b = JournalKey::Material {
+            seed: 42,
+            planet_seed: Some(2),
+        };
+        let on_planet_a_again = JournalKey::Material {
+            seed: 42,
+            planet_seed: Some(1),
+        };
+
+        assert_ne!(unknown, on_planet_a);
+        assert_ne!(on_planet_a, on_planet_b);
+        assert_eq!(on_planet_a, on_planet_a_again);
+    }
+
+    /// Derived `Ord` sorts material keys primarily by `seed`, with
+    /// `planet_seed` acting as a tiebreaker (`None` < `Some(_)` per the
+    /// standard library's `Option` ordering).  Pre-existing tests assume
+    /// the first axis is `seed` — this test pins both axes so a future
+    /// field-reordering change in `JournalKey` cannot silently re-shuffle
+    /// the `BTreeMap` iteration order the journal UI depends on.
+    #[test]
+    fn journal_key_material_ord_seed_then_planet_seed() {
+        let mut keys = vec![
+            JournalKey::Material {
+                seed: 2,
+                planet_seed: Some(0),
+            },
+            JournalKey::Material {
+                seed: 1,
+                planet_seed: Some(99),
+            },
+            JournalKey::Material {
+                seed: 1,
+                planet_seed: None,
+            },
+            JournalKey::Material {
+                seed: 1,
+                planet_seed: Some(1),
+            },
+        ];
+        keys.sort();
+        assert_eq!(
+            keys,
+            vec![
+                JournalKey::Material {
+                    seed: 1,
+                    planet_seed: None
+                },
+                JournalKey::Material {
+                    seed: 1,
+                    planet_seed: Some(1)
+                },
+                JournalKey::Material {
+                    seed: 1,
+                    planet_seed: Some(99)
+                },
+                JournalKey::Material {
+                    seed: 2,
+                    planet_seed: Some(0)
+                },
+            ],
+        );
     }
 
     #[test]
@@ -1564,7 +1684,10 @@ mod tests {
 
     #[test]
     fn journal_key_variants_are_distinct() {
-        let mat = JournalKey::Material { seed: 42 };
+        let mat = JournalKey::Material {
+            seed: 42,
+            planet_seed: None,
+        };
         let fab = JournalKey::Fabrication { output_seed: 42 };
         assert_ne!(mat, fab);
     }
@@ -1572,7 +1695,10 @@ mod tests {
     #[test]
     fn journal_key_serde_round_trip() {
         let keys = vec![
-            JournalKey::Material { seed: 123 },
+            JournalKey::Material {
+                seed: 123,
+                planet_seed: None,
+            },
             JournalKey::Fabrication { output_seed: 456 },
         ];
         for key in &keys {
@@ -1588,21 +1714,48 @@ mod tests {
         use std::collections::BTreeMap;
         let mut map = BTreeMap::new();
         map.insert(JournalKey::Fabrication { output_seed: 1 }, "fab");
-        map.insert(JournalKey::Material { seed: 99 }, "mat99");
-        map.insert(JournalKey::Material { seed: 1 }, "mat1");
+        map.insert(
+            JournalKey::Material {
+                seed: 99,
+                planet_seed: None,
+            },
+            "mat99",
+        );
+        map.insert(
+            JournalKey::Material {
+                seed: 1,
+                planet_seed: None,
+            },
+            "mat1",
+        );
 
         let keys: Vec<_> = map.keys().collect();
         // Derived Ord: enum variants ordered by declaration (Material < Fabrication),
         // then by field values within each variant.
-        assert_eq!(*keys[0], JournalKey::Material { seed: 1 });
-        assert_eq!(*keys[1], JournalKey::Material { seed: 99 });
+        assert_eq!(
+            *keys[0],
+            JournalKey::Material {
+                seed: 1,
+                planet_seed: None
+            }
+        );
+        assert_eq!(
+            *keys[1],
+            JournalKey::Material {
+                seed: 99,
+                planet_seed: None
+            }
+        );
         assert_eq!(*keys[2], JournalKey::Fabrication { output_seed: 1 });
     }
 
     #[test]
     fn journal_shows_weight_observation_only_when_present() {
         let mut journal = Journal::default();
-        let key = JournalKey::Material { seed: 4 };
+        let key = JournalKey::Material {
+            seed: 4,
+            planet_seed: None,
+        };
         journal.record(
             key.clone(),
             "Ferrite",
@@ -1636,7 +1789,10 @@ mod tests {
 
     #[test]
     fn journal_entry_new_sets_timestamps() {
-        let key = JournalKey::Material { seed: 1 };
+        let key = JournalKey::Material {
+            seed: 1,
+            planet_seed: None,
+        };
         let entry = JournalEntry::new(key.clone(), "Ferrite".into(), 100);
         assert_eq!(entry.key, key);
         assert_eq!(entry.name, "Ferrite");
@@ -1647,7 +1803,10 @@ mod tests {
 
     #[test]
     fn journal_entry_add_observation_updates_timestamp() {
-        let key = JournalKey::Material { seed: 1 };
+        let key = JournalKey::Material {
+            seed: 1,
+            planet_seed: None,
+        };
         let mut entry = JournalEntry::new(key, "Ferrite".into(), 10);
 
         entry.add_observation(Observation {
@@ -1664,7 +1823,10 @@ mod tests {
 
     #[test]
     fn journal_entry_accumulates_multiple_observations() {
-        let key = JournalKey::Material { seed: 1 };
+        let key = JournalKey::Material {
+            seed: 1,
+            planet_seed: None,
+        };
         let mut entry = JournalEntry::new(key, "Ferrite".into(), 10);
 
         entry.add_observation(Observation {
@@ -1692,7 +1854,10 @@ mod tests {
 
     #[test]
     fn journal_entry_observations_by_category() {
-        let key = JournalKey::Material { seed: 1 };
+        let key = JournalKey::Material {
+            seed: 1,
+            planet_seed: None,
+        };
         let mut entry = JournalEntry::new(key, "Ferrite".into(), 10);
 
         entry.add_observation(Observation {
@@ -1729,7 +1894,10 @@ mod tests {
     #[test]
     fn new_journal_ensure_entry_creates_and_retrieves() {
         let mut journal = Journal::default();
-        let key = JournalKey::Material { seed: 42 };
+        let key = JournalKey::Material {
+            seed: 42,
+            planet_seed: None,
+        };
 
         journal.ensure_entry(key.clone(), "Ferrite", 100);
         journal.ensure_entry(key.clone(), "Ignored Name", 200);
@@ -1745,7 +1913,10 @@ mod tests {
     #[test]
     fn new_journal_record_accumulates_observations() {
         let mut journal = Journal::default();
-        let key = JournalKey::Material { seed: 42 };
+        let key = JournalKey::Material {
+            seed: 42,
+            planet_seed: None,
+        };
 
         journal.record(
             key.clone(),
@@ -1777,7 +1948,10 @@ mod tests {
     #[test]
     fn new_journal_different_keys_coexist() {
         let mut journal = Journal::default();
-        let mat_key = JournalKey::Material { seed: 1 };
+        let mat_key = JournalKey::Material {
+            seed: 1,
+            planet_seed: None,
+        };
         let fab_key = JournalKey::Fabrication { output_seed: 2 };
 
         journal.record(
@@ -1810,7 +1984,10 @@ mod tests {
     fn new_journal_serde_round_trip() {
         let mut journal = Journal::default();
         journal.record(
-            JournalKey::Material { seed: 42 },
+            JournalKey::Material {
+                seed: 42,
+                planet_seed: None,
+            },
             "Ferrite",
             Observation {
                 category: ObservationCategory::SurfaceAppearance,
@@ -1837,7 +2014,10 @@ mod tests {
         assert_eq!(deserialized.entries.len(), 2);
         let ferrite = deserialized
             .entries
-            .get(&JournalKey::Material { seed: 42 })
+            .get(&JournalKey::Material {
+                seed: 42,
+                planet_seed: None,
+            })
             .expect("Ferrite entry should exist");
         assert_eq!(ferrite.name, "Ferrite");
         assert_eq!(ferrite.observation_count(), 1);
@@ -1860,7 +2040,10 @@ mod tests {
     #[test]
     fn single_observation_recorded_correctly() {
         let mut journal = Journal::default();
-        let key = JournalKey::Material { seed: 55 };
+        let key = JournalKey::Material {
+            seed: 55,
+            planet_seed: None,
+        };
 
         journal.record(
             key.clone(),
@@ -1894,7 +2077,10 @@ mod tests {
 
     #[test]
     fn duplicate_observation_same_category_and_description_is_skipped() {
-        let key = JournalKey::Material { seed: 1 };
+        let key = JournalKey::Material {
+            seed: 1,
+            planet_seed: None,
+        };
         let mut entry = JournalEntry::new(key, "Ferrite".into(), 10);
 
         entry.add_observation(Observation {
@@ -1918,7 +2104,10 @@ mod tests {
 
     #[test]
     fn duplicate_observation_upgrades_confidence() {
-        let key = JournalKey::Material { seed: 1 };
+        let key = JournalKey::Material {
+            seed: 1,
+            planet_seed: None,
+        };
         let mut entry = JournalEntry::new(key, "Ferrite".into(), 10);
 
         entry.add_observation(Observation {
@@ -1946,7 +2135,10 @@ mod tests {
 
     #[test]
     fn duplicate_does_not_downgrade_confidence() {
-        let key = JournalKey::Material { seed: 1 };
+        let key = JournalKey::Material {
+            seed: 1,
+            planet_seed: None,
+        };
         let mut entry = JournalEntry::new(key, "Ferrite".into(), 10);
 
         entry.add_observation(Observation {
@@ -1978,7 +2170,10 @@ mod tests {
     #[test]
     fn examine_same_material_twice_does_not_duplicate() {
         let mut journal = Journal::default();
-        let key = JournalKey::Material { seed: 42 };
+        let key = JournalKey::Material {
+            seed: 42,
+            planet_seed: None,
+        };
 
         let observation = Observation {
             category: ObservationCategory::SurfaceAppearance,
@@ -2017,7 +2212,10 @@ mod tests {
     #[test]
     fn examine_same_material_twice_upgrades_confidence() {
         let mut journal = Journal::default();
-        let key = JournalKey::Material { seed: 42 };
+        let key = JournalKey::Material {
+            seed: 42,
+            planet_seed: None,
+        };
 
         journal.record(
             key.clone(),
@@ -2054,7 +2252,10 @@ mod tests {
 
     #[test]
     fn same_category_different_description_is_not_duplicate() {
-        let key = JournalKey::Material { seed: 1 };
+        let key = JournalKey::Material {
+            seed: 1,
+            planet_seed: None,
+        };
         let mut entry = JournalEntry::new(key, "Ferrite".into(), 10);
 
         entry.add_observation(Observation {
@@ -2081,7 +2282,10 @@ mod tests {
 
     #[test]
     fn same_description_different_category_is_not_duplicate() {
-        let key = JournalKey::Material { seed: 1 };
+        let key = JournalKey::Material {
+            seed: 1,
+            planet_seed: None,
+        };
         let mut entry = JournalEntry::new(key, "Ferrite".into(), 10);
 
         entry.add_observation(Observation {
@@ -2112,7 +2316,10 @@ mod tests {
     #[test]
     fn multiple_observations_for_same_key_accumulate() {
         let mut journal = Journal::default();
-        let key = JournalKey::Material { seed: 77 };
+        let key = JournalKey::Material {
+            seed: 77,
+            planet_seed: None,
+        };
 
         // First observation — creates the entry.
         journal.record(
@@ -2229,8 +2436,22 @@ mod tests {
     fn all_types_serde_round_trip() {
         // ── JournalKey variants ─────────────────────────────────────
         let keys = vec![
-            JournalKey::Material { seed: 0 },
-            JournalKey::Material { seed: u64::MAX },
+            JournalKey::Material {
+                seed: 0,
+                planet_seed: None,
+            },
+            JournalKey::Material {
+                seed: u64::MAX,
+                planet_seed: None,
+            },
+            JournalKey::Material {
+                seed: 1,
+                planet_seed: Some(0),
+            },
+            JournalKey::Material {
+                seed: 7,
+                planet_seed: Some(u64::MAX),
+            },
             JournalKey::Fabrication { output_seed: 42 },
         ];
         for key in &keys {
@@ -2283,7 +2504,14 @@ mod tests {
         assert_eq!(rt.recorded_at, observation.recorded_at);
 
         // ── JournalEntry struct ─────────────────────────────────────
-        let mut entry = JournalEntry::new(JournalKey::Material { seed: 7 }, "Ferrite".into(), 10);
+        let mut entry = JournalEntry::new(
+            JournalKey::Material {
+                seed: 7,
+                planet_seed: None,
+            },
+            "Ferrite".into(),
+            10,
+        );
         entry.add_observation(Observation {
             category: ObservationCategory::SurfaceAppearance,
             confidence: ConfidenceLevel::Tentative,
@@ -2320,7 +2548,10 @@ mod tests {
         let mut journal = Journal::default();
 
         // Material entry with surface, thermal, and weight observations.
-        let mat_key = JournalKey::Material { seed: 100 };
+        let mat_key = JournalKey::Material {
+            seed: 100,
+            planet_seed: None,
+        };
         journal.record(
             mat_key.clone(),
             "Silite",
@@ -2453,8 +2684,14 @@ mod tests {
         // Three keys: two Material keys with different seeds and one
         // Fabrication key whose output_seed numerically equals the first
         // Material seed (verifies variant-level isolation).
-        let mat_a = JournalKey::Material { seed: 10 };
-        let mat_b = JournalKey::Material { seed: 20 };
+        let mat_a = JournalKey::Material {
+            seed: 10,
+            planet_seed: None,
+        };
+        let mat_b = JournalKey::Material {
+            seed: 20,
+            planet_seed: None,
+        };
         let fab_a = JournalKey::Fabrication { output_seed: 10 };
 
         // Record a surface observation on material A.
@@ -2607,7 +2844,10 @@ mod tests {
         let mut journal = Journal::default();
 
         // ── Material entry with surface, thermal, and weight observations ──
-        let mat_key = JournalKey::Material { seed: 42 };
+        let mat_key = JournalKey::Material {
+            seed: 42,
+            planet_seed: None,
+        };
 
         journal.record(
             mat_key.clone(),
@@ -2653,7 +2893,10 @@ mod tests {
         // ── Second material with only surface observation ───────────────
         // Legacy equivalent: entry with surface_observations only (no thermal
         // or weight).
-        let mat_key_b = JournalKey::Material { seed: 99 };
+        let mat_key_b = JournalKey::Material {
+            seed: 99,
+            planet_seed: None,
+        };
         journal.record(
             mat_key_b,
             "Silite",
@@ -2797,7 +3040,10 @@ mod tests {
             let key = if i % 3 == 0 {
                 JournalKey::Fabrication { output_seed: i }
             } else {
-                JournalKey::Material { seed: i }
+                JournalKey::Material {
+                    seed: i,
+                    planet_seed: None,
+                }
             };
 
             let name = format!("Subject-{i}");
@@ -2907,7 +3153,10 @@ mod tests {
         let mut journal = Journal::default();
 
         // ── Material 1: Ferrite ─────────────────────────────────────
-        let key_ferrite = JournalKey::Material { seed: 10 };
+        let key_ferrite = JournalKey::Material {
+            seed: 10,
+            planet_seed: None,
+        };
         journal.record(
             key_ferrite.clone(),
             "Ferrite",
@@ -2930,7 +3179,10 @@ mod tests {
         );
 
         // ── Material 2: Silite ──────────────────────────────────────
-        let key_silite = JournalKey::Material { seed: 20 };
+        let key_silite = JournalKey::Material {
+            seed: 20,
+            planet_seed: None,
+        };
         journal.record(
             key_silite.clone(),
             "Silite",
@@ -2953,7 +3205,10 @@ mod tests {
         );
 
         // ── Material 3: Volite ──────────────────────────────────────
-        let key_volite = JournalKey::Material { seed: 30 };
+        let key_volite = JournalKey::Material {
+            seed: 30,
+            planet_seed: None,
+        };
         journal.record(
             key_volite.clone(),
             "Volite",
@@ -2986,7 +3241,10 @@ mod tests {
         );
 
         // ── Material 4: Crystite (ensures "3+" is exceeded) ─────────
-        let key_crystite = JournalKey::Material { seed: 40 };
+        let key_crystite = JournalKey::Material {
+            seed: 40,
+            planet_seed: None,
+        };
         journal.record(
             key_crystite.clone(),
             "Crystite",
@@ -3101,7 +3359,10 @@ mod tests {
     fn make_journal_with_n_entries(n: usize) -> Journal {
         let mut journal = Journal::default();
         for i in 0..n {
-            let key = JournalKey::Material { seed: i as u64 };
+            let key = JournalKey::Material {
+                seed: i as u64,
+                planet_seed: None,
+            };
             let name = format!("Material-{i:03}");
             journal.record(
                 key,
@@ -3150,7 +3411,10 @@ mod tests {
     #[test]
     fn entry_list_shows_observation_count() {
         let mut journal = Journal::default();
-        let key = JournalKey::Material { seed: 1 };
+        let key = JournalKey::Material {
+            seed: 1,
+            planet_seed: None,
+        };
         journal.record(
             key.clone(),
             "Ferrite",
@@ -3184,7 +3448,10 @@ mod tests {
     #[test]
     fn detail_shows_selected_entry_observations() {
         let mut journal = Journal::default();
-        let key = JournalKey::Material { seed: 1 };
+        let key = JournalKey::Material {
+            seed: 1,
+            planet_seed: None,
+        };
         journal.record(
             key,
             "Ferrite",
@@ -3232,7 +3499,10 @@ mod tests {
     #[test]
     fn detail_spans_have_correct_kinds() {
         let mut journal = Journal::default();
-        let key = JournalKey::Material { seed: 1 };
+        let key = JournalKey::Material {
+            seed: 1,
+            planet_seed: None,
+        };
         journal.record(
             key.clone(),
             "Ferrite",
@@ -3302,7 +3572,10 @@ mod tests {
 
         // Create three entries with distinct observations.
         journal.record(
-            JournalKey::Material { seed: 1 },
+            JournalKey::Material {
+                seed: 1,
+                planet_seed: None,
+            },
             "Ferrite",
             Observation {
                 category: ObservationCategory::SurfaceAppearance,
@@ -3312,7 +3585,10 @@ mod tests {
             },
         );
         journal.record(
-            JournalKey::Material { seed: 2 },
+            JournalKey::Material {
+                seed: 2,
+                planet_seed: None,
+            },
             "Silite",
             Observation {
                 category: ObservationCategory::SurfaceAppearance,
@@ -3322,7 +3598,10 @@ mod tests {
             },
         );
         journal.record(
-            JournalKey::Material { seed: 3 },
+            JournalKey::Material {
+                seed: 3,
+                planet_seed: None,
+            },
             "Neoite",
             Observation {
                 category: ObservationCategory::Weight,
@@ -3412,7 +3691,10 @@ mod tests {
     #[test]
     fn detail_panel_shows_all_observations_for_multi_category_entry() {
         let mut journal = Journal::default();
-        let key = JournalKey::Material { seed: 1 };
+        let key = JournalKey::Material {
+            seed: 1,
+            planet_seed: None,
+        };
 
         journal.record(
             key.clone(),
@@ -3447,7 +3729,10 @@ mod tests {
 
         // Add a second entry to confirm isolation.
         journal.record(
-            JournalKey::Material { seed: 2 },
+            JournalKey::Material {
+                seed: 2,
+                planet_seed: None,
+            },
             "Silite",
             Observation {
                 category: ObservationCategory::SurfaceAppearance,
@@ -3810,7 +4095,10 @@ mod tests {
                 .expect("player must exist");
             for i in 0..5u64 {
                 journal.record(
-                    JournalKey::Material { seed: i },
+                    JournalKey::Material {
+                        seed: i,
+                        planet_seed: None,
+                    },
                     &format!("Mat-{i}"),
                     Observation {
                         category: ObservationCategory::SurfaceAppearance,
@@ -4008,7 +4296,10 @@ mod tests {
         let mut journal = Journal::default();
         for i in 0..10 {
             journal.record(
-                JournalKey::Material { seed: i },
+                JournalKey::Material {
+                    seed: i,
+                    planet_seed: None,
+                },
                 &format!("Mat-{i:03}"),
                 Observation {
                     category: ObservationCategory::SurfaceAppearance,
@@ -4056,7 +4347,10 @@ mod tests {
         let mut journal = Journal::default();
         for i in 0..10 {
             journal.record(
-                JournalKey::Material { seed: i },
+                JournalKey::Material {
+                    seed: i,
+                    planet_seed: None,
+                },
                 &format!("Mat-{i:03}"),
                 Observation {
                     category: ObservationCategory::SurfaceAppearance,
@@ -4106,6 +4400,7 @@ mod tests {
             journal.record(
                 JournalKey::Material {
                     seed: i.try_into().expect("entry index fits in u64"),
+                    planet_seed: None,
                 },
                 &format!("Mat-{i:03}"),
                 Observation {
@@ -4221,7 +4516,10 @@ mod tests {
 
         let mut journal = Journal::default();
         journal.record(
-            JournalKey::Material { seed: 0 },
+            JournalKey::Material {
+                seed: 0,
+                planet_seed: None,
+            },
             "Sole-Material",
             Observation {
                 category: ObservationCategory::SurfaceAppearance,
@@ -4285,6 +4583,7 @@ mod tests {
             journal.record(
                 JournalKey::Material {
                     seed: i.try_into().expect("entry index fits in u64"),
+                    planet_seed: None,
                 },
                 &format!("Mat-{i:03}"),
                 Observation {
@@ -4405,6 +4704,7 @@ mod tests {
             journal.record(
                 JournalKey::Material {
                     seed: i.try_into().expect("entry index fits in u64"),
+                    planet_seed: None,
                 },
                 &format!("Mat-{i:03}"),
                 Observation {
@@ -4563,9 +4863,33 @@ mod tests {
     fn selection_follows_subject_when_entry_inserted_before_it() {
         let mut app = make_panel_app(15);
 
-        record(&mut app, JournalKey::Material { seed: 1 }, "Bravo", 1);
-        record(&mut app, JournalKey::Material { seed: 2 }, "Charlie", 2);
-        record(&mut app, JournalKey::Material { seed: 3 }, "Delta", 3);
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 1,
+                planet_seed: None,
+            },
+            "Bravo",
+            1,
+        );
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 2,
+                planet_seed: None,
+            },
+            "Charlie",
+            2,
+        );
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 3,
+                planet_seed: None,
+            },
+            "Delta",
+            3,
+        );
         // Frame 1: panel reconciles initial state.
         app.update();
 
@@ -4577,7 +4901,15 @@ mod tests {
 
         // Insert "Alpha" — sorts before "Bravo", so "Charlie" shifts from
         // index 1 to index 2.
-        record(&mut app, JournalKey::Material { seed: 4 }, "Alpha", 4);
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 4,
+                planet_seed: None,
+            },
+            "Alpha",
+            4,
+        );
         app.update();
 
         let state = app.world().resource::<JournalUiState>();
@@ -4594,10 +4926,42 @@ mod tests {
     fn deleting_selected_entry_selects_nearest_by_sort_position() {
         let mut app = make_panel_app(15);
 
-        record(&mut app, JournalKey::Material { seed: 1 }, "Alpha", 1);
-        record(&mut app, JournalKey::Material { seed: 2 }, "Bravo", 2);
-        record(&mut app, JournalKey::Material { seed: 3 }, "Charlie", 3);
-        record(&mut app, JournalKey::Material { seed: 4 }, "Delta", 4);
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 1,
+                planet_seed: None,
+            },
+            "Alpha",
+            1,
+        );
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 2,
+                planet_seed: None,
+            },
+            "Bravo",
+            2,
+        );
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 3,
+                planet_seed: None,
+            },
+            "Charlie",
+            3,
+        );
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 4,
+                planet_seed: None,
+            },
+            "Delta",
+            4,
+        );
         app.update();
 
         // Select "Bravo" at index 1.
@@ -4609,7 +4973,13 @@ mod tests {
         // Delete "Bravo".  Sorted list becomes [Alpha, Charlie, Delta].
         // "Charlie" now occupies the old slot (index 1) — that is the
         // nearest entry by sort position.
-        delete(&mut app, &JournalKey::Material { seed: 2 });
+        delete(
+            &mut app,
+            &JournalKey::Material {
+                seed: 2,
+                planet_seed: None,
+            },
+        );
         app.update();
 
         let state = app.world().resource::<JournalUiState>();
@@ -4623,7 +4993,10 @@ mod tests {
         let tracker = app.world().resource::<JournalSelectionTracker>();
         assert_eq!(
             tracker.key,
-            Some(JournalKey::Material { seed: 3 }),
+            Some(JournalKey::Material {
+                seed: 3,
+                planet_seed: None
+            }),
             "tracker must re-anchor onto the nearest entry"
         );
     }
@@ -4635,9 +5008,33 @@ mod tests {
     fn deleting_last_entry_while_selected_falls_back_to_new_last() {
         let mut app = make_panel_app(15);
 
-        record(&mut app, JournalKey::Material { seed: 1 }, "Alpha", 1);
-        record(&mut app, JournalKey::Material { seed: 2 }, "Bravo", 2);
-        record(&mut app, JournalKey::Material { seed: 3 }, "Charlie", 3);
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 1,
+                planet_seed: None,
+            },
+            "Alpha",
+            1,
+        );
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 2,
+                planet_seed: None,
+            },
+            "Bravo",
+            2,
+        );
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 3,
+                planet_seed: None,
+            },
+            "Charlie",
+            3,
+        );
         app.update();
 
         // Select "Charlie" — the last entry, index 2.
@@ -4649,7 +5046,13 @@ mod tests {
         // Delete "Charlie".  Sorted list becomes [Alpha, Bravo].  There
         // is no entry at the old slot (index 2), so the nearest valid
         // entry is the new last one (index 1, "Bravo").
-        delete(&mut app, &JournalKey::Material { seed: 3 });
+        delete(
+            &mut app,
+            &JournalKey::Material {
+                seed: 3,
+                planet_seed: None,
+            },
+        );
         app.update();
 
         let state = app.world().resource::<JournalUiState>();
@@ -4660,7 +5063,10 @@ mod tests {
         let tracker = app.world().resource::<JournalSelectionTracker>();
         assert_eq!(
             tracker.key,
-            Some(JournalKey::Material { seed: 2 }),
+            Some(JournalKey::Material {
+                seed: 2,
+                planet_seed: None
+            }),
             "tracker must re-anchor onto Bravo"
         );
     }
@@ -4672,8 +5078,24 @@ mod tests {
     fn emptying_journal_resets_tracker_then_re_anchors_on_repopulation() {
         let mut app = make_panel_app(15);
 
-        record(&mut app, JournalKey::Material { seed: 1 }, "Alpha", 1);
-        record(&mut app, JournalKey::Material { seed: 2 }, "Bravo", 2);
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 1,
+                planet_seed: None,
+            },
+            "Alpha",
+            1,
+        );
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 2,
+                planet_seed: None,
+            },
+            "Bravo",
+            2,
+        );
         app.update();
 
         app.world_mut()
@@ -4682,8 +5104,20 @@ mod tests {
         app.update();
 
         // Delete both entries.
-        delete(&mut app, &JournalKey::Material { seed: 1 });
-        delete(&mut app, &JournalKey::Material { seed: 2 });
+        delete(
+            &mut app,
+            &JournalKey::Material {
+                seed: 1,
+                planet_seed: None,
+            },
+        );
+        delete(
+            &mut app,
+            &JournalKey::Material {
+                seed: 2,
+                planet_seed: None,
+            },
+        );
         app.update();
 
         let tracker = app.world().resource::<JournalSelectionTracker>();
@@ -4694,7 +5128,15 @@ mod tests {
 
         // Repopulate with a different key.  Selection must anchor onto
         // the new entry rather than wait for a (deleted) prior key.
-        record(&mut app, JournalKey::Material { seed: 99 }, "Charlie", 10);
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 99,
+                planet_seed: None,
+            },
+            "Charlie",
+            10,
+        );
         app.update();
 
         let state = app.world().resource::<JournalUiState>();
@@ -4702,7 +5144,10 @@ mod tests {
         assert_eq!(state.selected_index, 0);
         assert_eq!(
             tracker.key,
-            Some(JournalKey::Material { seed: 99 }),
+            Some(JournalKey::Material {
+                seed: 99,
+                planet_seed: None
+            }),
             "tracker must anchor onto the new sole entry"
         );
     }
@@ -4715,9 +5160,33 @@ mod tests {
     fn selection_follows_subject_when_entry_deleted_before_it() {
         let mut app = make_panel_app(15);
 
-        record(&mut app, JournalKey::Material { seed: 1 }, "Alpha", 1);
-        record(&mut app, JournalKey::Material { seed: 2 }, "Bravo", 2);
-        record(&mut app, JournalKey::Material { seed: 3 }, "Charlie", 3);
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 1,
+                planet_seed: None,
+            },
+            "Alpha",
+            1,
+        );
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 2,
+                planet_seed: None,
+            },
+            "Bravo",
+            2,
+        );
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 3,
+                planet_seed: None,
+            },
+            "Charlie",
+            3,
+        );
         app.update();
 
         // Select "Charlie" at index 2.
@@ -4728,7 +5197,13 @@ mod tests {
 
         // Delete "Alpha".  Sorted list becomes [Bravo, Charlie].
         // "Charlie" now sits at index 1.
-        delete(&mut app, &JournalKey::Material { seed: 1 });
+        delete(
+            &mut app,
+            &JournalKey::Material {
+                seed: 1,
+                planet_seed: None,
+            },
+        );
         app.update();
 
         let state = app.world().resource::<JournalUiState>();
@@ -4764,12 +5239,60 @@ mod tests {
 
         // Build a 6-entry journal: Bravo, Charlie, Delta, Echo, Foxtrot, Golf.
         // Sorted order will match insertion order since names are alphabetical.
-        record(&mut app, JournalKey::Material { seed: 1 }, "Bravo", 1);
-        record(&mut app, JournalKey::Material { seed: 2 }, "Charlie", 2);
-        record(&mut app, JournalKey::Material { seed: 3 }, "Delta", 3);
-        record(&mut app, JournalKey::Material { seed: 4 }, "Echo", 4);
-        record(&mut app, JournalKey::Material { seed: 5 }, "Foxtrot", 5);
-        record(&mut app, JournalKey::Material { seed: 6 }, "Golf", 6);
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 1,
+                planet_seed: None,
+            },
+            "Bravo",
+            1,
+        );
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 2,
+                planet_seed: None,
+            },
+            "Charlie",
+            2,
+        );
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 3,
+                planet_seed: None,
+            },
+            "Delta",
+            3,
+        );
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 4,
+                planet_seed: None,
+            },
+            "Echo",
+            4,
+        );
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 5,
+                planet_seed: None,
+            },
+            "Foxtrot",
+            5,
+        );
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 6,
+                planet_seed: None,
+            },
+            "Golf",
+            6,
+        );
         app.update();
 
         // Scroll down so the window shows entries 3-5: Echo, Foxtrot, Golf.
@@ -4792,7 +5315,15 @@ mod tests {
         // are now at indices 4, 5, 6 instead of 3, 4, 5.  To keep them
         // visible, scroll_offset must shift from 3 to 4 and selected_index
         // from 4 to 5.
-        record(&mut app, JournalKey::Material { seed: 99 }, "Alpha", 7);
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 99,
+                planet_seed: None,
+            },
+            "Alpha",
+            7,
+        );
         app.update();
 
         let state = app.world().resource::<JournalUiState>();
@@ -4814,9 +5345,33 @@ mod tests {
     fn new_entry_after_visible_window_does_not_move_view() {
         let mut app = make_panel_app(3);
 
-        record(&mut app, JournalKey::Material { seed: 1 }, "Alpha", 1);
-        record(&mut app, JournalKey::Material { seed: 2 }, "Bravo", 2);
-        record(&mut app, JournalKey::Material { seed: 3 }, "Charlie", 3);
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 1,
+                planet_seed: None,
+            },
+            "Alpha",
+            1,
+        );
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 2,
+                planet_seed: None,
+            },
+            "Bravo",
+            2,
+        );
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 3,
+                planet_seed: None,
+            },
+            "Charlie",
+            3,
+        );
         app.update();
 
         // Window shows Alpha, Bravo, Charlie (indices 0..3).  Select Bravo.
@@ -4828,7 +5383,15 @@ mod tests {
 
         // Insert "Zulu" — sorts after everything, lands at index 3 (just
         // past the visible window).  Nothing in view should change.
-        record(&mut app, JournalKey::Material { seed: 99 }, "Zulu", 4);
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 99,
+                planet_seed: None,
+            },
+            "Zulu",
+            4,
+        );
         app.update();
 
         let state = app.world().resource::<JournalUiState>();
@@ -4854,10 +5417,42 @@ mod tests {
     fn new_entry_between_top_and_selection_shifts_only_selection() {
         let mut app = make_panel_app(5);
 
-        record(&mut app, JournalKey::Material { seed: 1 }, "Alpha", 1);
-        record(&mut app, JournalKey::Material { seed: 2 }, "Bravo", 2);
-        record(&mut app, JournalKey::Material { seed: 3 }, "Delta", 3);
-        record(&mut app, JournalKey::Material { seed: 4 }, "Echo", 4);
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 1,
+                planet_seed: None,
+            },
+            "Alpha",
+            1,
+        );
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 2,
+                planet_seed: None,
+            },
+            "Bravo",
+            2,
+        );
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 3,
+                planet_seed: None,
+            },
+            "Delta",
+            3,
+        );
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 4,
+                planet_seed: None,
+            },
+            "Echo",
+            4,
+        );
         app.update();
 
         // Window shows all four (indices 0..4).  Select Echo at index 3.
@@ -4870,7 +5465,15 @@ mod tests {
         // Insert "Charlie" — sorts between Bravo and Delta at index 2.
         // Echo shifts from index 3 to index 4.  Top entry (Alpha) is
         // unchanged at index 0.
-        record(&mut app, JournalKey::Material { seed: 99 }, "Charlie", 5);
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 99,
+                planet_seed: None,
+            },
+            "Charlie",
+            5,
+        );
         app.update();
 
         let state = app.world().resource::<JournalUiState>();
@@ -4922,11 +5525,51 @@ mod tests {
         // Initial fixture: five entries spanning the visible window
         // (entries_per_page = 5).  Sorted alphabetically:
         // Bravo, Delta, Echo, Foxtrot, Hotel.
-        record(&mut app, JournalKey::Material { seed: 1 }, "Bravo", 1);
-        record(&mut app, JournalKey::Material { seed: 2 }, "Delta", 2);
-        record(&mut app, JournalKey::Material { seed: 3 }, "Echo", 3);
-        record(&mut app, JournalKey::Material { seed: 4 }, "Foxtrot", 4);
-        record(&mut app, JournalKey::Material { seed: 5 }, "Hotel", 5);
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 1,
+                planet_seed: None,
+            },
+            "Bravo",
+            1,
+        );
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 2,
+                planet_seed: None,
+            },
+            "Delta",
+            2,
+        );
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 3,
+                planet_seed: None,
+            },
+            "Echo",
+            3,
+        );
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 4,
+                planet_seed: None,
+            },
+            "Foxtrot",
+            4,
+        );
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 5,
+                planet_seed: None,
+            },
+            "Hotel",
+            5,
+        );
         app.update();
 
         // Select "Echo" (sort index 2).  All five entries fit on a single
@@ -4996,7 +5639,15 @@ mod tests {
         // (Bravo, Delta, Echo, Foxtrot, Hotel) — Alpha is reachable but
         // offscreen.  Echo's highlight follows.  The page indicator must
         // update to reflect the new total of six.
-        record(&mut app, JournalKey::Material { seed: 10 }, "Alpha", 10);
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 10,
+                planet_seed: None,
+            },
+            "Alpha",
+            10,
+        );
         app.update();
 
         assert_eq!(
@@ -5028,7 +5679,15 @@ mod tests {
         // Charlie between Bravo and Delta makes Charlie naturally appear
         // in the visible window (no scroll change needed).  Echo's sort
         // index advances by one; the highlight must follow.
-        record(&mut app, JournalKey::Material { seed: 11 }, "Charlie", 11);
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 11,
+                planet_seed: None,
+            },
+            "Charlie",
+            11,
+        );
         app.update();
 
         assert_eq!(entry_count(&mut app), 7);
@@ -5052,7 +5711,15 @@ mod tests {
         // visible window does not move, so Zulu may be offscreen — the
         // contract is that the journal contains it and the page
         // indicator reflects the new total.  Echo's highlight remains.
-        record(&mut app, JournalKey::Material { seed: 12 }, "Zulu", 12);
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 12,
+                planet_seed: None,
+            },
+            "Zulu",
+            12,
+        );
         app.update();
 
         assert_eq!(entry_count(&mut app), 8);
@@ -5060,9 +5727,10 @@ mod tests {
             let mut q = app.world_mut().query_filtered::<&Journal, With<Player>>();
             let journal = q.single(app.world()).expect("player must exist");
             assert!(
-                journal
-                    .entries
-                    .contains_key(&JournalKey::Material { seed: 12 }),
+                journal.entries.contains_key(&JournalKey::Material {
+                    seed: 12,
+                    planet_seed: None
+                }),
                 "Zulu entry must be present in the journal after recording"
             );
         }
@@ -5085,7 +5753,10 @@ mod tests {
             let journal = q.single(app.world()).expect("player must exist");
             let echo = journal
                 .entries
-                .get(&JournalKey::Material { seed: 3 })
+                .get(&JournalKey::Material {
+                    seed: 3,
+                    planet_seed: None,
+                })
                 .expect("Echo entry must still exist");
             assert_eq!(
                 echo.observation_count(),
@@ -5098,7 +5769,10 @@ mod tests {
         let tracker = app.world().resource::<JournalSelectionTracker>();
         assert_eq!(
             tracker.key,
-            Some(JournalKey::Material { seed: 3 }),
+            Some(JournalKey::Material {
+                seed: 3,
+                planet_seed: None
+            }),
             "tracker must remain anchored on Echo across all three insertions"
         );
     }
@@ -5129,10 +5803,42 @@ mod tests {
 
         // Populate four entries.  Sorted alphabetically the order is
         // Alpha (0), Bravo (1), Charlie (2), Delta (3).
-        record(&mut app, JournalKey::Material { seed: 1 }, "Alpha", 1);
-        record(&mut app, JournalKey::Material { seed: 2 }, "Bravo", 2);
-        record(&mut app, JournalKey::Material { seed: 3 }, "Charlie", 3);
-        record(&mut app, JournalKey::Material { seed: 4 }, "Delta", 4);
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 1,
+                planet_seed: None,
+            },
+            "Alpha",
+            1,
+        );
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 2,
+                planet_seed: None,
+            },
+            "Bravo",
+            2,
+        );
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 3,
+                planet_seed: None,
+            },
+            "Charlie",
+            3,
+        );
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 4,
+                planet_seed: None,
+            },
+            "Delta",
+            4,
+        );
         app.update();
 
         // User navigates to "Charlie" (sort index 2).

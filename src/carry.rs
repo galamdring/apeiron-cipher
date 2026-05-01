@@ -1369,6 +1369,7 @@ pub fn record_weight_observation(
     journal_writer.write(RecordObservation {
         key: JournalKey::Material {
             seed: material.seed,
+            planet_seed: None,
         },
         name: material.name.clone(),
         observation: Observation {
