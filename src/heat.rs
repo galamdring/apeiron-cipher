@@ -21,6 +21,7 @@ use crate::journal::{JournalKey, Observation, ObservationCategory, RecordObserva
 use crate::materials::{GameMaterial, MaterialObject, PropertyVisibility};
 use crate::observation::ConfidenceTracker;
 use crate::scene::{FurnitureConfig, HeatSourceConfig, Workbench};
+use crate::world_generation::WorldProfile;
 
 /// Plugin that manages heat sources and temperature-based material interactions.
 pub struct HeatPlugin;
@@ -277,9 +278,11 @@ fn reveal_thermal_property(
         ),
         With<MaterialObject>,
     >,
+    world_profile: Option<Res<WorldProfile>>,
 ) {
     let reveal_secs = hs_cfg.reveal_seconds;
     let mut revealed_seeds = Vec::new();
+    let planet_seed = world_profile.as_deref().map(|p| p.planet_seed.0);
 
     for (entity, exp, mut mat, recorded) in &mut material_query {
         if exp.elapsed < reveal_secs {
@@ -308,7 +311,16 @@ fn reveal_thermal_property(
             journal_writer.write(RecordObservation {
                 key: JournalKey::Material {
                     seed: mat.seed,
-                    planet_seed: None,
+                    // Capture the planet on which this thermal observation
+                    // is being recorded so the journal's "current planet"
+                    // filter (Story 10.3) can match this entry against the
+                    // player's current `WorldProfile::planet_seed`.  When
+                    // no `WorldProfile` is in scope (early bring-up or
+                    // ad-hoc integration tests) the field stays `None` —
+                    // see `JournalKey::Material::planet_seed`'s docs for
+                    // why "unknown provenance" is kept explicit instead
+                    // of defaulting to a sentinel.
+                    planet_seed,
                 },
                 name: mat.name.clone(),
                 observation: Observation {

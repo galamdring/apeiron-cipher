@@ -152,6 +152,7 @@ fn update_interaction_target(
     material_query: Query<&GameMaterial, With<MaterialObject>>,
     held_query: Query<(), With<HeldItem>>,
     mut encounter_writer: MessageWriter<RecordObservation>,
+    world_profile: Option<Res<WorldProfile>>,
 ) {
     let previous_target = target.entity;
     target.entity = None;
@@ -189,7 +190,17 @@ fn update_interaction_target(
         encounter_writer.write(RecordObservation {
             key: JournalKey::Material {
                 seed: material.seed,
-                planet_seed: None,
+                // Capture the planet on which this material is being
+                // observed so the journal's "current planet" filter
+                // (Story 10.3) can match the entry against the player's
+                // current `WorldProfile::planet_seed` without re-deriving
+                // provenance from observation history.  When no
+                // `WorldProfile` is in scope (early bring-up, ad-hoc
+                // integration tests, future non-planetary discovery
+                // sites) the field stays `None` rather than defaulting to
+                // a sentinel — see `JournalKey::Material::planet_seed`'s
+                // docs for why "unknown provenance" is kept explicit.
+                planet_seed: world_profile.as_deref().map(|p| p.planet_seed.0),
             },
             name: material.name.clone(),
             observation: Observation {

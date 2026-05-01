@@ -28,6 +28,7 @@ use crate::journal::{JournalKey, Observation, ObservationCategory, RecordObserva
 use crate::materials::{GameMaterial, MaterialObject};
 use crate::observation::{ConfidenceLevel, ConfidenceTracker};
 use crate::player::{Player, PlayerCamera, cursor_is_captured};
+use crate::world_generation::WorldProfile;
 use leafwing_input_manager::prelude::*;
 
 const CONFIG_PATH: &str = "assets/config/carry.toml";
@@ -1351,12 +1352,20 @@ pub fn stash_entity_into_carry(
 }
 
 /// Records a weight observation for a material, updating confidence and journal.
+///
+/// `planet_seed` is the player's current planet seed (taken from
+/// `WorldProfile::planet_seed.0` at the call site), or `None` when no
+/// `WorldProfile` is in scope.  It is stamped onto the resulting
+/// [`JournalKey::Material`] so the journal's "current planet" filter
+/// (Story 10.3) can match this entry against the player's current
+/// planet without re-deriving provenance from observation history.
 pub fn record_weight_observation(
     material: &GameMaterial,
     carry_strength: f32,
     config: &CarryConfig,
     tracker: &mut ConfidenceTracker,
     journal_writer: &mut MessageWriter<RecordObservation>,
+    planet_seed: Option<u64>,
 ) {
     tracker.record(material.seed, "weight");
     let confidence = tracker.level(material.seed, "weight");
@@ -1369,7 +1378,7 @@ pub fn record_weight_observation(
     journal_writer.write(RecordObservation {
         key: JournalKey::Material {
             seed: material.seed,
-            planet_seed: None,
+            planet_seed,
         },
         name: material.name.clone(),
         observation: Observation {
@@ -1429,7 +1438,9 @@ fn process_stash_intent(
     config: Res<CarryConfig>,
     mut player_query: Query<(&mut CarryState, &CarryStrength), With<Player>>,
     held_query: Query<(Entity, &GameMaterial), With<HeldItem>>,
+    world_profile: Option<Res<WorldProfile>>,
 ) {
+    let planet_seed = world_profile.as_deref().map(|p| p.planet_seed.0);
     for _intent in reader.read() {
         let Some((held_entity, held_material)) = held_query.iter().next() else {
             reject_writer.write(CarryActionRejected {
@@ -1458,6 +1469,7 @@ fn process_stash_intent(
             &config,
             &mut tracker,
             &mut journal_writer,
+            planet_seed,
         );
         emit_carry_weight_changed(&mut weight_writer, &carry_state);
     }
@@ -1476,7 +1488,9 @@ fn process_stash_held_for_pickup(
     mut tracker: ResMut<ConfidenceTracker>,
     config: Res<CarryConfig>,
     mut player_query: Query<(&mut CarryState, &CarryStrength), With<Player>>,
+    world_profile: Option<Res<WorldProfile>>,
 ) {
+    let planet_seed = world_profile.as_deref().map(|p| p.planet_seed.0);
     for request in reader.read() {
         let Ok((mut carry_state, carry_strength)) = player_query.single_mut() else {
             continue;
@@ -1494,6 +1508,7 @@ fn process_stash_held_for_pickup(
             &config,
             &mut tracker,
             &mut journal_writer,
+            planet_seed,
         );
         // Also record weight for the newly picked material.
         record_weight_observation(
@@ -1502,6 +1517,7 @@ fn process_stash_held_for_pickup(
             &config,
             &mut tracker,
             &mut journal_writer,
+            planet_seed,
         );
         emit_carry_weight_changed(&mut weight_writer, &carry_state);
     }
@@ -1514,7 +1530,9 @@ fn process_observe_weight(
     mut tracker: ResMut<ConfidenceTracker>,
     config: Res<CarryConfig>,
     player_query: Query<&CarryStrength, With<Player>>,
+    world_profile: Option<Res<WorldProfile>>,
 ) {
+    let planet_seed = world_profile.as_deref().map(|p| p.planet_seed.0);
     for request in reader.read() {
         let Ok(carry_strength) = player_query.single() else {
             continue;
@@ -1525,6 +1543,7 @@ fn process_observe_weight(
             &config,
             &mut tracker,
             &mut journal_writer,
+            planet_seed,
         );
     }
 }
@@ -1545,7 +1564,9 @@ fn process_cycle_carry_intent(
     camera_query: Query<Entity, With<PlayerCamera>>,
     held_query: Query<(Entity, &GameMaterial), With<HeldItem>>,
     carried_material_query: Query<&GameMaterial, With<InCarry>>,
+    world_profile: Option<Res<WorldProfile>>,
 ) {
+    let planet_seed = world_profile.as_deref().map(|p| p.planet_seed.0);
     for _intent in reader.read() {
         let Ok((mut carry_state, carry_strength)) = player_query.single_mut() else {
             continue;
@@ -1593,6 +1614,7 @@ fn process_cycle_carry_intent(
                 &config,
                 &mut tracker,
                 &mut journal_writer,
+                planet_seed,
             );
         }
 
@@ -1612,6 +1634,7 @@ fn process_cycle_carry_intent(
             &config,
             &mut tracker,
             &mut journal_writer,
+            planet_seed,
         );
         emit_carry_weight_changed(&mut weight_writer, &carry_state);
     }
