@@ -149,6 +149,88 @@ pub enum JournalKey {
     },
 }
 
+// ── Filtering ───────────────────────────────────────────────────────────
+
+/// Contextual scope used to narrow journal entries to those relevant to
+/// the player's current situation (e.g. only the current planet, only
+/// the current biome).
+///
+/// Each variant carries the identity of *what* the player is currently
+/// engaged with so the filter can be evaluated against the metadata
+/// captured on each [`JournalEntry`] / [`JournalKey`].  The enum is
+/// intentionally small at this stage — only the contexts already implied
+/// by Story 10.3's acceptance criteria (current planet, current biome)
+/// are included.  Additional contexts (current solar system, time
+/// period, etc.) are explicitly anticipated by the design but are out of
+/// scope for this task and will be added when their underlying world
+/// metadata is available.
+///
+/// The variant payloads use the same identifier types the rest of the
+/// codebase uses for these concepts: a raw planet seed (`u64`, matching
+/// `WorldGenerationConfig::planet_seed` and the public `PlanetSeed.0`
+/// representation already exposed in serialized world data) and a
+/// biome key as a `String` (matching the biome registry's text key
+/// format).  Keeping the payloads as plain owned values rather than
+/// borrowing keeps `JournalFilter` cheap to clone and store inside a
+/// long-lived UI state resource.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum JournalContext {
+    /// Restrict to entries that were observed on the planet identified
+    /// by this seed.  The seed matches `WorldProfile::planet_seed.0`,
+    /// which is the value future tasks will copy into [`JournalKey`]
+    /// metadata at observation time.
+    CurrentPlanet {
+        /// Raw planet seed (unwrapped from `PlanetSeed`) used as the
+        /// equality key when matching entries against this context.
+        planet_seed: u64,
+    },
+    /// Restrict to entries that were observed within the named biome.
+    /// The key matches the biome registry's text key (e.g. `"tundra"`,
+    /// `"basalt_flats"`); a `String` is used here because the biome
+    /// taxonomy is data-driven and not represented as a typed enum.
+    CurrentBiome {
+        /// Biome registry key used as the equality value when matching
+        /// entries against this context.
+        biome_key: String,
+    },
+    // Future variants (CurrentSystem, TimePeriod, …) will be added when
+    // the underlying world metadata is captured on JournalKey.  They are
+    // intentionally omitted now to avoid defining identifiers whose
+    // semantics have not yet been pinned down by their respective
+    // systems.
+}
+
+/// Combined filter applied to the journal entry list before rendering.
+///
+/// Both fields are independent and combine with **AND** logic: an entry
+/// is kept when *every* `Some(_)` filter matches it.  A `None` field is
+/// treated as "no restriction on this dimension", so the [`Default`]
+/// value (both fields `None`) corresponds to the "All" filter required
+/// by the Story 10.3 acceptance criteria — every entry is shown.
+///
+/// `JournalFilter` is a plain data type with no behavior: the matching
+/// logic, UI cycling, and persistence across journal toggles are added
+/// in subsequent Phase 1 tasks.  Defining the data shape first lets
+/// those tasks build on a stable type without coupling concerns.
+///
+/// `Hash` is derived alongside `PartialEq`/`Eq` so the filter can be
+/// used as part of cache keys in later tasks (e.g. memoising the
+/// filtered entry list while the filter is unchanged).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct JournalFilter {
+    /// Optional restriction to a single observation category.  When
+    /// `Some(category)`, only entries that contain at least one
+    /// observation in `category` are kept.  `None` means "no category
+    /// restriction" (the "All" category filter).
+    pub category: Option<ObservationCategory>,
+    /// Optional restriction to entries tied to a particular world
+    /// context (current planet, current biome, …).  When `Some(ctx)`,
+    /// only entries whose captured location metadata matches `ctx` are
+    /// kept.  `None` means "no contextual restriction" (the "All"
+    /// context filter).
+    pub context: Option<JournalContext>,
+}
+
 /// Plugin that manages the player journal, recording observations and discoveries.
 pub struct JournalPlugin;
 
@@ -1413,6 +1495,60 @@ mod tests {
         let a = JournalKey::Material { seed: 42 };
         let b = JournalKey::Material { seed: 42 };
         let c = JournalKey::Material { seed: 99 };
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn journal_filter_default_is_unrestricted() {
+        // The "All" filter required by the acceptance criteria is the
+        // Default value: both dimensions are `None`, meaning no
+        // restriction on either category or context.
+        let filter = JournalFilter::default();
+        assert!(filter.category.is_none());
+        assert!(filter.context.is_none());
+    }
+
+    #[test]
+    fn journal_filter_equality_distinguishes_dimensions() {
+        // Two filters are equal iff both dimensions match exactly; this
+        // is what allows later tasks to cache filtered results keyed by
+        // the active filter and skip recomputation when nothing changed.
+        let a = JournalFilter {
+            category: Some(ObservationCategory::SurfaceAppearance),
+            context: Some(JournalContext::CurrentPlanet { planet_seed: 7 }),
+        };
+        let b = JournalFilter {
+            category: Some(ObservationCategory::SurfaceAppearance),
+            context: Some(JournalContext::CurrentPlanet { planet_seed: 7 }),
+        };
+        let different_category = JournalFilter {
+            category: Some(ObservationCategory::ThermalBehavior),
+            context: Some(JournalContext::CurrentPlanet { planet_seed: 7 }),
+        };
+        let different_context = JournalFilter {
+            category: Some(ObservationCategory::SurfaceAppearance),
+            context: Some(JournalContext::CurrentPlanet { planet_seed: 8 }),
+        };
+        assert_eq!(a, b);
+        assert_ne!(a, different_category);
+        assert_ne!(a, different_context);
+    }
+
+    #[test]
+    fn journal_context_biome_equality_is_string_based() {
+        // CurrentBiome carries a registry key as a String; equality is
+        // straightforward string equality, which is what the matching
+        // logic in later tasks will rely on.
+        let a = JournalContext::CurrentBiome {
+            biome_key: "tundra".to_string(),
+        };
+        let b = JournalContext::CurrentBiome {
+            biome_key: "tundra".to_string(),
+        };
+        let c = JournalContext::CurrentBiome {
+            biome_key: "basalt_flats".to_string(),
+        };
         assert_eq!(a, b);
         assert_ne!(a, c);
     }
