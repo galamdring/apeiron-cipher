@@ -1,73 +1,26 @@
-# Phase 1, Task 3 — Extend `JournalKey` with optional planet_seed
+# Story 10.3 — Phase 1, Task 4: Add `JournalFilter` to `JournalUiState`
 
 ## What changed
 
-- **`src/journal.rs`**
-  - Extended `JournalKey::Material` with a new `planet_seed: Option<u64>`
-    field, with a documentation block explaining provenance, the
-    `None`-vs-`Some` semantics, and why field ordering preserves the
-    pre-existing `Ord`-based iteration order.
-  - Updated every existing `JournalKey::Material { seed: … }` literal
-    in this file (≈110 test sites) to pass `planet_seed: None`. No
-    semantic change — the `None` case maps onto the old "no planet
-    context" world.
-  - Extended `all_types_serde_round_trip` with two `Some(_)` cases
-    (`Some(0)`, `Some(u64::MAX)`) so the new field is exercised by the
-    persistence regression test.
-  - Added two focused tests:
-    - `journal_key_material_planet_seed_participates_in_equality`
-      pins the contract that two materials with the same `seed` but
-      different `planet_seed` are distinct keys (required so Story
-      10.3's context filter can treat the same material on different
-      planets as independent observations).
-    - `journal_key_material_ord_seed_then_planet_seed` pins the
-      derived `Ord` axis order (`seed` first, `planet_seed` as
-      tiebreaker, `None < Some(_)`) so a future field-reordering
-      change cannot silently re-shuffle the journal UI's
-      `BTreeMap`-driven iteration.
-
-- **`src/heat.rs`**, **`src/interaction.rs`**, **`src/carry.rs`**
-  - Updated the three production `RecordObservation` writers to pass
-    `planet_seed: None`. These are the systems that record material
-    observations today; the actual planet-context plumbing (reading
-    `WorldProfile` and substituting `Some(planet_seed)`) is explicitly
-    outside this task's scope and will be done by a later Phase 1
-    task.
-
-- **`Cargo.lock` / generated artifacts**: none touched.
+- `src/journal.rs`
+  - Added a private `filter: JournalFilter` field to `JournalUiState`, with documentation explaining why the filter is owned by the long-lived UI resource (so it persists across visibility toggles, satisfying the Story 10.3 acceptance criterion).
+  - Initialized `filter` to `JournalFilter::default()` in `Default for JournalUiState` (the "All" filter — every entry shown — also a Story 10.3 acceptance criterion).
+  - Added two read/write accessors mirroring the style of the other navigation accessors on this resource:
+    - `pub fn filter(&self) -> &JournalFilter` — borrow-returning getter (the filter will be inspected on every render frame, so cloning would be wasted work).
+    - `pub fn set_filter(&mut self, filter: JournalFilter)` — single mutation entry point so future tasks can hook reset-on-change behavior (e.g. resetting `scroll_offset` per the technical design) without finding every call site.
+  - Both accessors are `#[allow(dead_code)]` to match the existing convention on the other public accessors of this resource that are not yet wired into systems (callers arrive in later Phase 1 tasks).
+  - Updated every existing struct-literal construction of `JournalUiState` in the test module to include the new field as `filter: JournalFilter::default()` (the previous behavior — no filtering — is preserved).
+  - Added three new unit tests:
+    - `journal_ui_state_default_filter_is_unrestricted` — locks in the "All" default.
+    - `journal_ui_state_set_filter_replaces_active_filter` — round-trips a non-default filter through the setter/getter.
+    - `journal_ui_state_filter_persists_across_visibility_toggle` — directly exercises the persistence acceptance criterion against the resource.
 
 ## Why
 
-Story 10.3's contextual filter (`JournalContext::CurrentPlanet`) needs
-to evaluate "is this entry from the player's current planet?" against
-the entry's stored metadata. The previous task established the filter
-data shape; this task widens the journal's primary key so that planet
-provenance can be carried per-entry. Making the field `Option<u64>`
-keeps the "unknown provenance" case explicit at every match site
-rather than smuggling it in via a sentinel value, which matches the
-codebase's existing `WorldGenerationConfig::planet_seed: Option<u64>`
-convention.
-
-The variant-extension approach (rather than introducing a separate
-`Located<JournalKey>` wrapper or a parallel index) was chosen to
-follow the design exactly as written in the story's "JournalKey
-Extension" section, and to avoid introducing a new abstraction in
-violation of the change discipline rules.
-
-The spec also lists a `Location { chunk_coord, planet_seed }` variant,
-but no such variant exists in the current `JournalKey` (only `Material`
-and `Fabrication`). Per the minimization rule, only the `Material`
-variant — which exists today — was extended. Adding a new `Location`
-variant is a separate concern for a later story/task that has the
-location-discovery system in scope.
+Phase 1 of Story 10.3 builds the data foundation before wiring filter UI/logic. Tasks 1–3 defined `JournalFilter`, `JournalContext`, and extended `JournalKey` with planet context. Task 4 places the active filter on `JournalUiState` so subsequent tasks (matching logic, UI cycling, rendering) have a stable, persistent place to read and mutate it from. Field privacy and a setter are used (matching the rest of `JournalUiState`) so the future reset-on-filter-change hook required by the technical design has a single place to live.
 
 ## Testing
 
-- `make check` (fmt-check + clippy + full test suite + build): clean.
-- 556 lib tests + 9 material-regression tests + 1 carry-scenario
-  test all pass.
-- New tests (`journal_key_material_planet_seed_participates_in_equality`,
-  `journal_key_material_ord_seed_then_planet_seed`) cover the new
-  field's equality and ordering contracts.
-- `all_types_serde_round_trip` extended with `Some(_)` cases to cover
-  the new field's serialization.
+- Added three unit tests covering: default filter is unrestricted, setter round-trips, filter persists across visibility toggles.
+- Updated 35 existing test struct literals to include the new field, preserving their original behavior.
+- `make check` passes (fmt, clippy, tests, build).

@@ -543,6 +543,23 @@ pub struct JournalUiState {
     /// Maximum number of entry rows displayed per page.  Loaded from
     /// configuration; falls back to `Self::DEFAULT_ENTRIES_PER_PAGE`.
     entries_per_page: usize,
+    /// Active contextual filter applied to the entry list before
+    /// rendering (Story 10.3).
+    ///
+    /// Stored on the long-lived UI state resource — rather than recomputed
+    /// per-frame from input — so the filter persists across journal
+    /// visibility toggles, satisfying the acceptance criterion that
+    /// "filter state persists when journal is toggled closed/open".
+    /// The [`Default`] value is the empty filter ([`JournalFilter::default`]),
+    /// which corresponds to the "All" filter showing every entry — also a
+    /// Story 10.3 acceptance criterion.
+    ///
+    /// Field privacy mirrors the other navigation fields on this resource:
+    /// the matching logic, UI cycling, and rendering systems added by
+    /// later Phase 1 tasks read and mutate the filter only through the
+    /// accessor and setter on this type, keeping the [`JournalSet`]
+    /// ordering contract enforceable.
+    filter: JournalFilter,
 }
 
 impl JournalUiState {
@@ -588,6 +605,30 @@ impl JournalUiState {
         self.visible = visible;
     }
 
+    /// Currently active contextual filter (Story 10.3).
+    ///
+    /// Returns a borrow rather than a clone because the filter is read on
+    /// every render frame by the upcoming filtering logic; cloning would
+    /// be wasteful when the field is otherwise cheap to inspect in place.
+    #[allow(dead_code)]
+    pub fn filter(&self) -> &JournalFilter {
+        &self.filter
+    }
+
+    /// Replace the currently active contextual filter (Story 10.3).
+    ///
+    /// Mutation goes through this setter rather than a public field so
+    /// future tasks can hook reset-on-change behavior here (e.g., resetting
+    /// `scroll_offset` to the top when the filter changes, as called for
+    /// in the Story 10.3 technical design) without having to find every
+    /// call site.  The current implementation is a plain assignment;
+    /// behavioral hooks are deferred to the task that wires the filter
+    /// into navigation and rendering.
+    #[allow(dead_code)]
+    pub fn set_filter(&mut self, filter: JournalFilter) {
+        self.filter = filter;
+    }
+
     /// Clamp `selected_index` and `scroll_offset` so they stay within valid
     /// bounds for the given total entry count.  Called after any navigation
     /// input and before rendering so the UI never references out-of-range
@@ -617,6 +658,7 @@ impl Default for JournalUiState {
             selected_index: 0,
             scroll_offset: 0,
             entries_per_page: Self::DEFAULT_ENTRIES_PER_PAGE,
+            filter: JournalFilter::default(),
         }
     }
 }
@@ -1653,6 +1695,52 @@ mod tests {
         assert_eq!(a, b);
         assert_ne!(a, different_category);
         assert_ne!(a, different_context);
+    }
+
+    #[test]
+    fn journal_ui_state_default_filter_is_unrestricted() {
+        // The UI resource starts with the "All" filter so the default
+        // experience matches the Story 10.3 acceptance criterion that
+        // "'All' filter shows everything (default)".
+        let state = JournalUiState::default();
+        assert_eq!(*state.filter(), JournalFilter::default());
+        assert!(state.filter().category.is_none());
+        assert!(state.filter().context.is_none());
+    }
+
+    #[test]
+    fn journal_ui_state_set_filter_replaces_active_filter() {
+        // The setter is the only public path for mutating the filter; it
+        // must store exactly the value passed in so later UI cycling code
+        // can rely on round-trip equality when comparing the previous and
+        // current filter to detect changes.
+        let mut state = JournalUiState::default();
+        let new_filter = JournalFilter {
+            category: Some(ObservationCategory::SurfaceAppearance),
+            context: Some(JournalContext::CurrentPlanet { planet_seed: 42 }),
+        };
+        state.set_filter(new_filter.clone());
+        assert_eq!(*state.filter(), new_filter);
+    }
+
+    #[test]
+    fn journal_ui_state_filter_persists_across_visibility_toggle() {
+        // Story 10.3 acceptance criterion: "Filter state persists when
+        // journal is toggled closed/open".  Because the filter lives on
+        // the long-lived `JournalUiState` resource — not derived from
+        // visibility — toggling `visible` must not disturb it.
+        let mut state = JournalUiState::default();
+        let active = JournalFilter {
+            category: Some(ObservationCategory::ThermalBehavior),
+            context: None,
+        };
+        state.set_filter(active.clone());
+        state.set_visible(true);
+        assert_eq!(*state.filter(), active);
+        state.set_visible(false);
+        assert_eq!(*state.filter(), active);
+        state.set_visible(true);
+        assert_eq!(*state.filter(), active);
     }
 
     #[test]
@@ -3392,6 +3480,7 @@ mod tests {
             selected_index: 1,
             scroll_offset: 0,
             entries_per_page: 15,
+            filter: JournalFilter::default(),
         };
 
         let list = build_entry_list_text(&entries, &state);
@@ -3474,6 +3563,7 @@ mod tests {
             selected_index: 0,
             scroll_offset: 0,
             entries_per_page: 15,
+            filter: JournalFilter::default(),
         };
 
         let detail = detail_spans_to_string(&build_detail_spans(&entries, &state));
@@ -3535,6 +3625,7 @@ mod tests {
             selected_index: 0,
             scroll_offset: 0,
             entries_per_page: 15,
+            filter: JournalFilter::default(),
         };
 
         let spans = build_detail_spans(&entries, &state);
@@ -3627,6 +3718,7 @@ mod tests {
             selected_index: 0,
             scroll_offset: 0,
             entries_per_page: 15,
+            filter: JournalFilter::default(),
         };
         let detail = detail_spans_to_string(&build_detail_spans(&entries, &state));
         assert!(detail.contains("Ferrite"), "header should be Ferrite");
@@ -3649,6 +3741,7 @@ mod tests {
             selected_index: 1,
             scroll_offset: 0,
             entries_per_page: 15,
+            filter: JournalFilter::default(),
         };
         let detail = detail_spans_to_string(&build_detail_spans(&entries, &state));
         assert!(detail.contains("Neoite"), "header should be Neoite");
@@ -3671,6 +3764,7 @@ mod tests {
             selected_index: 2,
             scroll_offset: 0,
             entries_per_page: 15,
+            filter: JournalFilter::default(),
         };
         let detail = detail_spans_to_string(&build_detail_spans(&entries, &state));
         assert!(detail.contains("Silite"), "header should be Silite");
@@ -3754,6 +3848,7 @@ mod tests {
             selected_index: 0,
             scroll_offset: 0,
             entries_per_page: 15,
+            filter: JournalFilter::default(),
         };
         let spans = build_detail_spans(&entries, &state);
         let detail = detail_spans_to_string(&spans);
@@ -3792,6 +3887,7 @@ mod tests {
             selected_index: 0,
             scroll_offset: 0,
             entries_per_page: 15,
+            filter: JournalFilter::default(),
         };
         // Simulate pressing up — selection would go to saturating_sub(1) = 0.
         state.selected_index = state.selected_index.saturating_sub(1);
@@ -3806,6 +3902,7 @@ mod tests {
             selected_index: 4,
             scroll_offset: 0,
             entries_per_page: 15,
+            filter: JournalFilter::default(),
         };
         state.selected_index = (state.selected_index + 1).min(4);
         state.clamp_to_entry_count(5);
@@ -3819,6 +3916,7 @@ mod tests {
             selected_index: 0,
             scroll_offset: 0,
             entries_per_page: 3,
+            filter: JournalFilter::default(),
         };
         // Move selection to index 4 (past the 3-entry window).
         state.selected_index = 4;
@@ -3838,6 +3936,7 @@ mod tests {
             selected_index: 1,
             scroll_offset: 3,
             entries_per_page: 3,
+            filter: JournalFilter::default(),
         };
         state.clamp_to_entry_count(10);
         assert_eq!(
@@ -3853,6 +3952,7 @@ mod tests {
             selected_index: 2,
             scroll_offset: 0,
             entries_per_page: 5,
+            filter: JournalFilter::default(),
         };
         // Simulate PageDown: advance by entries_per_page.
         state.selected_index = (state.selected_index + state.entries_per_page).min(20 - 1);
@@ -3869,6 +3969,7 @@ mod tests {
             selected_index: 8,
             scroll_offset: 5,
             entries_per_page: 5,
+            filter: JournalFilter::default(),
         };
         let entry_count = 10;
         // PageDown from index 8 with page size 5 would overshoot — should clamp to 9.
@@ -3884,6 +3985,7 @@ mod tests {
             selected_index: 12,
             scroll_offset: 10,
             entries_per_page: 5,
+            filter: JournalFilter::default(),
         };
         // Simulate PageUp: go back by entries_per_page.
         state.selected_index = state.selected_index.saturating_sub(state.entries_per_page);
@@ -3901,6 +4003,7 @@ mod tests {
             selected_index: 2,
             scroll_offset: 0,
             entries_per_page: 5,
+            filter: JournalFilter::default(),
         };
         // PageUp from index 2 with page size 5 would underflow — saturating_sub clamps to 0.
         state.selected_index = state.selected_index.saturating_sub(state.entries_per_page);
@@ -3916,6 +4019,7 @@ mod tests {
             selected_index: 42,
             scroll_offset: 30,
             entries_per_page: 15,
+            filter: JournalFilter::default(),
         };
         // Simulate Home key — sets selected_index to 0.
         state.selected_index = 0;
@@ -3931,6 +4035,7 @@ mod tests {
             selected_index: 3,
             scroll_offset: 0,
             entries_per_page: 15,
+            filter: JournalFilter::default(),
         };
         let entry_count = 50;
         // Simulate End key — sets selected_index to last entry.
@@ -3948,6 +4053,7 @@ mod tests {
             selected_index: 0,
             scroll_offset: 0,
             entries_per_page: 3,
+            filter: JournalFilter::default(),
         };
         // PageDown jumps selection to index 3, which is outside window [0..3).
         state.selected_index = (state.selected_index + state.entries_per_page).min(10 - 1);
@@ -3966,6 +4072,7 @@ mod tests {
             selected_index: 5,
             scroll_offset: 3,
             entries_per_page: 15,
+            filter: JournalFilter::default(),
         };
         state.clamp_to_entry_count(0);
         assert_eq!(state.selected_index, 0);
@@ -3986,6 +4093,7 @@ mod tests {
             selected_index: 5,
             scroll_offset: 3,
             entries_per_page: 5,
+            filter: JournalFilter::default(),
         };
 
         let list = build_entry_list_text(&entries, &state);
@@ -4005,6 +4113,7 @@ mod tests {
             selected_index: 0,
             scroll_offset: 0,
             entries_per_page: 15,
+            filter: JournalFilter::default(),
         };
         let help = build_help_text(42, &state);
         assert!(
@@ -4038,6 +4147,7 @@ mod tests {
             selected_index: 50,
             scroll_offset: 0,
             entries_per_page: 15,
+            filter: JournalFilter::default(),
         };
         state.clamp_to_entry_count(entries.len());
 
@@ -4145,6 +4255,7 @@ mod tests {
             selected_index: 0,
             scroll_offset: 0,
             entries_per_page: 3,
+            filter: JournalFilter::default(),
         };
         let lines = build_entry_list_lines(&entries, &state);
         assert_eq!(lines.len(), 3);
@@ -4158,6 +4269,7 @@ mod tests {
             selected_index: 5,
             scroll_offset: 4,
             entries_per_page: 3,
+            filter: JournalFilter::default(),
         };
         let lines = build_entry_list_lines(&entries, &state);
         assert_eq!(lines.len(), 3);
@@ -4187,6 +4299,7 @@ mod tests {
             selected_index: 9,
             scroll_offset: 8,
             entries_per_page: 3,
+            filter: JournalFilter::default(),
         };
         let lines = build_entry_list_lines(&entries, &state);
         assert_eq!(
@@ -4206,6 +4319,7 @@ mod tests {
             selected_index: 7,
             scroll_offset: 3,
             entries_per_page: 15,
+            filter: JournalFilter::default(),
         };
 
         // Toggle closed.
@@ -4232,6 +4346,7 @@ mod tests {
             selected_index: 7,
             scroll_offset: 3,
             entries_per_page: 15,
+            filter: JournalFilter::default(),
         });
         app.add_systems(Update, toggle_journal_visibility);
 
@@ -4288,6 +4403,7 @@ mod tests {
             selected_index: 3,
             scroll_offset: 0,
             entries_per_page: 15,
+            filter: JournalFilter::default(),
         });
         app.add_systems(Update, journal_navigation);
 
@@ -4341,6 +4457,7 @@ mod tests {
             selected_index: 3,
             scroll_offset: 0,
             entries_per_page: 15,
+            filter: JournalFilter::default(),
         });
         app.add_systems(Update, journal_navigation);
 
@@ -4392,6 +4509,7 @@ mod tests {
             selected_index: 0,
             scroll_offset: 0,
             entries_per_page: 15,
+            filter: JournalFilter::default(),
         });
         app.add_systems(Update, journal_navigation);
 
@@ -4511,6 +4629,7 @@ mod tests {
             selected_index: 0,
             scroll_offset: 0,
             entries_per_page: 15,
+            filter: JournalFilter::default(),
         });
         app.add_systems(Update, journal_navigation);
 
@@ -4575,6 +4694,7 @@ mod tests {
             selected_index: 0,
             scroll_offset: 0,
             entries_per_page: 5,
+            filter: JournalFilter::default(),
         });
         app.add_systems(Update, journal_navigation);
 
@@ -4653,6 +4773,7 @@ mod tests {
             selected_index: 25,
             scroll_offset: 20,
             entries_per_page: 5,
+            filter: JournalFilter::default(),
         };
         state.clamp_to_entry_count(10);
         assert_eq!(
@@ -4696,6 +4817,7 @@ mod tests {
             selected_index: 0,
             scroll_offset: 0,
             entries_per_page,
+            filter: JournalFilter::default(),
         });
         app.add_systems(Update, journal_navigation);
 
@@ -4817,6 +4939,7 @@ mod tests {
             selected_index: 0,
             scroll_offset: 0,
             entries_per_page: initial_entries_per_page,
+            filter: JournalFilter::default(),
         });
         app.add_systems(Update, compute_journal_panels);
         app.world_mut()
