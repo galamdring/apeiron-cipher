@@ -824,6 +824,10 @@ struct JournalSelectionTracker {
 #[derive(Component)]
 struct JournalPanel;
 
+/// Marker for the filter bar text node above the entry list.
+#[derive(Component)]
+struct JournalFilterBarText;
+
 /// Marker for the left-hand entry list text node.
 #[derive(Component)]
 struct JournalEntryListText;
@@ -852,6 +856,7 @@ fn attach_journal_to_player(mut commands: Commands, player_query: Query<Entity, 
 ///   ├─ Title text ("Journal")
 ///   ├─ Body row (row)
 ///   │   ├─ Entry list column (30% width)
+///   │   │   ├─ JournalFilterBarText (filter bar above entry list)
 ///   │   │   └─ JournalEntryListText
 ///   │   └─ Detail column (70% width)
 ///   │       └─ JournalDetailText
@@ -922,6 +927,23 @@ fn spawn_journal_ui(mut commands: Commands) {
                         BorderColor::all(Color::srgba(0.3, 0.3, 0.28, 0.4)),
                     ))
                     .with_children(|left| {
+                        // Filter bar above entry list
+                        left.spawn((
+                            JournalFilterBarText,
+                            Text::new(""),
+                            TextFont {
+                                font_size: 14.0,
+                                ..default()
+                            },
+                            TextColor(Color::srgba(0.75, 0.68, 0.45, 1.0)), // Amber accent for filter status
+                            Node {
+                                margin: UiRect::bottom(Val::Px(4.0)),
+                                padding: UiRect::all(Val::Px(4.0)),
+                                ..default()
+                            },
+                        ));
+
+                        // Entry list
                         left.spawn((
                             JournalEntryListText,
                             Text::new(""),
@@ -1121,6 +1143,8 @@ fn apply_observations(
 /// within the 4-parameter limit.
 #[derive(Resource, Default)]
 struct JournalRenderCache {
+    /// Text for the filter bar above the entry list, showing active filter status.
+    filter_bar: String,
     /// Structured lines for the left-hand entry list panel, each carrying
     /// its display text and whether it represents the selected entry.
     list_lines: Vec<EntryListLine>,
@@ -1200,6 +1224,7 @@ fn compute_journal_panels(
     mut tracker: ResMut<JournalSelectionTracker>,
 ) {
     if !state.visible {
+        cache.filter_bar.clear();
         cache.list_lines.clear();
         cache.detail_spans.clear();
         cache.help.clear();
@@ -1207,6 +1232,7 @@ fn compute_journal_panels(
     }
 
     let Ok(journal) = player_query.single() else {
+        cache.filter_bar.clear();
         cache.list_lines.clear();
         cache.detail_spans.clear();
         cache.help.clear();
@@ -1289,6 +1315,7 @@ fn compute_journal_panels(
         tracker.last_scroll_offset = 0;
     }
 
+    cache.filter_bar = build_filter_bar_text(state.filter());
     cache.list_lines = build_entry_list_lines(&filtered_entries, &state);
     cache.detail_spans = build_detail_spans(&filtered_entries, &state);
     cache.help = build_help_text(entry_count, &state);
@@ -1312,6 +1339,7 @@ fn sync_journal_ui(
     list_query: Query<(Entity, Option<&Children>), With<JournalEntryListText>>,
     detail_query: Query<(Entity, Option<&Children>), With<JournalDetailText>>,
     mut texts: ParamSet<(
+        Query<&mut Text, With<JournalFilterBarText>>,
         Query<&mut Text, With<JournalEntryListText>>,
         Query<&mut Text, With<JournalDetailText>>,
         Query<&mut Text, With<JournalHelpText>>,
@@ -1349,7 +1377,7 @@ fn sync_journal_ui(
         }
 
         // Clear root text so only spans render.
-        if let Ok(mut root_text) = texts.p0().single_mut() {
+        if let Ok(mut root_text) = texts.p1().single_mut() {
             root_text.0.clear();
         }
 
@@ -1391,7 +1419,7 @@ fn sync_journal_ui(
             }
         }
 
-        if let Ok(mut root_text) = texts.p1().single_mut() {
+        if let Ok(mut root_text) = texts.p2().single_mut() {
             root_text.0.clear();
         }
 
@@ -1409,8 +1437,30 @@ fn sync_journal_ui(
         });
     }
 
-    if let Ok(mut help_text) = texts.p2().single_mut() {
+    // ── Filter bar text ──────────────────────────────────────────────
+    if let Ok(mut filter_text) = texts.p0().single_mut() {
+        filter_text.0.clone_from(&cache.filter_bar);
+    }
+
+    if let Ok(mut help_text) = texts.p3().single_mut() {
         help_text.0.clone_from(&cache.help);
+    }
+}
+
+/// Builds the filter bar text showing the currently active filter.
+/// Returns an empty string when no filter is active (All filter).
+fn build_filter_bar_text(filter: &JournalFilter) -> String {
+    match (&filter.category, &filter.context) {
+        (None, None) => String::new(), // All filter - no text needed
+        (Some(category), None) => format!("Filter: {}", category.display_label()),
+        (None, Some(JournalContext::CurrentPlanet { .. })) => "Filter: Current Planet".to_string(),
+        (None, Some(JournalContext::CurrentBiome { .. })) => "Filter: Current Biome".to_string(),
+        (Some(category), Some(JournalContext::CurrentPlanet { .. })) => {
+            format!("Filter: {} | Current Planet", category.display_label())
+        }
+        (Some(category), Some(JournalContext::CurrentBiome { .. })) => {
+            format!("Filter: {} | Current Biome", category.display_label())
+        }
     }
 }
 
@@ -6622,6 +6672,74 @@ mod tests {
         assert!(
             help_combined.contains("[Filter: Category | Current Planet]"),
             "help should show combined filter status, got: {help_combined}"
+        );
+    }
+
+    /// Filter bar renders correctly with different filter states.
+    #[test]
+    fn filter_bar_renders_correctly() {
+        // Test empty filter (All) - should render empty string
+        let filter_all = JournalFilter::default();
+        let filter_bar_all = build_filter_bar_text(&filter_all);
+        assert_eq!(filter_bar_all, "", "All filter should render empty string");
+
+        // Test category-only filter
+        let filter_category = JournalFilter {
+            category: Some(ObservationCategory::SurfaceAppearance),
+            context: None,
+        };
+        let filter_bar_category = build_filter_bar_text(&filter_category);
+        assert_eq!(
+            filter_bar_category, "Filter: Surface",
+            "Category filter should show category label"
+        );
+
+        // Test context-only filter (Current Planet)
+        let filter_planet = JournalFilter {
+            category: None,
+            context: Some(JournalContext::CurrentPlanet { planet_seed: 42 }),
+        };
+        let filter_bar_planet = build_filter_bar_text(&filter_planet);
+        assert_eq!(
+            filter_bar_planet, "Filter: Current Planet",
+            "Planet filter should show planet context"
+        );
+
+        // Test context-only filter (Current Biome)
+        let filter_biome = JournalFilter {
+            category: None,
+            context: Some(JournalContext::CurrentBiome {
+                biome_key: "tundra".to_string(),
+            }),
+        };
+        let filter_bar_biome = build_filter_bar_text(&filter_biome);
+        assert_eq!(
+            filter_bar_biome, "Filter: Current Biome",
+            "Biome filter should show biome context"
+        );
+
+        // Test combined filter (Category + Planet)
+        let filter_combined_planet = JournalFilter {
+            category: Some(ObservationCategory::ThermalBehavior),
+            context: Some(JournalContext::CurrentPlanet { planet_seed: 7 }),
+        };
+        let filter_bar_combined_planet = build_filter_bar_text(&filter_combined_planet);
+        assert_eq!(
+            filter_bar_combined_planet, "Filter: Thermal | Current Planet",
+            "Combined category+planet filter should show both"
+        );
+
+        // Test combined filter (Category + Biome)
+        let filter_combined_biome = JournalFilter {
+            category: Some(ObservationCategory::Weight),
+            context: Some(JournalContext::CurrentBiome {
+                biome_key: "basalt_flats".to_string(),
+            }),
+        };
+        let filter_bar_combined_biome = build_filter_bar_text(&filter_combined_biome);
+        assert_eq!(
+            filter_bar_combined_biome, "Filter: Weight | Current Biome",
+            "Combined category+biome filter should show both"
         );
     }
 }
