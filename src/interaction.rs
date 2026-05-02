@@ -389,6 +389,7 @@ fn process_pickup(
 
         commands
             .entity(target_entity)
+            .remove::<MaterialObject>()
             .insert(HeldItem)
             .set_parent_in_place(camera_entity)
             .insert(Transform::from_translation(carry_config.hold_offset_vec3()));
@@ -456,6 +457,7 @@ fn process_place(
             commands
                 .entity(held_entity)
                 .remove::<HeldItem>()
+                .insert(MaterialObject)
                 .remove_parent_in_place()
                 .insert(Transform::from_xyz(
                     slot_pos.x,
@@ -478,6 +480,7 @@ fn process_place(
         commands
             .entity(held_entity)
             .remove::<HeldItem>()
+            .insert(MaterialObject)
             .remove_parent_in_place();
 
         let drop_position = if let Some((_entity, surface_gtf, surface)) =
