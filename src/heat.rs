@@ -20,6 +20,7 @@ use crate::descriptions::describe_thermal_observation;
 use crate::journal::{JournalKey, Observation, ObservationCategory, RecordObservation};
 use crate::materials::{GameMaterial, MaterialObject, PropertyVisibility};
 use crate::observation::ConfidenceTracker;
+use crate::observation::PropertyName;
 use crate::scene::{FurnitureConfig, HeatSourceConfig, Workbench};
 use crate::world_generation::WorldProfile;
 
@@ -304,7 +305,7 @@ fn reveal_thermal_property(
         revealed_seeds.push(mat.seed);
 
         if recorded.is_none() {
-            let count = tracker.record(mat.seed, "thermal_resistance");
+            let count = tracker.record(mat.seed, PropertyName::ThermalResistance);
             commands
                 .entity(entity)
                 .insert(ThermalObservationRecordedThisCycle);
@@ -325,10 +326,10 @@ fn reveal_thermal_property(
                 name: mat.name.clone(),
                 observation: Observation {
                     category: ObservationCategory::ThermalBehavior,
-                    confidence: tracker.level(mat.seed, "thermal_resistance"),
+                    confidence: tracker.level(mat.seed, PropertyName::ThermalResistance),
                     description: describe_thermal_observation(
                         mat.thermal_resistance.value,
-                        tracker.level(mat.seed, "thermal_resistance"),
+                        tracker.level(mat.seed, PropertyName::ThermalResistance),
                     ),
                     recorded_at: 0,
                 },
@@ -497,7 +498,7 @@ mod tests {
         assert_eq!(
             app.world()
                 .resource::<ConfidenceTracker>()
-                .count(7, "thermal_resistance"),
+                .count(7, PropertyName::ThermalResistance),
             1
         );
 
@@ -518,7 +519,7 @@ mod tests {
         assert_eq!(
             app.world()
                 .resource::<ConfidenceTracker>()
-                .count(7, "thermal_resistance"),
+                .count(7, PropertyName::ThermalResistance),
             2
         );
     }

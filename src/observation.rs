@@ -68,8 +68,28 @@ impl ConfidenceLevel {
 
 // ── Tracker resource ─────────────────────────────────────────────────────
 
+/// Property names that can be observed through environmental testing.
+///
+/// This enum replaces string literals to provide compile-time safety.
+/// A typo in property names would create silently separate trackers;
+/// the enum prevents this by making invalid property names a compile error.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PropertyName {
+    /// Material density — how much mass per unit volume.
+    Density,
+    /// Resistance to heat transfer — thermal insulation properties.
+    ThermalResistance,
+    /// Chemical reactivity — tendency to undergo reactions.
+    Reactivity,
+    /// Electrical conductivity — ability to conduct electric current.
+    Conductivity,
+    /// Toxicity level — harmful effects on biological systems.
+    Toxicity,
+}
+
 /// Canonical key: (material seed, property name).
-type ObsKey = (u64, String);
+type ObsKey = (u64, PropertyName);
 
 /// Stores how many times the player has observed each (material, property)
 /// combination through environmental testing.
@@ -83,8 +103,8 @@ pub struct ConfidenceTracker {
 impl ConfidenceTracker {
     /// Record one observation. Returns the new count.
     #[allow(dead_code)]
-    pub fn record(&mut self, seed: u64, property: &str) -> u32 {
-        let key = (seed, property.to_string());
+    pub fn record(&mut self, seed: u64, property: PropertyName) -> u32 {
+        let key = (seed, property);
         let count = self.counts.entry(key).or_insert(0);
         *count += 1;
         *count
@@ -92,16 +112,13 @@ impl ConfidenceTracker {
 
     /// Current observation count (0 if never observed).
     #[allow(dead_code)]
-    pub fn count(&self, seed: u64, property: &str) -> u32 {
-        self.counts
-            .get(&(seed, property.to_string()))
-            .copied()
-            .unwrap_or(0)
+    pub fn count(&self, seed: u64, property: PropertyName) -> u32 {
+        self.counts.get(&(seed, property)).copied().unwrap_or(0)
     }
 
     /// Confidence level for a specific (material, property) pair.
     #[allow(dead_code)]
-    pub fn level(&self, seed: u64, property: &str) -> ConfidenceLevel {
+    pub fn level(&self, seed: u64, property: PropertyName) -> ConfidenceLevel {
         ConfidenceLevel::from_count(self.count(seed, property))
     }
 }
@@ -115,33 +132,33 @@ mod tests {
     #[test]
     fn fresh_tracker_has_zero_count() {
         let tracker = ConfidenceTracker::default();
-        assert_eq!(tracker.count(42, "thermal_resistance"), 0);
+        assert_eq!(tracker.count(42, PropertyName::ThermalResistance), 0);
     }
 
     #[test]
     fn record_increments_count() {
         let mut tracker = ConfidenceTracker::default();
-        assert_eq!(tracker.record(42, "thermal_resistance"), 1);
-        assert_eq!(tracker.record(42, "thermal_resistance"), 2);
-        assert_eq!(tracker.count(42, "thermal_resistance"), 2);
+        assert_eq!(tracker.record(42, PropertyName::ThermalResistance), 1);
+        assert_eq!(tracker.record(42, PropertyName::ThermalResistance), 2);
+        assert_eq!(tracker.count(42, PropertyName::ThermalResistance), 2);
     }
 
     #[test]
     fn different_seeds_tracked_independently() {
         let mut tracker = ConfidenceTracker::default();
-        tracker.record(42, "thermal_resistance");
-        tracker.record(99, "thermal_resistance");
-        assert_eq!(tracker.count(42, "thermal_resistance"), 1);
-        assert_eq!(tracker.count(99, "thermal_resistance"), 1);
+        tracker.record(42, PropertyName::ThermalResistance);
+        tracker.record(99, PropertyName::ThermalResistance);
+        assert_eq!(tracker.count(42, PropertyName::ThermalResistance), 1);
+        assert_eq!(tracker.count(99, PropertyName::ThermalResistance), 1);
     }
 
     #[test]
     fn different_properties_tracked_independently() {
         let mut tracker = ConfidenceTracker::default();
-        tracker.record(42, "thermal_resistance");
-        tracker.record(42, "density");
-        assert_eq!(tracker.count(42, "thermal_resistance"), 1);
-        assert_eq!(tracker.count(42, "density"), 1);
+        tracker.record(42, PropertyName::ThermalResistance);
+        tracker.record(42, PropertyName::Density);
+        assert_eq!(tracker.count(42, PropertyName::ThermalResistance), 1);
+        assert_eq!(tracker.count(42, PropertyName::Density), 1);
     }
 
     #[test]
@@ -158,27 +175,27 @@ mod tests {
     fn level_method_uses_internal_count() {
         let mut tracker = ConfidenceTracker::default();
         assert_eq!(
-            tracker.level(42, "thermal_resistance"),
+            tracker.level(42, PropertyName::ThermalResistance),
             ConfidenceLevel::Tentative
         );
-        tracker.record(42, "thermal_resistance");
+        tracker.record(42, PropertyName::ThermalResistance);
         assert_eq!(
-            tracker.level(42, "thermal_resistance"),
+            tracker.level(42, PropertyName::ThermalResistance),
             ConfidenceLevel::Tentative
         );
-        tracker.record(42, "thermal_resistance");
+        tracker.record(42, PropertyName::ThermalResistance);
         assert_eq!(
-            tracker.level(42, "thermal_resistance"),
+            tracker.level(42, PropertyName::ThermalResistance),
             ConfidenceLevel::Observed
         );
-        tracker.record(42, "thermal_resistance");
+        tracker.record(42, PropertyName::ThermalResistance);
         assert_eq!(
-            tracker.level(42, "thermal_resistance"),
+            tracker.level(42, PropertyName::ThermalResistance),
             ConfidenceLevel::Observed
         );
-        tracker.record(42, "thermal_resistance");
+        tracker.record(42, PropertyName::ThermalResistance);
         assert_eq!(
-            tracker.level(42, "thermal_resistance"),
+            tracker.level(42, PropertyName::ThermalResistance),
             ConfidenceLevel::Confident
         );
     }
