@@ -1570,7 +1570,11 @@ fn build_entry_list_text(entries: &[&JournalEntry], state: &JournalUiState) -> S
 /// The `has_any_entries` parameter distinguishes between an empty journal
 /// (shows "No observations yet.") and a filter that produces no results
 /// (shows "No matching entries").
-fn build_detail_spans(entries: &[&JournalEntry], state: &JournalUiState, has_any_entries: bool) -> Vec<DetailSpan> {
+fn build_detail_spans(
+    entries: &[&JournalEntry],
+    state: &JournalUiState,
+    has_any_entries: bool,
+) -> Vec<DetailSpan> {
     if entries.is_empty() {
         let message = if has_any_entries {
             "No matching entries"
@@ -7002,6 +7006,122 @@ mod tests {
         assert_eq!(
             filter_bar_combined_biome, "Filter: Weight | Current Biome",
             "Combined category+biome filter should show both"
+        );
+    }
+
+    /// Empty journal with filter applied shows "No observations yet." not "No matching entries".
+    /// This test verifies that when the journal has zero entries, applying any filter
+    /// still shows the empty journal message rather than the empty filter message.
+    #[test]
+    fn empty_journal_with_filter_shows_no_observations_yet() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.init_resource::<ButtonInput<KeyCode>>();
+        app.insert_resource(JournalUiState {
+            visible: true,
+            selected_index: 0,
+            scroll_offset: 0,
+            entries_per_page: 15,
+            filter: JournalFilter::default(),
+        });
+        app.add_systems(Update, journal_navigation);
+
+        // Create a Player entity with an empty Journal component
+        app.world_mut().spawn((Player, Journal::default()));
+
+        // Apply a category filter to the empty journal
+        {
+            let mut state = app.world_mut().resource_mut::<JournalUiState>();
+            state.set_filter(JournalFilter {
+                category: Some(ObservationCategory::SurfaceAppearance),
+                context: None,
+            });
+        }
+
+        // Update the app to process the filter
+        app.update();
+
+        // Verify that empty journal with filter shows "No observations yet."
+        let mut q = app.world_mut().query_filtered::<&Journal, With<Player>>();
+        let journal = q.single(app.world()).expect("player must exist");
+        let state = app.world().resource::<JournalUiState>();
+
+        // Build the detail spans using the same logic as the UI
+        let filtered_entries: Vec<&JournalEntry> = journal
+            .entries
+            .values()
+            .filter(|entry| matches_filter(entry, state.filter()))
+            .collect();
+
+        let detail_spans =
+            build_detail_spans(&filtered_entries, state, !journal.entries.is_empty());
+        let detail_text = detail_spans_to_string(&detail_spans);
+
+        assert_eq!(
+            detail_text, "No observations yet.",
+            "Empty journal with filter should show 'No observations yet.' not 'No matching entries'"
+        );
+
+        // Also test with context filter
+        {
+            let mut state = app.world_mut().resource_mut::<JournalUiState>();
+            state.set_filter(JournalFilter {
+                category: None,
+                context: Some(JournalContext::CurrentPlanet { planet_seed: 42 }),
+            });
+        }
+
+        app.update();
+
+        // Verify context filter on empty journal also shows "No observations yet."
+        let mut q = app.world_mut().query_filtered::<&Journal, With<Player>>();
+        let journal = q.single(app.world()).expect("player must exist");
+        let state = app.world().resource::<JournalUiState>();
+
+        let filtered_entries: Vec<&JournalEntry> = journal
+            .entries
+            .values()
+            .filter(|entry| matches_filter(entry, state.filter()))
+            .collect();
+
+        let detail_spans =
+            build_detail_spans(&filtered_entries, state, !journal.entries.is_empty());
+        let detail_text = detail_spans_to_string(&detail_spans);
+
+        assert_eq!(
+            detail_text, "No observations yet.",
+            "Empty journal with context filter should show 'No observations yet.' not 'No matching entries'"
+        );
+
+        // Test combined filter on empty journal
+        {
+            let mut state = app.world_mut().resource_mut::<JournalUiState>();
+            state.set_filter(JournalFilter {
+                category: Some(ObservationCategory::ThermalBehavior),
+                context: Some(JournalContext::CurrentPlanet { planet_seed: 7 }),
+            });
+        }
+
+        app.update();
+
+        // Verify combined filter on empty journal also shows "No observations yet."
+        let mut q = app.world_mut().query_filtered::<&Journal, With<Player>>();
+        let journal = q.single(app.world()).expect("player must exist");
+        let state = app.world().resource::<JournalUiState>();
+
+        let filtered_entries: Vec<&JournalEntry> = journal
+            .entries
+            .values()
+            .filter(|entry| matches_filter(entry, state.filter()))
+            .collect();
+
+        let detail_spans =
+            build_detail_spans(&filtered_entries, state, !journal.entries.is_empty());
+        let detail_text = detail_spans_to_string(&detail_spans);
+
+        assert_eq!(
+            detail_text, "No observations yet.",
+            "Empty journal with combined filter should show 'No observations yet.' not 'No matching entries'"
         );
     }
 }
