@@ -1068,14 +1068,11 @@ fn journal_navigation(
         let new_context = match current_filter.context {
             None => {
                 // All → Current Planet (if world context available)
-                if let Some(profile) = world_profile.as_ref() {
-                    Some(JournalContext::CurrentPlanet { 
-                        planet_seed: profile.planet_seed.0 
+                world_profile
+                    .as_ref()
+                    .map(|profile| JournalContext::CurrentPlanet {
+                        planet_seed: profile.planet_seed.0,
                     })
-                } else {
-                    // No WorldProfile available, skip Current Planet filter
-                    None
-                }
             }
             Some(JournalContext::CurrentPlanet { .. }) => {
                 // Current Planet → All
@@ -1191,24 +1188,29 @@ fn update_journal_context_on_planet_change(
     let Some(profile) = world_profile.as_ref() else {
         return;
     };
-    
+
     if !profile.is_changed() {
         return;
     }
 
     // Check if the current filter is using CurrentPlanet context
     let current_filter = state.filter().clone();
-    if let Some(JournalContext::CurrentPlanet { planet_seed: current_seed }) = current_filter.context {
+    if let Some(JournalContext::CurrentPlanet {
+        planet_seed: current_seed,
+    }) = current_filter.context
+    {
         let new_seed = profile.planet_seed.0;
-        
+
         // Only update if the planet seed has actually changed
         if current_seed != new_seed {
             let new_filter = JournalFilter {
                 category: current_filter.category,
-                context: Some(JournalContext::CurrentPlanet { planet_seed: new_seed }),
+                context: Some(JournalContext::CurrentPlanet {
+                    planet_seed: new_seed,
+                }),
             };
             state.set_filter(new_filter);
-            
+
             // Reset scroll to top when filter changes, as specified in the technical design
             state.selected_index = 0;
             state.scroll_offset = 0;
@@ -7253,9 +7255,12 @@ mod tests {
                 Some(JournalContext::CurrentPlanet { planet_seed: 123 }),
                 "Context filter should be automatically updated to new planet seed 123"
             );
-            
+
             // Verify that scroll position was reset
-            assert_eq!(state.selected_index, 0, "Selected index should be reset to 0");
+            assert_eq!(
+                state.selected_index, 0,
+                "Selected index should be reset to 0"
+            );
             assert_eq!(state.scroll_offset, 0, "Scroll offset should be reset to 0");
         }
 
@@ -7296,8 +7301,8 @@ mod tests {
             let mut state = app.world_mut().resource_mut::<JournalUiState>();
             state.set_filter(JournalFilter {
                 category: None,
-                context: Some(JournalContext::CurrentBiome { 
-                    biome_key: "tundra".to_string() 
+                context: Some(JournalContext::CurrentBiome {
+                    biome_key: "tundra".to_string(),
                 }),
             });
         }
@@ -7317,8 +7322,8 @@ mod tests {
             let state = app.world().resource::<JournalUiState>();
             assert_eq!(
                 state.filter().context,
-                Some(JournalContext::CurrentBiome { 
-                    biome_key: "tundra".to_string() 
+                Some(JournalContext::CurrentBiome {
+                    biome_key: "tundra".to_string()
                 }),
                 "CurrentBiome filter should not be affected by planet changes"
             );
