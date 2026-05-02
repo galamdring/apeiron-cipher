@@ -415,6 +415,9 @@ impl Plugin for JournalPlugin {
                     journal_navigation
                         .in_set(JournalSet::Navigate)
                         .after(toggle_journal_visibility),
+                    update_journal_context_on_planet_change
+                        .in_set(JournalSet::Navigate)
+                        .after(journal_navigation),
                     apply_observations.in_set(JournalSet::Navigate),
                     compute_journal_panels.in_set(JournalSet::Compute),
                     sync_journal_ui.in_set(JournalSet::Sync),
@@ -1035,15 +1038,16 @@ fn toggle_journal_visibility(
 /// - Scroll offset auto-adjusts via `clamp_to_entry_count` so the
 ///   selected entry is always within the visible window.
 fn journal_navigation(
-    keys: Res<ButtonInput<KeyCode>>,
     mut state: ResMut<JournalUiState>,
-    player_query: Query<&Journal, With<Player>>,
+    keys: Res<ButtonInput<KeyCode>>,
+    q: Query<&Journal, With<Player>>,
+    world_profile: Option<Res<crate::world_generation::WorldProfile>>,
 ) {
     if !state.visible {
         return;
     }
 
-    let Ok(journal) = player_query.single() else {
+    let Ok(journal) = q.single() else {
         return;
     };
 
@@ -1064,10 +1068,14 @@ fn journal_navigation(
         let new_context = match current_filter.context {
             None => {
                 // All → Current Planet (if world context available)
-                // For now, we'll use a placeholder planet seed since WorldProfile
-                // integration is not yet available. This will be updated when
-                // the world context system is implemented.
-                Some(JournalContext::CurrentPlanet { planet_seed: 0 })
+                if let Some(profile) = world_profile.as_ref() {
+                    Some(JournalContext::CurrentPlanet { 
+                        planet_seed: profile.planet_seed.0 
+                    })
+                } else {
+                    // No WorldProfile available, skip Current Planet filter
+                    None
+                }
             }
             Some(JournalContext::CurrentPlanet { .. }) => {
                 // Current Planet → All
@@ -1157,6 +1165,55 @@ fn journal_navigation(
     }
 
     state.clamp_to_entry_count(entry_count);
+}
+
+/// System that automatically updates the journal context filter when the
+/// planet changes (WorldProfile resource changes).
+///
+/// When the player switches planets, this system detects the change in
+/// WorldProfile and updates any active CurrentPlanet context filter to
+/// use the new planet's seed. This ensures that the journal filter stays
+/// relevant to the current planet without requiring manual re-filtering.
+///
+/// The system only acts when:
+/// 1. WorldProfile resource has changed (detected via `Changed<WorldProfile>`)
+/// 2. The current journal filter is set to CurrentPlanet context
+/// 3. The new planet seed differs from the filter's current planet seed
+///
+/// When these conditions are met, the filter is updated to use the new
+/// planet seed, maintaining the same category filter but updating the
+/// context to match the new planet.
+fn update_journal_context_on_planet_change(
+    mut state: ResMut<JournalUiState>,
+    world_profile: Option<Res<crate::world_generation::WorldProfile>>,
+) {
+    // Only proceed if WorldProfile exists and has changed
+    let Some(profile) = world_profile.as_ref() else {
+        return;
+    };
+    
+    if !profile.is_changed() {
+        return;
+    }
+
+    // Check if the current filter is using CurrentPlanet context
+    let current_filter = state.filter().clone();
+    if let Some(JournalContext::CurrentPlanet { planet_seed: current_seed }) = current_filter.context {
+        let new_seed = profile.planet_seed.0;
+        
+        // Only update if the planet seed has actually changed
+        if current_seed != new_seed {
+            let new_filter = JournalFilter {
+                category: current_filter.category,
+                context: Some(JournalContext::CurrentPlanet { planet_seed: new_seed }),
+            };
+            state.set_filter(new_filter);
+            
+            // Reset scroll to top when filter changes, as specified in the technical design
+            state.selected_index = 0;
+            state.scroll_offset = 0;
+        }
+    }
 }
 
 // ── Record ingestion ────────────────────────────────────────────────────
@@ -6571,6 +6628,8 @@ mod tests {
     /// When the filter changes, selection resets to the top of the filtered list.
     #[test]
     fn shift_tab_cycles_context_filter() {
+        use crate::world_generation::{WorldGenerationConfig, WorldProfile};
+
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
         app.init_resource::<ButtonInput<KeyCode>>();
@@ -6582,6 +6641,14 @@ mod tests {
             filter: JournalFilter::default(),
         });
         app.add_systems(Update, journal_navigation);
+
+        // Set up WorldProfile with planet seed 0 to match test expectations
+        let config = WorldGenerationConfig {
+            planet_seed: Some(0u64.into()),
+            ..Default::default()
+        };
+        let profile = WorldProfile::from_config(&config).unwrap();
+        app.world_mut().insert_resource(profile);
 
         // Create a journal with entries from different planets
         let mut journal = Journal::default();
@@ -7123,5 +7190,170 @@ mod tests {
             detail_text, "No observations yet.",
             "Empty journal with combined filter should show 'No observations yet.' not 'No matching entries'"
         );
+    }
+
+    #[test]
+    fn test_planet_switch_updates_context_filter() {
+        use crate::world_generation::{WorldGenerationConfig, WorldProfile};
+
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .add_plugins(JournalPlugin)
+            .init_resource::<ButtonInput<KeyCode>>();
+
+        // Create a Player entity with an empty Journal component
+        app.world_mut().spawn((Player, Journal::default()));
+
+        // Set up initial WorldProfile with planet seed 42
+        let initial_config = WorldGenerationConfig {
+            planet_seed: Some(42u64.into()),
+            ..Default::default()
+        };
+        let initial_profile = WorldProfile::from_config(&initial_config).unwrap();
+        app.world_mut().insert_resource(initial_profile);
+
+        // Set journal filter to CurrentPlanet with the initial planet seed
+        {
+            let mut state = app.world_mut().resource_mut::<JournalUiState>();
+            state.set_filter(JournalFilter {
+                category: None,
+                context: Some(JournalContext::CurrentPlanet { planet_seed: 42 }),
+            });
+        }
+
+        // Update the app to process the initial state
+        app.update();
+
+        // Verify initial filter state
+        {
+            let state = app.world().resource::<JournalUiState>();
+            assert_eq!(
+                state.filter().context,
+                Some(JournalContext::CurrentPlanet { planet_seed: 42 }),
+                "Initial filter should be set to planet seed 42"
+            );
+        }
+
+        // Switch to a new planet by updating the WorldProfile resource
+        let new_config = WorldGenerationConfig {
+            planet_seed: Some(123u64.into()),
+            ..Default::default()
+        };
+        let new_profile = WorldProfile::from_config(&new_config).unwrap();
+        app.world_mut().insert_resource(new_profile);
+
+        // Update the app to process the planet change
+        app.update();
+
+        // Verify that the context filter was automatically updated to the new planet
+        {
+            let state = app.world().resource::<JournalUiState>();
+            assert_eq!(
+                state.filter().context,
+                Some(JournalContext::CurrentPlanet { planet_seed: 123 }),
+                "Context filter should be automatically updated to new planet seed 123"
+            );
+            
+            // Verify that scroll position was reset
+            assert_eq!(state.selected_index, 0, "Selected index should be reset to 0");
+            assert_eq!(state.scroll_offset, 0, "Scroll offset should be reset to 0");
+        }
+
+        // Test that category filter is preserved during planet switch
+        {
+            let mut state = app.world_mut().resource_mut::<JournalUiState>();
+            state.set_filter(JournalFilter {
+                category: Some(ObservationCategory::ThermalBehavior),
+                context: Some(JournalContext::CurrentPlanet { planet_seed: 123 }),
+            });
+        }
+
+        // Switch to another planet
+        let another_config = WorldGenerationConfig {
+            planet_seed: Some(456u64.into()),
+            ..Default::default()
+        };
+        let another_profile = WorldProfile::from_config(&another_config).unwrap();
+        app.world_mut().insert_resource(another_profile);
+
+        app.update();
+
+        // Verify that category filter is preserved while context is updated
+        {
+            let state = app.world().resource::<JournalUiState>();
+            assert_eq!(
+                state.filter(),
+                &JournalFilter {
+                    category: Some(ObservationCategory::ThermalBehavior),
+                    context: Some(JournalContext::CurrentPlanet { planet_seed: 456 }),
+                },
+                "Category filter should be preserved while context is updated to new planet"
+            );
+        }
+
+        // Test that non-CurrentPlanet context filters are not affected
+        {
+            let mut state = app.world_mut().resource_mut::<JournalUiState>();
+            state.set_filter(JournalFilter {
+                category: None,
+                context: Some(JournalContext::CurrentBiome { 
+                    biome_key: "tundra".to_string() 
+                }),
+            });
+        }
+
+        // Switch to yet another planet
+        let final_config = WorldGenerationConfig {
+            planet_seed: Some(789u64.into()),
+            ..Default::default()
+        };
+        let final_profile = WorldProfile::from_config(&final_config).unwrap();
+        app.world_mut().insert_resource(final_profile);
+
+        app.update();
+
+        // Verify that CurrentBiome filter is not affected by planet changes
+        {
+            let state = app.world().resource::<JournalUiState>();
+            assert_eq!(
+                state.filter().context,
+                Some(JournalContext::CurrentBiome { 
+                    biome_key: "tundra".to_string() 
+                }),
+                "CurrentBiome filter should not be affected by planet changes"
+            );
+        }
+
+        // Test that filter with no context is not affected
+        {
+            let mut state = app.world_mut().resource_mut::<JournalUiState>();
+            state.set_filter(JournalFilter {
+                category: Some(ObservationCategory::SurfaceAppearance),
+                context: None,
+            });
+        }
+
+        // Switch planet one more time
+        let last_config = WorldGenerationConfig {
+            planet_seed: Some(999u64.into()),
+            ..Default::default()
+        };
+        let last_profile = WorldProfile::from_config(&last_config).unwrap();
+        app.world_mut().insert_resource(last_profile);
+
+        app.update();
+
+        // Verify that filter with no context remains unchanged
+        {
+            let state = app.world().resource::<JournalUiState>();
+            assert_eq!(
+                state.filter(),
+                &JournalFilter {
+                    category: Some(ObservationCategory::SurfaceAppearance),
+                    context: None,
+                },
+                "Filter with no context should not be affected by planet changes"
+            );
+        }
     }
 }
