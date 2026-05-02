@@ -1,4 +1,4 @@
-# State of the Game Address — 4/26/2026
+# State of the Game Address — 5/2/2026
 
 As we come to this momentous PR, we are proud to show you all the ways this world has grown. What began as an empty room has become a place where materials have weight, fire reveals secrets, and discovery rewards the curious. The ground beneath you now belongs to a planet — one that orbits a star, in a system generated from a single seed.
 
@@ -28,6 +28,11 @@ There is no tutorial. No quest marker. No explanation. The world teaches through
 | Drop | G | Drop next carried item at your feet |
 | Activate fabricator | F | Only when both input slots are filled |
 | Open journal | J | Toggle your discovery journal |
+| Filter journal | Tab | Cycle through observation categories (All → Materials → Locations → etc.) |
+| Context filter | Shift+Tab | Filter by current context (All → Current Planet) |
+| Navigate journal | ↑/↓ | Move selection up/down in journal entry list |
+| Page journal | PgUp/PgDn | Jump by page in journal entry list |
+| Jump journal | Home/End | Jump to first/last entry in journal |
 | Release cursor | Escape | Frees the mouse from the game window |
 
 All bindings can be changed in `assets/config/input.toml`.
@@ -106,7 +111,11 @@ Press **J** to open your journal. Everything you've learned is recorded here aut
 - **Weight observations** — how heavy the material felt when you picked it up, relative to your carry strength
 - **Fabrication history** — which materials you combined and what they produced
 
-The journal is built on a typed data model — every observation is categorized, timestamped with real game time, and keyed by material identity. Observations are deduplicated automatically and confidence upgrades as you repeat experiments. The journal is your memory, structured for the long game.
+The journal is built on a typed data model — every observation is categorized, timestamped with real game time, and keyed by material identity. Observations are deduplicated automatically and confidence upgrades as you repeat experiments.
+
+**Contextual Filtering** — The journal adapts to what you're currently doing. Use **Tab** to cycle through observation categories (All → Materials → Locations → Fabrications → Heat → Weight). Use **Shift+Tab** to filter by context (All → Current Planet). Multiple filters combine with AND logic — filter by both "Materials" and "Current Planet" to see only materials you've found on this world. Active filters are shown in the filter bar above the entry list, and your filter choices persist when you close and reopen the journal. When no entries match your filters, the journal shows "No matching entries" rather than an empty panel.
+
+The journal is your memory, structured for the long game and responsive to your current focus.
 
 ---
 
