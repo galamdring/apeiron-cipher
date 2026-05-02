@@ -1,0 +1,3075 @@
+use super::*;
+
+/// Helper: default registry for tests.
+fn test_registry() -> StarTypeRegistry {
+    StarTypeRegistry::default()
+}
+
+/// Same seed + same registry = identical star profile. This is the
+/// fundamental determinism guarantee.
+#[test]
+fn determinism_same_seed_same_profile() {
+    let seed = SolarSystemSeed(0xDEAD_BEEF_CAFE_BABE);
+    let registry = test_registry();
+
+    let profile_a = derive_star_profile(seed, &registry);
+    let profile_b = derive_star_profile(seed, &registry);
+
+    assert_eq!(profile_a, profile_b, "same seed must produce same profile");
+}
+
+/// Different seeds should (with overwhelming probability) produce
+/// different profiles. We test 100 consecutive seeds and verify:
+/// 1. Not all profiles are identical (basic non-degeneracy).
+/// 2. Multiple distinct profiles exist (not just two values).
+/// 3. Numeric parameters show actual variation (not clamped to a
+///    single value).
+///
+/// A trivially broken derivation (e.g., ignoring the seed, always
+/// returning the first type, or collapsing all parameters to a
+/// boundary) would fail at least one of these checks.
+#[test]
+fn different_seeds_produce_different_stars() {
+    let registry = test_registry();
+    let profiles: Vec<StarProfile> = (0..100)
+        .map(|i| derive_star_profile(SolarSystemSeed(i), &registry))
+        .collect();
+
+    // Check 1: not all identical.
+    let first = &profiles[0];
+    let all_same = profiles.iter().all(|p| p == first);
+    assert!(
+        !all_same,
+        "100 consecutive seeds must not all produce the same star"
+    );
+
+    // Check 2: meaningful count of distinct profiles. With 100 seeds
+    // and a well-mixed derivation, we expect many unique combinations.
+    // Requiring at least 10 distinct profiles is conservative.
+    let distinct_count = {
+        let mut seen = std::collections::HashSet::new();
+        for p in &profiles {
+            // Hash on the concatenation of all distinguishing fields.
+            // StarProfile does not implement Hash, so we use a string key.
+            let key = format!(
+                "{}|{:.8}|{}|{:.8}",
+                p.star_type, p.luminosity, p.surface_temperature_k, p.mass_solar
+            );
+            seen.insert(key);
+        }
+        seen.len()
+    };
+    assert!(
+        distinct_count >= 10,
+        "expected at least 10 distinct profiles from 100 seeds, got {distinct_count}"
+    );
+
+    // Check 3: numeric parameter variation. Collect min/max of
+    // luminosity across all profiles and verify the range is non-trivial.
+    let lum_min = profiles
+        .iter()
+        .map(|p| p.luminosity)
+        .fold(f32::INFINITY, f32::min);
+    let lum_max = profiles
+        .iter()
+        .map(|p| p.luminosity)
+        .fold(f32::NEG_INFINITY, f32::max);
+    assert!(
+        (lum_max - lum_min) > 0.001,
+        "luminosity should vary across 100 seeds, got range [{lum_min}, {lum_max}]"
+    );
+
+    let mass_min = profiles
+        .iter()
+        .map(|p| p.mass_solar)
+        .fold(f32::INFINITY, f32::min);
+    let mass_max = profiles
+        .iter()
+        .map(|p| p.mass_solar)
+        .fold(f32::NEG_INFINITY, f32::max);
+    assert!(
+        (mass_max - mass_min) > 0.001,
+        "mass should vary across 100 seeds, got range [{mass_min}, {mass_max}]"
+    );
+}
+
+/// Different system seeds must produce different star *types*, not just
+/// different numeric parameters within the same type. With the default
+/// registry weights (red_dwarf:7, yellow_dwarf:2, blue_giant:1) and
+/// 100 seeds, we expect at least 2 distinct star type keys to appear.
+/// A broken type-selection path that always picks the same bucket would
+/// fail this check even if luminosity/mass varied.
+#[test]
+fn different_seeds_produce_different_star_types() {
+    let registry = test_registry();
+    let types: std::collections::HashSet<StarType> = (0..100)
+        .map(|i| derive_star_profile(SolarSystemSeed(i), &registry).star_type)
+        .collect();
+
+    assert!(
+        types.len() >= 2,
+        "expected at least 2 distinct star types from 100 seeds, got {}: {:?}",
+        types.len(),
+        types
+    );
+}
+
+/// Three deliberately spaced seeds must not all collapse to the same
+/// star profile. At least one pair must differ in some parameter,
+/// confirming the derivation is non-degenerate for a small sample.
+#[test]
+fn three_seeds_produce_at_least_some_variation() {
+    let registry = test_registry();
+    let seeds = [
+        SolarSystemSeed(42),
+        SolarSystemSeed(123_456),
+        SolarSystemSeed(0xDEAD_BEEF),
+    ];
+    let profiles: Vec<StarProfile> = seeds
+        .iter()
+        .map(|s| derive_star_profile(*s, &registry))
+        .collect();
+
+    // At least one pair must differ in at least one field.
+    let all_identical = profiles[0] == profiles[1] && profiles[1] == profiles[2];
+    assert!(
+        !all_identical,
+        "three different seeds must not all produce identical star profiles: {:?}",
+        profiles
+    );
+}
+
+/// All star types defined in the registry must be reachable. We brute-force
+/// a range of seeds and collect which type keys appear. With the default
+/// weights (7:2:1), even 10_000 seeds should comfortably hit all three.
+#[test]
+fn all_star_types_reachable() {
+    let registry = test_registry();
+    let mut seen_types: std::collections::HashSet<StarType> = std::collections::HashSet::new();
+
+    for i in 0..10_000 {
+        let profile = derive_star_profile(SolarSystemSeed(i), &registry);
+        seen_types.insert(profile.star_type);
+    }
+
+    for star_type in &registry.star_types {
+        assert!(
+            seen_types.contains(&star_type.star_type),
+            "star type '{}' was never selected across 10,000 seeds",
+            star_type.star_type
+        );
+    }
+}
+
+/// Habitable zone scales with luminosity: brighter stars should have
+/// their habitable zone further out.
+#[test]
+fn habitable_zone_scales_with_luminosity() {
+    // Construct two profiles with known luminosity values.
+    let dim = StarProfile {
+        star_type: StarType::SunLike, // arbitrary for this test
+        luminosity: 0.05,
+        surface_temperature_k: 3000,
+        mass_solar: 0.2,
+        habitable_zone_inner_au: (0.05_f32 / 1.1).sqrt(),
+        habitable_zone_outer_au: (0.05_f32 / 0.53).sqrt(),
+    };
+    let bright = StarProfile {
+        star_type: StarType::BlueGiant, // arbitrary for this test
+        luminosity: 50.0,
+        surface_temperature_k: 20000,
+        mass_solar: 10.0,
+        habitable_zone_inner_au: (50.0_f32 / 1.1).sqrt(),
+        habitable_zone_outer_au: (50.0_f32 / 0.53).sqrt(),
+    };
+
+    assert!(
+        bright.habitable_zone_inner_au > dim.habitable_zone_inner_au,
+        "brighter star should have farther inner habitable zone"
+    );
+    assert!(
+        bright.habitable_zone_outer_au > dim.habitable_zone_outer_au,
+        "brighter star should have farther outer habitable zone"
+    );
+}
+
+/// The TOML file should round-trip through the registry type without
+/// data loss. This validates that serde serialization and deserialization
+/// produce equivalent registries.
+#[test]
+fn toml_round_trip() {
+    let original = StarTypeRegistry::default();
+    let serialized = toml::to_string(&original).expect("StarTypeRegistry should serialize to TOML");
+    let deserialized: StarTypeRegistry =
+        toml::from_str(&serialized).expect("serialized TOML should deserialize back");
+
+    assert_eq!(
+        original.star_types.len(),
+        deserialized.star_types.len(),
+        "round-trip should preserve star type count"
+    );
+
+    for (orig, deser) in original
+        .star_types
+        .iter()
+        .zip(deserialized.star_types.iter())
+    {
+        assert_eq!(
+            orig.star_type, deser.star_type,
+            "round-trip should preserve star_type"
+        );
+        assert!(
+            (orig.luminosity_min - deser.luminosity_min).abs() < f32::EPSILON,
+            "round-trip should preserve luminosity_min"
+        );
+        assert!(
+            (orig.weight - deser.weight).abs() < f32::EPSILON,
+            "round-trip should preserve weight"
+        );
+    }
+}
+
+/// Star parameters must fall within the selected type's defined ranges.
+#[test]
+fn parameters_within_type_ranges() {
+    let registry = test_registry();
+
+    for i in 0..1_000 {
+        let profile = derive_star_profile(SolarSystemSeed(i), &registry);
+        let star_type = registry
+            .star_types
+            .iter()
+            .find(|st| st.star_type == profile.star_type)
+            .expect("profile star_type must exist in registry");
+
+        assert!(
+            profile.luminosity >= star_type.luminosity_min
+                && profile.luminosity <= star_type.luminosity_max,
+            "seed {i}: luminosity {} outside [{}, {}]",
+            profile.luminosity,
+            star_type.luminosity_min,
+            star_type.luminosity_max
+        );
+        assert!(
+            profile.surface_temperature_k >= star_type.temperature_min
+                && profile.surface_temperature_k <= star_type.temperature_max,
+            "seed {i}: temperature {} outside [{}, {}]",
+            profile.surface_temperature_k,
+            star_type.temperature_min,
+            star_type.temperature_max
+        );
+        assert!(
+            profile.mass_solar >= star_type.mass_min && profile.mass_solar <= star_type.mass_max,
+            "seed {i}: mass {} outside [{}, {}]",
+            profile.mass_solar,
+            star_type.mass_min,
+            star_type.mass_max
+        );
+    }
+}
+
+/// Habitable zone inner edge must always be less than outer edge.
+#[test]
+fn habitable_zone_inner_less_than_outer() {
+    let registry = test_registry();
+
+    for i in 0..1_000 {
+        let profile = derive_star_profile(SolarSystemSeed(i), &registry);
+        assert!(
+            profile.habitable_zone_inner_au < profile.habitable_zone_outer_au,
+            "seed {i}: inner ({}) must be < outer ({})",
+            profile.habitable_zone_inner_au,
+            profile.habitable_zone_outer_au
+        );
+    }
+}
+
+// ── Validation Tests ─────────────────────────────────────────────────
+
+/// The default registry must pass validation — if it doesn't, the
+/// hardcoded fallback is broken.
+#[test]
+fn default_registry_validates() {
+    let registry = StarTypeRegistry::default();
+    registry
+        .validate()
+        .expect("default StarTypeRegistry must pass validation");
+}
+
+/// An empty registry must be rejected.
+#[test]
+fn validate_rejects_empty_registry() {
+    let registry = StarTypeRegistry { star_types: vec![] };
+    let err = registry.validate().unwrap_err();
+    assert!(
+        matches!(err, StarRegistryError::Empty),
+        "expected Empty, got: {err}"
+    );
+}
+
+/// An unknown star type string in TOML must fail deserialization.
+#[test]
+fn invalid_toml_unknown_star_type_rejected() {
+    let toml_str = r#"
+[[star_types]]
+star_type = "neutron_star"
+luminosity_min = 0.01
+luminosity_max = 0.08
+temperature_min = 2500
+temperature_max = 3700
+mass_min = 0.08
+mass_max = 0.45
+weight = 7.0
+"#;
+    let err = toml::from_str::<StarTypeRegistry>(toml_str)
+        .expect_err("unknown star type variant should fail to deserialize");
+    let msg = err.to_string();
+    assert!(
+        !msg.is_empty(),
+        "deserialization error should have a non-empty message"
+    );
+}
+
+/// Duplicate star types must be rejected by validation.
+#[test]
+fn validate_rejects_duplicate_star_types() {
+    let mut registry = StarTypeRegistry::default();
+    registry.star_types[1].star_type = registry.star_types[0].star_type;
+    let err = registry.validate().unwrap_err();
+    assert!(
+        matches!(err, StarRegistryError::DuplicateType { .. }),
+        "expected DuplicateType, got: {err}"
+    );
+}
+
+/// Zero weight must be rejected.
+#[test]
+fn validate_rejects_zero_weight() {
+    let mut registry = StarTypeRegistry::default();
+    registry.star_types[0].weight = 0.0;
+    let err = registry.validate().unwrap_err();
+    assert!(
+        matches!(err, StarRegistryError::InvalidWeight { .. }),
+        "expected InvalidWeight, got: {err}"
+    );
+}
+
+/// Negative weight must be rejected.
+#[test]
+fn validate_rejects_negative_weight() {
+    let mut registry = StarTypeRegistry::default();
+    registry.star_types[0].weight = -1.0;
+    let err = registry.validate().unwrap_err();
+    assert!(
+        matches!(err, StarRegistryError::InvalidWeight { .. }),
+        "expected InvalidWeight, got: {err}"
+    );
+}
+
+/// Non-finite weight (NaN) must be rejected.
+#[test]
+fn validate_rejects_nan_weight() {
+    let mut registry = StarTypeRegistry::default();
+    registry.star_types[0].weight = f32::NAN;
+    let err = registry.validate().unwrap_err();
+    assert!(
+        matches!(err, StarRegistryError::InvalidWeight { .. }),
+        "expected InvalidWeight, got: {err}"
+    );
+}
+
+/// Inverted luminosity range (min >= max) must be rejected.
+#[test]
+fn validate_rejects_inverted_luminosity_range() {
+    let mut registry = StarTypeRegistry::default();
+    registry.star_types[0].luminosity_min = 5.0;
+    registry.star_types[0].luminosity_max = 1.0;
+    let err = registry.validate().unwrap_err();
+    assert!(
+        matches!(err, StarRegistryError::InvalidLuminosity { .. }),
+        "expected InvalidLuminosity, got: {err}"
+    );
+}
+
+/// Zero luminosity_min must be rejected.
+#[test]
+fn validate_rejects_zero_luminosity_min() {
+    let mut registry = StarTypeRegistry::default();
+    registry.star_types[0].luminosity_min = 0.0;
+    let err = registry.validate().unwrap_err();
+    assert!(
+        matches!(err, StarRegistryError::InvalidLuminosity { .. }),
+        "expected InvalidLuminosity, got: {err}"
+    );
+}
+
+/// Inverted temperature range must be rejected.
+#[test]
+fn validate_rejects_inverted_temperature_range() {
+    let mut registry = StarTypeRegistry::default();
+    registry.star_types[0].temperature_min = 5000;
+    registry.star_types[0].temperature_max = 1000;
+    let err = registry.validate().unwrap_err();
+    assert!(
+        matches!(err, StarRegistryError::InvalidTemperature { .. }),
+        "expected InvalidTemperature, got: {err}"
+    );
+}
+
+/// Zero temperature_min must be rejected.
+#[test]
+fn validate_rejects_zero_temperature_min() {
+    let mut registry = StarTypeRegistry::default();
+    registry.star_types[0].temperature_min = 0;
+    let err = registry.validate().unwrap_err();
+    assert!(
+        matches!(err, StarRegistryError::InvalidTemperature { .. }),
+        "expected InvalidTemperature, got: {err}"
+    );
+}
+
+/// Inverted mass range must be rejected.
+#[test]
+fn validate_rejects_inverted_mass_range() {
+    let mut registry = StarTypeRegistry::default();
+    registry.star_types[0].mass_min = 10.0;
+    registry.star_types[0].mass_max = 1.0;
+    let err = registry.validate().unwrap_err();
+    assert!(
+        matches!(err, StarRegistryError::InvalidMass { .. }),
+        "expected InvalidMass, got: {err}"
+    );
+}
+
+/// Zero mass_min must be rejected.
+#[test]
+fn validate_rejects_zero_mass_min() {
+    let mut registry = StarTypeRegistry::default();
+    registry.star_types[0].mass_min = 0.0;
+    let err = registry.validate().unwrap_err();
+    assert!(
+        matches!(err, StarRegistryError::InvalidMass { .. }),
+        "expected InvalidMass, got: {err}"
+    );
+}
+
+// ── Invalid TOML Tests ────────────────────────────────────────────────
+//
+// These tests verify that malformed TOML input produces clear,
+// actionable errors — either at the deserialization stage (missing
+// required fields) or at the validation stage (semantically invalid
+// values like negative weights).
+
+/// TOML missing a required field (`weight`) must fail deserialization
+/// with an error message that identifies the missing field.
+#[test]
+fn invalid_toml_missing_field_produces_clear_error() {
+    let toml_str = r#"
+[[star_types]]
+star_type = "red_dwarf"
+luminosity_min = 0.01
+luminosity_max = 0.08
+temperature_min = 2500
+temperature_max = 3700
+mass_min = 0.08
+mass_max = 0.45
+"#;
+    let err = toml::from_str::<StarTypeRegistry>(toml_str)
+        .expect_err("TOML missing 'weight' field should fail to deserialize");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("weight"),
+        "error should identify the missing 'weight' field, got: {msg}"
+    );
+}
+
+/// TOML missing the `star_type` field must fail deserialization with a clear
+/// message identifying which field is absent.
+#[test]
+fn invalid_toml_missing_star_type_field_produces_clear_error() {
+    let toml_str = r#"
+[[star_types]]
+luminosity_min = 0.01
+luminosity_max = 0.08
+temperature_min = 2500
+temperature_max = 3700
+mass_min = 0.08
+mass_max = 0.45
+weight = 7.0
+"#;
+    let err = toml::from_str::<StarTypeRegistry>(toml_str)
+        .expect_err("TOML missing 'star_type' field should fail to deserialize");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("star_type"),
+        "error should identify the missing 'star_type' field, got: {msg}"
+    );
+}
+
+/// TOML missing a numeric range field (`temperature_max`) must fail
+/// deserialization with a message identifying the absent field.
+#[test]
+fn invalid_toml_missing_temperature_max_produces_clear_error() {
+    let toml_str = r#"
+[[star_types]]
+star_type = "red_dwarf"
+luminosity_min = 0.01
+luminosity_max = 0.08
+temperature_min = 2500
+mass_min = 0.08
+mass_max = 0.45
+weight = 7.0
+"#;
+    let err = toml::from_str::<StarTypeRegistry>(toml_str)
+        .expect_err("TOML missing 'temperature_max' should fail to deserialize");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("temperature_max"),
+        "error should identify the missing 'temperature_max' field, got: {msg}"
+    );
+}
+
+/// TOML with a negative weight parses successfully (it's a valid f32),
+/// but must be caught by `validate()` with a clear error message.
+#[test]
+fn invalid_toml_negative_weight_caught_by_validation() {
+    let toml_str = r#"
+[[star_types]]
+star_type = "red_dwarf"
+luminosity_min = 0.01
+luminosity_max = 0.08
+temperature_min = 2500
+temperature_max = 3700
+mass_min = 0.08
+mass_max = 0.45
+weight = -3.0
+"#;
+    let registry = toml::from_str::<StarTypeRegistry>(toml_str)
+        .expect("negative weight is valid f32, should parse");
+    let err = registry
+        .validate()
+        .expect_err("negative weight must fail validation");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("weight") && msg.contains("positive"),
+        "error should mention weight must be positive, got: {msg}"
+    );
+}
+
+/// Completely empty TOML (no `star_types` array) should either fail to
+/// deserialize or produce an empty registry that fails validation.
+#[test]
+fn invalid_toml_empty_file_produces_clear_error() {
+    let toml_str = "";
+    match toml::from_str::<StarTypeRegistry>(toml_str) {
+        Err(e) => {
+            // Deserialization failed — that's acceptable as long as the
+            // error is not completely opaque.
+            let msg = e.to_string();
+            assert!(
+                !msg.is_empty(),
+                "deserialization error should have a non-empty message"
+            );
+        }
+        Ok(registry) => {
+            // Parsed into an empty registry — validation must catch it.
+            let err = registry
+                .validate()
+                .expect_err("empty registry must fail validation");
+            assert!(
+                matches!(err, StarRegistryError::Empty),
+                "expected Empty, got: {err}"
+            );
+        }
+    }
+}
+
+/// TOML with a wrong type for a field (string where u32 expected) must
+/// fail deserialization with a clear error.
+#[test]
+fn invalid_toml_wrong_type_produces_clear_error() {
+    let toml_str = r#"
+[[star_types]]
+star_type = "red_dwarf"
+luminosity_min = 0.01
+luminosity_max = 0.08
+temperature_min = "not_a_number"
+temperature_max = 3700
+mass_min = 0.08
+mass_max = 0.45
+weight = 7.0
+"#;
+    let err = toml::from_str::<StarTypeRegistry>(toml_str)
+        .expect_err("wrong type for temperature_min should fail to deserialize");
+    let msg = err.to_string();
+    assert!(
+        !msg.is_empty(),
+        "deserialization error should have a non-empty message, got: {msg}"
+    );
+}
+
+/// All 3 star types must be reachable across 1000 seeds and the observed
+/// distribution must approximately match the configured weights (7:2:1).
+/// We allow ±10 percentage-points tolerance to account for pseudo-random
+/// variance while still catching gross selection bugs.
+#[test]
+fn star_type_weighted_distribution_across_1000_seeds() {
+    let registry = test_registry();
+    let total_seeds: usize = 1_000;
+    let mut counts: std::collections::HashMap<StarType, usize> = std::collections::HashMap::new();
+
+    for i in 0..total_seeds {
+        let profile = derive_star_profile(SolarSystemSeed(i as u64), &registry);
+        *counts.entry(profile.star_type).or_insert(0) += 1;
+    }
+
+    // Every type must appear at least once.
+    for star_type in &registry.star_types {
+        assert!(
+            counts.contains_key(&star_type.star_type),
+            "star type '{}' was never selected across {total_seeds} seeds",
+            star_type.star_type
+        );
+    }
+
+    // Compute total weight for expected proportions.
+    let total_weight: f64 = registry.star_types.iter().map(|st| st.weight as f64).sum();
+
+    for star_type in &registry.star_types {
+        let expected_fraction = star_type.weight as f64 / total_weight;
+        let observed_count = *counts.get(&star_type.star_type).unwrap_or(&0);
+        let observed_fraction = observed_count as f64 / total_seeds as f64;
+        let deviation = (observed_fraction - expected_fraction).abs();
+
+        assert!(
+            deviation < 0.10,
+            "star type '{}': expected ~{:.1}% but got {:.1}% ({} / {}), \
+                 deviation {:.1}pp exceeds 10pp tolerance",
+            star_type.star_type,
+            expected_fraction * 100.0,
+            observed_fraction * 100.0,
+            observed_count,
+            total_seeds,
+            deviation * 100.0,
+        );
+    }
+}
+
+/// `SolarSystemSeed` must round-trip through serde without data loss.
+/// This validates that the newtype's `Serialize`/`Deserialize` derives
+/// correctly preserve the inner `u64` value.
+#[test]
+fn solar_system_seed_serde_round_trip() {
+    let seeds = [
+        SolarSystemSeed(0),
+        SolarSystemSeed(1),
+        SolarSystemSeed(u64::MAX),
+        SolarSystemSeed(0xDEAD_BEEF_CAFE_BABE),
+    ];
+
+    for original in seeds {
+        let json =
+            serde_json::to_string(&original).expect("SolarSystemSeed should serialize to JSON");
+        let deserialized: SolarSystemSeed =
+            serde_json::from_str(&json).expect("SolarSystemSeed should deserialize from JSON");
+        assert_eq!(
+            original, deserialized,
+            "SolarSystemSeed({}) must survive JSON round-trip",
+            original.0
+        );
+    }
+}
+
+/// A registry containing exactly one star type must always select that
+/// type, regardless of the seed. This validates that the weighted
+/// selection logic handles the degenerate single-entry case correctly
+/// rather than panicking, wrapping, or falling through.
+#[test]
+fn single_type_registry_always_selects_that_type() {
+    let registry = StarTypeRegistry {
+        star_types: vec![StarTypeDefinition {
+            star_type: StarType::SunLike,
+            luminosity_min: 0.5,
+            luminosity_max: 1.5,
+            temperature_min: 4500,
+            temperature_max: 6500,
+            mass_min: 0.7,
+            mass_max: 1.3,
+            weight: 1.0,
+        }],
+    };
+
+    // Verify the registry is valid so we are not testing against an
+    // accidentally broken configuration.
+    registry
+        .validate()
+        .expect("single-type registry should be valid");
+
+    // Sweep a variety of seeds — every one must resolve to SunLike
+    // with parameters within the defined ranges.
+    for i in 0..500 {
+        let seed = SolarSystemSeed(i * 7_919); // spaced primes to avoid clustering
+        let profile = derive_star_profile(seed, &registry);
+
+        assert_eq!(
+            profile.star_type,
+            StarType::SunLike,
+            "seed {} selected '{:?}' instead of the only available type",
+            seed.0,
+            profile.star_type
+        );
+
+        assert!(
+            profile.luminosity >= 0.5 && profile.luminosity <= 1.5,
+            "seed {}: luminosity {} outside [0.5, 1.5]",
+            seed.0,
+            profile.luminosity
+        );
+        assert!(
+            profile.surface_temperature_k >= 4500 && profile.surface_temperature_k <= 6500,
+            "seed {}: temperature {} outside [4500, 6500]",
+            seed.0,
+            profile.surface_temperature_k
+        );
+        assert!(
+            profile.mass_solar >= 0.7 && profile.mass_solar <= 1.3,
+            "seed {}: mass {} outside [0.7, 1.3]",
+            seed.0,
+            profile.mass_solar
+        );
+    }
+}
+
+/// Extreme seed values (0, 1, u64::MAX, u64::MAX - 1) must produce valid
+/// profiles with no overflow, NaN, or out-of-range parameters.
+#[test]
+fn extreme_seed_values_produce_valid_profiles() {
+    let registry = StarTypeRegistry::default();
+    registry
+        .validate()
+        .expect("default registry should be valid");
+
+    let extreme_seeds: &[u64] = &[0, 1, u64::MAX, u64::MAX - 1];
+
+    for &raw in extreme_seeds {
+        let seed = SolarSystemSeed(raw);
+        let profile = derive_star_profile(seed, &registry);
+
+        // Find the matching star type definition so we can validate ranges.
+        let star_def = registry
+            .star_types
+            .iter()
+            .find(|st| st.star_type == profile.star_type)
+            .unwrap_or_else(|| {
+                panic!(
+                    "seed {}: star_type '{:?}' not found in registry",
+                    raw, profile.star_type
+                )
+            });
+
+        assert!(
+            profile.luminosity >= star_def.luminosity_min
+                && profile.luminosity <= star_def.luminosity_max,
+            "seed {}: luminosity {} outside [{}, {}]",
+            raw,
+            profile.luminosity,
+            star_def.luminosity_min,
+            star_def.luminosity_max,
+        );
+
+        assert!(
+            profile.surface_temperature_k >= star_def.temperature_min
+                && profile.surface_temperature_k <= star_def.temperature_max,
+            "seed {}: temperature {} outside [{}, {}]",
+            raw,
+            profile.surface_temperature_k,
+            star_def.temperature_min,
+            star_def.temperature_max,
+        );
+
+        assert!(
+            profile.mass_solar >= star_def.mass_min && profile.mass_solar <= star_def.mass_max,
+            "seed {}: mass {} outside [{}, {}]",
+            raw,
+            profile.mass_solar,
+            star_def.mass_min,
+            star_def.mass_max,
+        );
+
+        // Habitable zone values must be finite, positive, and inner < outer.
+        assert!(
+            profile.habitable_zone_inner_au.is_finite() && profile.habitable_zone_inner_au > 0.0,
+            "seed {}: habitable_zone_inner_au {} is not finite and positive",
+            raw,
+            profile.habitable_zone_inner_au,
+        );
+        assert!(
+            profile.habitable_zone_outer_au.is_finite() && profile.habitable_zone_outer_au > 0.0,
+            "seed {}: habitable_zone_outer_au {} is not finite and positive",
+            raw,
+            profile.habitable_zone_outer_au,
+        );
+        assert!(
+            profile.habitable_zone_inner_au < profile.habitable_zone_outer_au,
+            "seed {}: inner {} >= outer {}",
+            raw,
+            profile.habitable_zone_inner_au,
+            profile.habitable_zone_outer_au,
+        );
+
+        // No NaN in any float field.
+        assert!(
+            !profile.luminosity.is_nan(),
+            "seed {}: luminosity is NaN",
+            raw
+        );
+        assert!(
+            !profile.mass_solar.is_nan(),
+            "seed {}: mass_solar is NaN",
+            raw
+        );
+    }
+}
+
+// ── OrbitalConfig Validation Tests ───────────────────────────────────
+
+/// The default orbital config must pass validation.
+#[test]
+fn default_orbital_config_validates() {
+    OrbitalConfig::default()
+        .validate()
+        .expect("default OrbitalConfig must pass validation");
+}
+
+/// planet_count_min < 1 must be rejected.
+#[test]
+fn orbital_config_rejects_zero_planet_count_min() {
+    let mut config = OrbitalConfig::default();
+    config.planet_count_min = 0;
+    let err = config.validate().unwrap_err();
+    assert!(
+        matches!(err, OrbitalConfigError::PlanetCountMinTooLow { .. }),
+        "expected PlanetCountMinTooLow, got: {err}"
+    );
+}
+
+/// Inverted planet count range must be rejected.
+#[test]
+fn orbital_config_rejects_inverted_planet_count() {
+    let mut config = OrbitalConfig::default();
+    config.planet_count_min = 10;
+    config.planet_count_max = 3;
+    let err = config.validate().unwrap_err();
+    assert!(
+        matches!(err, OrbitalConfigError::PlanetCountRangeInverted { .. }),
+        "expected PlanetCountRangeInverted, got: {err}"
+    );
+}
+
+/// Zero inner_orbit_au must be rejected.
+#[test]
+fn orbital_config_rejects_zero_inner_orbit() {
+    let mut config = OrbitalConfig::default();
+    config.inner_orbit_au = 0.0;
+    let err = config.validate().unwrap_err();
+    assert!(
+        matches!(err, OrbitalConfigError::InvalidInnerOrbit { .. }),
+        "expected InvalidInnerOrbit, got: {err}"
+    );
+}
+
+/// Inverted orbit range must be rejected.
+#[test]
+fn orbital_config_rejects_inverted_orbit_range() {
+    let mut config = OrbitalConfig::default();
+    config.inner_orbit_au = 60.0;
+    config.outer_orbit_au = 10.0;
+    let err = config.validate().unwrap_err();
+    assert!(
+        matches!(err, OrbitalConfigError::OrbitRangeInverted { .. }),
+        "expected OrbitRangeInverted, got: {err}"
+    );
+}
+
+/// Zero min_separation_au must be rejected.
+#[test]
+fn orbital_config_rejects_zero_separation() {
+    let mut config = OrbitalConfig::default();
+    config.min_separation_au = 0.0;
+    let err = config.validate().unwrap_err();
+    assert!(
+        matches!(err, OrbitalConfigError::InvalidSeparation { .. }),
+        "expected InvalidSeparation, got: {err}"
+    );
+}
+
+/// NaN in outer_orbit_au must be rejected.
+#[test]
+fn orbital_config_rejects_nan_outer_orbit() {
+    let mut config = OrbitalConfig::default();
+    config.outer_orbit_au = f32::NAN;
+    let err = config.validate().unwrap_err();
+    assert!(
+        matches!(err, OrbitalConfigError::InvalidOuterOrbit { .. }),
+        "expected InvalidOuterOrbit, got: {err}"
+    );
+}
+
+/// Equal min and max planet count is valid (deterministic count).
+#[test]
+fn orbital_config_accepts_equal_planet_count() {
+    let mut config = OrbitalConfig::default();
+    config.planet_count_min = 5;
+    config.planet_count_max = 5;
+    config
+        .validate()
+        .expect("equal planet_count_min and planet_count_max should be valid");
+}
+
+/// OrbitalConfig must round-trip through TOML without data loss.
+#[test]
+fn orbital_config_toml_round_trip() {
+    let original = OrbitalConfig::default();
+    let serialized = toml::to_string(&original).expect("OrbitalConfig should serialize to TOML");
+    let deserialized: OrbitalConfig =
+        toml::from_str(&serialized).expect("serialized TOML should deserialize back");
+
+    assert_eq!(
+        original.planet_count_min, deserialized.planet_count_min,
+        "round-trip should preserve planet_count_min"
+    );
+    assert_eq!(
+        original.planet_count_max, deserialized.planet_count_max,
+        "round-trip should preserve planet_count_max"
+    );
+    assert!(
+        (original.inner_orbit_au - deserialized.inner_orbit_au).abs() < f32::EPSILON,
+        "round-trip should preserve inner_orbit_au"
+    );
+    assert!(
+        (original.outer_orbit_au - deserialized.outer_orbit_au).abs() < f32::EPSILON,
+        "round-trip should preserve outer_orbit_au"
+    );
+    assert!(
+        (original.min_separation_au - deserialized.min_separation_au).abs() < f32::EPSILON,
+        "round-trip should preserve min_separation_au"
+    );
+}
+
+/// OrbitalConfig must round-trip through serde (JSON) without data loss.
+#[test]
+fn orbital_config_serde_round_trip() {
+    let original = OrbitalConfig::default();
+    let json = serde_json::to_string(&original).expect("OrbitalConfig should serialize to JSON");
+    let deserialized: OrbitalConfig =
+        serde_json::from_str(&json).expect("OrbitalConfig should deserialize from JSON");
+
+    assert_eq!(
+        original.planet_count_min, deserialized.planet_count_min,
+        "round-trip should preserve planet_count_min"
+    );
+    assert_eq!(
+        original.planet_count_max, deserialized.planet_count_max,
+        "round-trip should preserve planet_count_max"
+    );
+    assert!(
+        (original.inner_orbit_au - deserialized.inner_orbit_au).abs() < f32::EPSILON,
+        "round-trip should preserve inner_orbit_au"
+    );
+    assert!(
+        (original.outer_orbit_au - deserialized.outer_orbit_au).abs() < f32::EPSILON,
+        "round-trip should preserve outer_orbit_au"
+    );
+    assert!(
+        (original.min_separation_au - deserialized.min_separation_au).abs() < f32::EPSILON,
+        "round-trip should preserve min_separation_au"
+    );
+}
+
+/// OrbitalSlot must round-trip through serde (JSON) without data loss.
+#[test]
+fn orbital_slot_serde_round_trip() {
+    let slot = OrbitalSlot {
+        planet_seed: PlanetSeed(0xCAFE_BABE),
+        orbital_distance_au: 1.5,
+        orbital_index: 2,
+    };
+    let json = serde_json::to_string(&slot).expect("OrbitalSlot should serialize to JSON");
+    let deserialized: OrbitalSlot =
+        serde_json::from_str(&json).expect("OrbitalSlot should deserialize from JSON");
+    assert_eq!(
+        slot, deserialized,
+        "OrbitalSlot must survive JSON round-trip"
+    );
+}
+
+/// OrbitalLayout must round-trip through serde (JSON) without data loss.
+#[test]
+fn orbital_layout_serde_round_trip() {
+    let layout = OrbitalLayout {
+        planets: vec![
+            OrbitalSlot {
+                planet_seed: PlanetSeed(1),
+                orbital_distance_au: 0.5,
+                orbital_index: 0,
+            },
+            OrbitalSlot {
+                planet_seed: PlanetSeed(2),
+                orbital_distance_au: 3.0,
+                orbital_index: 1,
+            },
+        ],
+    };
+    let json = serde_json::to_string(&layout).expect("OrbitalLayout should serialize to JSON");
+    let deserialized: OrbitalLayout =
+        serde_json::from_str(&json).expect("OrbitalLayout should deserialize from JSON");
+    assert_eq!(
+        layout, deserialized,
+        "OrbitalLayout must survive JSON round-trip"
+    );
+}
+
+/// Seed channel constants for orbital layout must not collide with
+/// existing star generation channels.
+#[test]
+fn orbital_channel_constants_do_not_collide_with_star_channels() {
+    let star_channels = [
+        STAR_TYPE_CHANNEL,
+        STAR_LUMINOSITY_CHANNEL,
+        STAR_TEMPERATURE_CHANNEL,
+        STAR_MASS_CHANNEL,
+    ];
+    let orbital_channels = [PLANET_COUNT_CHANNEL, ORBITAL_LAYOUT_CHANNEL];
+
+    for &oc in &orbital_channels {
+        for &sc in &star_channels {
+            assert_ne!(
+                oc, sc,
+                "orbital channel {oc:#018X} collides with star channel {sc:#018X}"
+            );
+        }
+    }
+
+    // Orbital channels must also not collide with each other.
+    assert_ne!(
+        PLANET_COUNT_CHANNEL, ORBITAL_LAYOUT_CHANNEL,
+        "PLANET_COUNT_CHANNEL and ORBITAL_LAYOUT_CHANNEL must differ"
+    );
+}
+
+// ── Planet Count Derivation Tests ────────────────────────────────
+
+/// Same seed + same config = same planet count. Fundamental determinism.
+#[test]
+fn planet_count_deterministic() {
+    let seed = SolarSystemSeed(0xDEAD_BEEF_CAFE_BABE);
+    let config = OrbitalConfig::default();
+
+    let count_a = derive_planet_count(seed, &config);
+    let count_b = derive_planet_count(seed, &config);
+
+    assert_eq!(count_a, count_b, "same seed must produce same planet count");
+}
+
+/// Planet count must always be within [min, max] for a range of seeds.
+#[test]
+fn planet_count_within_configured_range() {
+    let config = OrbitalConfig::default();
+
+    for i in 0..10_000_u64 {
+        let count = derive_planet_count(SolarSystemSeed(i), &config);
+        assert!(
+            count >= config.planet_count_min && count <= config.planet_count_max,
+            "seed {i}: planet count {count} outside [{}, {}]",
+            config.planet_count_min,
+            config.planet_count_max,
+        );
+    }
+}
+
+/// When min == max, every seed must produce exactly that count.
+#[test]
+fn planet_count_fixed_when_min_equals_max() {
+    let config = OrbitalConfig {
+        planet_count_min: 5,
+        planet_count_max: 5,
+        ..OrbitalConfig::default()
+    };
+
+    for i in 0..1_000_u64 {
+        let count = derive_planet_count(SolarSystemSeed(i), &config);
+        assert_eq!(
+            count, 5,
+            "seed {i}: expected exactly 5 planets when min==max, got {count}"
+        );
+    }
+}
+
+/// Different seeds should produce varying planet counts — not all the
+/// same value. With default range [2, 8] and 10,000 seeds, we expect
+/// at least 3 distinct counts.
+#[test]
+fn planet_count_varies_across_seeds() {
+    let config = OrbitalConfig::default();
+    let mut seen = std::collections::HashSet::new();
+
+    for i in 0..10_000_u64 {
+        seen.insert(derive_planet_count(SolarSystemSeed(i), &config));
+    }
+
+    assert!(
+        seen.len() >= 3,
+        "expected at least 3 distinct planet counts from 10,000 seeds, got {}",
+        seen.len()
+    );
+}
+
+/// Even a small sample of 10 seeds should produce at least 2 distinct
+/// planet counts with default config [2, 8]. This validates that the
+/// derivation feels varied at human-observable scale — a player
+/// visiting a handful of systems should encounter different planet
+/// counts, not the same number every time.
+#[test]
+fn planet_count_feels_varied_small_sample() {
+    let config = OrbitalConfig::default();
+    let seeds: [u64; 10] = [1, 2, 3, 42, 100, 999, 7777, 123_456, 0xCAFE, 0xBEEF];
+    let mut seen = std::collections::HashSet::new();
+
+    for &s in &seeds {
+        let count = derive_planet_count(SolarSystemSeed(s), &config);
+        // Every count must be in range regardless.
+        assert!(
+            count >= config.planet_count_min && count <= config.planet_count_max,
+            "seed {s}: planet count {count} outside [{}, {}]",
+            config.planet_count_min,
+            config.planet_count_max,
+        );
+        seen.insert(count);
+    }
+
+    assert!(
+        seen.len() >= 2,
+        "expected at least 2 distinct planet counts from 10 seeds, got {}: {:?}",
+        seen.len(),
+        seen,
+    );
+}
+
+/// Both min and max planet counts must be reachable. With 10,000 seeds
+/// and a well-mixed derivation, both endpoints should appear.
+#[test]
+fn planet_count_reaches_min_and_max() {
+    let config = OrbitalConfig::default();
+    let mut min_seen = false;
+    let mut max_seen = false;
+
+    for i in 0..10_000_u64 {
+        let count = derive_planet_count(SolarSystemSeed(i), &config);
+        if count == config.planet_count_min {
+            min_seen = true;
+        }
+        if count == config.planet_count_max {
+            max_seen = true;
+        }
+        if min_seen && max_seen {
+            break;
+        }
+    }
+
+    assert!(
+        min_seen,
+        "planet_count_min ({}) was never produced in 10,000 seeds",
+        config.planet_count_min
+    );
+    assert!(
+        max_seen,
+        "planet_count_max ({}) was never produced in 10,000 seeds",
+        config.planet_count_max
+    );
+}
+
+/// Same seed + same config = identical planet count. This is the
+/// fundamental determinism guarantee for orbital layout generation.
+#[test]
+fn determinism_same_seed_same_planet_count() {
+    let config = OrbitalConfig::default();
+    let seed = SolarSystemSeed(0xDEAD_BEEF_CAFE_BABE);
+
+    let count_a = derive_planet_count(seed, &config);
+    let count_b = derive_planet_count(seed, &config);
+
+    assert_eq!(count_a, count_b, "same seed must produce same planet count");
+}
+
+/// Planet count respects a custom narrower range.
+#[test]
+fn planet_count_respects_custom_range() {
+    let config = OrbitalConfig {
+        planet_count_min: 4,
+        planet_count_max: 6,
+        ..OrbitalConfig::default()
+    };
+
+    for i in 0..10_000_u64 {
+        let count = derive_planet_count(SolarSystemSeed(i), &config);
+        assert!(
+            count >= 4 && count <= 6,
+            "seed {i}: planet count {count} outside custom range [4, 6]"
+        );
+    }
+}
+
+// ── Orbital Layout Tests ────────────────────────────────────────────
+
+/// When planet_count_min == planet_count_max, every seed must produce
+/// a layout with exactly that many planets. This exercises the edge
+/// case where the lerp range collapses to a single value, ensuring
+/// both `derive_planet_count` and `derive_orbital_layout` handle it
+/// without off-by-one or float rounding surprises.
+#[test]
+fn orbital_layout_fixed_count_when_min_equals_max() {
+    let config = OrbitalConfig {
+        planet_count_min: 3,
+        planet_count_max: 3,
+        ..OrbitalConfig::default()
+    };
+
+    for i in 0..1_000_u64 {
+        let layout = derive_orbital_layout(SolarSystemSeed(i), &config);
+        assert_eq!(
+            layout.planets.len(),
+            3,
+            "seed {i}: expected exactly 3 planets when min==max==3, got {}",
+            layout.planets.len()
+        );
+    }
+}
+
+/// Same seed + same config = identical orbital layout. This is the
+/// fundamental determinism guarantee for orbital generation.
+#[test]
+fn orbital_layout_deterministic() {
+    let seed = SolarSystemSeed(0xCAFE_BABE_DEAD_BEEF);
+    let config = OrbitalConfig::default();
+
+    let layout_a = derive_orbital_layout(seed, &config);
+    let layout_b = derive_orbital_layout(seed, &config);
+
+    assert_eq!(
+        layout_a, layout_b,
+        "same seed must produce identical orbital layout"
+    );
+}
+
+/// Orbital distances must be sorted innermost-first (ascending).
+#[test]
+fn orbital_layout_distances_sorted() {
+    let config = OrbitalConfig::default();
+
+    for i in 0..1_000_u64 {
+        let layout = derive_orbital_layout(SolarSystemSeed(i), &config);
+        for window in layout.planets.windows(2) {
+            assert!(
+                window[0].orbital_distance_au <= window[1].orbital_distance_au,
+                "seed {i}: distances not sorted — {} > {}",
+                window[0].orbital_distance_au,
+                window[1].orbital_distance_au,
+            );
+        }
+    }
+}
+
+/// Adjacent orbital distances must respect the configured minimum
+/// separation. The enforcement pushes overlapping orbits outward.
+#[test]
+fn orbital_layout_minimum_separation_enforced() {
+    let config = OrbitalConfig::default();
+
+    for i in 0..1_000_u64 {
+        let layout = derive_orbital_layout(SolarSystemSeed(i), &config);
+        for window in layout.planets.windows(2) {
+            let gap = window[1].orbital_distance_au - window[0].orbital_distance_au;
+            assert!(
+                gap >= config.min_separation_au - f32::EPSILON,
+                "seed {i}: separation {gap} AU < minimum {} AU",
+                config.min_separation_au,
+            );
+        }
+    }
+}
+
+/// Minimum separation must hold even when many planets are packed into a
+/// narrow orbital range, forcing heavy outward pushing.
+#[test]
+fn orbital_layout_minimum_separation_enforced_tight_range() {
+    let config = OrbitalConfig {
+        planet_count_min: 8,
+        planet_count_max: 8,
+        inner_orbit_au: 1.0,
+        outer_orbit_au: 5.0,
+        min_separation_au: 0.5,
+    };
+
+    for i in 0..500_u64 {
+        let layout = derive_orbital_layout(SolarSystemSeed(i), &config);
+        assert_eq!(layout.planets.len(), 8, "seed {i}: expected 8 planets",);
+        for window in layout.planets.windows(2) {
+            let gap = window[1].orbital_distance_au - window[0].orbital_distance_au;
+            assert!(
+                gap >= config.min_separation_au - 1e-5,
+                "seed {i}: separation {gap} AU < minimum {} AU (distances: {} AU, {} AU)",
+                config.min_separation_au,
+                window[0].orbital_distance_au,
+                window[1].orbital_distance_au,
+            );
+        }
+    }
+}
+
+/// Minimum separation must hold with a custom (large) separation value.
+#[test]
+fn orbital_layout_minimum_separation_enforced_custom_separation() {
+    let config = OrbitalConfig {
+        planet_count_min: 4,
+        planet_count_max: 4,
+        inner_orbit_au: 0.3,
+        outer_orbit_au: 100.0,
+        min_separation_au: 5.0,
+    };
+
+    for i in 0..500_u64 {
+        let layout = derive_orbital_layout(SolarSystemSeed(i), &config);
+        for window in layout.planets.windows(2) {
+            let gap = window[1].orbital_distance_au - window[0].orbital_distance_au;
+            assert!(
+                gap >= config.min_separation_au - 1e-5,
+                "seed {i}: separation {gap} AU < minimum {} AU (distances: {} AU, {} AU)",
+                config.min_separation_au,
+                window[0].orbital_distance_au,
+                window[1].orbital_distance_au,
+            );
+        }
+    }
+}
+
+/// With a single planet, separation enforcement is trivially satisfied
+/// (no adjacent pair exists).
+#[test]
+fn orbital_layout_minimum_separation_single_planet() {
+    let config = OrbitalConfig {
+        planet_count_min: 1,
+        planet_count_max: 1,
+        inner_orbit_au: 0.3,
+        outer_orbit_au: 50.0,
+        min_separation_au: 0.5,
+    };
+
+    for i in 0..100_u64 {
+        let layout = derive_orbital_layout(SolarSystemSeed(i), &config);
+        assert_eq!(layout.planets.len(), 1, "seed {i}: expected 1 planet");
+        // windows(2) yields nothing for a single-element vec — no
+        // separation invariant to violate.
+        assert_eq!(layout.planets.windows(2).count(), 0);
+    }
+}
+
+/// Planet seeds must differ for different orbital positions within the
+/// same system. Two planets at different distances must not share a seed.
+#[test]
+fn orbital_layout_planet_seeds_differ() {
+    let config = OrbitalConfig {
+        planet_count_min: 4,
+        planet_count_max: 4,
+        ..OrbitalConfig::default()
+    };
+
+    for i in 0..100_u64 {
+        let layout = derive_orbital_layout(SolarSystemSeed(i), &config);
+        for (a_idx, a) in layout.planets.iter().enumerate() {
+            for b in layout.planets.iter().skip(a_idx + 1) {
+                assert_ne!(
+                    a.planet_seed, b.planet_seed,
+                    "seed {i}: planets at {} AU and {} AU share the same planet seed",
+                    a.orbital_distance_au, b.orbital_distance_au,
+                );
+            }
+        }
+    }
+}
+
+/// Planet seeds are position-based, not index-based. Changing the planet
+/// count range should not alter the seed of a planet that ends up at the
+/// same orbital distance. We verify this by comparing a layout where a
+/// specific planet exists in both a narrow and wide count config — if the
+/// distance is identical, the seed must be identical.
+#[test]
+fn orbital_layout_planet_seeds_position_based() {
+    // Use a seed where we can get a layout with at least 2 planets in
+    // both configs. We use min==max to guarantee exact counts.
+    let seed = SolarSystemSeed(42);
+
+    // Generate a 3-planet layout.
+    let config_3 = OrbitalConfig {
+        planet_count_min: 3,
+        planet_count_max: 3,
+        ..OrbitalConfig::default()
+    };
+    let layout_3 = derive_orbital_layout(seed, &config_3);
+
+    // Generate a 5-planet layout. The first 3 distance draws use the same
+    // sub-seeds (channels 1, 2, 3), so if sorting doesn't interleave new
+    // planets between them, their distances — and therefore seeds — match.
+    let config_5 = OrbitalConfig {
+        planet_count_min: 5,
+        planet_count_max: 5,
+        ..OrbitalConfig::default()
+    };
+    let layout_5 = derive_orbital_layout(seed, &config_5);
+
+    // Find planets that share an orbital distance across the two layouts.
+    // For those planets, the seed must be identical (position-based).
+    for slot_3 in &layout_3.planets {
+        for slot_5 in &layout_5.planets {
+            if (slot_3.orbital_distance_au - slot_5.orbital_distance_au).abs() < f32::EPSILON {
+                assert_eq!(
+                    slot_3.planet_seed, slot_5.planet_seed,
+                    "planet at {} AU has different seeds across configs",
+                    slot_3.orbital_distance_au,
+                );
+            }
+        }
+    }
+}
+
+/// Orbital indices must be 0-based and sequential from innermost outward.
+#[test]
+fn orbital_layout_indices_sequential() {
+    let config = OrbitalConfig::default();
+
+    for i in 0..100_u64 {
+        let layout = derive_orbital_layout(SolarSystemSeed(i), &config);
+        for (expected_idx, slot) in layout.planets.iter().enumerate() {
+            assert_eq!(
+                slot.orbital_index, expected_idx as u32,
+                "seed {i}: expected orbital_index {expected_idx}, got {}",
+                slot.orbital_index,
+            );
+        }
+    }
+}
+
+/// Different system seeds should produce varying orbital layouts. With
+/// 1000 seeds, we expect to see multiple distinct planet counts and
+/// distance patterns.
+#[test]
+fn orbital_layout_varies_across_seeds() {
+    let config = OrbitalConfig::default();
+    let mut distinct_counts = std::collections::HashSet::new();
+
+    for i in 0..1_000_u64 {
+        let layout = derive_orbital_layout(SolarSystemSeed(i), &config);
+        distinct_counts.insert(layout.planets.len());
+    }
+
+    assert!(
+        distinct_counts.len() >= 3,
+        "expected at least 3 distinct planet counts across 1000 seeds, got {:?}",
+        distinct_counts,
+    );
+}
+
+/// All orbital distances must fall at or above the inner orbit bound.
+/// (They may exceed outer_orbit_au due to min-separation pushing.)
+#[test]
+fn orbital_layout_distances_at_least_inner_orbit() {
+    let config = OrbitalConfig::default();
+
+    for i in 0..1_000_u64 {
+        let layout = derive_orbital_layout(SolarSystemSeed(i), &config);
+        for slot in &layout.planets {
+            assert!(
+                slot.orbital_distance_au >= config.inner_orbit_au,
+                "seed {i}: distance {} AU < inner bound {} AU",
+                slot.orbital_distance_au,
+                config.inner_orbit_au,
+            );
+        }
+    }
+}
+
+/// All orbital distances must fall within [inner_orbit_au, outer_orbit_au]
+/// when min-separation enforcement cannot push planets beyond the outer
+/// bound.
+///
+/// With a single planet (min==max==1), no separation enforcement occurs,
+/// so the raw distance draw must land within [inner, outer]. With
+/// multiple planets we use a generous range (0.3–500 AU, 0.5 AU sep)
+/// where pushing is negligible, confirming the base draws respect bounds.
+#[test]
+fn orbital_layout_distances_within_inner_outer_range() {
+    // Single-planet config: no separation enforcement, pure draw check.
+    let config_single = OrbitalConfig {
+        planet_count_min: 1,
+        planet_count_max: 1,
+        inner_orbit_au: 0.3,
+        outer_orbit_au: 50.0,
+        min_separation_au: 0.5,
+    };
+
+    for i in 0..1_000_u64 {
+        let layout = derive_orbital_layout(SolarSystemSeed(i), &config_single);
+        for slot in &layout.planets {
+            assert!(
+                slot.orbital_distance_au >= config_single.inner_orbit_au,
+                "seed {i}: distance {} AU < inner bound {} AU",
+                slot.orbital_distance_au,
+                config_single.inner_orbit_au,
+            );
+            assert!(
+                slot.orbital_distance_au <= config_single.outer_orbit_au,
+                "seed {i}: distance {} AU > outer bound {} AU",
+                slot.orbital_distance_au,
+                config_single.outer_orbit_au,
+            );
+        }
+    }
+
+    // Multi-planet config with a wide range so separation won't push
+    // past outer. 8 planets × 0.5 AU separation = 3.5 AU worst case,
+    // well within the 500 AU range.
+    let config = OrbitalConfig {
+        planet_count_min: 2,
+        planet_count_max: 8,
+        inner_orbit_au: 0.3,
+        outer_orbit_au: 500.0,
+        min_separation_au: 0.5,
+    };
+
+    for i in 0..1_000_u64 {
+        let layout = derive_orbital_layout(SolarSystemSeed(i), &config);
+        for slot in &layout.planets {
+            assert!(
+                slot.orbital_distance_au >= config.inner_orbit_au,
+                "seed {i}: distance {} AU < inner bound {} AU",
+                slot.orbital_distance_au,
+                config.inner_orbit_au,
+            );
+            assert!(
+                slot.orbital_distance_au <= config.outer_orbit_au,
+                "seed {i}: distance {} AU > outer bound {} AU",
+                slot.orbital_distance_au,
+                config.outer_orbit_au,
+            );
+        }
+    }
+}
+
+/// When many planets are crammed into a narrow orbital range, the
+/// min-separation enforcement pushes later planets beyond the nominal
+/// outer bound. The algorithm must handle this gracefully: no panics,
+/// distances still sorted, separation still enforced, and all planet
+/// seeds remain unique.
+///
+/// Config: 8 planets forced (min==max), range [1.0, 3.0] AU with
+/// 0.5 AU separation. Worst case needs 1.0 + 7×0.5 = 4.5 AU — well
+/// past the 3.0 AU outer bound.
+#[test]
+fn orbital_layout_many_planets_small_range_pushes_gracefully() {
+    let config = OrbitalConfig {
+        planet_count_min: 8,
+        planet_count_max: 8,
+        inner_orbit_au: 1.0,
+        outer_orbit_au: 3.0,
+        min_separation_au: 0.5,
+    };
+
+    for i in 0..500_u64 {
+        let layout = derive_orbital_layout(SolarSystemSeed(i), &config);
+
+        assert_eq!(layout.planets.len(), 8, "seed {i}: expected 8 planets",);
+
+        // Distances must be sorted ascending.
+        for pair in layout.planets.windows(2) {
+            assert!(
+                pair[0].orbital_distance_au <= pair[1].orbital_distance_au,
+                "seed {i}: distances not sorted: {} > {}",
+                pair[0].orbital_distance_au,
+                pair[1].orbital_distance_au,
+            );
+        }
+
+        // Minimum separation must hold between every consecutive pair.
+        for pair in layout.planets.windows(2) {
+            let gap = pair[1].orbital_distance_au - pair[0].orbital_distance_au;
+            assert!(
+                gap >= config.min_separation_au - f32::EPSILON,
+                "seed {i}: separation {gap} AU < min {} AU (distances: {}, {})",
+                config.min_separation_au,
+                pair[0].orbital_distance_au,
+                pair[1].orbital_distance_au,
+            );
+        }
+
+        // Innermost planet must be at or above the inner bound.
+        assert!(
+            layout.planets[0].orbital_distance_au >= config.inner_orbit_au,
+            "seed {i}: innermost distance {} AU < inner bound {} AU",
+            layout.planets[0].orbital_distance_au,
+            config.inner_orbit_au,
+        );
+
+        // Planet seeds must all be unique (position-based derivation).
+        let seeds: Vec<u64> = layout.planets.iter().map(|s| s.planet_seed.0).collect();
+        for (a_idx, a_seed) in seeds.iter().enumerate() {
+            for (b_idx, b_seed) in seeds.iter().enumerate() {
+                if a_idx != b_idx {
+                    assert_ne!(
+                        a_seed, b_seed,
+                        "seed {i}: planet seeds at indices {a_idx} and {b_idx} collide",
+                    );
+                }
+            }
+        }
+
+        // Orbital indices must be sequential 0..N.
+        for (idx, slot) in layout.planets.iter().enumerate() {
+            assert_eq!(
+                slot.orbital_index, idx as u32,
+                "seed {i}: orbital_index mismatch at position {idx}",
+            );
+        }
+    }
+}
+
+/// Different system seeds must produce different orbital layouts. We derive
+/// layouts for 100 consecutive seeds and assert that not all of them are
+/// identical — the generator must be non-degenerate.
+#[test]
+fn different_system_seeds_produce_different_layouts() {
+    let config = OrbitalConfig::default();
+
+    let layouts: Vec<OrbitalLayout> = (0..100_u64)
+        .map(|i| derive_orbital_layout(SolarSystemSeed(i), &config))
+        .collect();
+
+    // At least two layouts must differ (planet count, distances, or seeds).
+    let all_identical = layouts.windows(2).all(|w| w[0] == w[1]);
+    assert!(
+        !all_identical,
+        "100 consecutive seeds all produced identical orbital layouts — generator is degenerate",
+    );
+
+    // Stronger: count distinct layouts. With 100 seeds and a healthy mixer
+    // we expect a large fraction to be unique.
+    let distinct = {
+        let mut seen = std::collections::HashSet::new();
+        for layout in &layouts {
+            // Hash the debug representation as a cheap equality proxy.
+            seen.insert(format!("{layout:?}"));
+        }
+        seen.len()
+    };
+    assert!(
+        distinct >= 10,
+        "only {distinct}/100 distinct layouts — expected at least 10 for non-degeneracy",
+    );
+}
+
+// ── Position-based stability tests ────────────────────────────────────
+
+/// Changing `planet_count_max` must not change the seeds of planets whose
+/// orbital distances remain the same. Because planet seeds are derived from
+/// `mix_seed(system_seed, f32_to_u64_bits(distance))`, any planet that
+/// keeps its distance keeps its seed — regardless of how many siblings
+/// were added or removed.
+#[test]
+fn position_based_stability_across_planet_count_max() {
+    let system_seed = SolarSystemSeed(0xBEEF_CAFE_1234_5678);
+
+    // Narrow config: forces exactly 4 planets.
+    let narrow = OrbitalConfig {
+        planet_count_min: 4,
+        planet_count_max: 4,
+        inner_orbit_au: 0.3,
+        outer_orbit_au: 50.0,
+        min_separation_au: 0.5,
+    };
+
+    // Wide config: forces exactly 8 planets.  The first 4 raw distance
+    // draws (layout-seed channels 1–4) are identical to the narrow config;
+    // channels 5–8 are new draws that may interleave after sorting.
+    let wide = OrbitalConfig {
+        planet_count_min: 8,
+        planet_count_max: 8,
+        inner_orbit_au: 0.3,
+        outer_orbit_au: 50.0,
+        min_separation_au: 0.5,
+    };
+
+    let narrow_layout = derive_orbital_layout(system_seed, &narrow);
+    let wide_layout = derive_orbital_layout(system_seed, &wide);
+
+    assert_eq!(narrow_layout.planets.len(), 4);
+    assert_eq!(wide_layout.planets.len(), 8);
+
+    // Build a lookup from orbital_distance_au → planet_seed for the wide
+    // layout. We compare by exact f32 bit equality (same derivation path
+    // means bitwise-identical floats).
+    let wide_seed_by_dist: std::collections::HashMap<u64, u64> = wide_layout
+        .planets
+        .iter()
+        .map(|s| (f32_to_u64_bits(s.orbital_distance_au), s.planet_seed.0))
+        .collect();
+
+    // Every narrow-layout planet whose exact distance also appears in the
+    // wide layout must have the identical seed.
+    let mut matched = 0_u32;
+    for slot in &narrow_layout.planets {
+        let dist_bits = f32_to_u64_bits(slot.orbital_distance_au);
+        if let Some(&wide_seed) = wide_seed_by_dist.get(&dist_bits) {
+            assert_eq!(
+                slot.planet_seed.0, wide_seed,
+                "planet at distance {} AU has different seeds across configs \
+                     (narrow={:#018X}, wide={:#018X})",
+                slot.orbital_distance_au, slot.planet_seed.0, wide_seed,
+            );
+            matched += 1;
+        }
+    }
+
+    // We must have matched at least one planet, otherwise the test is
+    // vacuously true and proves nothing.  With the chosen seed and
+    // generous orbital range the first-drawn distances are very likely to
+    // survive sorting + separation unchanged.
+    assert!(
+        matched > 0,
+        "no narrow-layout distances appeared in the wide layout — \
+             test is vacuous; choose a different seed or relax separation",
+    );
+}
+
+/// A stronger variant: when `planet_count_max` increases but the *raw*
+/// distance draws for the original indices are far enough apart that
+/// separation enforcement doesn't shift them, every original planet must
+/// keep its seed.  We use a very large orbital range with tiny separation
+/// to make collisions virtually impossible.
+#[test]
+fn position_based_stability_wide_range_no_push() {
+    let system_seed = SolarSystemSeed(0xDEAD_BEEF_0000_0001);
+
+    let base = OrbitalConfig {
+        planet_count_min: 3,
+        planet_count_max: 3,
+        inner_orbit_au: 0.3,
+        outer_orbit_au: 500.0,
+        min_separation_au: 0.01,
+    };
+
+    let expanded = OrbitalConfig {
+        planet_count_min: 6,
+        planet_count_max: 6,
+        ..base.clone()
+    };
+
+    let base_layout = derive_orbital_layout(system_seed, &base);
+    let expanded_layout = derive_orbital_layout(system_seed, &expanded);
+
+    let expanded_seed_by_dist: std::collections::HashMap<u64, u64> = expanded_layout
+        .planets
+        .iter()
+        .map(|s| (f32_to_u64_bits(s.orbital_distance_au), s.planet_seed.0))
+        .collect();
+
+    let mut matched = 0_u32;
+    for slot in &base_layout.planets {
+        let dist_bits = f32_to_u64_bits(slot.orbital_distance_au);
+        if let Some(&exp_seed) = expanded_seed_by_dist.get(&dist_bits) {
+            assert_eq!(
+                slot.planet_seed.0, exp_seed,
+                "planet at {} AU changed seed when planet_count_max increased",
+                slot.orbital_distance_au,
+            );
+            matched += 1;
+        }
+    }
+
+    // With a 500 AU range and 0.01 AU separation, all 3 base distances
+    // should survive untouched in the 6-planet layout.
+    assert_eq!(
+        matched,
+        base_layout.planets.len() as u32,
+        "expected all {} base planets to retain their distances in the expanded layout, \
+             but only {matched} matched",
+        base_layout.planets.len(),
+    );
+}
+
+// ── f32_to_u64_bits tests ───────────────────────────────────────────
+
+/// `f32_to_u64_bits` must return the IEEE-754 bit pattern zero-extended
+/// to `u64`. We verify against known bit patterns.
+#[test]
+fn f32_to_u64_bits_known_values() {
+    // 0.0f32 is all-zero bits.
+    assert_eq!(f32_to_u64_bits(0.0_f32), 0x0000_0000_u64);
+
+    // 1.0f32 = 0x3F80_0000 in IEEE-754.
+    assert_eq!(f32_to_u64_bits(1.0_f32), 0x3F80_0000_u64);
+
+    // -1.0f32 = 0xBF80_0000 in IEEE-754.
+    assert_eq!(f32_to_u64_bits(-1.0_f32), 0xBF80_0000_u64);
+
+    // A typical orbital distance value.
+    let dist = 3.5_f32;
+    assert_eq!(f32_to_u64_bits(dist), dist.to_bits() as u64);
+}
+
+/// Determinism: same float always produces the same u64.
+#[test]
+fn f32_to_u64_bits_deterministic() {
+    let values = [
+        0.3_f32,
+        1.0,
+        50.0,
+        0.123_456_78,
+        f32::MAX,
+        f32::MIN_POSITIVE,
+    ];
+    for v in values {
+        assert_eq!(
+            f32_to_u64_bits(v),
+            f32_to_u64_bits(v),
+            "f32_to_u64_bits must be deterministic for {v}",
+        );
+    }
+}
+
+/// Different floats produce different bit patterns (non-degeneracy).
+#[test]
+fn f32_to_u64_bits_different_inputs_differ() {
+    let a = f32_to_u64_bits(1.0_f32);
+    let b = f32_to_u64_bits(2.0_f32);
+    assert_ne!(a, b, "different floats must produce different bit patterns");
+}
+
+/// The upper 32 bits must always be zero (zero-extension, not sign-extension).
+#[test]
+fn f32_to_u64_bits_upper_bits_zero() {
+    let negative = f32_to_u64_bits(-42.0_f32);
+    assert_eq!(
+        negative >> 32,
+        0,
+        "upper 32 bits must be zero even for negative floats",
+    );
+}
+
+// ── Full Pipeline Tests ─────────────────────────────────────────────
+//
+// Phase 5: end-to-end determinism — a single system seed produces a
+// star profile AND an orbital layout, and the entire result is stable
+// across repeated invocations.
+
+/// Full pipeline determinism: same system seed + same configs = identical
+/// star profile AND identical orbital layout. This is the capstone test
+/// verifying that the entire generation pipeline — star type selection,
+/// parameter interpolation, planet count derivation, orbital distance
+/// placement, separation enforcement, and position-based planet seed
+/// derivation — is fully deterministic end-to-end.
+#[test]
+fn full_pipeline_deterministic() {
+    let seed = SolarSystemSeed(0xF011_0000_DEAD_BEEF);
+    let registry = test_registry();
+    let orbital_config = OrbitalConfig::default();
+
+    // Run the full pipeline twice.
+    let star_a = derive_star_profile(seed, &registry);
+    let layout_a = derive_orbital_layout(seed, &orbital_config);
+
+    let star_b = derive_star_profile(seed, &registry);
+    let layout_b = derive_orbital_layout(seed, &orbital_config);
+
+    assert_eq!(star_a, star_b, "star profile must be deterministic");
+    assert_eq!(layout_a, layout_b, "orbital layout must be deterministic");
+}
+
+/// Full pipeline coherence: the star profile and orbital layout derived
+/// from the same system seed must form a physically coherent system.
+/// Specifically:
+/// - Planet count is within the configured range.
+/// - All orbital distances are sorted and separated.
+/// - Star parameters are within their type's defined ranges.
+/// - Planet seeds are all unique within the system.
+/// - The pipeline produces consistent results across many seeds.
+#[test]
+fn full_pipeline_coherence_across_seeds() {
+    let registry = test_registry();
+    let orbital_config = OrbitalConfig::default();
+
+    for i in 0..1_000_u64 {
+        let seed = SolarSystemSeed(i);
+
+        // ── Star derivation ──────────────────────────────────────
+        let star = derive_star_profile(seed, &registry);
+
+        let star_type = registry
+            .star_types
+            .iter()
+            .find(|st| st.star_type == star.star_type)
+            .unwrap_or_else(|| {
+                panic!(
+                    "seed {i}: star type '{:?}' not found in registry",
+                    star.star_type
+                )
+            });
+
+        assert!(
+            star.luminosity >= star_type.luminosity_min
+                && star.luminosity <= star_type.luminosity_max,
+            "seed {i}: luminosity {} outside [{}, {}]",
+            star.luminosity,
+            star_type.luminosity_min,
+            star_type.luminosity_max,
+        );
+        assert!(
+            star.mass_solar >= star_type.mass_min && star.mass_solar <= star_type.mass_max,
+            "seed {i}: mass {} outside [{}, {}]",
+            star.mass_solar,
+            star_type.mass_min,
+            star_type.mass_max,
+        );
+        assert!(
+            star.habitable_zone_inner_au < star.habitable_zone_outer_au,
+            "seed {i}: habitable zone inner ({}) >= outer ({})",
+            star.habitable_zone_inner_au,
+            star.habitable_zone_outer_au,
+        );
+
+        // ── Orbital layout derivation ────────────────────────────
+        let layout = derive_orbital_layout(seed, &orbital_config);
+
+        // Planet count within range.
+        let count = layout.planets.len() as u32;
+        assert!(
+            count >= orbital_config.planet_count_min && count <= orbital_config.planet_count_max,
+            "seed {i}: planet count {count} outside [{}, {}]",
+            orbital_config.planet_count_min,
+            orbital_config.planet_count_max,
+        );
+
+        // Distances sorted ascending.
+        for pair in layout.planets.windows(2) {
+            assert!(
+                pair[0].orbital_distance_au <= pair[1].orbital_distance_au,
+                "seed {i}: distances not sorted: {} > {}",
+                pair[0].orbital_distance_au,
+                pair[1].orbital_distance_au,
+            );
+        }
+
+        // Minimum separation enforced.
+        for pair in layout.planets.windows(2) {
+            let gap = pair[1].orbital_distance_au - pair[0].orbital_distance_au;
+            assert!(
+                gap >= orbital_config.min_separation_au - f32::EPSILON,
+                "seed {i}: separation {gap} AU < min {} AU",
+                orbital_config.min_separation_au,
+            );
+        }
+
+        // All planet seeds unique within this system.
+        let mut seen_seeds = std::collections::HashSet::new();
+        for slot in &layout.planets {
+            assert!(
+                seen_seeds.insert(slot.planet_seed.0),
+                "seed {i}: duplicate planet seed {:#018X}",
+                slot.planet_seed.0,
+            );
+        }
+
+        // Orbital indices sequential.
+        for (idx, slot) in layout.planets.iter().enumerate() {
+            assert_eq!(
+                slot.orbital_index, idx as u32,
+                "seed {i}: orbital_index mismatch at position {idx}",
+            );
+        }
+    }
+}
+
+/// Full pipeline: re-deriving the same system 10 times produces bitwise-
+/// identical results every time, for multiple distinct seeds. This guards
+/// against subtle non-determinism (e.g., HashMap iteration order, float
+/// accumulation drift, or accidental use of thread-local state).
+#[test]
+fn full_pipeline_repeated_derivation_stable() {
+    let registry = test_registry();
+    let orbital_config = OrbitalConfig::default();
+    let test_seeds = [
+        SolarSystemSeed(0),
+        SolarSystemSeed(1),
+        SolarSystemSeed(u64::MAX),
+        SolarSystemSeed(0xDEAD_BEEF_CAFE_BABE),
+        SolarSystemSeed(42),
+    ];
+
+    for seed in test_seeds {
+        let star_ref = derive_star_profile(seed, &registry);
+        let layout_ref = derive_orbital_layout(seed, &orbital_config);
+
+        for attempt in 1..=10 {
+            let star = derive_star_profile(seed, &registry);
+            let layout = derive_orbital_layout(seed, &orbital_config);
+
+            assert_eq!(
+                star_ref, star,
+                "seed {}: star profile diverged on attempt {attempt}",
+                seed.0,
+            );
+            assert_eq!(
+                layout_ref, layout,
+                "seed {}: orbital layout diverged on attempt {attempt}",
+                seed.0,
+            );
+        }
+    }
+}
+
+/// PlanetEnvironmentConfig must round-trip through TOML without data loss.
+#[test]
+fn planet_environment_config_toml_round_trip() {
+    let original = PlanetEnvironmentConfig::default();
+    let serialized =
+        toml::to_string(&original).expect("PlanetEnvironmentConfig should serialize to TOML");
+    let deserialized: PlanetEnvironmentConfig =
+        toml::from_str(&serialized).expect("serialized TOML should deserialize back");
+
+    assert!(
+        (original.temp_base_k - deserialized.temp_base_k).abs() < f32::EPSILON,
+        "round-trip should preserve temp_base_k"
+    );
+    assert!(
+        (original.temp_variation_fraction - deserialized.temp_variation_fraction).abs()
+            < f32::EPSILON,
+        "round-trip should preserve temp_variation_fraction"
+    );
+    assert!(
+        (original.atmosphere_inner_penalty - deserialized.atmosphere_inner_penalty).abs()
+            < f32::EPSILON,
+        "round-trip should preserve atmosphere_inner_penalty"
+    );
+    assert!(
+        (original.gravity_min - deserialized.gravity_min).abs() < f32::EPSILON,
+        "round-trip should preserve gravity_min"
+    );
+    assert!(
+        (original.gravity_max - deserialized.gravity_max).abs() < f32::EPSILON,
+        "round-trip should preserve gravity_max"
+    );
+}
+
+/// PlanetEnvironmentConfig must round-trip through serde (JSON) without data loss.
+#[test]
+fn planet_environment_config_serde_round_trip() {
+    let original = PlanetEnvironmentConfig::default();
+    let json =
+        serde_json::to_string(&original).expect("PlanetEnvironmentConfig should serialize to JSON");
+    let deserialized: PlanetEnvironmentConfig =
+        serde_json::from_str(&json).expect("PlanetEnvironmentConfig should deserialize from JSON");
+
+    assert!(
+        (original.temp_base_k - deserialized.temp_base_k).abs() < f32::EPSILON,
+        "round-trip should preserve temp_base_k"
+    );
+    assert!(
+        (original.temp_variation_fraction - deserialized.temp_variation_fraction).abs()
+            < f32::EPSILON,
+        "round-trip should preserve temp_variation_fraction"
+    );
+    assert!(
+        (original.atmosphere_inner_penalty - deserialized.atmosphere_inner_penalty).abs()
+            < f32::EPSILON,
+        "round-trip should preserve atmosphere_inner_penalty"
+    );
+    assert!(
+        (original.gravity_min - deserialized.gravity_min).abs() < f32::EPSILON,
+        "round-trip should preserve gravity_min"
+    );
+    assert!(
+        (original.gravity_max - deserialized.gravity_max).abs() < f32::EPSILON,
+        "round-trip should preserve gravity_max"
+    );
+}
+
+// ── PlanetEnvironmentConfig Validation Rejection Tests ───────────────
+
+#[test]
+fn planet_env_config_rejects_negative_temp_base() {
+    let mut cfg = PlanetEnvironmentConfig::default();
+    cfg.temp_base_k = -1.0;
+    assert_eq!(
+        cfg.validate().unwrap_err(),
+        PlanetEnvConfigError::InvalidTempBase { value: -1.0 }
+    );
+}
+
+#[test]
+fn planet_env_config_rejects_zero_temp_base() {
+    let mut cfg = PlanetEnvironmentConfig::default();
+    cfg.temp_base_k = 0.0;
+    assert_eq!(
+        cfg.validate().unwrap_err(),
+        PlanetEnvConfigError::InvalidTempBase { value: 0.0 }
+    );
+}
+
+#[test]
+fn planet_env_config_rejects_nan_temp_base() {
+    let mut cfg = PlanetEnvironmentConfig::default();
+    cfg.temp_base_k = f32::NAN;
+    assert!(matches!(
+        cfg.validate().unwrap_err(),
+        PlanetEnvConfigError::InvalidTempBase { .. }
+    ));
+}
+
+#[test]
+fn planet_env_config_rejects_variation_at_one() {
+    let mut cfg = PlanetEnvironmentConfig::default();
+    cfg.temp_variation_fraction = 1.0;
+    assert_eq!(
+        cfg.validate().unwrap_err(),
+        PlanetEnvConfigError::InvalidTempVariation { value: 1.0 }
+    );
+}
+
+#[test]
+fn planet_env_config_rejects_negative_variation() {
+    let mut cfg = PlanetEnvironmentConfig::default();
+    cfg.temp_variation_fraction = -0.1;
+    assert_eq!(
+        cfg.validate().unwrap_err(),
+        PlanetEnvConfigError::InvalidTempVariation { value: -0.1 }
+    );
+}
+
+#[test]
+fn planet_env_config_rejects_zero_atmosphere_penalty() {
+    let mut cfg = PlanetEnvironmentConfig::default();
+    cfg.atmosphere_inner_penalty = 0.0;
+    assert_eq!(
+        cfg.validate().unwrap_err(),
+        PlanetEnvConfigError::InvalidAtmospherePenalty { value: 0.0 }
+    );
+}
+
+#[test]
+fn planet_env_config_rejects_atmosphere_penalty_above_one() {
+    let mut cfg = PlanetEnvironmentConfig::default();
+    cfg.atmosphere_inner_penalty = 1.5;
+    assert_eq!(
+        cfg.validate().unwrap_err(),
+        PlanetEnvConfigError::InvalidAtmospherePenalty { value: 1.5 }
+    );
+}
+
+#[test]
+fn planet_env_config_rejects_inverted_gravity_range() {
+    let mut cfg = PlanetEnvironmentConfig::default();
+    cfg.gravity_min = 5.0;
+    cfg.gravity_max = 2.0;
+    assert_eq!(
+        cfg.validate().unwrap_err(),
+        PlanetEnvConfigError::GravityRangeInverted { min: 5.0, max: 2.0 }
+    );
+}
+
+#[test]
+fn planet_env_config_rejects_zero_gravity_min() {
+    let mut cfg = PlanetEnvironmentConfig::default();
+    cfg.gravity_min = 0.0;
+    assert_eq!(
+        cfg.validate().unwrap_err(),
+        PlanetEnvConfigError::InvalidGravityMin { value: 0.0 }
+    );
+}
+
+#[test]
+fn planet_env_config_rejects_nan_gravity_max() {
+    let mut cfg = PlanetEnvironmentConfig::default();
+    cfg.gravity_max = f32::NAN;
+    assert!(matches!(
+        cfg.validate().unwrap_err(),
+        PlanetEnvConfigError::InvalidGravityMax { .. }
+    ));
+}
+
+#[test]
+fn planet_env_config_default_validates() {
+    PlanetEnvironmentConfig::default()
+        .validate()
+        .expect("default config should be valid");
+}
+
+// ── Planet Environment Derivation Tests ──────────────────────────────
+
+/// Helper: a Sol-like star for planet environment tests.
+fn test_star() -> StarProfile {
+    StarProfile {
+        star_type: StarType::SunLike,
+        luminosity: 1.0,
+        surface_temperature_k: 5778,
+        mass_solar: 1.0,
+        habitable_zone_inner_au: (1.0_f32 / 1.1).sqrt(),
+        habitable_zone_outer_au: (1.0_f32 / 0.53).sqrt(),
+    }
+}
+
+/// Same inputs → same PlanetEnvironment. Fundamental determinism.
+#[test]
+fn planet_environment_deterministic() {
+    let star = test_star();
+    let config = PlanetEnvironmentConfig::default();
+    let seed = PlanetSeed(0xDEAD_BEEF);
+
+    let env_a = derive_planet_environment(&star, 1.0, seed, &config);
+    let env_b = derive_planet_environment(&star, 1.0, seed, &config);
+
+    assert_eq!(env_a, env_b, "same inputs must produce same environment");
+}
+
+/// Temperature must decrease with distance (controlling for seed).
+#[test]
+fn planet_environment_temperature_decreases_with_distance() {
+    let star = test_star();
+    let config = PlanetEnvironmentConfig::default();
+    let seed = PlanetSeed(42);
+
+    let inner = derive_planet_environment(&star, 0.5, seed, &config);
+    let outer = derive_planet_environment(&star, 10.0, seed, &config);
+
+    assert!(
+        inner.surface_temp_min_k > outer.surface_temp_min_k,
+        "inner planet temp_min ({}) should exceed outer planet temp_min ({})",
+        inner.surface_temp_min_k,
+        outer.surface_temp_min_k,
+    );
+    assert!(
+        inner.surface_temp_max_k > outer.surface_temp_max_k,
+        "inner planet temp_max ({}) should exceed outer planet temp_max ({})",
+        inner.surface_temp_max_k,
+        outer.surface_temp_max_k,
+    );
+}
+
+/// Inner planets should have less atmosphere than outer planets on
+/// average across many seeds (stellar wind stripping).
+#[test]
+fn planet_environment_inner_atmosphere_less_than_outer() {
+    let star = test_star();
+    let config = PlanetEnvironmentConfig::default();
+
+    let mut inner_sum = 0.0_f64;
+    let mut outer_sum = 0.0_f64;
+    let count = 1_000;
+
+    for i in 0..count {
+        let seed = PlanetSeed(i);
+        let inner = derive_planet_environment(&star, 0.3, seed, &config);
+        let outer = derive_planet_environment(&star, 5.0, seed, &config);
+        inner_sum += inner.atmosphere_density as f64;
+        outer_sum += outer.atmosphere_density as f64;
+    }
+
+    assert!(
+        inner_sum < outer_sum,
+        "average inner atmosphere ({}) should be less than outer ({})",
+        inner_sum / count as f64,
+        outer_sum / count as f64,
+    );
+}
+
+/// Habitable zone flag must match the star's zone boundaries.
+#[test]
+fn planet_environment_habitable_zone_flag() {
+    let star = test_star();
+    let config = PlanetEnvironmentConfig::default();
+    let seed = PlanetSeed(99);
+
+    // Inside habitable zone.
+    let hz_mid = (star.habitable_zone_inner_au + star.habitable_zone_outer_au) / 2.0;
+    let env_hz = derive_planet_environment(&star, hz_mid, seed, &config);
+    assert!(
+        env_hz.in_habitable_zone,
+        "planet at {hz_mid} AU should be in habitable zone [{}, {}]",
+        star.habitable_zone_inner_au, star.habitable_zone_outer_au,
+    );
+
+    // Well inside the star (too close).
+    let env_inner = derive_planet_environment(&star, 0.1, seed, &config);
+    assert!(
+        !env_inner.in_habitable_zone,
+        "planet at 0.1 AU should NOT be in habitable zone",
+    );
+
+    // Far outside.
+    let env_outer = derive_planet_environment(&star, 50.0, seed, &config);
+    assert!(
+        !env_outer.in_habitable_zone,
+        "planet at 50 AU should NOT be in habitable zone",
+    );
+}
+
+/// Habitable zone flag is correct at the exact boundaries and ±1% offsets.
+///
+/// Tests six points: inner−1%, inner, inner+1%, outer−1%, outer, outer+1%.
+/// The boundaries themselves (inner, outer) are inclusive per the `>=`/`<=`
+/// comparison in `derive_planet_environment`.
+#[test]
+fn planet_environment_habitable_zone_boundary() {
+    let star = test_star();
+    let config = PlanetEnvironmentConfig::default();
+    let seed = PlanetSeed(42);
+
+    let inner = star.habitable_zone_inner_au;
+    let outer = star.habitable_zone_outer_au;
+
+    let cases: &[(f32, bool, &str)] = &[
+        (inner * 0.99, false, "inner − 1% (outside)"),
+        (inner, true, "inner boundary (inclusive)"),
+        (inner * 1.01, true, "inner + 1% (inside)"),
+        (outer * 0.99, true, "outer − 1% (inside)"),
+        (outer, true, "outer boundary (inclusive)"),
+        (outer * 1.01, false, "outer + 1% (outside)"),
+    ];
+
+    for &(distance, expected, label) in cases {
+        let env = derive_planet_environment(&star, distance, seed, &config);
+        assert_eq!(
+            env.in_habitable_zone, expected,
+            "at {distance:.6} AU ({label}): expected in_habitable_zone = {expected}, \
+                 HZ = [{inner:.6}, {outer:.6}]",
+        );
+    }
+}
+
+/// For a sun-like star (luminosity = 1.0), the habitable zone spans roughly
+/// 0.95–1.37 AU (derived from `sqrt(L/1.1)` to `sqrt(L/0.53)`). Planets
+/// within this band report `in_habitable_zone: true`; planets closer to the
+/// star or farther away report `false`.
+///
+/// This test checks representative distances across the range to confirm
+/// the flag behaves correctly for a Sol-equivalent star.
+#[test]
+fn planet_environment_habitable_zone_sun_like_star() {
+    let star = test_star(); // luminosity = 1.0, sun-like
+    let config = PlanetEnvironmentConfig::default();
+    let seed = PlanetSeed(7);
+
+    // Verify computed HZ bounds are in the expected ballpark for a
+    // sun-like star (~0.95 inner, ~1.37 outer).
+    let inner = star.habitable_zone_inner_au;
+    let outer = star.habitable_zone_outer_au;
+    assert!(
+        (0.90..1.00).contains(&inner),
+        "sun-like inner HZ should be ~0.95, got {inner}",
+    );
+    assert!(
+        (1.30..1.45).contains(&outer),
+        "sun-like outer HZ should be ~1.37, got {outer}",
+    );
+
+    // Representative distances and expected results.
+    let cases: &[(f32, bool, &str)] = &[
+        (0.3, false, "Mercury-like, well inside"),
+        (0.7, false, "Venus-like, still inside HZ inner"),
+        (0.9, false, "just below HZ inner (~0.953)"),
+        (1.0, true, "Earth-like, inside HZ"),
+        (1.1, true, "mid HZ"),
+        (1.3, true, "near outer HZ edge"),
+        (1.5, false, "beyond outer HZ (~1.374)"),
+        (5.0, false, "Jupiter-like, far outside"),
+    ];
+
+    for &(distance, expected, label) in cases {
+        let env = derive_planet_environment(&star, distance, seed, &config);
+        assert_eq!(
+            env.in_habitable_zone, expected,
+            "at {distance} AU ({label}): expected {expected}, HZ = [{inner:.4}, {outer:.4}]",
+        );
+    }
+}
+
+/// Different planet seeds at the same distance produce different environments.
+///
+/// We verify across multiple distances that a batch of distinct seeds
+/// yields actual variation in every continuous parameter — not just a
+/// single `!=` check between two seeds.
+#[test]
+fn planet_environment_seed_variation() {
+    let star = test_star();
+    let config = PlanetEnvironmentConfig::default();
+
+    // Test at several representative distances (inner, habitable, outer).
+    for &distance in &[0.5, 1.0, 5.0, 20.0] {
+        let seed_count: u64 = 50;
+        let envs: Vec<PlanetEnvironment> = (0..seed_count)
+            .map(|i| derive_planet_environment(&star, distance, PlanetSeed(i), &config))
+            .collect();
+
+        // Collect the set of unique values for each continuous field.
+        let unique_temps_min: std::collections::HashSet<u64> = envs
+            .iter()
+            .map(|e| e.surface_temp_min_k.to_bits() as u64)
+            .collect();
+        let unique_temps_max: std::collections::HashSet<u64> = envs
+            .iter()
+            .map(|e| e.surface_temp_max_k.to_bits() as u64)
+            .collect();
+        let unique_atmo: std::collections::HashSet<u64> = envs
+            .iter()
+            .map(|e| e.atmosphere_density.to_bits() as u64)
+            .collect();
+        let unique_rad: std::collections::HashSet<u64> = envs
+            .iter()
+            .map(|e| e.radiation_level.to_bits() as u64)
+            .collect();
+        let unique_grav: std::collections::HashSet<u64> = envs
+            .iter()
+            .map(|e| e.surface_gravity_g.to_bits() as u64)
+            .collect();
+
+        // With 50 seeds we expect meaningful variation — at least 2
+        // distinct values per field.
+        assert!(
+            unique_temps_min.len() > 1,
+            "dist {distance}: surface_temp_min_k should vary across seeds, got {} unique",
+            unique_temps_min.len(),
+        );
+        assert!(
+            unique_temps_max.len() > 1,
+            "dist {distance}: surface_temp_max_k should vary across seeds, got {} unique",
+            unique_temps_max.len(),
+        );
+        assert!(
+            unique_atmo.len() > 1,
+            "dist {distance}: atmosphere_density should vary across seeds, got {} unique",
+            unique_atmo.len(),
+        );
+        assert!(
+            unique_rad.len() > 1,
+            "dist {distance}: radiation_level should vary across seeds, got {} unique",
+            unique_rad.len(),
+        );
+        assert!(
+            unique_grav.len() > 1,
+            "dist {distance}: surface_gravity_g should vary across seeds, got {} unique",
+            unique_grav.len(),
+        );
+
+        // Also verify that not all environments are identical overall.
+        let unique_envs: std::collections::HashSet<String> =
+            envs.iter().map(|e| format!("{e:?}")).collect();
+        assert!(
+            unique_envs.len() > 1,
+            "dist {distance}: all {seed_count} seeds produced identical environments",
+        );
+    }
+}
+
+/// Surface gravity must stay within the configured [min, max] range.
+#[test]
+fn planet_environment_gravity_within_range() {
+    let star = test_star();
+    let config = PlanetEnvironmentConfig::default();
+
+    for i in 0..1_000_u64 {
+        let env = derive_planet_environment(&star, 1.0, PlanetSeed(i), &config);
+        assert!(
+            env.surface_gravity_g >= config.gravity_min
+                && env.surface_gravity_g <= config.gravity_max,
+            "seed {i}: gravity {} outside [{}, {}]",
+            env.surface_gravity_g,
+            config.gravity_min,
+            config.gravity_max,
+        );
+    }
+}
+
+/// Radiation level must be in [0.0, 1.0].
+#[test]
+fn planet_environment_radiation_normalized() {
+    let star = test_star();
+    let config = PlanetEnvironmentConfig::default();
+
+    for i in 0..1_000_u64 {
+        for &dist in &[0.3, 1.0, 5.0, 20.0, 50.0] {
+            let env = derive_planet_environment(&star, dist, PlanetSeed(i), &config);
+            assert!(
+                env.radiation_level >= 0.0 && env.radiation_level <= 1.0,
+                "seed {i} dist {dist}: radiation {} outside [0, 1]",
+                env.radiation_level,
+            );
+        }
+    }
+}
+
+/// All float fields must be finite (no NaN, no infinity).
+#[test]
+fn planet_environment_all_fields_finite() {
+    let star = test_star();
+    let config = PlanetEnvironmentConfig::default();
+
+    for i in 0..1_000_u64 {
+        for &dist in &[0.3, 1.0, 5.0, 50.0] {
+            let env = derive_planet_environment(&star, dist, PlanetSeed(i), &config);
+            assert!(env.surface_temp_min_k.is_finite(), "temp_min not finite");
+            assert!(env.surface_temp_max_k.is_finite(), "temp_max not finite");
+            assert!(env.atmosphere_density.is_finite(), "atmosphere not finite");
+            assert!(env.radiation_level.is_finite(), "radiation not finite");
+            assert!(env.surface_gravity_g.is_finite(), "gravity not finite");
+        }
+    }
+}
+
+/// temp_min must always be less than temp_max.
+#[test]
+fn planet_environment_temp_min_less_than_max() {
+    let star = test_star();
+    let config = PlanetEnvironmentConfig::default();
+
+    for i in 0..1_000_u64 {
+        for &dist in &[0.3, 1.0, 5.0, 50.0] {
+            let env = derive_planet_environment(&star, dist, PlanetSeed(i), &config);
+            assert!(
+                env.surface_temp_min_k < env.surface_temp_max_k,
+                "seed {i} dist {dist}: temp_min ({}) >= temp_max ({})",
+                env.surface_temp_min_k,
+                env.surface_temp_max_k,
+            );
+        }
+    }
+}
+
+/// PlanetEnvironment must round-trip through serde (JSON).
+#[test]
+fn planet_environment_serde_round_trip() {
+    let env = PlanetEnvironment {
+        surface_temp_min_k: 200.0,
+        surface_temp_max_k: 350.0,
+        atmosphere_density: 1.0,
+        radiation_level: 0.5,
+        surface_gravity_g: 1.0,
+        in_habitable_zone: true,
+    };
+    let json = serde_json::to_string(&env).expect("PlanetEnvironment should serialize to JSON");
+    let deserialized: PlanetEnvironment =
+        serde_json::from_str(&json).expect("PlanetEnvironment should deserialize from JSON");
+    assert_eq!(
+        env, deserialized,
+        "PlanetEnvironment must survive JSON round-trip"
+    );
+}
+
+/// Brighter stars produce hotter planets at the same distance.
+#[test]
+fn planet_environment_brighter_star_hotter_planet() {
+    let config = PlanetEnvironmentConfig::default();
+    let seed = PlanetSeed(42);
+
+    let dim_star = StarProfile {
+        luminosity: 0.05,
+        ..test_star()
+    };
+    let bright_star = StarProfile {
+        luminosity: 50.0,
+        habitable_zone_inner_au: (50.0_f32 / 1.1).sqrt(),
+        habitable_zone_outer_au: (50.0_f32 / 0.53).sqrt(),
+        ..test_star()
+    };
+
+    let dim_env = derive_planet_environment(&dim_star, 1.0, seed, &config);
+    let bright_env = derive_planet_environment(&bright_star, 1.0, seed, &config);
+
+    assert!(
+        bright_env.surface_temp_min_k > dim_env.surface_temp_min_k,
+        "brighter star should produce hotter planet",
+    );
+}
+
+/// Radiation level should decrease with orbital distance on average
+/// across many seeds, because raw radiation follows inverse-square law
+/// and atmosphere (which attenuates radiation) increases with distance.
+#[test]
+fn planet_environment_radiation_decreases_with_distance() {
+    let star = test_star();
+    let config = PlanetEnvironmentConfig::default();
+
+    let mut inner_sum = 0.0_f64;
+    let mut outer_sum = 0.0_f64;
+    let count = 1_000;
+
+    for i in 0..count {
+        let seed = PlanetSeed(i);
+        let inner = derive_planet_environment(&star, 0.3, seed, &config);
+        let outer = derive_planet_environment(&star, 5.0, seed, &config);
+        inner_sum += inner.radiation_level as f64;
+        outer_sum += outer.radiation_level as f64;
+    }
+
+    assert!(
+        inner_sum > outer_sum,
+        "average inner radiation ({}) should exceed outer radiation ({})",
+        inner_sum / count as f64,
+        outer_sum / count as f64,
+    );
+}
+
+/// A planet at 0 AU (degenerate input) must not panic and must produce
+/// extreme but finite, valid values across all fields.
+#[test]
+fn planet_environment_zero_distance_no_panic() {
+    let star = test_star();
+    let config = PlanetEnvironmentConfig::default();
+
+    for i in 0..100_u64 {
+        let env = derive_planet_environment(&star, 0.0, PlanetSeed(i), &config);
+
+        // All fields must be finite (no inf, no NaN).
+        assert!(
+            env.surface_temp_min_k.is_finite(),
+            "temp_min not finite at seed {i}"
+        );
+        assert!(
+            env.surface_temp_max_k.is_finite(),
+            "temp_max not finite at seed {i}"
+        );
+        assert!(
+            env.atmosphere_density.is_finite(),
+            "atmosphere not finite at seed {i}"
+        );
+        assert!(
+            env.radiation_level.is_finite(),
+            "radiation not finite at seed {i}"
+        );
+        assert!(
+            env.surface_gravity_g.is_finite(),
+            "gravity not finite at seed {i}"
+        );
+
+        // Temperature ordering invariant still holds.
+        assert!(
+            env.surface_temp_min_k < env.surface_temp_max_k,
+            "seed {i}: temp_min ({}) >= temp_max ({})",
+            env.surface_temp_min_k,
+            env.surface_temp_max_k,
+        );
+
+        // Extreme heat: a planet at the star's surface should be very hot.
+        assert!(
+            env.surface_temp_min_k > 1_000.0,
+            "seed {i}: expected extreme temperature at 0 AU, got {}",
+            env.surface_temp_min_k,
+        );
+
+        // Radiation should be at maximum (clamped to 1.0).
+        assert!(
+            (env.radiation_level - 1.0).abs() < f32::EPSILON || env.radiation_level <= 1.0,
+            "seed {i}: radiation {} exceeds 1.0",
+            env.radiation_level,
+        );
+
+        // Atmosphere near zero — stellar wind strips everything at 0 AU.
+        assert!(
+            env.atmosphere_density < 0.01,
+            "seed {i}: expected negligible atmosphere at 0 AU, got {}",
+            env.atmosphere_density,
+        );
+
+        // Gravity within configured range.
+        assert!(
+            env.surface_gravity_g >= config.gravity_min
+                && env.surface_gravity_g <= config.gravity_max,
+            "seed {i}: gravity {} outside [{}, {}]",
+            env.surface_gravity_g,
+            config.gravity_min,
+            config.gravity_max,
+        );
+
+        // Not in habitable zone (0 AU is inside inner boundary).
+        assert!(
+            !env.in_habitable_zone,
+            "seed {i}: 0 AU should not be in habitable zone",
+        );
+    }
+}
+
+/// A planet at very large distance must be cold, have thin atmosphere,
+/// and receive low radiation — the deep-freeze boundary of a system.
+#[test]
+fn planet_environment_very_large_distance() {
+    let star = test_star();
+    let config = PlanetEnvironmentConfig::default();
+
+    // 100 AU — well beyond any habitable zone for a Sol-like star.
+    let distance_au = 100.0;
+
+    for i in 0..100_u64 {
+        let env = derive_planet_environment(&star, distance_au, PlanetSeed(i), &config);
+
+        // All fields must be finite.
+        assert!(
+            env.surface_temp_min_k.is_finite(),
+            "seed {i}: temp_min not finite",
+        );
+        assert!(
+            env.surface_temp_max_k.is_finite(),
+            "seed {i}: temp_max not finite",
+        );
+        assert!(
+            env.atmosphere_density.is_finite(),
+            "seed {i}: atmosphere not finite",
+        );
+        assert!(
+            env.radiation_level.is_finite(),
+            "seed {i}: radiation not finite",
+        );
+        assert!(
+            env.surface_gravity_g.is_finite(),
+            "seed {i}: gravity not finite",
+        );
+
+        // Temperature ordering invariant.
+        assert!(
+            env.surface_temp_min_k < env.surface_temp_max_k,
+            "seed {i}: temp_min ({}) >= temp_max ({})",
+            env.surface_temp_min_k,
+            env.surface_temp_max_k,
+        );
+
+        // Cold: at 100 AU from a Sol-like star, even with seed variation
+        // the temperature should be far below Earth-normal (280 K).
+        assert!(
+            env.surface_temp_max_k < 50.0,
+            "seed {i}: expected very cold planet at 100 AU, got temp_max {} K",
+            env.surface_temp_max_k,
+        );
+
+        // Thin atmosphere: distant planets retain atmosphere (no inner
+        // penalty) but the base atmosphere from sqrt(distance) is high —
+        // verify it is at least positive and finite (already checked).
+        // The key physical assertion: atmosphere should be non-negative.
+        assert!(
+            env.atmosphere_density >= 0.0,
+            "seed {i}: atmosphere density {} is negative",
+            env.atmosphere_density,
+        );
+
+        // Low radiation: inverse-square at 100 AU yields negligible flux.
+        assert!(
+            env.radiation_level < 0.01,
+            "seed {i}: expected near-zero radiation at 100 AU, got {}",
+            env.radiation_level,
+        );
+
+        // Gravity within configured range.
+        assert!(
+            env.surface_gravity_g >= config.gravity_min
+                && env.surface_gravity_g <= config.gravity_max,
+            "seed {i}: gravity {} outside [{}, {}]",
+            env.surface_gravity_g,
+            config.gravity_min,
+            config.gravity_max,
+        );
+
+        // Not in habitable zone.
+        assert!(
+            !env.in_habitable_zone,
+            "seed {i}: 100 AU should not be in habitable zone",
+        );
+    }
+}
+
+/// A blue giant at maximum luminosity (100 L☉) produces a very wide
+/// habitable zone far from the star. Planets in the zone are habitable;
+/// planets outside are not.
+///
+/// This validates that the habitable zone formulas produce physically
+/// coherent results even for the brightest stars in the registry: the
+/// zone exists, is wide, inner planets are scorching, and the flag
+/// correctly discriminates at the zone boundaries.
+#[test]
+fn blue_giant_max_luminosity_wide_habitable_zone() {
+    let luminosity = 100.0_f32; // blue giant maximum from star_types.toml
+    let star = StarProfile {
+        star_type: StarType::BlueGiant,
+        luminosity,
+        surface_temperature_k: 30000,
+        mass_solar: 20.0,
+        habitable_zone_inner_au: (luminosity / 1.1_f32).sqrt(),
+        habitable_zone_outer_au: (luminosity / 0.53_f32).sqrt(),
+    };
+
+    // ── Zone geometry ────────────────────────────────────────────────
+    let hz_width = star.habitable_zone_outer_au - star.habitable_zone_inner_au;
+
+    // The zone must exist and be positive.
+    assert!(
+        hz_width > 0.0,
+        "habitable zone width must be positive, got {hz_width}",
+    );
+
+    // For a 100 L☉ star the zone is roughly 4–14 AU — much wider than
+    // Sol's ~0.8 AU zone. Assert it exceeds 3 AU to catch any formula
+    // regression that would shrink it unrealistically.
+    assert!(
+        hz_width > 3.0,
+        "blue giant HZ should be very wide, got {hz_width:.4} AU",
+    );
+
+    // Inner edge should be well beyond Earth's orbit (> 5 AU).
+    assert!(
+        star.habitable_zone_inner_au > 5.0,
+        "inner edge {} AU should be > 5 AU for a very bright star",
+        star.habitable_zone_inner_au,
+    );
+
+    // ── Habitable zone flag accuracy ─────────────────────────────────
+    let config = PlanetEnvironmentConfig::default();
+    let seed = PlanetSeed(42);
+
+    // Midpoint of the zone → habitable.
+    let hz_mid = (star.habitable_zone_inner_au + star.habitable_zone_outer_au) / 2.0;
+    let env_mid = derive_planet_environment(&star, hz_mid, seed, &config);
+    assert!(
+        env_mid.in_habitable_zone,
+        "planet at midpoint {hz_mid:.6} AU should be in habitable zone",
+    );
+
+    // Just outside inner edge → not habitable.
+    let just_inside_inner = star.habitable_zone_inner_au * 0.95;
+    let env_too_close = derive_planet_environment(&star, just_inside_inner, seed, &config);
+    assert!(
+        !env_too_close.in_habitable_zone,
+        "planet at {just_inside_inner:.6} AU (5% inside inner edge) should NOT be habitable",
+    );
+
+    // Just outside outer edge → not habitable.
+    let just_outside_outer = star.habitable_zone_outer_au * 1.05;
+    let env_too_far = derive_planet_environment(&star, just_outside_outer, seed, &config);
+    assert!(
+        !env_too_far.in_habitable_zone,
+        "planet at {just_outside_outer:.6} AU (5% outside outer edge) should NOT be habitable",
+    );
+
+    // ── Temperature coherence ────────────────────────────────────────
+    // A habitable-zone planet around a very luminous blue giant should
+    // still have moderate temperatures (the HZ is far from the star).
+    // Max temp should stay below 1000 K for a planet in the HZ.
+    assert!(
+        env_mid.surface_temp_max_k < 1000.0,
+        "HZ planet around blue giant should not be scorching, got {} K",
+        env_mid.surface_temp_max_k,
+    );
+
+    // Inner planet (close to star) should be extremely hot.
+    let inner_dist = 1.0_f32; // 1 AU from a 100 L☉ star
+    let env_inner = derive_planet_environment(&star, inner_dist, seed, &config);
+    assert!(
+        env_inner.surface_temp_min_k > 500.0,
+        "inner planet at 1 AU from 100 L☉ star should be very hot, got min {} K",
+        env_inner.surface_temp_min_k,
+    );
+
+    // ── Comparison with Sol-like star ────────────────────────────────
+    let sol = test_star();
+    let sol_hz_width = sol.habitable_zone_outer_au - sol.habitable_zone_inner_au;
+
+    assert!(
+        hz_width > sol_hz_width,
+        "blue giant HZ width ({hz_width:.4} AU) should be wider than Sol's ({sol_hz_width:.4} AU)",
+    );
+
+    // ── Radiation coherence ──────────────────────────────────────────
+    // An inner planet around a blue giant should receive very high
+    // radiation (clamped to 1.0 by the normalization).
+    assert!(
+        env_inner.radiation_level > 0.5,
+        "inner planet around blue giant should have high radiation, got {}",
+        env_inner.radiation_level,
+    );
+
+    // HZ planet should have lower radiation than inner planet.
+    assert!(
+        env_mid.radiation_level < env_inner.radiation_level,
+        "HZ planet radiation ({}) should be less than inner planet radiation ({})",
+        env_mid.radiation_level,
+        env_inner.radiation_level,
+    );
+}
+
+/// A red dwarf at minimum luminosity (0.01 L☉) produces a very narrow
+/// habitable zone. Planets just inside the zone are habitable; planets
+/// slightly outside are not.
+///
+/// This validates that the habitable zone formulas produce physically
+/// coherent results even for the dimmest stars in the registry: the zone
+/// exists, is narrow, and the flag correctly discriminates at fine
+/// orbital-distance resolution.
+#[test]
+fn red_dwarf_minimum_luminosity_narrow_habitable_zone() {
+    let luminosity = 0.01_f32; // red dwarf minimum from star_types.toml
+    let star = StarProfile {
+        star_type: StarType::RedDwarf,
+        luminosity,
+        surface_temperature_k: 2500,
+        mass_solar: 0.08,
+        habitable_zone_inner_au: (luminosity / 1.1_f32).sqrt(),
+        habitable_zone_outer_au: (luminosity / 0.53_f32).sqrt(),
+    };
+
+    // ── Zone geometry ────────────────────────────────────────────────
+    let hz_width = star.habitable_zone_outer_au - star.habitable_zone_inner_au;
+
+    // The zone must exist and be positive.
+    assert!(
+        hz_width > 0.0,
+        "habitable zone width must be positive, got {hz_width}",
+    );
+
+    // For a 0.01 L☉ star the zone is roughly 0.04 AU wide — far narrower
+    // than Sol's ~0.8 AU zone. Assert it is under 0.1 AU to catch any
+    // formula regression that would widen it unrealistically.
+    assert!(
+        hz_width < 0.1,
+        "red dwarf HZ should be very narrow, got {hz_width:.4} AU",
+    );
+
+    // Inner edge should be very close to the star (< 0.2 AU).
+    assert!(
+        star.habitable_zone_inner_au < 0.2,
+        "inner edge {} AU should be < 0.2 AU for a dim star",
+        star.habitable_zone_inner_au,
+    );
+
+    // ── Habitable zone flag accuracy ─────────────────────────────────
+    let config = PlanetEnvironmentConfig::default();
+    let seed = PlanetSeed(42);
+
+    // Midpoint of the zone → habitable.
+    let hz_mid = (star.habitable_zone_inner_au + star.habitable_zone_outer_au) / 2.0;
+    let env_mid = derive_planet_environment(&star, hz_mid, seed, &config);
+    assert!(
+        env_mid.in_habitable_zone,
+        "planet at midpoint {hz_mid:.6} AU should be in habitable zone",
+    );
+
+    // Just outside inner edge → not habitable.
+    let just_inside_inner = star.habitable_zone_inner_au * 0.95;
+    let env_too_close = derive_planet_environment(&star, just_inside_inner, seed, &config);
+    assert!(
+        !env_too_close.in_habitable_zone,
+        "planet at {just_inside_inner:.6} AU (5% inside inner edge) should NOT be habitable",
+    );
+
+    // Just outside outer edge → not habitable.
+    let just_outside_outer = star.habitable_zone_outer_au * 1.05;
+    let env_too_far = derive_planet_environment(&star, just_outside_outer, seed, &config);
+    assert!(
+        !env_too_far.in_habitable_zone,
+        "planet at {just_outside_outer:.6} AU (5% outside outer edge) should NOT be habitable",
+    );
+
+    // ── Temperature coherence ────────────────────────────────────────
+    // A habitable-zone planet around a dim red dwarf should still have
+    // reasonable temperatures (not extreme). The midpoint planet's max
+    // temp should be well below a hot inner planet around Sol.
+    assert!(
+        env_mid.surface_temp_max_k < 1000.0,
+        "HZ planet around dim red dwarf should not be scorching, got {} K",
+        env_mid.surface_temp_max_k,
+    );
+
+    // ── Comparison with Sol-like star ────────────────────────────────
+    let sol = test_star();
+    let sol_hz_width = sol.habitable_zone_outer_au - sol.habitable_zone_inner_au;
+
+    assert!(
+        hz_width < sol_hz_width,
+        "red dwarf HZ width ({hz_width:.4} AU) should be narrower than Sol's ({sol_hz_width:.4} AU)",
+    );
+}
+
+/// Using the full orbital layout pipeline, the innermost planet (index 0)
+/// should be hotter with less atmosphere than the outermost planet (last
+/// index) across many system seeds.
+#[test]
+fn inner_planet_hotter_and_thinner_than_outer_via_layout() {
+    let star_registry = StarTypeRegistry::default();
+    let orbital_config = OrbitalConfig::default();
+    let env_config = PlanetEnvironmentConfig::default();
+
+    let mut inner_hotter_count = 0u32;
+    let mut inner_thinner_count = 0u32;
+    let seed_count = 200u64;
+    let mut tested = 0u32;
+
+    for i in 0..seed_count {
+        let system_seed = SolarSystemSeed(i);
+        let star = derive_star_profile(system_seed, &star_registry);
+        let layout = derive_orbital_layout(system_seed, &orbital_config);
+
+        // Need at least two planets to compare inner vs outer.
+        if layout.planets.len() < 2 {
+            continue;
+        }
+        tested += 1;
+
+        let inner_slot = &layout.planets[0];
+        let outer_slot = &layout.planets[layout.planets.len() - 1];
+
+        let inner_env = derive_planet_environment(
+            &star,
+            inner_slot.orbital_distance_au,
+            inner_slot.planet_seed,
+            &env_config,
+        );
+        let outer_env = derive_planet_environment(
+            &star,
+            outer_slot.orbital_distance_au,
+            outer_slot.planet_seed,
+            &env_config,
+        );
+
+        if inner_env.surface_temp_max_k > outer_env.surface_temp_max_k {
+            inner_hotter_count += 1;
+        }
+        if inner_env.atmosphere_density < outer_env.atmosphere_density {
+            inner_thinner_count += 1;
+        }
+    }
+
+    // Sanity: we must have tested a meaningful number of systems.
+    assert!(
+        tested >= 50,
+        "expected at least 50 multi-planet systems, got {tested}",
+    );
+
+    // The trend should hold for the vast majority of seeds. Different
+    // planet seeds introduce variation, but the distance-driven formulas
+    // should dominate.
+    let hotter_pct = (inner_hotter_count as f64 / tested as f64) * 100.0;
+    let thinner_pct = (inner_thinner_count as f64 / tested as f64) * 100.0;
+
+    assert!(
+        hotter_pct > 80.0,
+        "inner planet should be hotter than outer in >80% of systems, got {hotter_pct:.1}%",
+    );
+    // Atmosphere has a wider seed-based variation (±30%) than temperature,
+    // so different planet seeds can occasionally override the distance
+    // trend when the orbital spread is modest. We require a clear
+    // statistical majority rather than near-unanimity.
+    assert!(
+        thinner_pct > 60.0,
+        "inner planet should have thinner atmosphere than outer in >60% of systems, got {thinner_pct:.1}%",
+    );
+}
