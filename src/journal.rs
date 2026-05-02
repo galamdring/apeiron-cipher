@@ -136,10 +136,35 @@ pub struct Observation {
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum JournalKey {
     /// A raw or discovered material, keyed by its procedural seed.
+    ///
+    /// The optional `planet_seed` records the planet on which this
+    /// material was first observed, so context-aware filters
+    /// (Story 10.3 — "entries relevant to current planet") can match
+    /// entries against the player's [`WorldProfile::planet_seed`]
+    /// without re-deriving provenance from observation history.
+    ///
+    /// `planet_seed` is `None` for entries created in contexts where
+    /// no planetary world profile is in scope (early bring-up, ad-hoc
+    /// integration tests, future non-planetary discovery sites).
+    /// Treating it as `Option<u64>` rather than baking in a sentinel
+    /// keeps the "unknown provenance" case explicit at every match
+    /// site.
+    ///
+    /// Field ordering is `seed` then `planet_seed` so the derived
+    /// `Ord` continues to sort primarily by material identity — the
+    /// existing journal iteration order is preserved when
+    /// `planet_seed` is `None` everywhere, which matches the
+    /// pre-extension behaviour bit-for-bit.
     Material {
         /// The deterministic seed that uniquely identifies this material
         /// within the world generation system.
         seed: u64,
+        /// The planet on which this material was first observed, taken
+        /// from `WorldProfile::planet_seed.0` at observation time.
+        /// `None` indicates the recording site had no planetary context
+        /// available; such entries are excluded from
+        /// [`JournalContext::CurrentPlanet`] filtering.
+        planet_seed: Option<u64>,
     },
     /// The output of a fabrication process, keyed by the resulting
     /// material's seed.
@@ -147,6 +172,183 @@ pub enum JournalKey {
         /// The deterministic seed of the fabricated output material.
         output_seed: u64,
     },
+}
+
+impl JournalKey {
+    /// Planet on which the subject identified by this key was first
+    /// observed, when that information is available.
+    ///
+    /// Returns `Some(seed)` for [`JournalKey::Material`] entries that
+    /// were recorded with a planetary world profile in scope, and `None`
+    /// for materials recorded without one (early bring-up, ad-hoc
+    /// integration tests, future non-planetary discovery sites).
+    ///
+    /// [`JournalKey::Fabrication`] entries return `None` because
+    /// fabrications are produced at the player's fabricator and are
+    /// intentionally not tied to a discovery planet — the same recipe
+    /// produces the same output regardless of where it was crafted.  The
+    /// "current planet" filter therefore intentionally hides
+    /// fabrications, which matches the player-mental-model of the
+    /// filter ("show me things tied to where I am") better than
+    /// pretending fabrications belong to whichever planet the player
+    /// happened to be standing on at craft time.
+    ///
+    /// Used by [`matches_filter`] to evaluate
+    /// [`JournalContext::CurrentPlanet`] without re-deriving provenance
+    /// from observation history.
+    pub fn planet_seed(&self) -> Option<u64> {
+        match self {
+            JournalKey::Material { planet_seed, .. } => *planet_seed,
+            JournalKey::Fabrication { .. } => None,
+        }
+    }
+}
+
+// ── Filtering ───────────────────────────────────────────────────────────
+
+/// Contextual scope used to narrow journal entries to those relevant to
+/// the player's current situation (e.g. only the current planet, only
+/// the current biome).
+///
+/// Each variant carries the identity of *what* the player is currently
+/// engaged with so the filter can be evaluated against the metadata
+/// captured on each [`JournalEntry`] / [`JournalKey`].  The enum is
+/// intentionally small at this stage — only the contexts already implied
+/// by Story 10.3's acceptance criteria (current planet, current biome)
+/// are included.  Additional contexts (current solar system, time
+/// period, etc.) are explicitly anticipated by the design but are out of
+/// scope for this task and will be added when their underlying world
+/// metadata is available.
+///
+/// The variant payloads use the same identifier types the rest of the
+/// codebase uses for these concepts: a raw planet seed (`u64`, matching
+/// `WorldGenerationConfig::planet_seed` and the public `PlanetSeed.0`
+/// representation already exposed in serialized world data) and a
+/// biome key as a `String` (matching the biome registry's text key
+/// format).  Keeping the payloads as plain owned values rather than
+/// borrowing keeps `JournalFilter` cheap to clone and store inside a
+/// long-lived UI state resource.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum JournalContext {
+    /// Restrict to entries that were observed on the planet identified
+    /// by this seed.  The seed matches `WorldProfile::planet_seed.0`,
+    /// which is the value future tasks will copy into [`JournalKey`]
+    /// metadata at observation time.
+    CurrentPlanet {
+        /// Raw planet seed (unwrapped from `PlanetSeed`) used as the
+        /// equality key when matching entries against this context.
+        planet_seed: u64,
+    },
+    /// Restrict to entries that were observed within the named biome.
+    /// The key matches the biome registry's text key (e.g. `"tundra"`,
+    /// `"basalt_flats"`); a `String` is used here because the biome
+    /// taxonomy is data-driven and not represented as a typed enum.
+    CurrentBiome {
+        /// Biome registry key used as the equality value when matching
+        /// entries against this context.
+        biome_key: String,
+    },
+    // Future variants (CurrentSystem, TimePeriod, …) will be added when
+    // the underlying world metadata is captured on JournalKey.  They are
+    // intentionally omitted now to avoid defining identifiers whose
+    // semantics have not yet been pinned down by their respective
+    // systems.
+}
+
+/// Combined filter applied to the journal entry list before rendering.
+///
+/// Both fields are independent and combine with **AND** logic: an entry
+/// is kept when *every* `Some(_)` filter matches it.  A `None` field is
+/// treated as "no restriction on this dimension", so the [`Default`]
+/// value (both fields `None`) corresponds to the "All" filter required
+/// by the Story 10.3 acceptance criteria — every entry is shown.
+///
+/// `JournalFilter` is a plain data type with no behavior: the matching
+/// logic, UI cycling, and persistence across journal toggles are added
+/// in subsequent Phase 1 tasks.  Defining the data shape first lets
+/// those tasks build on a stable type without coupling concerns.
+///
+/// `Hash` is derived alongside `PartialEq`/`Eq` so the filter can be
+/// used as part of cache keys in later tasks (e.g. memoising the
+/// filtered entry list while the filter is unchanged).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct JournalFilter {
+    /// Optional restriction to a single observation category.  When
+    /// `Some(category)`, only entries that contain at least one
+    /// observation in `category` are kept.  `None` means "no category
+    /// restriction" (the "All" category filter).
+    pub category: Option<ObservationCategory>,
+    /// Optional restriction to entries tied to a particular world
+    /// context (current planet, current biome, …).  When `Some(ctx)`,
+    /// only entries whose captured location metadata matches `ctx` are
+    /// kept.  `None` means "no contextual restriction" (the "All"
+    /// context filter).
+    pub context: Option<JournalContext>,
+}
+
+/// Predicate evaluating whether a journal entry should be shown under the
+/// active filter.
+///
+/// The two filter dimensions combine with **AND** logic: an entry is
+/// kept when *every* `Some(_)` dimension matches it.  `None` on a
+/// dimension means "no restriction on this dimension" — the
+/// [`JournalFilter::default`] value (both dimensions `None`) therefore
+/// returns `true` for every entry, satisfying the Story 10.3
+/// acceptance criterion that the "All" filter shows everything.
+///
+/// Dimension semantics:
+///
+/// * **Category match** — the entry contains at least one observation
+///   whose [`Observation::category`] equals the requested category.  An
+///   entry with no observations cannot match any category restriction
+///   (the `any` fold returns `false` over an empty iterator), which is
+///   the correct behaviour: an entry with zero observations carries no
+///   evidence of belonging to any category.
+/// * **Context match** — the entry's captured location metadata
+///   matches the requested context.  For
+///   [`JournalContext::CurrentPlanet`] this consults
+///   [`JournalKey::planet_seed`]: an entry matches iff its key recorded
+///   the same planet seed.  Entries whose key has no planet seed
+///   (`None`) are excluded from current-planet filtering — this is by
+///   design (see [`JournalKey::Material::planet_seed`]'s docs):
+///   "unknown provenance" should not silently be assumed to mean
+///   "current planet".
+///
+///   [`JournalContext::CurrentBiome`] is not yet evaluated and
+///   currently returns `true` (no restriction).  Biome provenance is
+///   not captured on [`JournalKey`] today; wiring it up is tracked as a
+///   follow-up so that filter UI cycling can already expose the option
+///   without false-negative behaviour.  When biome capture is added,
+///   this arm changes to compare against the entry's recorded biome
+///   key — no other call site needs to change.
+///
+/// The function is intentionally pure (no `WorldContext` parameter):
+/// the filter already carries the planet seed / biome key it is
+/// matching against, and the entry already carries the metadata being
+/// matched.  Keeping the predicate parameter-light means it can be
+/// dropped into an iterator chain (`entries.filter(|e|
+/// matches_filter(e, &filter))`) without threading additional
+/// resources through the render pipeline.
+pub fn matches_filter(entry: &JournalEntry, filter: &JournalFilter) -> bool {
+    let category_match = filter
+        .category
+        .as_ref()
+        .is_none_or(|cat| entry.observations.keys().any(|entry_cat| entry_cat == cat));
+
+    let context_match = filter.context.as_ref().is_none_or(|ctx| match ctx {
+        JournalContext::CurrentPlanet { planet_seed } => {
+            entry.key.planet_seed() == Some(*planet_seed)
+        }
+        // Biome provenance is not yet captured on JournalKey; until it
+        // is, the biome filter is a no-op (matches everything) rather
+        // than excluding every entry.  Returning `true` here keeps the
+        // UI affordance usable without producing a misleading "no
+        // matching entries" panel for a filter that hasn't been
+        // wired through to the data model yet.
+        JournalContext::CurrentBiome { .. } => true,
+    });
+
+    category_match && context_match
 }
 
 /// Plugin that manages the player journal, recording observations and discoveries.
@@ -213,6 +415,9 @@ impl Plugin for JournalPlugin {
                     journal_navigation
                         .in_set(JournalSet::Navigate)
                         .after(toggle_journal_visibility),
+                    update_journal_context_on_planet_change
+                        .in_set(JournalSet::Navigate)
+                        .after(journal_navigation),
                     apply_observations.in_set(JournalSet::Navigate),
                     compute_journal_panels.in_set(JournalSet::Compute),
                     sync_journal_ui.in_set(JournalSet::Sync),
@@ -436,6 +641,23 @@ pub struct JournalUiState {
     /// Maximum number of entry rows displayed per page.  Loaded from
     /// configuration; falls back to `Self::DEFAULT_ENTRIES_PER_PAGE`.
     entries_per_page: usize,
+    /// Active contextual filter applied to the entry list before
+    /// rendering (Story 10.3).
+    ///
+    /// Stored on the long-lived UI state resource — rather than recomputed
+    /// per-frame from input — so the filter persists across journal
+    /// visibility toggles, satisfying the acceptance criterion that
+    /// "filter state persists when journal is toggled closed/open".
+    /// The [`Default`] value is the empty filter ([`JournalFilter::default`]),
+    /// which corresponds to the "All" filter showing every entry — also a
+    /// Story 10.3 acceptance criterion.
+    ///
+    /// Field privacy mirrors the other navigation fields on this resource:
+    /// the matching logic, UI cycling, and rendering systems added by
+    /// later Phase 1 tasks read and mutate the filter only through the
+    /// accessor and setter on this type, keeping the [`JournalSet`]
+    /// ordering contract enforceable.
+    filter: JournalFilter,
 }
 
 impl JournalUiState {
@@ -481,6 +703,30 @@ impl JournalUiState {
         self.visible = visible;
     }
 
+    /// Currently active contextual filter (Story 10.3).
+    ///
+    /// Returns a borrow rather than a clone because the filter is read on
+    /// every render frame by the upcoming filtering logic; cloning would
+    /// be wasteful when the field is otherwise cheap to inspect in place.
+    #[allow(dead_code)]
+    pub fn filter(&self) -> &JournalFilter {
+        &self.filter
+    }
+
+    /// Replace the currently active contextual filter (Story 10.3).
+    ///
+    /// Mutation goes through this setter rather than a public field so
+    /// future tasks can hook reset-on-change behavior here (e.g., resetting
+    /// `scroll_offset` to the top when the filter changes, as called for
+    /// in the Story 10.3 technical design) without having to find every
+    /// call site.  The current implementation is a plain assignment;
+    /// behavioral hooks are deferred to the task that wires the filter
+    /// into navigation and rendering.
+    #[allow(dead_code)]
+    pub fn set_filter(&mut self, filter: JournalFilter) {
+        self.filter = filter;
+    }
+
     /// Clamp `selected_index` and `scroll_offset` so they stay within valid
     /// bounds for the given total entry count.  Called after any navigation
     /// input and before rendering so the UI never references out-of-range
@@ -510,6 +756,7 @@ impl Default for JournalUiState {
             selected_index: 0,
             scroll_offset: 0,
             entries_per_page: Self::DEFAULT_ENTRIES_PER_PAGE,
+            filter: JournalFilter::default(),
         }
     }
 }
@@ -580,6 +827,10 @@ struct JournalSelectionTracker {
 #[derive(Component)]
 struct JournalPanel;
 
+/// Marker for the filter bar text node above the entry list.
+#[derive(Component)]
+struct JournalFilterBarText;
+
 /// Marker for the left-hand entry list text node.
 #[derive(Component)]
 struct JournalEntryListText;
@@ -608,6 +859,7 @@ fn attach_journal_to_player(mut commands: Commands, player_query: Query<Entity, 
 ///   ├─ Title text ("Journal")
 ///   ├─ Body row (row)
 ///   │   ├─ Entry list column (30% width)
+///   │   │   ├─ JournalFilterBarText (filter bar above entry list)
 ///   │   │   └─ JournalEntryListText
 ///   │   └─ Detail column (70% width)
 ///   │       └─ JournalDetailText
@@ -678,6 +930,23 @@ fn spawn_journal_ui(mut commands: Commands) {
                         BorderColor::all(Color::srgba(0.3, 0.3, 0.28, 0.4)),
                     ))
                     .with_children(|left| {
+                        // Filter bar above entry list
+                        left.spawn((
+                            JournalFilterBarText,
+                            Text::new(""),
+                            TextFont {
+                                font_size: 14.0,
+                                ..default()
+                            },
+                            TextColor(Color::srgba(0.75, 0.68, 0.45, 1.0)), // Amber accent for filter status
+                            Node {
+                                margin: UiRect::bottom(Val::Px(4.0)),
+                                padding: UiRect::all(Val::Px(4.0)),
+                                ..default()
+                            },
+                        ));
+
+                        // Entry list
                         left.spawn((
                             JournalEntryListText,
                             Text::new(""),
@@ -769,21 +1038,108 @@ fn toggle_journal_visibility(
 /// - Scroll offset auto-adjusts via `clamp_to_entry_count` so the
 ///   selected entry is always within the visible window.
 fn journal_navigation(
-    keys: Res<ButtonInput<KeyCode>>,
     mut state: ResMut<JournalUiState>,
-    player_query: Query<&Journal, With<Player>>,
+    keys: Res<ButtonInput<KeyCode>>,
+    q: Query<&Journal, With<Player>>,
+    world_profile: Option<Res<crate::world_generation::WorldProfile>>,
 ) {
     if !state.visible {
         return;
     }
 
-    let Ok(journal) = player_query.single() else {
+    let Ok(journal) = q.single() else {
         return;
     };
 
     let entry_count = journal.entries.len();
     if entry_count == 0 {
         return;
+    }
+
+    // ── Context filter cycling (Shift+Tab) ─────────────────────────────
+    //
+    // Cycles through context filter options: All → Current Planet.
+    // Uses Shift+Tab to distinguish from category filter cycling (Tab).
+    // When no world context is available, Current Planet is skipped.
+    if keys.just_pressed(KeyCode::Tab)
+        && (keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight))
+    {
+        let current_filter = state.filter().clone();
+        let new_context = match current_filter.context {
+            None => {
+                // All → Current Planet (if world context available)
+                world_profile
+                    .as_ref()
+                    .map(|profile| JournalContext::CurrentPlanet {
+                        planet_seed: profile.planet_seed.0,
+                    })
+            }
+            Some(JournalContext::CurrentPlanet { .. }) => {
+                // Current Planet → All
+                None
+            }
+            Some(JournalContext::CurrentBiome { .. }) => {
+                // CurrentBiome → All (future expansion)
+                None
+            }
+        };
+
+        let new_filter = JournalFilter {
+            category: current_filter.category,
+            context: new_context,
+        };
+        state.set_filter(new_filter);
+
+        // Reset scroll to top when filter changes, as specified in the technical design
+        state.selected_index = 0;
+        state.scroll_offset = 0;
+    }
+
+    // ── Category filter cycling (Tab) ──────────────────────────────────────
+    //
+    // Cycles through category filter options: All → SurfaceAppearance → ThermalBehavior → Weight → FabricationResult.
+    // Uses Tab without Shift to distinguish from context filter cycling (Shift+Tab).
+    if keys.just_pressed(KeyCode::Tab)
+        && !keys.pressed(KeyCode::ShiftLeft)
+        && !keys.pressed(KeyCode::ShiftRight)
+    {
+        let current_filter = state.filter().clone();
+        let new_category = match current_filter.category {
+            None => {
+                // All → SurfaceAppearance
+                Some(ObservationCategory::SurfaceAppearance)
+            }
+            Some(ObservationCategory::SurfaceAppearance) => {
+                // SurfaceAppearance → ThermalBehavior
+                Some(ObservationCategory::ThermalBehavior)
+            }
+            Some(ObservationCategory::ThermalBehavior) => {
+                // ThermalBehavior → Weight
+                Some(ObservationCategory::Weight)
+            }
+            Some(ObservationCategory::Weight) => {
+                // Weight → FabricationResult
+                Some(ObservationCategory::FabricationResult)
+            }
+            Some(ObservationCategory::FabricationResult) => {
+                // FabricationResult → All
+                None
+            }
+            Some(ObservationCategory::LocationNote) => {
+                // LocationNote → All (for future expansion)
+                None
+            }
+        };
+
+        let new_filter = JournalFilter {
+            category: new_category,
+            context: current_filter.context,
+        };
+        state.set_filter(new_filter);
+
+        // Reset scroll to top when filter changes, as specified in the technical design
+        state.selected_index = 0;
+        state.scroll_offset = 0;
     }
 
     if keys.just_pressed(KeyCode::ArrowUp) {
@@ -806,6 +1162,60 @@ fn journal_navigation(
     }
 
     state.clamp_to_entry_count(entry_count);
+}
+
+/// System that automatically updates the journal context filter when the
+/// planet changes (WorldProfile resource changes).
+///
+/// When the player switches planets, this system detects the change in
+/// WorldProfile and updates any active CurrentPlanet context filter to
+/// use the new planet's seed. This ensures that the journal filter stays
+/// relevant to the current planet without requiring manual re-filtering.
+///
+/// The system only acts when:
+/// 1. WorldProfile resource has changed (detected via `Changed<WorldProfile>`)
+/// 2. The current journal filter is set to CurrentPlanet context
+/// 3. The new planet seed differs from the filter's current planet seed
+///
+/// When these conditions are met, the filter is updated to use the new
+/// planet seed, maintaining the same category filter but updating the
+/// context to match the new planet.
+fn update_journal_context_on_planet_change(
+    mut state: ResMut<JournalUiState>,
+    world_profile: Option<Res<crate::world_generation::WorldProfile>>,
+) {
+    // Only proceed if WorldProfile exists and has changed
+    let Some(profile) = world_profile.as_ref() else {
+        return;
+    };
+
+    if !profile.is_changed() {
+        return;
+    }
+
+    // Check if the current filter is using CurrentPlanet context
+    let current_filter = state.filter().clone();
+    if let Some(JournalContext::CurrentPlanet {
+        planet_seed: current_seed,
+    }) = current_filter.context
+    {
+        let new_seed = profile.planet_seed.0;
+
+        // Only update if the planet seed has actually changed
+        if current_seed != new_seed {
+            let new_filter = JournalFilter {
+                category: current_filter.category,
+                context: Some(JournalContext::CurrentPlanet {
+                    planet_seed: new_seed,
+                }),
+            };
+            state.set_filter(new_filter);
+
+            // Reset scroll to top when filter changes, as specified in the technical design
+            state.selected_index = 0;
+            state.scroll_offset = 0;
+        }
+    }
 }
 
 // ── Record ingestion ────────────────────────────────────────────────────
@@ -839,6 +1249,8 @@ fn apply_observations(
 /// within the 4-parameter limit.
 #[derive(Resource, Default)]
 struct JournalRenderCache {
+    /// Text for the filter bar above the entry list, showing active filter status.
+    filter_bar: String,
     /// Structured lines for the left-hand entry list panel, each carrying
     /// its display text and whether it represents the selected entry.
     list_lines: Vec<EntryListLine>,
@@ -918,6 +1330,7 @@ fn compute_journal_panels(
     mut tracker: ResMut<JournalSelectionTracker>,
 ) {
     if !state.visible {
+        cache.filter_bar.clear();
         cache.list_lines.clear();
         cache.detail_spans.clear();
         cache.help.clear();
@@ -925,6 +1338,7 @@ fn compute_journal_panels(
     }
 
     let Ok(journal) = player_query.single() else {
+        cache.filter_bar.clear();
         cache.list_lines.clear();
         cache.detail_spans.clear();
         cache.help.clear();
@@ -935,7 +1349,13 @@ fn compute_journal_panels(
     let mut sorted_entries: Vec<&JournalEntry> = journal.entries.values().collect();
     sorted_entries.sort_by(|a, b| a.name.cmp(&b.name));
 
-    let entry_count = sorted_entries.len();
+    // Apply active filter to the sorted entries
+    let filtered_entries: Vec<&JournalEntry> = sorted_entries
+        .into_iter()
+        .filter(|entry| matches_filter(entry, state.filter()))
+        .collect();
+
+    let entry_count = filtered_entries.len();
 
     // ── Selection reconciliation ────────────────────────────────────
     //
@@ -951,7 +1371,7 @@ fn compute_journal_panels(
     // if the deletion was at the end of the list.
     if let Some(tracked_key) = tracker.key.clone()
         && state.selected_index == tracker.last_index
-        && let Some(new_pos) = sorted_entries.iter().position(|e| e.key == tracked_key)
+        && let Some(new_pos) = filtered_entries.iter().position(|e| e.key == tracked_key)
     {
         state.selected_index = new_pos;
     }
@@ -973,7 +1393,7 @@ fn compute_journal_panels(
     // (possibly already re-anchored) selection stays visible.
     if let Some(top_key) = tracker.top_key.clone()
         && state.scroll_offset == tracker.last_scroll_offset
-        && let Some(new_top_pos) = sorted_entries.iter().position(|e| e.key == top_key)
+        && let Some(new_top_pos) = filtered_entries.iter().position(|e| e.key == top_key)
     {
         state.scroll_offset = new_top_pos;
     }
@@ -985,10 +1405,10 @@ fn compute_journal_panels(
     // Anchor onto whatever entry is now selected (which, after clamping,
     // is guaranteed to exist when entry_count > 0) and onto whatever
     // entry now occupies the top of the visible window.
-    if let Some(entry) = sorted_entries.get(state.selected_index) {
+    if let Some(entry) = filtered_entries.get(state.selected_index) {
         tracker.key = Some(entry.key.clone());
         tracker.last_index = state.selected_index;
-        tracker.top_key = sorted_entries
+        tracker.top_key = filtered_entries
             .get(state.scroll_offset)
             .map(|e| e.key.clone());
         tracker.last_scroll_offset = state.scroll_offset;
@@ -1001,8 +1421,9 @@ fn compute_journal_panels(
         tracker.last_scroll_offset = 0;
     }
 
-    cache.list_lines = build_entry_list_lines(&sorted_entries, &state);
-    cache.detail_spans = build_detail_spans(&sorted_entries, &state);
+    cache.filter_bar = build_filter_bar_text(state.filter());
+    cache.list_lines = build_entry_list_lines(&filtered_entries, &state);
+    cache.detail_spans = build_detail_spans(&filtered_entries, &state, !journal.entries.is_empty());
     cache.help = build_help_text(entry_count, &state);
 }
 
@@ -1024,6 +1445,7 @@ fn sync_journal_ui(
     list_query: Query<(Entity, Option<&Children>), With<JournalEntryListText>>,
     detail_query: Query<(Entity, Option<&Children>), With<JournalDetailText>>,
     mut texts: ParamSet<(
+        Query<&mut Text, With<JournalFilterBarText>>,
         Query<&mut Text, With<JournalEntryListText>>,
         Query<&mut Text, With<JournalDetailText>>,
         Query<&mut Text, With<JournalHelpText>>,
@@ -1061,7 +1483,7 @@ fn sync_journal_ui(
         }
 
         // Clear root text so only spans render.
-        if let Ok(mut root_text) = texts.p0().single_mut() {
+        if let Ok(mut root_text) = texts.p1().single_mut() {
             root_text.0.clear();
         }
 
@@ -1103,7 +1525,7 @@ fn sync_journal_ui(
             }
         }
 
-        if let Ok(mut root_text) = texts.p1().single_mut() {
+        if let Ok(mut root_text) = texts.p2().single_mut() {
             root_text.0.clear();
         }
 
@@ -1121,8 +1543,30 @@ fn sync_journal_ui(
         });
     }
 
-    if let Ok(mut help_text) = texts.p2().single_mut() {
+    // ── Filter bar text ──────────────────────────────────────────────
+    if let Ok(mut filter_text) = texts.p0().single_mut() {
+        filter_text.0.clone_from(&cache.filter_bar);
+    }
+
+    if let Ok(mut help_text) = texts.p3().single_mut() {
         help_text.0.clone_from(&cache.help);
+    }
+}
+
+/// Builds the filter bar text showing the currently active filter.
+/// Returns an empty string when no filter is active (All filter).
+fn build_filter_bar_text(filter: &JournalFilter) -> String {
+    match (&filter.category, &filter.context) {
+        (None, None) => String::new(), // All filter - no text needed
+        (Some(category), None) => format!("Filter: {}", category.display_label()),
+        (None, Some(JournalContext::CurrentPlanet { .. })) => "Filter: Current Planet".to_string(),
+        (None, Some(JournalContext::CurrentBiome { .. })) => "Filter: Current Biome".to_string(),
+        (Some(category), Some(JournalContext::CurrentPlanet { .. })) => {
+            format!("Filter: {} | Current Planet", category.display_label())
+        }
+        (Some(category), Some(JournalContext::CurrentBiome { .. })) => {
+            format!("Filter: {} | Current Biome", category.display_label())
+        }
     }
 }
 
@@ -1181,10 +1625,23 @@ fn build_entry_list_text(entries: &[&JournalEntry], state: &JournalUiState) -> S
 /// labels ("Surface:", "Heat:", etc.) use an amber accent, while observation
 /// descriptions use the normal body color.  If no entries exist, a single
 /// placeholder span is returned.
-fn build_detail_spans(entries: &[&JournalEntry], state: &JournalUiState) -> Vec<DetailSpan> {
+///
+/// The `has_any_entries` parameter distinguishes between an empty journal
+/// (shows "No observations yet.") and a filter that produces no results
+/// (shows "No matching entries").
+fn build_detail_spans(
+    entries: &[&JournalEntry],
+    state: &JournalUiState,
+    has_any_entries: bool,
+) -> Vec<DetailSpan> {
     if entries.is_empty() {
+        let message = if has_any_entries {
+            "No matching entries"
+        } else {
+            "No observations yet."
+        };
         return vec![DetailSpan {
-            text: "No observations yet.".to_string(),
+            text: message.to_string(),
             kind: DetailSpanKind::Placeholder,
         }];
     }
@@ -1266,8 +1723,24 @@ fn build_help_text(entry_count: usize, state: &JournalUiState) -> String {
     let page_start = state.scroll_offset + 1;
     let page_end = (state.scroll_offset + state.entries_per_page).min(entry_count);
 
+    // Show active filter status if any filter is applied
+    let filter_status = match (&state.filter().category, &state.filter().context) {
+        (None, None) => String::new(),
+        (Some(_), None) => " [Filter: Category]".to_string(),
+        (None, Some(JournalContext::CurrentPlanet { .. })) => {
+            " [Filter: Current Planet]".to_string()
+        }
+        (None, Some(JournalContext::CurrentBiome { .. })) => " [Filter: Current Biome]".to_string(),
+        (Some(_), Some(JournalContext::CurrentPlanet { .. })) => {
+            " [Filter: Category | Current Planet]".to_string()
+        }
+        (Some(_), Some(JournalContext::CurrentBiome { .. })) => {
+            " [Filter: Category | Current Biome]".to_string()
+        }
+    };
+
     format!(
-        "\u{2191}\u{2193} Navigate  PgUp/PgDn: Page  Home/End: Jump  J: Close  [{page_start}-{page_end} of {entry_count}]"
+        "\u{2191}\u{2193} Navigate  PgUp/PgDn: Page  Home/End: Jump  Shift+Tab: Context Filter  J: Close{filter_status}  [{page_start}-{page_end} of {entry_count}]"
     )
 }
 
@@ -1356,7 +1829,10 @@ mod tests {
     fn journal_omits_unknown_properties() {
         let mut journal = Journal::default();
         journal.record(
-            JournalKey::Material { seed: 1 },
+            JournalKey::Material {
+                seed: 1,
+                planet_seed: None,
+            },
             "Ferrite",
             Observation {
                 category: ObservationCategory::SurfaceAppearance,
@@ -1394,7 +1870,10 @@ mod tests {
     fn journal_shows_thermal_observation_when_present() {
         let mut journal = Journal::default();
         journal.record(
-            JournalKey::Material { seed: 3 },
+            JournalKey::Material {
+                seed: 3,
+                planet_seed: None,
+            },
             "TestMat",
             Observation {
                 category: ObservationCategory::ThermalBehavior,
@@ -1410,11 +1889,474 @@ mod tests {
 
     #[test]
     fn journal_key_material_equality() {
-        let a = JournalKey::Material { seed: 42 };
-        let b = JournalKey::Material { seed: 42 };
-        let c = JournalKey::Material { seed: 99 };
+        let a = JournalKey::Material {
+            seed: 42,
+            planet_seed: None,
+        };
+        let b = JournalKey::Material {
+            seed: 42,
+            planet_seed: None,
+        };
+        let c = JournalKey::Material {
+            seed: 99,
+            planet_seed: None,
+        };
         assert_eq!(a, b);
         assert_ne!(a, c);
+    }
+
+    /// `planet_seed` participates in `JournalKey::Material` identity: two
+    /// otherwise-identical material keys captured on different planets
+    /// must be distinct so the journal records them as separate entries.
+    /// This is what lets the upcoming context filter (Story 10.3) treat
+    /// "Ferrite seen on Planet A" and "Ferrite seen on Planet B" as
+    /// independent observations.
+    #[test]
+    fn journal_key_material_planet_seed_participates_in_equality() {
+        let unknown = JournalKey::Material {
+            seed: 42,
+            planet_seed: None,
+        };
+        let on_planet_a = JournalKey::Material {
+            seed: 42,
+            planet_seed: Some(1),
+        };
+        let on_planet_b = JournalKey::Material {
+            seed: 42,
+            planet_seed: Some(2),
+        };
+        let on_planet_a_again = JournalKey::Material {
+            seed: 42,
+            planet_seed: Some(1),
+        };
+
+        assert_ne!(unknown, on_planet_a);
+        assert_ne!(on_planet_a, on_planet_b);
+        assert_eq!(on_planet_a, on_planet_a_again);
+    }
+
+    /// Derived `Ord` sorts material keys primarily by `seed`, with
+    /// `planet_seed` acting as a tiebreaker (`None` < `Some(_)` per the
+    /// standard library's `Option` ordering).  Pre-existing tests assume
+    /// the first axis is `seed` — this test pins both axes so a future
+    /// field-reordering change in `JournalKey` cannot silently re-shuffle
+    /// the `BTreeMap` iteration order the journal UI depends on.
+    #[test]
+    fn journal_key_material_ord_seed_then_planet_seed() {
+        let mut keys = vec![
+            JournalKey::Material {
+                seed: 2,
+                planet_seed: Some(0),
+            },
+            JournalKey::Material {
+                seed: 1,
+                planet_seed: Some(99),
+            },
+            JournalKey::Material {
+                seed: 1,
+                planet_seed: None,
+            },
+            JournalKey::Material {
+                seed: 1,
+                planet_seed: Some(1),
+            },
+        ];
+        keys.sort();
+        assert_eq!(
+            keys,
+            vec![
+                JournalKey::Material {
+                    seed: 1,
+                    planet_seed: None
+                },
+                JournalKey::Material {
+                    seed: 1,
+                    planet_seed: Some(1)
+                },
+                JournalKey::Material {
+                    seed: 1,
+                    planet_seed: Some(99)
+                },
+                JournalKey::Material {
+                    seed: 2,
+                    planet_seed: Some(0)
+                },
+            ],
+        );
+    }
+
+    #[test]
+    fn journal_filter_default_is_unrestricted() {
+        // The "All" filter required by the acceptance criteria is the
+        // Default value: both dimensions are `None`, meaning no
+        // restriction on either category or context.
+        let filter = JournalFilter::default();
+        assert!(filter.category.is_none());
+        assert!(filter.context.is_none());
+    }
+
+    #[test]
+    fn journal_filter_equality_distinguishes_dimensions() {
+        // Two filters are equal iff both dimensions match exactly; this
+        // is what allows later tasks to cache filtered results keyed by
+        // the active filter and skip recomputation when nothing changed.
+        let a = JournalFilter {
+            category: Some(ObservationCategory::SurfaceAppearance),
+            context: Some(JournalContext::CurrentPlanet { planet_seed: 7 }),
+        };
+        let b = JournalFilter {
+            category: Some(ObservationCategory::SurfaceAppearance),
+            context: Some(JournalContext::CurrentPlanet { planet_seed: 7 }),
+        };
+        let different_category = JournalFilter {
+            category: Some(ObservationCategory::ThermalBehavior),
+            context: Some(JournalContext::CurrentPlanet { planet_seed: 7 }),
+        };
+        let different_context = JournalFilter {
+            category: Some(ObservationCategory::SurfaceAppearance),
+            context: Some(JournalContext::CurrentPlanet { planet_seed: 8 }),
+        };
+        assert_eq!(a, b);
+        assert_ne!(a, different_category);
+        assert_ne!(a, different_context);
+    }
+
+    #[test]
+    fn journal_ui_state_default_filter_is_unrestricted() {
+        // The UI resource starts with the "All" filter so the default
+        // experience matches the Story 10.3 acceptance criterion that
+        // "'All' filter shows everything (default)".
+        let state = JournalUiState::default();
+        assert_eq!(*state.filter(), JournalFilter::default());
+        assert!(state.filter().category.is_none());
+        assert!(state.filter().context.is_none());
+    }
+
+    #[test]
+    fn journal_ui_state_set_filter_replaces_active_filter() {
+        // The setter is the only public path for mutating the filter; it
+        // must store exactly the value passed in so later UI cycling code
+        // can rely on round-trip equality when comparing the previous and
+        // current filter to detect changes.
+        let mut state = JournalUiState::default();
+        let new_filter = JournalFilter {
+            category: Some(ObservationCategory::SurfaceAppearance),
+            context: Some(JournalContext::CurrentPlanet { planet_seed: 42 }),
+        };
+        state.set_filter(new_filter.clone());
+        assert_eq!(*state.filter(), new_filter);
+    }
+
+    #[test]
+    fn journal_ui_state_filter_persists_across_visibility_toggle() {
+        // Story 10.3 acceptance criterion: "Filter state persists when
+        // journal is toggled closed/open".  Because the filter lives on
+        // the long-lived `JournalUiState` resource — not derived from
+        // visibility — toggling `visible` must not disturb it.
+        let mut state = JournalUiState::default();
+        let active = JournalFilter {
+            category: Some(ObservationCategory::ThermalBehavior),
+            context: None,
+        };
+        state.set_filter(active.clone());
+        state.set_visible(true);
+        assert_eq!(*state.filter(), active);
+        state.set_visible(false);
+        assert_eq!(*state.filter(), active);
+        state.set_visible(true);
+        assert_eq!(*state.filter(), active);
+    }
+
+    #[test]
+    fn journal_context_biome_equality_is_string_based() {
+        // CurrentBiome carries a registry key as a String; equality is
+        // straightforward string equality, which is what the matching
+        // logic in later tasks will rely on.
+        let a = JournalContext::CurrentBiome {
+            biome_key: "tundra".to_string(),
+        };
+        let b = JournalContext::CurrentBiome {
+            biome_key: "tundra".to_string(),
+        };
+        let c = JournalContext::CurrentBiome {
+            biome_key: "basalt_flats".to_string(),
+        };
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+    }
+
+    // ── matches_filter ─────────────────────────────────────────────
+    //
+    // Helpers for the matches_filter tests below.  Build a small entry
+    // with a single observation so the category dimension can be
+    // exercised independently of the context dimension.
+    fn entry_with_observation(key: JournalKey, category: ObservationCategory) -> JournalEntry {
+        let mut entry = JournalEntry::new(key, "Subject".to_string(), 0);
+        entry.add_observation(Observation {
+            category,
+            confidence: ConfidenceLevel::Tentative,
+            description: "obs".to_string(),
+            recorded_at: 0,
+        });
+        entry
+    }
+
+    #[test]
+    fn matches_filter_default_accepts_every_entry() {
+        // The "All" filter (Default) imposes no restriction on either
+        // dimension; every entry — including one with no observations —
+        // must pass.  This is the Story 10.3 default behaviour.
+        let filter = JournalFilter::default();
+        let entry = JournalEntry::new(
+            JournalKey::Material {
+                seed: 1,
+                planet_seed: None,
+            },
+            "Empty".to_string(),
+            0,
+        );
+        assert!(matches_filter(&entry, &filter));
+
+        let populated = entry_with_observation(
+            JournalKey::Material {
+                seed: 2,
+                planet_seed: Some(99),
+            },
+            ObservationCategory::SurfaceAppearance,
+        );
+        assert!(matches_filter(&populated, &filter));
+    }
+
+    #[test]
+    fn matches_filter_category_only_keeps_matching_entries() {
+        // With only a category restriction set, an entry must contain at
+        // least one observation in that category to pass.
+        let filter = JournalFilter {
+            category: Some(ObservationCategory::ThermalBehavior),
+            context: None,
+        };
+
+        let thermal = entry_with_observation(
+            JournalKey::Material {
+                seed: 1,
+                planet_seed: None,
+            },
+            ObservationCategory::ThermalBehavior,
+        );
+        assert!(matches_filter(&thermal, &filter));
+
+        let surface = entry_with_observation(
+            JournalKey::Material {
+                seed: 2,
+                planet_seed: None,
+            },
+            ObservationCategory::SurfaceAppearance,
+        );
+        assert!(!matches_filter(&surface, &filter));
+    }
+
+    #[test]
+    fn matches_filter_category_rejects_entry_with_no_observations() {
+        // An entry with zero observations carries no evidence of any
+        // category and therefore fails any `Some(category)` restriction.
+        let filter = JournalFilter {
+            category: Some(ObservationCategory::SurfaceAppearance),
+            context: None,
+        };
+        let empty = JournalEntry::new(
+            JournalKey::Material {
+                seed: 1,
+                planet_seed: None,
+            },
+            "Empty".to_string(),
+            0,
+        );
+        assert!(!matches_filter(&empty, &filter));
+    }
+
+    #[test]
+    fn matches_filter_current_planet_uses_key_planet_seed() {
+        // CurrentPlanet matches an entry iff its key's planet_seed
+        // equals the filter's seed.  Entries without a recorded planet
+        // (planet_seed == None) are excluded — "unknown provenance"
+        // must not silently masquerade as "current planet".
+        let filter = JournalFilter {
+            category: None,
+            context: Some(JournalContext::CurrentPlanet { planet_seed: 7 }),
+        };
+
+        let on_planet = entry_with_observation(
+            JournalKey::Material {
+                seed: 1,
+                planet_seed: Some(7),
+            },
+            ObservationCategory::SurfaceAppearance,
+        );
+        assert!(matches_filter(&on_planet, &filter));
+
+        let other_planet = entry_with_observation(
+            JournalKey::Material {
+                seed: 2,
+                planet_seed: Some(8),
+            },
+            ObservationCategory::SurfaceAppearance,
+        );
+        assert!(!matches_filter(&other_planet, &filter));
+
+        let no_planet = entry_with_observation(
+            JournalKey::Material {
+                seed: 3,
+                planet_seed: None,
+            },
+            ObservationCategory::SurfaceAppearance,
+        );
+        assert!(!matches_filter(&no_planet, &filter));
+    }
+
+    #[test]
+    fn matches_filter_current_planet_excludes_fabrications() {
+        // Fabrications are not tied to a discovery planet; the
+        // CurrentPlanet filter therefore intentionally hides them.
+        let filter = JournalFilter {
+            category: None,
+            context: Some(JournalContext::CurrentPlanet { planet_seed: 7 }),
+        };
+        let fab = entry_with_observation(
+            JournalKey::Fabrication { output_seed: 42 },
+            ObservationCategory::FabricationResult,
+        );
+        assert!(!matches_filter(&fab, &filter));
+    }
+
+    #[test]
+    fn matches_filter_combined_uses_and_logic() {
+        // Both dimensions must match.  Verify the four corners of the
+        // 2x2 truth table for an entry on planet 7 with a Surface
+        // observation against a Surface + planet 7 filter.
+        let entry = entry_with_observation(
+            JournalKey::Material {
+                seed: 1,
+                planet_seed: Some(7),
+            },
+            ObservationCategory::SurfaceAppearance,
+        );
+
+        let both_match = JournalFilter {
+            category: Some(ObservationCategory::SurfaceAppearance),
+            context: Some(JournalContext::CurrentPlanet { planet_seed: 7 }),
+        };
+        assert!(matches_filter(&entry, &both_match));
+
+        let category_mismatch = JournalFilter {
+            category: Some(ObservationCategory::ThermalBehavior),
+            context: Some(JournalContext::CurrentPlanet { planet_seed: 7 }),
+        };
+        assert!(!matches_filter(&entry, &category_mismatch));
+
+        let context_mismatch = JournalFilter {
+            category: Some(ObservationCategory::SurfaceAppearance),
+            context: Some(JournalContext::CurrentPlanet { planet_seed: 8 }),
+        };
+        assert!(!matches_filter(&entry, &context_mismatch));
+
+        let both_mismatch = JournalFilter {
+            category: Some(ObservationCategory::ThermalBehavior),
+            context: Some(JournalContext::CurrentPlanet { planet_seed: 8 }),
+        };
+        assert!(!matches_filter(&entry, &both_mismatch));
+    }
+
+    #[test]
+    fn matches_filter_current_biome_is_no_op_until_data_capture() {
+        // Biome provenance is not yet captured on JournalKey; the
+        // CurrentBiome arm therefore matches every entry.  This
+        // documents the intentional placeholder behaviour so a future
+        // change that wires biome capture through can update this test
+        // alongside the implementation.
+        let filter = JournalFilter {
+            category: None,
+            context: Some(JournalContext::CurrentBiome {
+                biome_key: "tundra".to_string(),
+            }),
+        };
+        let entry = entry_with_observation(
+            JournalKey::Material {
+                seed: 1,
+                planet_seed: Some(7),
+            },
+            ObservationCategory::SurfaceAppearance,
+        );
+        assert!(matches_filter(&entry, &filter));
+    }
+
+    #[test]
+    fn journal_key_planet_seed_accessor() {
+        // Material carries an Option<u64>; Fabrication is always None.
+        assert_eq!(
+            JournalKey::Material {
+                seed: 1,
+                planet_seed: Some(42),
+            }
+            .planet_seed(),
+            Some(42)
+        );
+        assert_eq!(
+            JournalKey::Material {
+                seed: 1,
+                planet_seed: None,
+            }
+            .planet_seed(),
+            None
+        );
+        assert_eq!(
+            JournalKey::Fabrication { output_seed: 7 }.planet_seed(),
+            None
+        );
+    }
+
+    #[test]
+    fn matches_filter_handles_500_entries_quickly() {
+        // Story 10.3 acceptance criterion: "Filtering is responsive
+        // with 100+ entries" / "Performance: filtering 500 entries
+        // < 1ms".  The threshold here is generous (10ms) to absorb
+        // noise on loaded CI hardware while still catching pathological
+        // regressions that would land us in the seconds.
+        let entries: Vec<JournalEntry> = (0..500u64)
+            .map(|i| {
+                entry_with_observation(
+                    JournalKey::Material {
+                        seed: i,
+                        planet_seed: Some(i % 4),
+                    },
+                    if i % 2 == 0 {
+                        ObservationCategory::SurfaceAppearance
+                    } else {
+                        ObservationCategory::ThermalBehavior
+                    },
+                )
+            })
+            .collect();
+
+        let filter = JournalFilter {
+            category: Some(ObservationCategory::SurfaceAppearance),
+            context: Some(JournalContext::CurrentPlanet { planet_seed: 2 }),
+        };
+
+        let start = std::time::Instant::now();
+        let kept = entries
+            .iter()
+            .filter(|e| matches_filter(e, &filter))
+            .count();
+        let elapsed = start.elapsed();
+
+        // seed % 4 == 2 yields 125 entries (seeds 2, 6, 10, …, 498);
+        // every such seed is even, so it also satisfies the
+        // SurfaceAppearance category filter.  Hence 125 entries pass.
+        assert_eq!(kept, 125);
+        assert!(
+            elapsed < std::time::Duration::from_millis(10),
+            "matches_filter over 500 entries took {elapsed:?}, expected < 10ms"
+        );
     }
 
     #[test]
@@ -1428,7 +2370,10 @@ mod tests {
 
     #[test]
     fn journal_key_variants_are_distinct() {
-        let mat = JournalKey::Material { seed: 42 };
+        let mat = JournalKey::Material {
+            seed: 42,
+            planet_seed: None,
+        };
         let fab = JournalKey::Fabrication { output_seed: 42 };
         assert_ne!(mat, fab);
     }
@@ -1436,7 +2381,10 @@ mod tests {
     #[test]
     fn journal_key_serde_round_trip() {
         let keys = vec![
-            JournalKey::Material { seed: 123 },
+            JournalKey::Material {
+                seed: 123,
+                planet_seed: None,
+            },
             JournalKey::Fabrication { output_seed: 456 },
         ];
         for key in &keys {
@@ -1452,21 +2400,48 @@ mod tests {
         use std::collections::BTreeMap;
         let mut map = BTreeMap::new();
         map.insert(JournalKey::Fabrication { output_seed: 1 }, "fab");
-        map.insert(JournalKey::Material { seed: 99 }, "mat99");
-        map.insert(JournalKey::Material { seed: 1 }, "mat1");
+        map.insert(
+            JournalKey::Material {
+                seed: 99,
+                planet_seed: None,
+            },
+            "mat99",
+        );
+        map.insert(
+            JournalKey::Material {
+                seed: 1,
+                planet_seed: None,
+            },
+            "mat1",
+        );
 
         let keys: Vec<_> = map.keys().collect();
         // Derived Ord: enum variants ordered by declaration (Material < Fabrication),
         // then by field values within each variant.
-        assert_eq!(*keys[0], JournalKey::Material { seed: 1 });
-        assert_eq!(*keys[1], JournalKey::Material { seed: 99 });
+        assert_eq!(
+            *keys[0],
+            JournalKey::Material {
+                seed: 1,
+                planet_seed: None
+            }
+        );
+        assert_eq!(
+            *keys[1],
+            JournalKey::Material {
+                seed: 99,
+                planet_seed: None
+            }
+        );
         assert_eq!(*keys[2], JournalKey::Fabrication { output_seed: 1 });
     }
 
     #[test]
     fn journal_shows_weight_observation_only_when_present() {
         let mut journal = Journal::default();
-        let key = JournalKey::Material { seed: 4 };
+        let key = JournalKey::Material {
+            seed: 4,
+            planet_seed: None,
+        };
         journal.record(
             key.clone(),
             "Ferrite",
@@ -1500,7 +2475,10 @@ mod tests {
 
     #[test]
     fn journal_entry_new_sets_timestamps() {
-        let key = JournalKey::Material { seed: 1 };
+        let key = JournalKey::Material {
+            seed: 1,
+            planet_seed: None,
+        };
         let entry = JournalEntry::new(key.clone(), "Ferrite".into(), 100);
         assert_eq!(entry.key, key);
         assert_eq!(entry.name, "Ferrite");
@@ -1511,7 +2489,10 @@ mod tests {
 
     #[test]
     fn journal_entry_add_observation_updates_timestamp() {
-        let key = JournalKey::Material { seed: 1 };
+        let key = JournalKey::Material {
+            seed: 1,
+            planet_seed: None,
+        };
         let mut entry = JournalEntry::new(key, "Ferrite".into(), 10);
 
         entry.add_observation(Observation {
@@ -1528,7 +2509,10 @@ mod tests {
 
     #[test]
     fn journal_entry_accumulates_multiple_observations() {
-        let key = JournalKey::Material { seed: 1 };
+        let key = JournalKey::Material {
+            seed: 1,
+            planet_seed: None,
+        };
         let mut entry = JournalEntry::new(key, "Ferrite".into(), 10);
 
         entry.add_observation(Observation {
@@ -1556,7 +2540,10 @@ mod tests {
 
     #[test]
     fn journal_entry_observations_by_category() {
-        let key = JournalKey::Material { seed: 1 };
+        let key = JournalKey::Material {
+            seed: 1,
+            planet_seed: None,
+        };
         let mut entry = JournalEntry::new(key, "Ferrite".into(), 10);
 
         entry.add_observation(Observation {
@@ -1593,7 +2580,10 @@ mod tests {
     #[test]
     fn new_journal_ensure_entry_creates_and_retrieves() {
         let mut journal = Journal::default();
-        let key = JournalKey::Material { seed: 42 };
+        let key = JournalKey::Material {
+            seed: 42,
+            planet_seed: None,
+        };
 
         journal.ensure_entry(key.clone(), "Ferrite", 100);
         journal.ensure_entry(key.clone(), "Ignored Name", 200);
@@ -1609,7 +2599,10 @@ mod tests {
     #[test]
     fn new_journal_record_accumulates_observations() {
         let mut journal = Journal::default();
-        let key = JournalKey::Material { seed: 42 };
+        let key = JournalKey::Material {
+            seed: 42,
+            planet_seed: None,
+        };
 
         journal.record(
             key.clone(),
@@ -1641,7 +2634,10 @@ mod tests {
     #[test]
     fn new_journal_different_keys_coexist() {
         let mut journal = Journal::default();
-        let mat_key = JournalKey::Material { seed: 1 };
+        let mat_key = JournalKey::Material {
+            seed: 1,
+            planet_seed: None,
+        };
         let fab_key = JournalKey::Fabrication { output_seed: 2 };
 
         journal.record(
@@ -1674,7 +2670,10 @@ mod tests {
     fn new_journal_serde_round_trip() {
         let mut journal = Journal::default();
         journal.record(
-            JournalKey::Material { seed: 42 },
+            JournalKey::Material {
+                seed: 42,
+                planet_seed: None,
+            },
             "Ferrite",
             Observation {
                 category: ObservationCategory::SurfaceAppearance,
@@ -1701,7 +2700,10 @@ mod tests {
         assert_eq!(deserialized.entries.len(), 2);
         let ferrite = deserialized
             .entries
-            .get(&JournalKey::Material { seed: 42 })
+            .get(&JournalKey::Material {
+                seed: 42,
+                planet_seed: None,
+            })
             .expect("Ferrite entry should exist");
         assert_eq!(ferrite.name, "Ferrite");
         assert_eq!(ferrite.observation_count(), 1);
@@ -1724,7 +2726,10 @@ mod tests {
     #[test]
     fn single_observation_recorded_correctly() {
         let mut journal = Journal::default();
-        let key = JournalKey::Material { seed: 55 };
+        let key = JournalKey::Material {
+            seed: 55,
+            planet_seed: None,
+        };
 
         journal.record(
             key.clone(),
@@ -1758,7 +2763,10 @@ mod tests {
 
     #[test]
     fn duplicate_observation_same_category_and_description_is_skipped() {
-        let key = JournalKey::Material { seed: 1 };
+        let key = JournalKey::Material {
+            seed: 1,
+            planet_seed: None,
+        };
         let mut entry = JournalEntry::new(key, "Ferrite".into(), 10);
 
         entry.add_observation(Observation {
@@ -1782,7 +2790,10 @@ mod tests {
 
     #[test]
     fn duplicate_observation_upgrades_confidence() {
-        let key = JournalKey::Material { seed: 1 };
+        let key = JournalKey::Material {
+            seed: 1,
+            planet_seed: None,
+        };
         let mut entry = JournalEntry::new(key, "Ferrite".into(), 10);
 
         entry.add_observation(Observation {
@@ -1810,7 +2821,10 @@ mod tests {
 
     #[test]
     fn duplicate_does_not_downgrade_confidence() {
-        let key = JournalKey::Material { seed: 1 };
+        let key = JournalKey::Material {
+            seed: 1,
+            planet_seed: None,
+        };
         let mut entry = JournalEntry::new(key, "Ferrite".into(), 10);
 
         entry.add_observation(Observation {
@@ -1842,7 +2856,10 @@ mod tests {
     #[test]
     fn examine_same_material_twice_does_not_duplicate() {
         let mut journal = Journal::default();
-        let key = JournalKey::Material { seed: 42 };
+        let key = JournalKey::Material {
+            seed: 42,
+            planet_seed: None,
+        };
 
         let observation = Observation {
             category: ObservationCategory::SurfaceAppearance,
@@ -1881,7 +2898,10 @@ mod tests {
     #[test]
     fn examine_same_material_twice_upgrades_confidence() {
         let mut journal = Journal::default();
-        let key = JournalKey::Material { seed: 42 };
+        let key = JournalKey::Material {
+            seed: 42,
+            planet_seed: None,
+        };
 
         journal.record(
             key.clone(),
@@ -1918,7 +2938,10 @@ mod tests {
 
     #[test]
     fn same_category_different_description_is_not_duplicate() {
-        let key = JournalKey::Material { seed: 1 };
+        let key = JournalKey::Material {
+            seed: 1,
+            planet_seed: None,
+        };
         let mut entry = JournalEntry::new(key, "Ferrite".into(), 10);
 
         entry.add_observation(Observation {
@@ -1945,7 +2968,10 @@ mod tests {
 
     #[test]
     fn same_description_different_category_is_not_duplicate() {
-        let key = JournalKey::Material { seed: 1 };
+        let key = JournalKey::Material {
+            seed: 1,
+            planet_seed: None,
+        };
         let mut entry = JournalEntry::new(key, "Ferrite".into(), 10);
 
         entry.add_observation(Observation {
@@ -1976,7 +3002,10 @@ mod tests {
     #[test]
     fn multiple_observations_for_same_key_accumulate() {
         let mut journal = Journal::default();
-        let key = JournalKey::Material { seed: 77 };
+        let key = JournalKey::Material {
+            seed: 77,
+            planet_seed: None,
+        };
 
         // First observation — creates the entry.
         journal.record(
@@ -2093,8 +3122,22 @@ mod tests {
     fn all_types_serde_round_trip() {
         // ── JournalKey variants ─────────────────────────────────────
         let keys = vec![
-            JournalKey::Material { seed: 0 },
-            JournalKey::Material { seed: u64::MAX },
+            JournalKey::Material {
+                seed: 0,
+                planet_seed: None,
+            },
+            JournalKey::Material {
+                seed: u64::MAX,
+                planet_seed: None,
+            },
+            JournalKey::Material {
+                seed: 1,
+                planet_seed: Some(0),
+            },
+            JournalKey::Material {
+                seed: 7,
+                planet_seed: Some(u64::MAX),
+            },
             JournalKey::Fabrication { output_seed: 42 },
         ];
         for key in &keys {
@@ -2147,7 +3190,14 @@ mod tests {
         assert_eq!(rt.recorded_at, observation.recorded_at);
 
         // ── JournalEntry struct ─────────────────────────────────────
-        let mut entry = JournalEntry::new(JournalKey::Material { seed: 7 }, "Ferrite".into(), 10);
+        let mut entry = JournalEntry::new(
+            JournalKey::Material {
+                seed: 7,
+                planet_seed: None,
+            },
+            "Ferrite".into(),
+            10,
+        );
         entry.add_observation(Observation {
             category: ObservationCategory::SurfaceAppearance,
             confidence: ConfidenceLevel::Tentative,
@@ -2184,7 +3234,10 @@ mod tests {
         let mut journal = Journal::default();
 
         // Material entry with surface, thermal, and weight observations.
-        let mat_key = JournalKey::Material { seed: 100 };
+        let mat_key = JournalKey::Material {
+            seed: 100,
+            planet_seed: None,
+        };
         journal.record(
             mat_key.clone(),
             "Silite",
@@ -2317,8 +3370,14 @@ mod tests {
         // Three keys: two Material keys with different seeds and one
         // Fabrication key whose output_seed numerically equals the first
         // Material seed (verifies variant-level isolation).
-        let mat_a = JournalKey::Material { seed: 10 };
-        let mat_b = JournalKey::Material { seed: 20 };
+        let mat_a = JournalKey::Material {
+            seed: 10,
+            planet_seed: None,
+        };
+        let mat_b = JournalKey::Material {
+            seed: 20,
+            planet_seed: None,
+        };
         let fab_a = JournalKey::Fabrication { output_seed: 10 };
 
         // Record a surface observation on material A.
@@ -2471,7 +3530,10 @@ mod tests {
         let mut journal = Journal::default();
 
         // ── Material entry with surface, thermal, and weight observations ──
-        let mat_key = JournalKey::Material { seed: 42 };
+        let mat_key = JournalKey::Material {
+            seed: 42,
+            planet_seed: None,
+        };
 
         journal.record(
             mat_key.clone(),
@@ -2517,7 +3579,10 @@ mod tests {
         // ── Second material with only surface observation ───────────────
         // Legacy equivalent: entry with surface_observations only (no thermal
         // or weight).
-        let mat_key_b = JournalKey::Material { seed: 99 };
+        let mat_key_b = JournalKey::Material {
+            seed: 99,
+            planet_seed: None,
+        };
         journal.record(
             mat_key_b,
             "Silite",
@@ -2661,7 +3726,10 @@ mod tests {
             let key = if i % 3 == 0 {
                 JournalKey::Fabrication { output_seed: i }
             } else {
-                JournalKey::Material { seed: i }
+                JournalKey::Material {
+                    seed: i,
+                    planet_seed: None,
+                }
             };
 
             let name = format!("Subject-{i}");
@@ -2771,7 +3839,10 @@ mod tests {
         let mut journal = Journal::default();
 
         // ── Material 1: Ferrite ─────────────────────────────────────
-        let key_ferrite = JournalKey::Material { seed: 10 };
+        let key_ferrite = JournalKey::Material {
+            seed: 10,
+            planet_seed: None,
+        };
         journal.record(
             key_ferrite.clone(),
             "Ferrite",
@@ -2794,7 +3865,10 @@ mod tests {
         );
 
         // ── Material 2: Silite ──────────────────────────────────────
-        let key_silite = JournalKey::Material { seed: 20 };
+        let key_silite = JournalKey::Material {
+            seed: 20,
+            planet_seed: None,
+        };
         journal.record(
             key_silite.clone(),
             "Silite",
@@ -2817,7 +3891,10 @@ mod tests {
         );
 
         // ── Material 3: Volite ──────────────────────────────────────
-        let key_volite = JournalKey::Material { seed: 30 };
+        let key_volite = JournalKey::Material {
+            seed: 30,
+            planet_seed: None,
+        };
         journal.record(
             key_volite.clone(),
             "Volite",
@@ -2850,7 +3927,10 @@ mod tests {
         );
 
         // ── Material 4: Crystite (ensures "3+" is exceeded) ─────────
-        let key_crystite = JournalKey::Material { seed: 40 };
+        let key_crystite = JournalKey::Material {
+            seed: 40,
+            planet_seed: None,
+        };
         journal.record(
             key_crystite.clone(),
             "Crystite",
@@ -2965,7 +4045,10 @@ mod tests {
     fn make_journal_with_n_entries(n: usize) -> Journal {
         let mut journal = Journal::default();
         for i in 0..n {
-            let key = JournalKey::Material { seed: i as u64 };
+            let key = JournalKey::Material {
+                seed: i as u64,
+                planet_seed: None,
+            };
             let name = format!("Material-{i:03}");
             journal.record(
                 key,
@@ -2995,6 +4078,7 @@ mod tests {
             selected_index: 1,
             scroll_offset: 0,
             entries_per_page: 15,
+            filter: JournalFilter::default(),
         };
 
         let list = build_entry_list_text(&entries, &state);
@@ -3014,7 +4098,10 @@ mod tests {
     #[test]
     fn entry_list_shows_observation_count() {
         let mut journal = Journal::default();
-        let key = JournalKey::Material { seed: 1 };
+        let key = JournalKey::Material {
+            seed: 1,
+            planet_seed: None,
+        };
         journal.record(
             key.clone(),
             "Ferrite",
@@ -3048,7 +4135,10 @@ mod tests {
     #[test]
     fn detail_shows_selected_entry_observations() {
         let mut journal = Journal::default();
-        let key = JournalKey::Material { seed: 1 };
+        let key = JournalKey::Material {
+            seed: 1,
+            planet_seed: None,
+        };
         journal.record(
             key,
             "Ferrite",
@@ -3071,9 +4161,10 @@ mod tests {
             selected_index: 0,
             scroll_offset: 0,
             entries_per_page: 15,
+            filter: JournalFilter::default(),
         };
 
-        let detail = detail_spans_to_string(&build_detail_spans(&entries, &state));
+        let detail = detail_spans_to_string(&build_detail_spans(&entries, &state, true));
         assert!(detail.contains("Ferrite"), "detail should show entry name");
         assert!(
             detail.contains("Surface"),
@@ -3089,14 +4180,27 @@ mod tests {
     fn detail_empty_journal_shows_placeholder() {
         let state = JournalUiState::default();
         let entries: Vec<&JournalEntry> = vec![];
-        let detail = detail_spans_to_string(&build_detail_spans(&entries, &state));
+        let detail = detail_spans_to_string(&build_detail_spans(&entries, &state, false));
         assert_eq!(detail, "No observations yet.");
+    }
+
+    #[test]
+    fn detail_filtered_empty_shows_no_matching_entries() {
+        let state = JournalUiState::default();
+        let entries: Vec<&JournalEntry> = vec![];
+        // has_any_entries = true simulates the case where the journal has entries
+        // but the current filter produces no results
+        let detail = detail_spans_to_string(&build_detail_spans(&entries, &state, true));
+        assert_eq!(detail, "No matching entries");
     }
 
     #[test]
     fn detail_spans_have_correct_kinds() {
         let mut journal = Journal::default();
-        let key = JournalKey::Material { seed: 1 };
+        let key = JournalKey::Material {
+            seed: 1,
+            planet_seed: None,
+        };
         journal.record(
             key.clone(),
             "Ferrite",
@@ -3129,9 +4233,10 @@ mod tests {
             selected_index: 0,
             scroll_offset: 0,
             entries_per_page: 15,
+            filter: JournalFilter::default(),
         };
 
-        let spans = build_detail_spans(&entries, &state);
+        let spans = build_detail_spans(&entries, &state, true);
         // First span: header with entry name.
         assert_eq!(spans[0].kind, DetailSpanKind::Header);
         assert_eq!(spans[0].text, "Ferrite");
@@ -3155,7 +4260,7 @@ mod tests {
     fn detail_placeholder_span_kind() {
         let state = JournalUiState::default();
         let entries: Vec<&JournalEntry> = vec![];
-        let spans = build_detail_spans(&entries, &state);
+        let spans = build_detail_spans(&entries, &state, false);
         assert_eq!(spans.len(), 1);
         assert_eq!(spans[0].kind, DetailSpanKind::Placeholder);
     }
@@ -3166,7 +4271,10 @@ mod tests {
 
         // Create three entries with distinct observations.
         journal.record(
-            JournalKey::Material { seed: 1 },
+            JournalKey::Material {
+                seed: 1,
+                planet_seed: None,
+            },
             "Ferrite",
             Observation {
                 category: ObservationCategory::SurfaceAppearance,
@@ -3176,7 +4284,10 @@ mod tests {
             },
         );
         journal.record(
-            JournalKey::Material { seed: 2 },
+            JournalKey::Material {
+                seed: 2,
+                planet_seed: None,
+            },
             "Silite",
             Observation {
                 category: ObservationCategory::SurfaceAppearance,
@@ -3186,7 +4297,10 @@ mod tests {
             },
         );
         journal.record(
-            JournalKey::Material { seed: 3 },
+            JournalKey::Material {
+                seed: 3,
+                planet_seed: None,
+            },
             "Neoite",
             Observation {
                 category: ObservationCategory::Weight,
@@ -3212,8 +4326,9 @@ mod tests {
             selected_index: 0,
             scroll_offset: 0,
             entries_per_page: 15,
+            filter: JournalFilter::default(),
         };
-        let detail = detail_spans_to_string(&build_detail_spans(&entries, &state));
+        let detail = detail_spans_to_string(&build_detail_spans(&entries, &state, true));
         assert!(detail.contains("Ferrite"), "header should be Ferrite");
         assert!(
             detail.contains("Warm rust tone"),
@@ -3234,8 +4349,9 @@ mod tests {
             selected_index: 1,
             scroll_offset: 0,
             entries_per_page: 15,
+            filter: JournalFilter::default(),
         };
-        let detail = detail_spans_to_string(&build_detail_spans(&entries, &state));
+        let detail = detail_spans_to_string(&build_detail_spans(&entries, &state, true));
         assert!(detail.contains("Neoite"), "header should be Neoite");
         assert!(
             detail.contains("Surprisingly light"),
@@ -3256,8 +4372,9 @@ mod tests {
             selected_index: 2,
             scroll_offset: 0,
             entries_per_page: 15,
+            filter: JournalFilter::default(),
         };
-        let detail = detail_spans_to_string(&build_detail_spans(&entries, &state));
+        let detail = detail_spans_to_string(&build_detail_spans(&entries, &state, true));
         assert!(detail.contains("Silite"), "header should be Silite");
         assert!(
             detail.contains("Glassy smooth surface"),
@@ -3276,7 +4393,10 @@ mod tests {
     #[test]
     fn detail_panel_shows_all_observations_for_multi_category_entry() {
         let mut journal = Journal::default();
-        let key = JournalKey::Material { seed: 1 };
+        let key = JournalKey::Material {
+            seed: 1,
+            planet_seed: None,
+        };
 
         journal.record(
             key.clone(),
@@ -3311,7 +4431,10 @@ mod tests {
 
         // Add a second entry to confirm isolation.
         journal.record(
-            JournalKey::Material { seed: 2 },
+            JournalKey::Material {
+                seed: 2,
+                planet_seed: None,
+            },
             "Silite",
             Observation {
                 category: ObservationCategory::SurfaceAppearance,
@@ -3333,8 +4456,9 @@ mod tests {
             selected_index: 0,
             scroll_offset: 0,
             entries_per_page: 15,
+            filter: JournalFilter::default(),
         };
-        let spans = build_detail_spans(&entries, &state);
+        let spans = build_detail_spans(&entries, &state, true);
         let detail = detail_spans_to_string(&spans);
 
         // Should contain the header.
@@ -3371,6 +4495,7 @@ mod tests {
             selected_index: 0,
             scroll_offset: 0,
             entries_per_page: 15,
+            filter: JournalFilter::default(),
         };
         // Simulate pressing up — selection would go to saturating_sub(1) = 0.
         state.selected_index = state.selected_index.saturating_sub(1);
@@ -3385,6 +4510,7 @@ mod tests {
             selected_index: 4,
             scroll_offset: 0,
             entries_per_page: 15,
+            filter: JournalFilter::default(),
         };
         state.selected_index = (state.selected_index + 1).min(4);
         state.clamp_to_entry_count(5);
@@ -3398,6 +4524,7 @@ mod tests {
             selected_index: 0,
             scroll_offset: 0,
             entries_per_page: 3,
+            filter: JournalFilter::default(),
         };
         // Move selection to index 4 (past the 3-entry window).
         state.selected_index = 4;
@@ -3417,6 +4544,7 @@ mod tests {
             selected_index: 1,
             scroll_offset: 3,
             entries_per_page: 3,
+            filter: JournalFilter::default(),
         };
         state.clamp_to_entry_count(10);
         assert_eq!(
@@ -3432,6 +4560,7 @@ mod tests {
             selected_index: 2,
             scroll_offset: 0,
             entries_per_page: 5,
+            filter: JournalFilter::default(),
         };
         // Simulate PageDown: advance by entries_per_page.
         state.selected_index = (state.selected_index + state.entries_per_page).min(20 - 1);
@@ -3448,6 +4577,7 @@ mod tests {
             selected_index: 8,
             scroll_offset: 5,
             entries_per_page: 5,
+            filter: JournalFilter::default(),
         };
         let entry_count = 10;
         // PageDown from index 8 with page size 5 would overshoot — should clamp to 9.
@@ -3463,6 +4593,7 @@ mod tests {
             selected_index: 12,
             scroll_offset: 10,
             entries_per_page: 5,
+            filter: JournalFilter::default(),
         };
         // Simulate PageUp: go back by entries_per_page.
         state.selected_index = state.selected_index.saturating_sub(state.entries_per_page);
@@ -3480,6 +4611,7 @@ mod tests {
             selected_index: 2,
             scroll_offset: 0,
             entries_per_page: 5,
+            filter: JournalFilter::default(),
         };
         // PageUp from index 2 with page size 5 would underflow — saturating_sub clamps to 0.
         state.selected_index = state.selected_index.saturating_sub(state.entries_per_page);
@@ -3495,6 +4627,7 @@ mod tests {
             selected_index: 42,
             scroll_offset: 30,
             entries_per_page: 15,
+            filter: JournalFilter::default(),
         };
         // Simulate Home key — sets selected_index to 0.
         state.selected_index = 0;
@@ -3510,6 +4643,7 @@ mod tests {
             selected_index: 3,
             scroll_offset: 0,
             entries_per_page: 15,
+            filter: JournalFilter::default(),
         };
         let entry_count = 50;
         // Simulate End key — sets selected_index to last entry.
@@ -3527,6 +4661,7 @@ mod tests {
             selected_index: 0,
             scroll_offset: 0,
             entries_per_page: 3,
+            filter: JournalFilter::default(),
         };
         // PageDown jumps selection to index 3, which is outside window [0..3).
         state.selected_index = (state.selected_index + state.entries_per_page).min(10 - 1);
@@ -3545,6 +4680,7 @@ mod tests {
             selected_index: 5,
             scroll_offset: 3,
             entries_per_page: 15,
+            filter: JournalFilter::default(),
         };
         state.clamp_to_entry_count(0);
         assert_eq!(state.selected_index, 0);
@@ -3565,6 +4701,7 @@ mod tests {
             selected_index: 5,
             scroll_offset: 3,
             entries_per_page: 5,
+            filter: JournalFilter::default(),
         };
 
         let list = build_entry_list_text(&entries, &state);
@@ -3584,6 +4721,7 @@ mod tests {
             selected_index: 0,
             scroll_offset: 0,
             entries_per_page: 15,
+            filter: JournalFilter::default(),
         };
         let help = build_help_text(42, &state);
         assert!(
@@ -3617,12 +4755,13 @@ mod tests {
             selected_index: 50,
             scroll_offset: 0,
             entries_per_page: 15,
+            filter: JournalFilter::default(),
         };
         state.clamp_to_entry_count(entries.len());
 
         let list = build_entry_list_text(&entries, &state);
         assert!(!list.is_empty());
-        let detail = build_detail_spans(&entries, &state);
+        let detail = build_detail_spans(&entries, &state, true);
         assert!(!detail.is_empty());
         let help = build_help_text(entries.len(), &state);
         assert!(help.contains("of 120"));
@@ -3674,7 +4813,10 @@ mod tests {
                 .expect("player must exist");
             for i in 0..5u64 {
                 journal.record(
-                    JournalKey::Material { seed: i },
+                    JournalKey::Material {
+                        seed: i,
+                        planet_seed: None,
+                    },
                     &format!("Mat-{i}"),
                     Observation {
                         category: ObservationCategory::SurfaceAppearance,
@@ -3721,6 +4863,7 @@ mod tests {
             selected_index: 0,
             scroll_offset: 0,
             entries_per_page: 3,
+            filter: JournalFilter::default(),
         };
         let lines = build_entry_list_lines(&entries, &state);
         assert_eq!(lines.len(), 3);
@@ -3734,6 +4877,7 @@ mod tests {
             selected_index: 5,
             scroll_offset: 4,
             entries_per_page: 3,
+            filter: JournalFilter::default(),
         };
         let lines = build_entry_list_lines(&entries, &state);
         assert_eq!(lines.len(), 3);
@@ -3763,6 +4907,7 @@ mod tests {
             selected_index: 9,
             scroll_offset: 8,
             entries_per_page: 3,
+            filter: JournalFilter::default(),
         };
         let lines = build_entry_list_lines(&entries, &state);
         assert_eq!(
@@ -3782,6 +4927,7 @@ mod tests {
             selected_index: 7,
             scroll_offset: 3,
             entries_per_page: 15,
+            filter: JournalFilter::default(),
         };
 
         // Toggle closed.
@@ -3808,6 +4954,7 @@ mod tests {
             selected_index: 7,
             scroll_offset: 3,
             entries_per_page: 15,
+            filter: JournalFilter::default(),
         });
         app.add_systems(Update, toggle_journal_visibility);
 
@@ -3864,6 +5011,7 @@ mod tests {
             selected_index: 3,
             scroll_offset: 0,
             entries_per_page: 15,
+            filter: JournalFilter::default(),
         });
         app.add_systems(Update, journal_navigation);
 
@@ -3872,7 +5020,10 @@ mod tests {
         let mut journal = Journal::default();
         for i in 0..10 {
             journal.record(
-                JournalKey::Material { seed: i },
+                JournalKey::Material {
+                    seed: i,
+                    planet_seed: None,
+                },
                 &format!("Mat-{i:03}"),
                 Observation {
                     category: ObservationCategory::SurfaceAppearance,
@@ -3914,13 +5065,17 @@ mod tests {
             selected_index: 3,
             scroll_offset: 0,
             entries_per_page: 15,
+            filter: JournalFilter::default(),
         });
         app.add_systems(Update, journal_navigation);
 
         let mut journal = Journal::default();
         for i in 0..10 {
             journal.record(
-                JournalKey::Material { seed: i },
+                JournalKey::Material {
+                    seed: i,
+                    planet_seed: None,
+                },
                 &format!("Mat-{i:03}"),
                 Observation {
                     category: ObservationCategory::SurfaceAppearance,
@@ -3962,6 +5117,7 @@ mod tests {
             selected_index: 0,
             scroll_offset: 0,
             entries_per_page: 15,
+            filter: JournalFilter::default(),
         });
         app.add_systems(Update, journal_navigation);
 
@@ -3970,6 +5126,7 @@ mod tests {
             journal.record(
                 JournalKey::Material {
                     seed: i.try_into().expect("entry index fits in u64"),
+                    planet_seed: None,
                 },
                 &format!("Mat-{i:03}"),
                 Observation {
@@ -4080,12 +5237,16 @@ mod tests {
             selected_index: 0,
             scroll_offset: 0,
             entries_per_page: 15,
+            filter: JournalFilter::default(),
         });
         app.add_systems(Update, journal_navigation);
 
         let mut journal = Journal::default();
         journal.record(
-            JournalKey::Material { seed: 0 },
+            JournalKey::Material {
+                seed: 0,
+                planet_seed: None,
+            },
             "Sole-Material",
             Observation {
                 category: ObservationCategory::SurfaceAppearance,
@@ -4141,6 +5302,7 @@ mod tests {
             selected_index: 0,
             scroll_offset: 0,
             entries_per_page: 5,
+            filter: JournalFilter::default(),
         });
         app.add_systems(Update, journal_navigation);
 
@@ -4149,6 +5311,7 @@ mod tests {
             journal.record(
                 JournalKey::Material {
                     seed: i.try_into().expect("entry index fits in u64"),
+                    planet_seed: None,
                 },
                 &format!("Mat-{i:03}"),
                 Observation {
@@ -4218,6 +5381,7 @@ mod tests {
             selected_index: 25,
             scroll_offset: 20,
             entries_per_page: 5,
+            filter: JournalFilter::default(),
         };
         state.clamp_to_entry_count(10);
         assert_eq!(
@@ -4261,6 +5425,7 @@ mod tests {
             selected_index: 0,
             scroll_offset: 0,
             entries_per_page,
+            filter: JournalFilter::default(),
         });
         app.add_systems(Update, journal_navigation);
 
@@ -4269,6 +5434,7 @@ mod tests {
             journal.record(
                 JournalKey::Material {
                     seed: i.try_into().expect("entry index fits in u64"),
+                    planet_seed: None,
                 },
                 &format!("Mat-{i:03}"),
                 Observation {
@@ -4381,6 +5547,7 @@ mod tests {
             selected_index: 0,
             scroll_offset: 0,
             entries_per_page: initial_entries_per_page,
+            filter: JournalFilter::default(),
         });
         app.add_systems(Update, compute_journal_panels);
         app.world_mut()
@@ -4427,9 +5594,33 @@ mod tests {
     fn selection_follows_subject_when_entry_inserted_before_it() {
         let mut app = make_panel_app(15);
 
-        record(&mut app, JournalKey::Material { seed: 1 }, "Bravo", 1);
-        record(&mut app, JournalKey::Material { seed: 2 }, "Charlie", 2);
-        record(&mut app, JournalKey::Material { seed: 3 }, "Delta", 3);
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 1,
+                planet_seed: None,
+            },
+            "Bravo",
+            1,
+        );
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 2,
+                planet_seed: None,
+            },
+            "Charlie",
+            2,
+        );
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 3,
+                planet_seed: None,
+            },
+            "Delta",
+            3,
+        );
         // Frame 1: panel reconciles initial state.
         app.update();
 
@@ -4441,7 +5632,15 @@ mod tests {
 
         // Insert "Alpha" — sorts before "Bravo", so "Charlie" shifts from
         // index 1 to index 2.
-        record(&mut app, JournalKey::Material { seed: 4 }, "Alpha", 4);
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 4,
+                planet_seed: None,
+            },
+            "Alpha",
+            4,
+        );
         app.update();
 
         let state = app.world().resource::<JournalUiState>();
@@ -4458,10 +5657,42 @@ mod tests {
     fn deleting_selected_entry_selects_nearest_by_sort_position() {
         let mut app = make_panel_app(15);
 
-        record(&mut app, JournalKey::Material { seed: 1 }, "Alpha", 1);
-        record(&mut app, JournalKey::Material { seed: 2 }, "Bravo", 2);
-        record(&mut app, JournalKey::Material { seed: 3 }, "Charlie", 3);
-        record(&mut app, JournalKey::Material { seed: 4 }, "Delta", 4);
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 1,
+                planet_seed: None,
+            },
+            "Alpha",
+            1,
+        );
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 2,
+                planet_seed: None,
+            },
+            "Bravo",
+            2,
+        );
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 3,
+                planet_seed: None,
+            },
+            "Charlie",
+            3,
+        );
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 4,
+                planet_seed: None,
+            },
+            "Delta",
+            4,
+        );
         app.update();
 
         // Select "Bravo" at index 1.
@@ -4473,7 +5704,13 @@ mod tests {
         // Delete "Bravo".  Sorted list becomes [Alpha, Charlie, Delta].
         // "Charlie" now occupies the old slot (index 1) — that is the
         // nearest entry by sort position.
-        delete(&mut app, &JournalKey::Material { seed: 2 });
+        delete(
+            &mut app,
+            &JournalKey::Material {
+                seed: 2,
+                planet_seed: None,
+            },
+        );
         app.update();
 
         let state = app.world().resource::<JournalUiState>();
@@ -4487,7 +5724,10 @@ mod tests {
         let tracker = app.world().resource::<JournalSelectionTracker>();
         assert_eq!(
             tracker.key,
-            Some(JournalKey::Material { seed: 3 }),
+            Some(JournalKey::Material {
+                seed: 3,
+                planet_seed: None
+            }),
             "tracker must re-anchor onto the nearest entry"
         );
     }
@@ -4499,9 +5739,33 @@ mod tests {
     fn deleting_last_entry_while_selected_falls_back_to_new_last() {
         let mut app = make_panel_app(15);
 
-        record(&mut app, JournalKey::Material { seed: 1 }, "Alpha", 1);
-        record(&mut app, JournalKey::Material { seed: 2 }, "Bravo", 2);
-        record(&mut app, JournalKey::Material { seed: 3 }, "Charlie", 3);
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 1,
+                planet_seed: None,
+            },
+            "Alpha",
+            1,
+        );
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 2,
+                planet_seed: None,
+            },
+            "Bravo",
+            2,
+        );
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 3,
+                planet_seed: None,
+            },
+            "Charlie",
+            3,
+        );
         app.update();
 
         // Select "Charlie" — the last entry, index 2.
@@ -4513,7 +5777,13 @@ mod tests {
         // Delete "Charlie".  Sorted list becomes [Alpha, Bravo].  There
         // is no entry at the old slot (index 2), so the nearest valid
         // entry is the new last one (index 1, "Bravo").
-        delete(&mut app, &JournalKey::Material { seed: 3 });
+        delete(
+            &mut app,
+            &JournalKey::Material {
+                seed: 3,
+                planet_seed: None,
+            },
+        );
         app.update();
 
         let state = app.world().resource::<JournalUiState>();
@@ -4524,7 +5794,10 @@ mod tests {
         let tracker = app.world().resource::<JournalSelectionTracker>();
         assert_eq!(
             tracker.key,
-            Some(JournalKey::Material { seed: 2 }),
+            Some(JournalKey::Material {
+                seed: 2,
+                planet_seed: None
+            }),
             "tracker must re-anchor onto Bravo"
         );
     }
@@ -4536,8 +5809,24 @@ mod tests {
     fn emptying_journal_resets_tracker_then_re_anchors_on_repopulation() {
         let mut app = make_panel_app(15);
 
-        record(&mut app, JournalKey::Material { seed: 1 }, "Alpha", 1);
-        record(&mut app, JournalKey::Material { seed: 2 }, "Bravo", 2);
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 1,
+                planet_seed: None,
+            },
+            "Alpha",
+            1,
+        );
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 2,
+                planet_seed: None,
+            },
+            "Bravo",
+            2,
+        );
         app.update();
 
         app.world_mut()
@@ -4546,8 +5835,20 @@ mod tests {
         app.update();
 
         // Delete both entries.
-        delete(&mut app, &JournalKey::Material { seed: 1 });
-        delete(&mut app, &JournalKey::Material { seed: 2 });
+        delete(
+            &mut app,
+            &JournalKey::Material {
+                seed: 1,
+                planet_seed: None,
+            },
+        );
+        delete(
+            &mut app,
+            &JournalKey::Material {
+                seed: 2,
+                planet_seed: None,
+            },
+        );
         app.update();
 
         let tracker = app.world().resource::<JournalSelectionTracker>();
@@ -4558,7 +5859,15 @@ mod tests {
 
         // Repopulate with a different key.  Selection must anchor onto
         // the new entry rather than wait for a (deleted) prior key.
-        record(&mut app, JournalKey::Material { seed: 99 }, "Charlie", 10);
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 99,
+                planet_seed: None,
+            },
+            "Charlie",
+            10,
+        );
         app.update();
 
         let state = app.world().resource::<JournalUiState>();
@@ -4566,7 +5875,10 @@ mod tests {
         assert_eq!(state.selected_index, 0);
         assert_eq!(
             tracker.key,
-            Some(JournalKey::Material { seed: 99 }),
+            Some(JournalKey::Material {
+                seed: 99,
+                planet_seed: None
+            }),
             "tracker must anchor onto the new sole entry"
         );
     }
@@ -4579,9 +5891,33 @@ mod tests {
     fn selection_follows_subject_when_entry_deleted_before_it() {
         let mut app = make_panel_app(15);
 
-        record(&mut app, JournalKey::Material { seed: 1 }, "Alpha", 1);
-        record(&mut app, JournalKey::Material { seed: 2 }, "Bravo", 2);
-        record(&mut app, JournalKey::Material { seed: 3 }, "Charlie", 3);
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 1,
+                planet_seed: None,
+            },
+            "Alpha",
+            1,
+        );
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 2,
+                planet_seed: None,
+            },
+            "Bravo",
+            2,
+        );
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 3,
+                planet_seed: None,
+            },
+            "Charlie",
+            3,
+        );
         app.update();
 
         // Select "Charlie" at index 2.
@@ -4592,7 +5928,13 @@ mod tests {
 
         // Delete "Alpha".  Sorted list becomes [Bravo, Charlie].
         // "Charlie" now sits at index 1.
-        delete(&mut app, &JournalKey::Material { seed: 1 });
+        delete(
+            &mut app,
+            &JournalKey::Material {
+                seed: 1,
+                planet_seed: None,
+            },
+        );
         app.update();
 
         let state = app.world().resource::<JournalUiState>();
@@ -4628,12 +5970,60 @@ mod tests {
 
         // Build a 6-entry journal: Bravo, Charlie, Delta, Echo, Foxtrot, Golf.
         // Sorted order will match insertion order since names are alphabetical.
-        record(&mut app, JournalKey::Material { seed: 1 }, "Bravo", 1);
-        record(&mut app, JournalKey::Material { seed: 2 }, "Charlie", 2);
-        record(&mut app, JournalKey::Material { seed: 3 }, "Delta", 3);
-        record(&mut app, JournalKey::Material { seed: 4 }, "Echo", 4);
-        record(&mut app, JournalKey::Material { seed: 5 }, "Foxtrot", 5);
-        record(&mut app, JournalKey::Material { seed: 6 }, "Golf", 6);
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 1,
+                planet_seed: None,
+            },
+            "Bravo",
+            1,
+        );
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 2,
+                planet_seed: None,
+            },
+            "Charlie",
+            2,
+        );
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 3,
+                planet_seed: None,
+            },
+            "Delta",
+            3,
+        );
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 4,
+                planet_seed: None,
+            },
+            "Echo",
+            4,
+        );
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 5,
+                planet_seed: None,
+            },
+            "Foxtrot",
+            5,
+        );
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 6,
+                planet_seed: None,
+            },
+            "Golf",
+            6,
+        );
         app.update();
 
         // Scroll down so the window shows entries 3-5: Echo, Foxtrot, Golf.
@@ -4656,7 +6046,15 @@ mod tests {
         // are now at indices 4, 5, 6 instead of 3, 4, 5.  To keep them
         // visible, scroll_offset must shift from 3 to 4 and selected_index
         // from 4 to 5.
-        record(&mut app, JournalKey::Material { seed: 99 }, "Alpha", 7);
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 99,
+                planet_seed: None,
+            },
+            "Alpha",
+            7,
+        );
         app.update();
 
         let state = app.world().resource::<JournalUiState>();
@@ -4678,9 +6076,33 @@ mod tests {
     fn new_entry_after_visible_window_does_not_move_view() {
         let mut app = make_panel_app(3);
 
-        record(&mut app, JournalKey::Material { seed: 1 }, "Alpha", 1);
-        record(&mut app, JournalKey::Material { seed: 2 }, "Bravo", 2);
-        record(&mut app, JournalKey::Material { seed: 3 }, "Charlie", 3);
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 1,
+                planet_seed: None,
+            },
+            "Alpha",
+            1,
+        );
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 2,
+                planet_seed: None,
+            },
+            "Bravo",
+            2,
+        );
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 3,
+                planet_seed: None,
+            },
+            "Charlie",
+            3,
+        );
         app.update();
 
         // Window shows Alpha, Bravo, Charlie (indices 0..3).  Select Bravo.
@@ -4692,7 +6114,15 @@ mod tests {
 
         // Insert "Zulu" — sorts after everything, lands at index 3 (just
         // past the visible window).  Nothing in view should change.
-        record(&mut app, JournalKey::Material { seed: 99 }, "Zulu", 4);
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 99,
+                planet_seed: None,
+            },
+            "Zulu",
+            4,
+        );
         app.update();
 
         let state = app.world().resource::<JournalUiState>();
@@ -4718,10 +6148,42 @@ mod tests {
     fn new_entry_between_top_and_selection_shifts_only_selection() {
         let mut app = make_panel_app(5);
 
-        record(&mut app, JournalKey::Material { seed: 1 }, "Alpha", 1);
-        record(&mut app, JournalKey::Material { seed: 2 }, "Bravo", 2);
-        record(&mut app, JournalKey::Material { seed: 3 }, "Delta", 3);
-        record(&mut app, JournalKey::Material { seed: 4 }, "Echo", 4);
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 1,
+                planet_seed: None,
+            },
+            "Alpha",
+            1,
+        );
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 2,
+                planet_seed: None,
+            },
+            "Bravo",
+            2,
+        );
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 3,
+                planet_seed: None,
+            },
+            "Delta",
+            3,
+        );
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 4,
+                planet_seed: None,
+            },
+            "Echo",
+            4,
+        );
         app.update();
 
         // Window shows all four (indices 0..4).  Select Echo at index 3.
@@ -4734,7 +6196,15 @@ mod tests {
         // Insert "Charlie" — sorts between Bravo and Delta at index 2.
         // Echo shifts from index 3 to index 4.  Top entry (Alpha) is
         // unchanged at index 0.
-        record(&mut app, JournalKey::Material { seed: 99 }, "Charlie", 5);
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 99,
+                planet_seed: None,
+            },
+            "Charlie",
+            5,
+        );
         app.update();
 
         let state = app.world().resource::<JournalUiState>();
@@ -4786,11 +6256,51 @@ mod tests {
         // Initial fixture: five entries spanning the visible window
         // (entries_per_page = 5).  Sorted alphabetically:
         // Bravo, Delta, Echo, Foxtrot, Hotel.
-        record(&mut app, JournalKey::Material { seed: 1 }, "Bravo", 1);
-        record(&mut app, JournalKey::Material { seed: 2 }, "Delta", 2);
-        record(&mut app, JournalKey::Material { seed: 3 }, "Echo", 3);
-        record(&mut app, JournalKey::Material { seed: 4 }, "Foxtrot", 4);
-        record(&mut app, JournalKey::Material { seed: 5 }, "Hotel", 5);
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 1,
+                planet_seed: None,
+            },
+            "Bravo",
+            1,
+        );
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 2,
+                planet_seed: None,
+            },
+            "Delta",
+            2,
+        );
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 3,
+                planet_seed: None,
+            },
+            "Echo",
+            3,
+        );
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 4,
+                planet_seed: None,
+            },
+            "Foxtrot",
+            4,
+        );
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 5,
+                planet_seed: None,
+            },
+            "Hotel",
+            5,
+        );
         app.update();
 
         // Select "Echo" (sort index 2).  All five entries fit on a single
@@ -4860,7 +6370,15 @@ mod tests {
         // (Bravo, Delta, Echo, Foxtrot, Hotel) — Alpha is reachable but
         // offscreen.  Echo's highlight follows.  The page indicator must
         // update to reflect the new total of six.
-        record(&mut app, JournalKey::Material { seed: 10 }, "Alpha", 10);
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 10,
+                planet_seed: None,
+            },
+            "Alpha",
+            10,
+        );
         app.update();
 
         assert_eq!(
@@ -4892,7 +6410,15 @@ mod tests {
         // Charlie between Bravo and Delta makes Charlie naturally appear
         // in the visible window (no scroll change needed).  Echo's sort
         // index advances by one; the highlight must follow.
-        record(&mut app, JournalKey::Material { seed: 11 }, "Charlie", 11);
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 11,
+                planet_seed: None,
+            },
+            "Charlie",
+            11,
+        );
         app.update();
 
         assert_eq!(entry_count(&mut app), 7);
@@ -4916,7 +6442,15 @@ mod tests {
         // visible window does not move, so Zulu may be offscreen — the
         // contract is that the journal contains it and the page
         // indicator reflects the new total.  Echo's highlight remains.
-        record(&mut app, JournalKey::Material { seed: 12 }, "Zulu", 12);
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 12,
+                planet_seed: None,
+            },
+            "Zulu",
+            12,
+        );
         app.update();
 
         assert_eq!(entry_count(&mut app), 8);
@@ -4924,9 +6458,10 @@ mod tests {
             let mut q = app.world_mut().query_filtered::<&Journal, With<Player>>();
             let journal = q.single(app.world()).expect("player must exist");
             assert!(
-                journal
-                    .entries
-                    .contains_key(&JournalKey::Material { seed: 12 }),
+                journal.entries.contains_key(&JournalKey::Material {
+                    seed: 12,
+                    planet_seed: None
+                }),
                 "Zulu entry must be present in the journal after recording"
             );
         }
@@ -4949,7 +6484,10 @@ mod tests {
             let journal = q.single(app.world()).expect("player must exist");
             let echo = journal
                 .entries
-                .get(&JournalKey::Material { seed: 3 })
+                .get(&JournalKey::Material {
+                    seed: 3,
+                    planet_seed: None,
+                })
                 .expect("Echo entry must still exist");
             assert_eq!(
                 echo.observation_count(),
@@ -4962,7 +6500,10 @@ mod tests {
         let tracker = app.world().resource::<JournalSelectionTracker>();
         assert_eq!(
             tracker.key,
-            Some(JournalKey::Material { seed: 3 }),
+            Some(JournalKey::Material {
+                seed: 3,
+                planet_seed: None
+            }),
             "tracker must remain anchored on Echo across all three insertions"
         );
     }
@@ -4993,10 +6534,42 @@ mod tests {
 
         // Populate four entries.  Sorted alphabetically the order is
         // Alpha (0), Bravo (1), Charlie (2), Delta (3).
-        record(&mut app, JournalKey::Material { seed: 1 }, "Alpha", 1);
-        record(&mut app, JournalKey::Material { seed: 2 }, "Bravo", 2);
-        record(&mut app, JournalKey::Material { seed: 3 }, "Charlie", 3);
-        record(&mut app, JournalKey::Material { seed: 4 }, "Delta", 4);
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 1,
+                planet_seed: None,
+            },
+            "Alpha",
+            1,
+        );
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 2,
+                planet_seed: None,
+            },
+            "Bravo",
+            2,
+        );
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 3,
+                planet_seed: None,
+            },
+            "Charlie",
+            3,
+        );
+        record(
+            &mut app,
+            JournalKey::Material {
+                seed: 4,
+                planet_seed: None,
+            },
+            "Delta",
+            4,
+        );
         app.update();
 
         // User navigates to "Charlie" (sort index 2).
@@ -5050,5 +6623,742 @@ mod tests {
             "highlighted entry after reopening must still be Charlie, got {:?}",
             highlighted[0]
         );
+    }
+
+    /// Shift+Tab cycles through context filter options: All → Current Planet → All.
+    /// The filter state persists and affects which entries are shown.
+    /// When the filter changes, selection resets to the top of the filtered list.
+    #[test]
+    fn shift_tab_cycles_context_filter() {
+        use crate::world_generation::{WorldGenerationConfig, WorldProfile};
+
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.init_resource::<ButtonInput<KeyCode>>();
+        app.insert_resource(JournalUiState {
+            visible: true,
+            selected_index: 0,
+            scroll_offset: 0,
+            entries_per_page: 15,
+            filter: JournalFilter::default(),
+        });
+        app.add_systems(Update, journal_navigation);
+
+        // Set up WorldProfile with planet seed 0 to match test expectations
+        let config = WorldGenerationConfig {
+            planet_seed: Some(0u64.into()),
+            ..Default::default()
+        };
+        let profile = WorldProfile::from_config(&config).unwrap();
+        app.world_mut().insert_resource(profile);
+
+        // Create a journal with entries from different planets
+        let mut journal = Journal::default();
+
+        // Material from planet 0
+        journal.record(
+            JournalKey::Material {
+                seed: 1,
+                planet_seed: Some(0),
+            },
+            "Planet0-Material",
+            Observation {
+                category: ObservationCategory::SurfaceAppearance,
+                confidence: ConfidenceLevel::Tentative,
+                description: "From planet 0".to_string(),
+                recorded_at: 1,
+            },
+        );
+
+        // Material from planet 1
+        journal.record(
+            JournalKey::Material {
+                seed: 2,
+                planet_seed: Some(1),
+            },
+            "Planet1-Material",
+            Observation {
+                category: ObservationCategory::SurfaceAppearance,
+                confidence: ConfidenceLevel::Tentative,
+                description: "From planet 1".to_string(),
+                recorded_at: 2,
+            },
+        );
+
+        // Material with no planet context
+        journal.record(
+            JournalKey::Material {
+                seed: 3,
+                planet_seed: None,
+            },
+            "Unknown-Material",
+            Observation {
+                category: ObservationCategory::SurfaceAppearance,
+                confidence: ConfidenceLevel::Tentative,
+                description: "Unknown origin".to_string(),
+                recorded_at: 3,
+            },
+        );
+
+        app.world_mut().spawn((Player, journal));
+
+        // Initial state: All filter (default)
+        {
+            let state = app.world().resource::<JournalUiState>();
+            assert!(state.filter().category.is_none());
+            assert!(state.filter().context.is_none());
+        }
+
+        // First Shift+Tab: All → Current Planet (planet 0)
+        {
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.press(KeyCode::ShiftLeft);
+            keys.press(KeyCode::Tab);
+        }
+        app.update();
+        {
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.release(KeyCode::Tab);
+            keys.release(KeyCode::ShiftLeft);
+        }
+
+        {
+            let state = app.world().resource::<JournalUiState>();
+            assert!(state.filter().category.is_none());
+            assert!(matches!(
+                state.filter().context,
+                Some(JournalContext::CurrentPlanet { planet_seed: 0 })
+            ));
+            // Selection should reset to top when filter changes
+            assert_eq!(state.selected_index, 0);
+            assert_eq!(state.scroll_offset, 0);
+        }
+
+        // Second Shift+Tab: Current Planet → All
+        {
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.press(KeyCode::ShiftLeft);
+            keys.press(KeyCode::Tab);
+        }
+        app.update();
+        {
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.release(KeyCode::Tab);
+            keys.release(KeyCode::ShiftLeft);
+        }
+
+        {
+            let state = app.world().resource::<JournalUiState>();
+            assert!(state.filter().category.is_none());
+            assert!(state.filter().context.is_none());
+            // Selection should reset to top when filter changes
+            assert_eq!(state.selected_index, 0);
+            assert_eq!(state.scroll_offset, 0);
+        }
+    }
+
+    /// Tab cycles through category filter options: All → SurfaceAppearance → ThermalBehavior → Weight → FabricationResult → All.
+    /// The filter state persists and affects which entries are shown.
+    /// When the filter changes, selection resets to the top of the filtered list.
+    #[test]
+    fn tab_cycles_category_filter() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.init_resource::<ButtonInput<KeyCode>>();
+        app.insert_resource(JournalUiState {
+            visible: true,
+            selected_index: 0,
+            scroll_offset: 0,
+            entries_per_page: 15,
+            filter: JournalFilter::default(),
+        });
+        app.add_systems(Update, journal_navigation);
+
+        // Create a journal with entries to test filtering
+        let mut journal = Journal::default();
+
+        // Add a material entry with SurfaceAppearance observation
+        journal.record(
+            JournalKey::Material {
+                seed: 1,
+                planet_seed: Some(0),
+            },
+            "Surface-Material",
+            Observation {
+                category: ObservationCategory::SurfaceAppearance,
+                confidence: ConfidenceLevel::Tentative,
+                description: "Smooth metallic surface".to_string(),
+                recorded_at: 1,
+            },
+        );
+
+        // Add a material entry with ThermalBehavior observation
+        journal.record(
+            JournalKey::Material {
+                seed: 2,
+                planet_seed: Some(0),
+            },
+            "Thermal-Material",
+            Observation {
+                category: ObservationCategory::ThermalBehavior,
+                confidence: ConfidenceLevel::Observed,
+                description: "Warm to the touch".to_string(),
+                recorded_at: 2,
+            },
+        );
+
+        // Add a material entry with Weight observation
+        journal.record(
+            JournalKey::Material {
+                seed: 3,
+                planet_seed: Some(0),
+            },
+            "Heavy-Material",
+            Observation {
+                category: ObservationCategory::Weight,
+                confidence: ConfidenceLevel::Confident,
+                description: "Heavy material".to_string(),
+                recorded_at: 3,
+            },
+        );
+
+        // Add a fabrication entry with FabricationResult observation
+        journal.record(
+            JournalKey::Fabrication { output_seed: 4 },
+            "Alloy-Fabrication",
+            Observation {
+                category: ObservationCategory::FabricationResult,
+                confidence: ConfidenceLevel::Confident,
+                description: "Successfully fabricated alloy".to_string(),
+                recorded_at: 4,
+            },
+        );
+
+        app.world_mut().spawn((Player, journal));
+
+        // Initial state: All filter (no restrictions)
+        {
+            let state = app.world().resource::<JournalUiState>();
+            assert!(state.filter().category.is_none());
+            assert!(state.filter().context.is_none());
+        }
+
+        // First Tab: All → SurfaceAppearance
+        {
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.press(KeyCode::Tab);
+        }
+        app.update();
+        {
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.release(KeyCode::Tab);
+        }
+
+        {
+            let state = app.world().resource::<JournalUiState>();
+            assert_eq!(
+                state.filter().category,
+                Some(ObservationCategory::SurfaceAppearance)
+            );
+            assert!(state.filter().context.is_none());
+            // Selection should reset to top when filter changes
+            assert_eq!(state.selected_index, 0);
+            assert_eq!(state.scroll_offset, 0);
+        }
+
+        // Second Tab: SurfaceAppearance → ThermalBehavior
+        {
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.press(KeyCode::Tab);
+        }
+        app.update();
+        {
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.release(KeyCode::Tab);
+        }
+
+        {
+            let state = app.world().resource::<JournalUiState>();
+            assert_eq!(
+                state.filter().category,
+                Some(ObservationCategory::ThermalBehavior)
+            );
+            assert!(state.filter().context.is_none());
+            // Selection should reset to top when filter changes
+            assert_eq!(state.selected_index, 0);
+            assert_eq!(state.scroll_offset, 0);
+        }
+
+        // Third Tab: ThermalBehavior → Weight
+        {
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.press(KeyCode::Tab);
+        }
+        app.update();
+        {
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.release(KeyCode::Tab);
+        }
+
+        {
+            let state = app.world().resource::<JournalUiState>();
+            assert_eq!(state.filter().category, Some(ObservationCategory::Weight));
+            assert!(state.filter().context.is_none());
+            // Selection should reset to top when filter changes
+            assert_eq!(state.selected_index, 0);
+            assert_eq!(state.scroll_offset, 0);
+        }
+
+        // Fourth Tab: Weight → FabricationResult
+        {
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.press(KeyCode::Tab);
+        }
+        app.update();
+        {
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.release(KeyCode::Tab);
+        }
+
+        {
+            let state = app.world().resource::<JournalUiState>();
+            assert_eq!(
+                state.filter().category,
+                Some(ObservationCategory::FabricationResult)
+            );
+            assert!(state.filter().context.is_none());
+            // Selection should reset to top when filter changes
+            assert_eq!(state.selected_index, 0);
+            assert_eq!(state.scroll_offset, 0);
+        }
+
+        // Fifth Tab: FabricationResult → All
+        {
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.press(KeyCode::Tab);
+        }
+        app.update();
+        {
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.release(KeyCode::Tab);
+        }
+
+        {
+            let state = app.world().resource::<JournalUiState>();
+            assert!(state.filter().category.is_none());
+            assert!(state.filter().context.is_none());
+            // Selection should reset to top when filter changes
+            assert_eq!(state.selected_index, 0);
+            assert_eq!(state.scroll_offset, 0);
+        }
+    }
+
+    /// Help text shows Shift+Tab context filter hint and displays active filter status.
+    #[test]
+    fn help_text_shows_context_filter_hint_and_status() {
+        let state_all = JournalUiState {
+            visible: true,
+            selected_index: 0,
+            scroll_offset: 0,
+            entries_per_page: 15,
+            filter: JournalFilter::default(),
+        };
+        let help_all = build_help_text(10, &state_all);
+        assert!(
+            help_all.contains("Shift+Tab: Context Filter"),
+            "help should show Shift+Tab hint, got: {help_all}"
+        );
+        assert!(
+            !help_all.contains("[Filter:"),
+            "help should not show filter status when no filter active, got: {help_all}"
+        );
+
+        let state_planet = JournalUiState {
+            visible: true,
+            selected_index: 0,
+            scroll_offset: 0,
+            entries_per_page: 15,
+            filter: JournalFilter {
+                category: None,
+                context: Some(JournalContext::CurrentPlanet { planet_seed: 42 }),
+            },
+        };
+        let help_planet = build_help_text(10, &state_planet);
+        assert!(
+            help_planet.contains("Shift+Tab: Context Filter"),
+            "help should show Shift+Tab hint with filter active, got: {help_planet}"
+        );
+        assert!(
+            help_planet.contains("[Filter: Current Planet]"),
+            "help should show current planet filter status, got: {help_planet}"
+        );
+
+        let state_combined = JournalUiState {
+            visible: true,
+            selected_index: 0,
+            scroll_offset: 0,
+            entries_per_page: 15,
+            filter: JournalFilter {
+                category: Some(ObservationCategory::SurfaceAppearance),
+                context: Some(JournalContext::CurrentPlanet { planet_seed: 42 }),
+            },
+        };
+        let help_combined = build_help_text(10, &state_combined);
+        assert!(
+            help_combined.contains("[Filter: Category | Current Planet]"),
+            "help should show combined filter status, got: {help_combined}"
+        );
+    }
+
+    /// Filter bar renders correctly with different filter states.
+    #[test]
+    fn filter_bar_renders_correctly() {
+        // Test empty filter (All) - should render empty string
+        let filter_all = JournalFilter::default();
+        let filter_bar_all = build_filter_bar_text(&filter_all);
+        assert_eq!(filter_bar_all, "", "All filter should render empty string");
+
+        // Test category-only filter
+        let filter_category = JournalFilter {
+            category: Some(ObservationCategory::SurfaceAppearance),
+            context: None,
+        };
+        let filter_bar_category = build_filter_bar_text(&filter_category);
+        assert_eq!(
+            filter_bar_category, "Filter: Surface",
+            "Category filter should show category label"
+        );
+
+        // Test context-only filter (Current Planet)
+        let filter_planet = JournalFilter {
+            category: None,
+            context: Some(JournalContext::CurrentPlanet { planet_seed: 42 }),
+        };
+        let filter_bar_planet = build_filter_bar_text(&filter_planet);
+        assert_eq!(
+            filter_bar_planet, "Filter: Current Planet",
+            "Planet filter should show planet context"
+        );
+
+        // Test context-only filter (Current Biome)
+        let filter_biome = JournalFilter {
+            category: None,
+            context: Some(JournalContext::CurrentBiome {
+                biome_key: "tundra".to_string(),
+            }),
+        };
+        let filter_bar_biome = build_filter_bar_text(&filter_biome);
+        assert_eq!(
+            filter_bar_biome, "Filter: Current Biome",
+            "Biome filter should show biome context"
+        );
+
+        // Test combined filter (Category + Planet)
+        let filter_combined_planet = JournalFilter {
+            category: Some(ObservationCategory::ThermalBehavior),
+            context: Some(JournalContext::CurrentPlanet { planet_seed: 7 }),
+        };
+        let filter_bar_combined_planet = build_filter_bar_text(&filter_combined_planet);
+        assert_eq!(
+            filter_bar_combined_planet, "Filter: Thermal | Current Planet",
+            "Combined category+planet filter should show both"
+        );
+
+        // Test combined filter (Category + Biome)
+        let filter_combined_biome = JournalFilter {
+            category: Some(ObservationCategory::Weight),
+            context: Some(JournalContext::CurrentBiome {
+                biome_key: "basalt_flats".to_string(),
+            }),
+        };
+        let filter_bar_combined_biome = build_filter_bar_text(&filter_combined_biome);
+        assert_eq!(
+            filter_bar_combined_biome, "Filter: Weight | Current Biome",
+            "Combined category+biome filter should show both"
+        );
+    }
+
+    /// Empty journal with filter applied shows "No observations yet." not "No matching entries".
+    /// This test verifies that when the journal has zero entries, applying any filter
+    /// still shows the empty journal message rather than the empty filter message.
+    #[test]
+    fn empty_journal_with_filter_shows_no_observations_yet() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.init_resource::<ButtonInput<KeyCode>>();
+        app.insert_resource(JournalUiState {
+            visible: true,
+            selected_index: 0,
+            scroll_offset: 0,
+            entries_per_page: 15,
+            filter: JournalFilter::default(),
+        });
+        app.add_systems(Update, journal_navigation);
+
+        // Create a Player entity with an empty Journal component
+        app.world_mut().spawn((Player, Journal::default()));
+
+        // Apply a category filter to the empty journal
+        {
+            let mut state = app.world_mut().resource_mut::<JournalUiState>();
+            state.set_filter(JournalFilter {
+                category: Some(ObservationCategory::SurfaceAppearance),
+                context: None,
+            });
+        }
+
+        // Update the app to process the filter
+        app.update();
+
+        // Verify that empty journal with filter shows "No observations yet."
+        let mut q = app.world_mut().query_filtered::<&Journal, With<Player>>();
+        let journal = q.single(app.world()).expect("player must exist");
+        let state = app.world().resource::<JournalUiState>();
+
+        // Build the detail spans using the same logic as the UI
+        let filtered_entries: Vec<&JournalEntry> = journal
+            .entries
+            .values()
+            .filter(|entry| matches_filter(entry, state.filter()))
+            .collect();
+
+        let detail_spans =
+            build_detail_spans(&filtered_entries, state, !journal.entries.is_empty());
+        let detail_text = detail_spans_to_string(&detail_spans);
+
+        assert_eq!(
+            detail_text, "No observations yet.",
+            "Empty journal with filter should show 'No observations yet.' not 'No matching entries'"
+        );
+
+        // Also test with context filter
+        {
+            let mut state = app.world_mut().resource_mut::<JournalUiState>();
+            state.set_filter(JournalFilter {
+                category: None,
+                context: Some(JournalContext::CurrentPlanet { planet_seed: 42 }),
+            });
+        }
+
+        app.update();
+
+        // Verify context filter on empty journal also shows "No observations yet."
+        let mut q = app.world_mut().query_filtered::<&Journal, With<Player>>();
+        let journal = q.single(app.world()).expect("player must exist");
+        let state = app.world().resource::<JournalUiState>();
+
+        let filtered_entries: Vec<&JournalEntry> = journal
+            .entries
+            .values()
+            .filter(|entry| matches_filter(entry, state.filter()))
+            .collect();
+
+        let detail_spans =
+            build_detail_spans(&filtered_entries, state, !journal.entries.is_empty());
+        let detail_text = detail_spans_to_string(&detail_spans);
+
+        assert_eq!(
+            detail_text, "No observations yet.",
+            "Empty journal with context filter should show 'No observations yet.' not 'No matching entries'"
+        );
+
+        // Test combined filter on empty journal
+        {
+            let mut state = app.world_mut().resource_mut::<JournalUiState>();
+            state.set_filter(JournalFilter {
+                category: Some(ObservationCategory::ThermalBehavior),
+                context: Some(JournalContext::CurrentPlanet { planet_seed: 7 }),
+            });
+        }
+
+        app.update();
+
+        // Verify combined filter on empty journal also shows "No observations yet."
+        let mut q = app.world_mut().query_filtered::<&Journal, With<Player>>();
+        let journal = q.single(app.world()).expect("player must exist");
+        let state = app.world().resource::<JournalUiState>();
+
+        let filtered_entries: Vec<&JournalEntry> = journal
+            .entries
+            .values()
+            .filter(|entry| matches_filter(entry, state.filter()))
+            .collect();
+
+        let detail_spans =
+            build_detail_spans(&filtered_entries, state, !journal.entries.is_empty());
+        let detail_text = detail_spans_to_string(&detail_spans);
+
+        assert_eq!(
+            detail_text, "No observations yet.",
+            "Empty journal with combined filter should show 'No observations yet.' not 'No matching entries'"
+        );
+    }
+
+    #[test]
+    fn test_planet_switch_updates_context_filter() {
+        use crate::world_generation::{WorldGenerationConfig, WorldProfile};
+
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .add_plugins(JournalPlugin)
+            .init_resource::<ButtonInput<KeyCode>>();
+
+        // Create a Player entity with an empty Journal component
+        app.world_mut().spawn((Player, Journal::default()));
+
+        // Set up initial WorldProfile with planet seed 42
+        let initial_config = WorldGenerationConfig {
+            planet_seed: Some(42u64.into()),
+            ..Default::default()
+        };
+        let initial_profile = WorldProfile::from_config(&initial_config).unwrap();
+        app.world_mut().insert_resource(initial_profile);
+
+        // Set journal filter to CurrentPlanet with the initial planet seed
+        {
+            let mut state = app.world_mut().resource_mut::<JournalUiState>();
+            state.set_filter(JournalFilter {
+                category: None,
+                context: Some(JournalContext::CurrentPlanet { planet_seed: 42 }),
+            });
+        }
+
+        // Update the app to process the initial state
+        app.update();
+
+        // Verify initial filter state
+        {
+            let state = app.world().resource::<JournalUiState>();
+            assert_eq!(
+                state.filter().context,
+                Some(JournalContext::CurrentPlanet { planet_seed: 42 }),
+                "Initial filter should be set to planet seed 42"
+            );
+        }
+
+        // Switch to a new planet by updating the WorldProfile resource
+        let new_config = WorldGenerationConfig {
+            planet_seed: Some(123u64.into()),
+            ..Default::default()
+        };
+        let new_profile = WorldProfile::from_config(&new_config).unwrap();
+        app.world_mut().insert_resource(new_profile);
+
+        // Update the app to process the planet change
+        app.update();
+
+        // Verify that the context filter was automatically updated to the new planet
+        {
+            let state = app.world().resource::<JournalUiState>();
+            assert_eq!(
+                state.filter().context,
+                Some(JournalContext::CurrentPlanet { planet_seed: 123 }),
+                "Context filter should be automatically updated to new planet seed 123"
+            );
+
+            // Verify that scroll position was reset
+            assert_eq!(
+                state.selected_index, 0,
+                "Selected index should be reset to 0"
+            );
+            assert_eq!(state.scroll_offset, 0, "Scroll offset should be reset to 0");
+        }
+
+        // Test that category filter is preserved during planet switch
+        {
+            let mut state = app.world_mut().resource_mut::<JournalUiState>();
+            state.set_filter(JournalFilter {
+                category: Some(ObservationCategory::ThermalBehavior),
+                context: Some(JournalContext::CurrentPlanet { planet_seed: 123 }),
+            });
+        }
+
+        // Switch to another planet
+        let another_config = WorldGenerationConfig {
+            planet_seed: Some(456u64.into()),
+            ..Default::default()
+        };
+        let another_profile = WorldProfile::from_config(&another_config).unwrap();
+        app.world_mut().insert_resource(another_profile);
+
+        app.update();
+
+        // Verify that category filter is preserved while context is updated
+        {
+            let state = app.world().resource::<JournalUiState>();
+            assert_eq!(
+                state.filter(),
+                &JournalFilter {
+                    category: Some(ObservationCategory::ThermalBehavior),
+                    context: Some(JournalContext::CurrentPlanet { planet_seed: 456 }),
+                },
+                "Category filter should be preserved while context is updated to new planet"
+            );
+        }
+
+        // Test that non-CurrentPlanet context filters are not affected
+        {
+            let mut state = app.world_mut().resource_mut::<JournalUiState>();
+            state.set_filter(JournalFilter {
+                category: None,
+                context: Some(JournalContext::CurrentBiome {
+                    biome_key: "tundra".to_string(),
+                }),
+            });
+        }
+
+        // Switch to yet another planet
+        let final_config = WorldGenerationConfig {
+            planet_seed: Some(789u64.into()),
+            ..Default::default()
+        };
+        let final_profile = WorldProfile::from_config(&final_config).unwrap();
+        app.world_mut().insert_resource(final_profile);
+
+        app.update();
+
+        // Verify that CurrentBiome filter is not affected by planet changes
+        {
+            let state = app.world().resource::<JournalUiState>();
+            assert_eq!(
+                state.filter().context,
+                Some(JournalContext::CurrentBiome {
+                    biome_key: "tundra".to_string()
+                }),
+                "CurrentBiome filter should not be affected by planet changes"
+            );
+        }
+
+        // Test that filter with no context is not affected
+        {
+            let mut state = app.world_mut().resource_mut::<JournalUiState>();
+            state.set_filter(JournalFilter {
+                category: Some(ObservationCategory::SurfaceAppearance),
+                context: None,
+            });
+        }
+
+        // Switch planet one more time
+        let last_config = WorldGenerationConfig {
+            planet_seed: Some(999u64.into()),
+            ..Default::default()
+        };
+        let last_profile = WorldProfile::from_config(&last_config).unwrap();
+        app.world_mut().insert_resource(last_profile);
+
+        app.update();
+
+        // Verify that filter with no context remains unchanged
+        {
+            let state = app.world().resource::<JournalUiState>();
+            assert_eq!(
+                state.filter(),
+                &JournalFilter {
+                    category: Some(ObservationCategory::SurfaceAppearance),
+                    context: None,
+                },
+                "Filter with no context should not be affected by planet changes"
+            );
+        }
     }
 }
