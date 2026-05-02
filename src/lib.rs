@@ -29,6 +29,9 @@ pub mod solar_system;
 pub mod surface;
 pub mod world_generation;
 
+#[cfg(test)]
+mod test_support;
+
 /// Registers every game plugin onto the given [`App`].
 ///
 /// This is the single source of truth for plugin wiring — both `main()`
