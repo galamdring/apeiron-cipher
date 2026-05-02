@@ -1392,10 +1392,10 @@ pub fn record_weight_observation(
 
 /// Convert a stashed carry item back into the player's hand.
 ///
-/// We restore the entity into the world-facing material state because the hand
-/// interaction loop already understands `HeldItem + MaterialObject`. Reusing that
-/// path keeps Epic 4 from inventing a second representation for "the material in
-/// front of the camera."
+/// We restore the entity into the held state (`HeldItem` only, not
+/// `MaterialObject`) because the hand is not "in the world" — it is
+/// attached to the camera. `MaterialObject` is re-added when the player
+/// places the item back onto a surface or slot.
 fn move_entity_from_carry_to_hand(
     commands: &mut Commands,
     camera_entity: Entity,
@@ -1405,7 +1405,6 @@ fn move_entity_from_carry_to_hand(
     commands
         .entity(entity)
         .remove::<InCarry>()
-        .insert(MaterialObject)
         .insert(HeldItem)
         .insert(Visibility::Inherited)
         .set_parent_in_place(camera_entity)
