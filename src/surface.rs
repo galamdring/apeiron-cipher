@@ -61,17 +61,29 @@ pub struct SurfaceOverrideRegistry {
 }
 
 impl SurfaceOverrideRegistry {
-    /// Register a new surface override. Returns the index for debugging.
-    pub fn register(&mut self, surface: SurfaceOverride) -> usize {
+    /// Add a new surface override. Returns the index for debugging.
+    pub fn add_override(&mut self, surface: SurfaceOverride) -> usize {
         let idx = self.overrides.len();
         self.overrides.push(surface);
         idx
+    }
+
+    /// Register a new surface override. Returns the index for debugging.
+    /// 
+    /// Deprecated: Use `add_override` instead. Kept for backward compatibility.
+    pub fn register(&mut self, surface: SurfaceOverride) -> usize {
+        self.add_override(surface)
     }
 
     /// Remove all overrides owned by the given entity.
     #[allow(dead_code)] // API for future structure removal
     pub fn remove_by_owner(&mut self, owner: Entity) {
         self.overrides.retain(|s| s.owner != owner);
+    }
+
+    /// Query for overrides that contain the given XZ point.
+    pub fn query(&self, x: f32, z: f32) -> impl Iterator<Item = &SurfaceOverride> {
+        self.overrides.iter().filter(move |s| s.contains_xz(x, z))
     }
 
     /// Iterate all overrides (for queries).
@@ -138,7 +150,7 @@ mod tests {
     fn sample_registry() -> SurfaceOverrideRegistry {
         let mut reg = SurfaceOverrideRegistry::default();
         // Room floor at y=2.0, covering -4..4 on both axes.
-        reg.register(SurfaceOverride {
+        reg.add_override(SurfaceOverride {
             owner: Entity::from_bits(1),
             min_x: -4.0,
             max_x: 4.0,
@@ -147,7 +159,7 @@ mod tests {
             surface_y: 2.0,
         });
         // Table at y=2.8, smaller footprint.
-        reg.register(SurfaceOverride {
+        reg.add_override(SurfaceOverride {
             owner: Entity::from_bits(2),
             min_x: -1.0,
             max_x: 1.0,
@@ -230,7 +242,7 @@ mod tests {
     fn cave_override_below_terrain_is_found() {
         let mut reg = SurfaceOverrideRegistry::default();
         // Cave floor at y=-2, terrain at y=5. Player is in the cave at y=-1.
-        reg.register(SurfaceOverride {
+        reg.add_override(SurfaceOverride {
             owner: Entity::from_bits(10),
             min_x: -10.0,
             max_x: 10.0,
@@ -241,5 +253,40 @@ mod tests {
         // max_y = -1 + 0.5 = -0.5. Cave floor at -2 is below -0.5. Terrain at 5 is above.
         let result = resolve_standing_surface(0.0, 0.0, -0.5, 5.0, &reg);
         assert!((result - (-2.0)).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn query_returns_matching_overrides() {
+        let reg = sample_registry();
+        
+        // Query inside table bounds (0.0, 0.0) - should return both room and table
+        let matches: Vec<_> = reg.query(0.0, 0.0).collect();
+        assert_eq!(matches.len(), 2);
+        
+        // Query inside room but outside table (3.0, 3.0) - should return only room
+        let matches: Vec<_> = reg.query(3.0, 3.0).collect();
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].surface_y, 2.0); // room floor
+        
+        // Query outside everything (10.0, 10.0) - should return nothing
+        let matches: Vec<_> = reg.query(10.0, 10.0).collect();
+        assert_eq!(matches.len(), 0);
+    }
+
+    #[test]
+    fn register_method_still_works_for_backward_compatibility() {
+        let mut reg = SurfaceOverrideRegistry::default();
+        let surface = SurfaceOverride {
+            owner: Entity::from_bits(1),
+            min_x: 0.0,
+            max_x: 1.0,
+            min_z: 0.0,
+            max_z: 1.0,
+            surface_y: 1.0,
+        };
+        
+        let idx = reg.register(surface);
+        assert_eq!(idx, 0);
+        assert_eq!(reg.iter().count(), 1);
     }
 }

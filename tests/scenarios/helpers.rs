@@ -62,6 +62,5 @@ pub fn carry_item_count(world: &mut World) -> usize {
         .iter(world)
         .next()
         .expect("no entity with CarryState found")
-        .carried_items
         .len()
 }
