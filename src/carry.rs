@@ -19,7 +19,6 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
-use crate::observation::PropertyName;
 
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -28,7 +27,7 @@ use crate::input::InputAction;
 use crate::interaction::HeldItem;
 use crate::journal::{JournalKey, Observation, ObservationCategory, RecordObservation};
 use crate::materials::{GameMaterial, MaterialObject};
-use crate::observation::{ConfidenceLevel, ConfidenceTracker};
+use crate::observation::Confidence;
 use crate::player::{Player, PlayerCamera, cursor_is_captured};
 use crate::world_generation::WorldProfile;
 use leafwing_input_manager::prelude::*;
@@ -1238,7 +1237,7 @@ fn carry_strength_delta(
 fn describe_weight_observation(
     density: f32,
     carry_strength: f32,
-    confidence: ConfidenceLevel,
+    confidence: Confidence,
     bands: &[WeightDescriptionBand],
 ) -> String {
     let ratio = if carry_strength <= f32::EPSILON {
@@ -1252,9 +1251,10 @@ fn describe_weight_observation(
         .map(|band| band.text.as_str())
         .unwrap_or("Barely able to lift");
 
-    match confidence {
-        ConfidenceLevel::Tentative => format!("Seemed {}", base.to_lowercase()),
-        ConfidenceLevel::Observed | ConfidenceLevel::Confident => base.to_string(),
+    match confidence.tier() {
+        crate::observation::ConfidenceTier::Tentative => format!("Seemed {}", base.to_lowercase()),
+        crate::observation::ConfidenceTier::Observed
+        | crate::observation::ConfidenceTier::Confident => base.to_string(),
     }
 }
 
@@ -1365,18 +1365,33 @@ pub fn record_weight_observation(
     material: &GameMaterial,
     carry_strength: f32,
     config: &CarryConfig,
-    tracker: &mut ConfidenceTracker,
     journal_writer: &mut MessageWriter<RecordObservation>,
+    descriptor_vocab: &crate::observation::DescriptorVocabulary,
     planet_seed: Option<u64>,
 ) {
-    tracker.record(material.seed, PropertyName::Density);
-    let confidence = tracker.level(material.seed, PropertyName::Density);
-    let description = describe_weight_observation(
-        material.density.value,
-        carry_strength,
-        confidence,
-        &config.weight_descriptions,
-    );
+    // Use initial confidence for new observations - the journal system
+    // will handle accumulation automatically for repeated observations
+    let initial_confidence = Confidence(0.2);
+
+    // Generate description using the DescriptorVocabulary system
+    let description = descriptor_vocab
+        .describe(
+            &ObservationCategory::Weight,
+            material.density.value,
+            initial_confidence,
+        )
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| {
+            // Fallback to old system if vocabulary lookup fails
+            describe_weight_observation(
+                material.density.value,
+                carry_strength,
+                initial_confidence,
+                &config.weight_descriptions,
+            )
+        });
+
+
     journal_writer.write(RecordObservation {
         key: JournalKey::Material {
             seed: material.seed,
@@ -1385,7 +1400,7 @@ pub fn record_weight_observation(
         name: material.name.clone(),
         observation: Observation {
             category: ObservationCategory::Weight,
-            confidence,
+            confidence: initial_confidence,
             description,
             recorded_at: 0,
         },
@@ -1435,8 +1450,8 @@ fn process_stash_intent(
     mut weight_writer: MessageWriter<CarryWeightChanged>,
     mut reject_writer: MessageWriter<CarryActionRejected>,
     mut journal_writer: MessageWriter<RecordObservation>,
-    mut tracker: ResMut<ConfidenceTracker>,
     config: Res<CarryConfig>,
+    descriptor_vocab: Res<crate::observation::DescriptorVocabulary>,
     mut player_query: Query<(&mut CarryState, &CarryStrength), With<Player>>,
     held_query: Query<(Entity, &GameMaterial), With<HeldItem>>,
     world_profile: Option<Res<WorldProfile>>,
@@ -1468,8 +1483,8 @@ fn process_stash_intent(
             held_material,
             carry_strength.current,
             &config,
-            &mut tracker,
             &mut journal_writer,
+            &descriptor_vocab,
             planet_seed,
         );
         emit_carry_weight_changed(&mut weight_writer, &carry_state);
@@ -1486,8 +1501,8 @@ fn process_stash_held_for_pickup(
     mut reader: MessageReader<StashHeldForPickup>,
     mut weight_writer: MessageWriter<CarryWeightChanged>,
     mut journal_writer: MessageWriter<RecordObservation>,
-    mut tracker: ResMut<ConfidenceTracker>,
     config: Res<CarryConfig>,
+    descriptor_vocab: Res<crate::observation::DescriptorVocabulary>,
     mut player_query: Query<(&mut CarryState, &CarryStrength), With<Player>>,
     world_profile: Option<Res<WorldProfile>>,
 ) {
@@ -1507,8 +1522,8 @@ fn process_stash_held_for_pickup(
             &request.held_material,
             carry_strength.current,
             &config,
-            &mut tracker,
             &mut journal_writer,
+            &descriptor_vocab,
             planet_seed,
         );
         // Also record weight for the newly picked material.
@@ -1516,8 +1531,8 @@ fn process_stash_held_for_pickup(
             &request.picked_material,
             carry_strength.current,
             &config,
-            &mut tracker,
             &mut journal_writer,
+            &descriptor_vocab,
             planet_seed,
         );
         emit_carry_weight_changed(&mut weight_writer, &carry_state);
@@ -1528,8 +1543,8 @@ fn process_stash_held_for_pickup(
 fn process_observe_weight(
     mut reader: MessageReader<ObserveWeight>,
     mut journal_writer: MessageWriter<RecordObservation>,
-    mut tracker: ResMut<ConfidenceTracker>,
     config: Res<CarryConfig>,
+    descriptor_vocab: Res<crate::observation::DescriptorVocabulary>,
     player_query: Query<&CarryStrength, With<Player>>,
     world_profile: Option<Res<WorldProfile>>,
 ) {
@@ -1542,8 +1557,8 @@ fn process_observe_weight(
             &request.material,
             carry_strength.current,
             &config,
-            &mut tracker,
             &mut journal_writer,
+            &descriptor_vocab,
             planet_seed,
         );
     }
@@ -1559,8 +1574,8 @@ fn process_cycle_carry_intent(
     mut weight_writer: MessageWriter<CarryWeightChanged>,
     mut reject_writer: MessageWriter<CarryActionRejected>,
     mut journal_writer: MessageWriter<RecordObservation>,
-    mut tracker: ResMut<ConfidenceTracker>,
     config: Res<CarryConfig>,
+    descriptor_vocab: Res<crate::observation::DescriptorVocabulary>,
     mut player_query: Query<(&mut CarryState, &CarryStrength), With<Player>>,
     camera_query: Query<Entity, With<PlayerCamera>>,
     held_query: Query<(Entity, &GameMaterial), With<HeldItem>>,
@@ -1613,8 +1628,8 @@ fn process_cycle_carry_intent(
                 held_material,
                 carry_strength.current,
                 &config,
-                &mut tracker,
                 &mut journal_writer,
+                &descriptor_vocab,
                 planet_seed,
             );
         }
@@ -1633,8 +1648,8 @@ fn process_cycle_carry_intent(
             next_material,
             carry_strength.current,
             &config,
-            &mut tracker,
             &mut journal_writer,
+            &descriptor_vocab,
             planet_seed,
         );
         emit_carry_weight_changed(&mut weight_writer, &carry_state);
@@ -2190,7 +2205,7 @@ exponent = 1.0
         let text = describe_weight_observation(
             0.8,
             1.0,
-            ConfidenceLevel::Tentative,
+            Confidence(0.2), // Tentative
             &default_weight_descriptions(),
         );
 
@@ -2202,7 +2217,7 @@ exponent = 1.0
         let text = describe_weight_observation(
             0.8,
             1.0,
-            ConfidenceLevel::Observed,
+            Confidence(0.5), // Observed
             &default_weight_descriptions(),
         );
 
@@ -2230,11 +2245,11 @@ exponent = 1.0
         fn drive(
             inputs: bevy::ecs::system::In<(GameMaterial, Option<u64>)>,
             mut writer: MessageWriter<RecordObservation>,
+            descriptor_vocab: Res<crate::observation::DescriptorVocabulary>,
         ) {
             let (mat, seed) = inputs.0;
-            let mut tracker = ConfidenceTracker::default();
             let cfg = CarryConfig::default();
-            record_weight_observation(&mat, 1.0, &cfg, &mut tracker, &mut writer, seed);
+            record_weight_observation(&mat, 1.0, &cfg, &mut writer, &descriptor_vocab, seed);
         }
 
         let material = material_with_density(0.8);
@@ -2249,6 +2264,7 @@ exponent = 1.0
         ] {
             let mut app = App::new();
             app.add_message::<RecordObservation>();
+            app.insert_resource(crate::observation::DescriptorVocabulary::default());
             app.world_mut()
                 .run_system_cached_with(drive, (material.clone(), supplied))
                 .expect("one-shot system should run");

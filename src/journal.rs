@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use strum::IntoEnumIterator;
 
 use crate::input::InputAction;
-use crate::observation::ConfidenceLevel;
+use crate::observation::Confidence;
 use crate::player::{Player, cursor_is_captured, spawn_player};
 
 // ── Observation data model ──────────────────────────────────────────────
@@ -106,7 +106,7 @@ impl ObservationCategory {
 ///
 /// Observations are the atomic unit of player knowledge. Each one records
 /// *what* was observed ([`ObservationCategory`]), *how confident* the
-/// player should be ([`ConfidenceLevel`]), a human-readable description,
+/// player should be ([`Confidence`]), a human-readable description,
 /// and the game-time tick when it was recorded. Observations accumulate
 /// inside a [`JournalEntry`] over time — the journal never forgets.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -114,7 +114,7 @@ pub struct Observation {
     /// What kind of knowledge this observation represents.
     pub category: ObservationCategory,
     /// How certain the player is based on repeated evidence.
-    pub confidence: ConfidenceLevel,
+    pub confidence: Confidence,
     /// Player-facing prose description of the observation.
     pub description: String,
     /// Game-time tick when this observation was recorded.
@@ -517,9 +517,68 @@ impl JournalEntry {
             .find(|o| o.description == observation.description)
         {
             // Upgrade confidence if the new evidence is stronger.
-            if observation.confidence > existing.confidence {
+            if observation.confidence.0 > existing.confidence.0 {
                 existing.confidence = observation.confidence;
             }
+            return;
+        }
+
+        group.push(observation);
+    }
+
+    /// Record an observation with confidence accumulation for existing observations.
+    ///
+    /// This method implements the confidence evolution system described in Story 10.4.
+    /// When an observation with the same category and description already exists,
+    /// it calls `accumulate()` on the existing observation's confidence using the
+    /// base observation weight from the configuration. This provides diminishing
+    /// returns as evidence accumulates, matching the technical design.
+    ///
+    /// When the observation is genuinely new (different category or different
+    /// description), it is appended to the appropriate category group.
+    pub fn add_observation_with_accumulation(
+        &mut self,
+        observation: Observation,
+        config: &crate::observation::ConfidenceConfig,
+    ) {
+        self.add_observation_with_domain_weighted_accumulation(observation, config, 1.0);
+    }
+
+    /// Add an observation with domain-weighted confidence accumulation.
+    ///
+    /// This method extends the basic accumulation system with domain-weighted
+    /// recovery. The recovery multiplier adjusts the accumulation rate based
+    /// on recent death context and whether the player is engaging with the
+    /// death-relevant domain.
+    ///
+    /// # Arguments
+    /// * `recovery_multiplier` - Multiplier applied to base observation weight
+    ///   - > 1.0 for death-relevant domain (faster recovery)
+    ///   - < 1.0 for unrelated domains (slower recovery)
+    ///   - = 1.0 for no death context (normal rate)
+    pub fn add_observation_with_domain_weighted_accumulation(
+        &mut self,
+        observation: Observation,
+        config: &crate::observation::ConfidenceConfig,
+        recovery_multiplier: f32,
+    ) {
+        self.last_updated_at = observation.recorded_at;
+
+        let group = self
+            .observations
+            .entry(observation.category.clone())
+            .or_default();
+
+        // Look for an existing observation with the same description within this category.
+        if let Some(existing) = group
+            .iter_mut()
+            .find(|o| o.description == observation.description)
+        {
+            // Apply domain-weighted recovery to the accumulation weight
+            let adjusted_weight = config.base_observation_weight * recovery_multiplier;
+
+            // Accumulate evidence using the confidence system with diminishing returns.
+            existing.confidence.accumulate(adjusted_weight);
             return;
         }
 
@@ -609,6 +668,52 @@ impl Journal {
     pub fn record(&mut self, key: JournalKey, name: &str, observation: Observation) {
         let entry = self.ensure_entry(key, name, observation.recorded_at);
         entry.add_observation(observation);
+    }
+
+    /// Record an observation with confidence accumulation for existing observations.
+    ///
+    /// This method uses the confidence accumulation system to properly handle
+    /// repeated observations of the same property. When an observation with the
+    /// same category and description already exists, it calls `accumulate()` on
+    /// the existing observation's confidence using the base observation weight
+    /// from the configuration.
+    pub fn record_with_accumulation(
+        &mut self,
+        key: JournalKey,
+        name: &str,
+        observation: Observation,
+        config: &crate::observation::ConfidenceConfig,
+    ) {
+        let entry = self.ensure_entry(key, name, observation.recorded_at);
+        entry.add_observation_with_accumulation(observation, config);
+    }
+
+    /// Record an observation with domain-weighted confidence accumulation.
+    ///
+    /// This method extends the basic accumulation system with domain-weighted
+    /// recovery based on recent death context. The recovery multiplier adjusts
+    /// the accumulation rate based on whether the player is engaging with the
+    /// death-relevant domain or avoiding it.
+    ///
+    /// # Arguments
+    /// * `recovery_multiplier` - Multiplier applied to base observation weight
+    ///   - > 1.0 for death-relevant domain (faster recovery)
+    ///   - < 1.0 for unrelated domains (slower recovery)
+    ///   - = 1.0 for no death context (normal rate)
+    pub fn record_with_domain_weighted_accumulation(
+        &mut self,
+        key: JournalKey,
+        name: &str,
+        observation: Observation,
+        config: &crate::observation::ConfidenceConfig,
+        recovery_multiplier: f32,
+    ) {
+        let entry = self.ensure_entry(key, name, observation.recorded_at);
+        entry.add_observation_with_domain_weighted_accumulation(
+            observation,
+            config,
+            recovery_multiplier,
+        );
     }
 }
 
@@ -1221,14 +1326,21 @@ fn update_journal_context_on_planet_change(
 // ── Record ingestion ────────────────────────────────────────────────────
 
 /// Unified ingestion system — reads [`RecordObservation`] messages and
-/// writes them into the player's [`Journal`].
+/// writes them into the player's [`Journal`] with domain-weighted recovery.
 ///
 /// Callers pass `recorded_at: 0` — this system overwrites with real
 /// elapsed time so caller signatures stay lean.
+///
+/// The system applies domain-weighted confidence recovery based on recent
+/// death context. If the player died recently and is now observing the
+/// death-relevant domain, confidence accumulates faster. If they're
+/// avoiding the death domain, it accumulates slower.
 fn apply_observations(
     mut reader: MessageReader<RecordObservation>,
     mut player_query: Query<&mut Journal, With<Player>>,
     time: Res<Time>,
+    config: Res<crate::observation::ConfidenceConfig>,
+    death_context: Option<Res<crate::observation::DeathContext>>,
 ) {
     let Ok(mut journal) = player_query.single_mut() else {
         return;
@@ -1239,7 +1351,21 @@ fn apply_observations(
     for event in reader.read() {
         let mut obs = event.observation.clone();
         obs.recorded_at = tick;
-        journal.record(event.key.clone(), &event.name, obs);
+
+        // Calculate recovery multiplier based on death context
+        let recovery_multiplier = if let Some(death_ctx) = &death_context {
+            death_ctx.recovery_multiplier(&obs.category, tick, &config)
+        } else {
+            1.0 // No death context, use base rate
+        };
+
+        journal.record_with_domain_weighted_accumulation(
+            event.key.clone(),
+            &event.name,
+            obs,
+            &config,
+            recovery_multiplier,
+        );
     }
 }
 
@@ -1677,7 +1803,7 @@ fn build_detail_spans(
             // Qualitative confidence indicator — communicates certainty
             // without exposing internal counts.
             spans.push(DetailSpan {
-                text: format!("  [{}]", obs.confidence.display_label()),
+                text: format!("  [{}]", obs.confidence.tier().display_label()),
                 kind: DetailSpanKind::ConfidenceLabel,
             });
         }

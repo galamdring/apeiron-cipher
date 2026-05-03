@@ -7,7 +7,6 @@ mod scenarios;
 
 use apeiron_cipher::carry::{CarryPlugin, CarryState, CarryStrength};
 use apeiron_cipher::journal::RecordObservation;
-use apeiron_cipher::observation::ConfidenceTracker;
 use apeiron_cipher::player::Player;
 use bevy::prelude::*;
 use scenarios::helpers::{
@@ -22,7 +21,8 @@ use scenarios::{Scenario, Step, run_scenarios};
 fn carry_shared_setup(app: &mut App) {
     app.add_plugins(MinimalPlugins);
     app.add_message::<RecordObservation>();
-    app.init_resource::<ConfidenceTracker>();
+    // ConfidenceTracker removed - confidence is now tracked per-observation in journal
+    app.insert_resource(apeiron_cipher::observation::DescriptorVocabulary::default());
     app.add_plugins(CarryPlugin);
 }
 
