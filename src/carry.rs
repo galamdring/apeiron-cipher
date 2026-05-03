@@ -30,7 +30,6 @@ use crate::journal::{JournalKey, Observation, ObservationCategory, RecordObserva
 use crate::materials::{GameMaterial, MaterialObject};
 use crate::observation::{ConfidenceLevel, ConfidenceTracker};
 use crate::player::{Player, PlayerCamera, cursor_is_captured};
-use crate::world_generation::WorldProfile;
 use leafwing_input_manager::prelude::*;
 
 const CONFIG_PATH: &str = "assets/config/carry.toml";
@@ -1355,16 +1354,17 @@ pub fn stash_entity_into_carry(
 
 /// Records a weight observation for a material, updating confidence and journal.
 ///
-/// `planet_seed` is the player's current planet seed (taken from
-/// `WorldProfile::planet_seed.0` at the call site), or `None` when no
-/// `WorldProfile` is in scope. See `JournalKey::Material::planet_seed` docs.
+/// **Planet seed handling:** This function passes `planet_seed: None` to
+/// the journal system, which automatically resolves the current planet
+/// from the [`WorldProfile`] resource. This eliminates the need for callers
+/// to manually extract planet seed information and prevents silent failures
+/// when observation sites forget the extraction pattern.
 pub fn record_weight_observation(
     material: &GameMaterial,
     carry_strength: f32,
     config: &CarryConfig,
     tracker: &mut ConfidenceTracker,
     journal_writer: &mut MessageWriter<RecordObservation>,
-    planet_seed: Option<u64>,
 ) {
     tracker.record(material.seed, PropertyName::Density);
     let confidence = tracker.level(material.seed, PropertyName::Density);
@@ -1377,7 +1377,7 @@ pub fn record_weight_observation(
     journal_writer.write(RecordObservation {
         key: JournalKey::Material {
             seed: material.seed,
-            planet_seed,
+            planet_seed: None, // Automatically resolved by apply_observations system
         },
         name: material.name.clone(),
         observation: Observation {
@@ -1436,9 +1436,7 @@ fn process_stash_intent(
     config: Res<CarryConfig>,
     mut player_query: Query<(&mut CarryState, &CarryStrength), With<Player>>,
     held_query: Query<(Entity, &GameMaterial), With<HeldItem>>,
-    world_profile: Option<Res<WorldProfile>>,
 ) {
-    let planet_seed = world_profile.as_deref().map(|p| p.planet_seed.0);
     for _intent in reader.read() {
         let Some((held_entity, held_material)) = held_query.iter().next() else {
             reject_writer.write(CarryActionRejected {
@@ -1467,7 +1465,6 @@ fn process_stash_intent(
             &config,
             &mut tracker,
             &mut journal_writer,
-            planet_seed,
         );
         emit_carry_weight_changed(&mut weight_writer, &carry_state);
     }
@@ -1486,9 +1483,7 @@ fn process_stash_held_for_pickup(
     mut tracker: ResMut<ConfidenceTracker>,
     config: Res<CarryConfig>,
     mut player_query: Query<(&mut CarryState, &CarryStrength), With<Player>>,
-    world_profile: Option<Res<WorldProfile>>,
 ) {
-    let planet_seed = world_profile.as_deref().map(|p| p.planet_seed.0);
     for request in reader.read() {
         let Ok((mut carry_state, carry_strength)) = player_query.single_mut() else {
             continue;
@@ -1506,7 +1501,6 @@ fn process_stash_held_for_pickup(
             &config,
             &mut tracker,
             &mut journal_writer,
-            planet_seed,
         );
         // Also record weight for the newly picked material.
         record_weight_observation(
@@ -1515,7 +1509,6 @@ fn process_stash_held_for_pickup(
             &config,
             &mut tracker,
             &mut journal_writer,
-            planet_seed,
         );
         emit_carry_weight_changed(&mut weight_writer, &carry_state);
     }
@@ -1528,9 +1521,7 @@ fn process_observe_weight(
     mut tracker: ResMut<ConfidenceTracker>,
     config: Res<CarryConfig>,
     player_query: Query<&CarryStrength, With<Player>>,
-    world_profile: Option<Res<WorldProfile>>,
 ) {
-    let planet_seed = world_profile.as_deref().map(|p| p.planet_seed.0);
     for request in reader.read() {
         let Ok(carry_strength) = player_query.single() else {
             continue;
@@ -1541,7 +1532,6 @@ fn process_observe_weight(
             &config,
             &mut tracker,
             &mut journal_writer,
-            planet_seed,
         );
     }
 }
@@ -1562,9 +1552,7 @@ fn process_cycle_carry_intent(
     camera_query: Query<Entity, With<PlayerCamera>>,
     held_query: Query<(Entity, &GameMaterial), With<HeldItem>>,
     carried_material_query: Query<&GameMaterial, With<InCarry>>,
-    world_profile: Option<Res<WorldProfile>>,
 ) {
-    let planet_seed = world_profile.as_deref().map(|p| p.planet_seed.0);
     for _intent in reader.read() {
         let Ok((mut carry_state, carry_strength)) = player_query.single_mut() else {
             continue;
@@ -1590,29 +1578,28 @@ fn process_cycle_carry_intent(
         };
 
         // Extract held item data before mutating carry state.
-        // Only density is needed for the capacity check; extract just that value
-        // to avoid cloning the entire GameMaterial.
+        // Only density is needed for the capacity check; the full &GameMaterial
+        // reference is re-acquired after stashing for the weight observation.
         let held_info = held_query
             .iter()
             .next()
-            .map(|(entity, material)| (entity, material.density.value));
-        if let Some((held_entity, held_density)) = held_info {
-            if !carry_state.can_accept(held_density) {
+            .map(|(entity, material)| (entity, material.clone()));
+        if let Some((held_entity, held_material)) = held_info.as_ref() {
+            if !carry_state.can_stash(held_material) {
                 continue;
             }
             // Re-acquire the material ref — entity is still alive, query is
             // still valid since we only mutated CarryState (separate component).
-            let Ok((_, held_material)) = held_query.get(held_entity) else {
+            let Ok((_, held_material)) = held_query.get(*held_entity) else {
                 continue;
             };
-            stash_entity_into_carry(&mut commands, &mut carry_state, held_entity, held_material);
+            stash_entity_into_carry(&mut commands, &mut carry_state, *held_entity, held_material);
             record_weight_observation(
                 held_material,
                 carry_strength.current,
                 &config,
                 &mut tracker,
                 &mut journal_writer,
-                planet_seed,
             );
         }
 
@@ -1632,7 +1619,6 @@ fn process_cycle_carry_intent(
             &config,
             &mut tracker,
             &mut journal_writer,
-            planet_seed,
         );
         emit_carry_weight_changed(&mut weight_writer, &carry_state);
     }
@@ -2206,65 +2192,50 @@ exponent = 1.0
         assert_eq!(text, "Straining under the weight");
     }
 
-    /// Story 10.3 / Phase 2 Task 4: `record_weight_observation` is the
-    /// shared sink for every carry-path weight observation (stash, swap,
-    /// standalone observe, cycle).  It must stamp its caller-supplied
-    /// `planet_seed` directly onto the emitted `JournalKey::Material` so
-    /// the journal's "current planet" filter can later match the entry
-    /// against the player's `WorldProfile::planet_seed`.  Verifying the
-    /// pure function here pins the contract that every system call site
-    /// (which all read `world_profile.as_deref().map(|p| p.planet_seed.0)`
-    /// before calling) relies on.
+    /// Verify that `record_weight_observation` emits a `RecordObservation`
+    /// message with `planet_seed: None`, allowing the journal ingestion
+    /// system to automatically resolve the current planet from the
+    /// `WorldProfile` resource. This eliminates the implicit contract
+    /// fragility where every observation site had to manually extract
+    /// the planet seed.
     #[test]
-    fn record_weight_observation_stamps_supplied_planet_seed_on_key() {
+    fn record_weight_observation_emits_observation_with_none_planet_seed() {
         use bevy::prelude::Messages;
 
-        // Run the function twice — once with a known planet seed and once
-        // with `None` — and assert the recorded key faithfully reflects
-        // each input.  We drive it through a Bevy one-shot system because
+        // Drive the function through a Bevy one-shot system because
         // `record_weight_observation` takes a real `MessageWriter`, which
         // can only be obtained from a `World`.
         fn drive(
-            inputs: bevy::ecs::system::In<(GameMaterial, Option<u64>)>,
+            inputs: bevy::ecs::system::In<GameMaterial>,
             mut writer: MessageWriter<RecordObservation>,
         ) {
-            let (mat, seed) = inputs.0;
+            let mat = inputs.0;
             let mut tracker = ConfidenceTracker::default();
             let cfg = CarryConfig::default();
-            record_weight_observation(&mat, 1.0, &cfg, &mut tracker, &mut writer, seed);
+            record_weight_observation(&mat, 1.0, &cfg, &mut tracker, &mut writer);
         }
 
         let material = material_with_density(0.8);
+        let mut app = App::new();
+        app.add_message::<RecordObservation>();
+        app.world_mut()
+            .run_system_cached_with(drive, material.clone())
+            .expect("one-shot system should run");
 
-        for (label, supplied, expected) in [
-            (
-                "with current planet",
-                Some(0xDEAD_BEEFu64),
-                Some(0xDEAD_BEEFu64),
-            ),
-            ("without WorldProfile", None, None),
-        ] {
-            let mut app = App::new();
-            app.add_message::<RecordObservation>();
-            app.world_mut()
-                .run_system_cached_with(drive, (material.clone(), supplied))
-                .expect("one-shot system should run");
-
-            let mut messages = app
-                .world_mut()
-                .resource_mut::<Messages<RecordObservation>>();
-            let recorded: Vec<RecordObservation> = messages.drain().collect();
-            assert_eq!(recorded.len(), 1, "{label}: expected one observation");
-            match &recorded[0].key {
-                JournalKey::Material { seed, planet_seed } => {
-                    assert_eq!(*seed, material.seed, "{label}: material seed must match");
-                    assert_eq!(
-                        *planet_seed, expected,
-                        "{label}: recorded planet_seed must equal the supplied value (no sentinel substitution)"
-                    );
-                }
-                other => panic!("{label}: expected JournalKey::Material, got {other:?}"),
+        let mut messages = app
+            .world_mut()
+            .resource_mut::<Messages<RecordObservation>>();
+        let recorded: Vec<RecordObservation> = messages.drain().collect();
+        assert_eq!(recorded.len(), 1, "expected one observation");
+        match &recorded[0].key {
+            JournalKey::Material { seed, planet_seed } => {
+                assert_eq!(*seed, material.seed, "material seed must match");
+                assert_eq!(
+                    *planet_seed, None,
+                    "planet_seed should be None for automatic resolution by apply_observations"
+                );
             }
+            other => panic!("expected JournalKey::Material, got {other:?}"),
         }
     }
 }

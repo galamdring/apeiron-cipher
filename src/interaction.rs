@@ -152,7 +152,6 @@ fn update_interaction_target(
     material_query: Query<&GameMaterial, With<MaterialObject>>,
     held_query: Query<(), With<HeldItem>>,
     mut encounter_writer: MessageWriter<RecordObservation>,
-    world_profile: Option<Res<WorldProfile>>,
 ) {
     let previous_target = target.entity;
     target.entity = None;
@@ -190,8 +189,12 @@ fn update_interaction_target(
         encounter_writer.write(RecordObservation {
             key: JournalKey::Material {
                 seed: material.seed,
-                // See JournalKey::Material::planet_seed docs.
-                planet_seed: world_profile.as_deref().map(|p| p.planet_seed.0),
+                // Planet seed is automatically resolved by the journal
+                // ingestion system from the current WorldProfile resource.
+                // This eliminates the need for manual extraction and
+                // prevents silent failures when observation sites forget
+                // the extraction pattern.
+                planet_seed: None,
             },
             name: material.name.clone(),
             observation: Observation {
