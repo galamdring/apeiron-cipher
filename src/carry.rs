@@ -1357,10 +1357,7 @@ pub fn stash_entity_into_carry(
 ///
 /// `planet_seed` is the player's current planet seed (taken from
 /// `WorldProfile::planet_seed.0` at the call site), or `None` when no
-/// `WorldProfile` is in scope.  It is stamped onto the resulting
-/// [`JournalKey::Material`] so the journal's "current planet" filter
-/// (Story 10.3) can match this entry against the player's current
-/// planet without re-deriving provenance from observation history.
+/// `WorldProfile` is in scope. See `JournalKey::Material::planet_seed` docs.
 pub fn record_weight_observation(
     material: &GameMaterial,
     carry_strength: f32,
