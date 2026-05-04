@@ -16,7 +16,7 @@ use strum::IntoEnumIterator;
 use crate::input::InputAction;
 use crate::observation::ConfidenceLevel;
 use crate::player::{Player, cursor_is_captured, spawn_player};
-use crate::world_generation::BiomeType;
+use crate::world_generation::{BiomeType, WorldProfile};
 
 // ── Biome key type safety ──────────────────────────────────────────────
 
@@ -492,6 +492,14 @@ impl Plugin for JournalPlugin {
 /// sends this single message type instead of a per-category variant. The
 /// journal ingestion system routes based on the [`Observation::category`]
 /// field — callers only need to fill in the key, name, and observation.
+///
+/// **Planet seed handling:** For [`JournalKey::Material`] observations,
+/// the `planet_seed` field is automatically resolved by the ingestion
+/// system from the current [`WorldProfile`] resource. Observation producers
+/// should pass `planet_seed: None` and let the system fill it in centrally.
+/// This eliminates the need for every observation site to manually extract
+/// `world_profile.as_deref().map(|p| p.planet_seed.0)` and prevents silent
+/// failures when new observation sites forget this pattern.
 #[derive(Message, Clone)]
 pub struct RecordObservation {
     /// Which journal subject this observation belongs to.
@@ -1283,21 +1291,46 @@ fn update_journal_context_on_planet_change(
 ///
 /// Callers pass `recorded_at: 0` — this system overwrites with real
 /// elapsed time so caller signatures stay lean.
-fn apply_observations(
+///
+/// **Planet seed resolution:** For [`JournalKey::Material`] observations,
+/// this system automatically fills in the `planet_seed` field from the
+/// current [`WorldProfile`] resource if available. Observation producers
+/// no longer need to extract `planet_seed` manually — they can pass
+/// `planet_seed: None` and this system will resolve it centrally.
+/// This eliminates the implicit contract fragility where every observation
+/// site had to remember the exact `world_profile.as_deref().map(|p| p.planet_seed.0)`
+/// extraction pattern.
+pub fn apply_observations(
     mut reader: MessageReader<RecordObservation>,
     mut player_query: Query<&mut Journal, With<Player>>,
     time: Res<Time>,
+    world_profile: Option<Res<WorldProfile>>,
 ) {
     let Ok(mut journal) = player_query.single_mut() else {
         return;
     };
 
     let tick = time.elapsed().as_millis() as u64;
+    let current_planet_seed = world_profile.as_deref().map(|p| p.planet_seed.0);
 
     for event in reader.read() {
         let mut obs = event.observation.clone();
         obs.recorded_at = tick;
-        journal.record(event.key.clone(), &event.name, obs);
+
+        // Automatically resolve planet_seed for Material observations if not already set
+        let key = match &event.key {
+            JournalKey::Material {
+                seed,
+                planet_seed: None,
+            } => JournalKey::Material {
+                seed: *seed,
+                planet_seed: current_planet_seed,
+            },
+            // For Material observations that already have planet_seed set, or non-Material observations, use as-is
+            key => key.clone(),
+        };
+
+        journal.record(key, &event.name, obs);
     }
 }
 
