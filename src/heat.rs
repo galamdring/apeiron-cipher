@@ -312,15 +312,7 @@ fn reveal_thermal_property(
             journal_writer.write(RecordObservation {
                 key: JournalKey::Material {
                     seed: mat.seed,
-                    // Capture the planet on which this thermal observation
-                    // is being recorded so the journal's "current planet"
-                    // filter (Story 10.3) can match this entry against the
-                    // player's current `WorldProfile::planet_seed`.  When
-                    // no `WorldProfile` is in scope (early bring-up or
-                    // ad-hoc integration tests) the field stays `None` —
-                    // see `JournalKey::Material::planet_seed`'s docs for
-                    // why "unknown provenance" is kept explicit instead
-                    // of defaulting to a sentinel.
+                    // See JournalKey::Material::planet_seed docs.
                     planet_seed,
                 },
                 name: mat.name.clone(),
