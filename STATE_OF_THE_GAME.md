@@ -1,4 +1,4 @@
-# State of the Game Address — 5/2/2026
+# State of the Game Address — 5/4/2026
 
 As we come to this momentous PR, we are proud to show you all the ways this world has grown. What began as an empty room has become a place where materials have weight, fire reveals secrets, and discovery rewards the curious. The ground beneath you now belongs to a planet — one that orbits a star, in a system generated from a single seed.
 
