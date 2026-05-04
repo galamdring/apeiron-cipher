@@ -640,14 +640,20 @@ mod tests {
     /// provenance" is kept explicit.
     #[test]
     fn thermal_observation_records_none_planet_seed_without_world_profile() {
-        use bevy::prelude::Messages;
+        use crate::journal::{Journal, apply_observations};
+        use crate::player::Player;
 
         let mut app = App::new();
         app.add_message::<RecordObservation>();
         app.insert_resource(HeatSourceConfig::default());
         app.insert_resource(ConfidenceTracker::default());
+        app.insert_resource(Time::<()>::default());
         // Deliberately do *not* insert WorldProfile.
         app.add_systems(Update, reveal_thermal_property);
+        app.add_systems(Update, apply_observations.after(reveal_thermal_property));
+
+        // Spawn a player with a journal to receive the observations
+        let player_entity = app.world_mut().spawn((Player, Journal::default())).id();
 
         app.world_mut().spawn((
             MaterialObject,
@@ -660,17 +666,22 @@ mod tests {
 
         app.update();
 
-        let mut messages = app
-            .world_mut()
-            .resource_mut::<Messages<RecordObservation>>();
-        let recorded: Vec<RecordObservation> = messages.drain().collect();
-        assert_eq!(recorded.len(), 1);
-        match &recorded[0].key {
+        // Check that the observation was recorded in the journal with planet_seed remaining None
+        let journal = app.world().get::<Journal>(player_entity).unwrap();
+        let entries: Vec<_> = journal.entries.iter().collect();
+        assert_eq!(
+            entries.len(),
+            1,
+            "exactly one journal entry should be created for the thermal observation"
+        );
+
+        let (key, _entry) = &entries[0];
+        match key {
             JournalKey::Material { seed, planet_seed } => {
-                assert_eq!(*seed, 11);
+                assert_eq!(*seed, 11, "material seed should match the test material");
                 assert_eq!(
                     *planet_seed, None,
-                    "without a WorldProfile, planet_seed must be None — never a sentinel"
+                    "without a WorldProfile, planet_seed must remain None after apply_observations"
                 );
             }
             other => panic!("expected JournalKey::Material, got {other:?}"),
