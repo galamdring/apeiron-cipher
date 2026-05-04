@@ -451,10 +451,10 @@ mod tests {
     #[test]
     fn update_stamina_creative_mode_always_max() {
         let carry_movement = CarryMovementState::default();
-        
+
         let result = update_stamina(50.0, 100.0, true, true, &carry_movement, 0.1);
         assert_eq!(result, 100.0);
-        
+
         let result = update_stamina(50.0, 100.0, false, true, &carry_movement, 0.1);
         assert_eq!(result, 100.0);
     }
@@ -466,7 +466,7 @@ mod tests {
             stamina_drain_multiplier: 2.0,
             ..Default::default()
         };
-        
+
         let result = update_stamina(50.0, 100.0, true, false, &carry_movement, 0.1);
         // Should drain 10.0 * 2.0 * 0.1 = 2.0
         assert!((result - 48.0).abs() < f32::EPSILON);
@@ -478,7 +478,7 @@ mod tests {
             stamina_regen_per_second: 5.0,
             ..Default::default()
         };
-        
+
         let result = update_stamina(50.0, 100.0, false, false, &carry_movement, 0.2);
         // Should regen 5.0 * 0.2 = 1.0
         assert!((result - 51.0).abs() < f32::EPSILON);
@@ -491,7 +491,7 @@ mod tests {
             stamina_drain_multiplier: 1.0,
             ..Default::default()
         };
-        
+
         let result = update_stamina(5.0, 100.0, true, false, &carry_movement, 1.0);
         assert_eq!(result, 0.0);
     }
@@ -502,7 +502,7 @@ mod tests {
             stamina_regen_per_second: 100.0,
             ..Default::default()
         };
-        
+
         let result = update_stamina(95.0, 100.0, false, false, &carry_movement, 1.0);
         assert_eq!(result, 100.0);
     }
@@ -511,16 +511,16 @@ mod tests {
     fn calculate_sprint_state_requires_all_conditions() {
         // All conditions met
         assert!(calculate_sprint_state(true, true, 10.0, false));
-        
+
         // Missing want to sprint
         assert!(!calculate_sprint_state(false, true, 10.0, false));
-        
+
         // Missing movement
         assert!(!calculate_sprint_state(true, false, 10.0, false));
-        
+
         // No stamina (but not creative)
         assert!(!calculate_sprint_state(true, true, 0.0, false));
-        
+
         // No stamina but creative mode
         assert!(calculate_sprint_state(true, true, 0.0, true));
     }
@@ -536,7 +536,7 @@ mod tests {
         let forward = Vec3::new(0.0, 0.0, -1.0); // Negative Z is forward in Bevy
         let right = Vec3::new(1.0, 0.0, 0.0);
         let input = Vec2::new(0.0, 1.0); // Forward input
-        
+
         let result = calculate_movement_direction(input, forward, right);
         assert!((result - Vec3::new(0.0, 0.0, -1.0)).length() < f32::EPSILON);
     }
@@ -546,7 +546,7 @@ mod tests {
         let forward = Vec3::new(0.0, 0.0, -1.0);
         let right = Vec3::new(1.0, 0.0, 0.0);
         let input = Vec2::new(1.0, 0.0); // Right input
-        
+
         let result = calculate_movement_direction(input, forward, right);
         assert!((result - Vec3::new(1.0, 0.0, 0.0)).length() < f32::EPSILON);
     }
@@ -556,7 +556,7 @@ mod tests {
         let forward = Vec3::new(0.0, 0.0, -1.0);
         let right = Vec3::new(1.0, 0.0, 0.0);
         let input = Vec2::new(1.0, 1.0); // Diagonal input
-        
+
         let result = calculate_movement_direction(input, forward, right);
         // Should be normalized diagonal
         assert!((result.length() - 1.0).abs() < f32::EPSILON);
@@ -568,7 +568,7 @@ mod tests {
         let forward = Vec3::new(0.0, 0.5, -1.0); // Forward with Y component
         let right = Vec3::new(1.0, 0.3, 0.0); // Right with Y component
         let input = Vec2::new(1.0, 1.0);
-        
+
         let result = calculate_movement_direction(input, forward, right);
         assert!((result.y).abs() < f32::EPSILON); // Y should be zero
     }
@@ -578,7 +578,7 @@ mod tests {
         let forward = Vec3::new(0.0, 0.0, -1.0);
         let right = Vec3::new(1.0, 0.0, 0.0);
         let input = Vec2::ZERO;
-        
+
         let result = calculate_movement_direction(input, forward, right);
         assert_eq!(result, Vec3::ZERO);
     }

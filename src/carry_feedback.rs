@@ -364,7 +364,9 @@ mod tests {
         let config = CarryCueConfig::default();
         let encumbrance = 0.5;
 
-        assert!(bob_amplitude(&config, encumbrance, 2.0) > bob_amplitude(&config, encumbrance, 1.0));
+        assert!(
+            bob_amplitude(&config, encumbrance, 2.0) > bob_amplitude(&config, encumbrance, 1.0)
+        );
     }
 
     #[test]
@@ -423,10 +425,10 @@ mod tests {
 
         // At the threshold, should return 0.0 (since encumbrance_ratio <= start)
         assert_eq!(breathing_mix(0.8, &config), 0.0);
-        
+
         // Below threshold, should return 0.0
         assert_eq!(breathing_mix(0.7, &config), 0.0);
-        
+
         // Above threshold should return 1.0 (clamped)
         assert_eq!(breathing_mix(0.9, &config), 1.0);
     }
@@ -452,7 +454,7 @@ mod tests {
     fn lerp_clamps_t_parameter() {
         // t < 0 should return start
         assert!((lerp(2.0, 6.0, -0.5) - 2.0).abs() < f32::EPSILON);
-        
+
         // t > 1 should return end
         assert!((lerp(2.0, 6.0, 1.5) - 6.0).abs() < f32::EPSILON);
     }
@@ -521,7 +523,7 @@ mod tests {
     fn decay_toward_zero_handles_negative_components() {
         let start = Vec3::new(-1.0, -0.5, 0.0);
         let result = decay_toward_zero(start, 5.0, 0.1);
-        
+
         // Should decay toward zero from negative values
         assert!(result.x > -1.0 && result.x < 0.0);
         assert!(result.y > -0.5 && result.y < 0.0);
@@ -531,55 +533,79 @@ mod tests {
     fn is_player_moving_requires_cursor_captured() {
         let mut action_state = ActionState::<InputAction>::default();
         action_state.set_axis_pair(&InputAction::Move, Vec2::new(1.0, 0.0));
-        
+
         let carry_movement = CarryMovementState {
             creative_mode: false,
             ..Default::default()
         };
 
         // Not captured
-        assert!(!is_player_moving(CursorGrabMode::None, &action_state, &carry_movement));
-        
+        assert!(!is_player_moving(
+            CursorGrabMode::None,
+            &action_state,
+            &carry_movement
+        ));
+
         // Captured
-        assert!(is_player_moving(CursorGrabMode::Locked, &action_state, &carry_movement));
-        assert!(is_player_moving(CursorGrabMode::Confined, &action_state, &carry_movement));
+        assert!(is_player_moving(
+            CursorGrabMode::Locked,
+            &action_state,
+            &carry_movement
+        ));
+        assert!(is_player_moving(
+            CursorGrabMode::Confined,
+            &action_state,
+            &carry_movement
+        ));
     }
 
     #[test]
     fn is_player_moving_requires_movement_input() {
         let action_state = ActionState::<InputAction>::default(); // No input
-        
+
         let carry_movement = CarryMovementState {
             creative_mode: false,
             ..Default::default()
         };
 
-        assert!(!is_player_moving(CursorGrabMode::Locked, &action_state, &carry_movement));
+        assert!(!is_player_moving(
+            CursorGrabMode::Locked,
+            &action_state,
+            &carry_movement
+        ));
     }
 
     #[test]
     fn is_player_moving_blocked_by_creative_mode() {
         let mut action_state = ActionState::<InputAction>::default();
         action_state.set_axis_pair(&InputAction::Move, Vec2::new(1.0, 0.0));
-        
+
         let carry_movement = CarryMovementState {
             creative_mode: true,
             ..Default::default()
         };
 
-        assert!(!is_player_moving(CursorGrabMode::Locked, &action_state, &carry_movement));
+        assert!(!is_player_moving(
+            CursorGrabMode::Locked,
+            &action_state,
+            &carry_movement
+        ));
     }
 
     #[test]
     fn is_player_moving_all_conditions_met() {
         let mut action_state = ActionState::<InputAction>::default();
         action_state.set_axis_pair(&InputAction::Move, Vec2::new(0.5, 0.8));
-        
+
         let carry_movement = CarryMovementState {
             creative_mode: false,
             ..Default::default()
         };
 
-        assert!(is_player_moving(CursorGrabMode::Locked, &action_state, &carry_movement));
+        assert!(is_player_moving(
+            CursorGrabMode::Locked,
+            &action_state,
+            &carry_movement
+        ));
     }
 }

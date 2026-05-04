@@ -248,7 +248,7 @@ fn journal_key_material_ord_seed_then_planet_seed() {
                 planet_seed: Some(0)
             },
         ],
-        );
+    );
 }
 
 // ── Tests for pure text formatting functions ──────────────────────────────
@@ -285,11 +285,11 @@ fn build_filter_bar_text_current_biome_only() {
     let filter = JournalFilter {
         category: None,
         context: Some(JournalContext::CurrentBiome {
-            biome_key: "desert".to_string(),
+            biome_key: BiomeKey::from(BiomeType::ScorchedFlats),
         }),
     };
     let result = build_filter_bar_text(&filter);
-    assert_eq!(result, "Filter: Current Biome");
+    assert_eq!(result, "Filter: Current Biome (scorched_flats)");
 }
 
 #[test]
@@ -307,11 +307,11 @@ fn build_filter_bar_text_category_and_biome() {
     let filter = JournalFilter {
         category: Some(ObservationCategory::Weight),
         context: Some(JournalContext::CurrentBiome {
-            biome_key: "forest".to_string(),
+            biome_key: BiomeKey::from(BiomeType::FrostShelf),
         }),
     };
     let result = build_filter_bar_text(&filter);
-    assert_eq!(result, "Filter: Weight | Current Biome");
+    assert_eq!(result, "Filter: Weight | Current Biome (frost_shelf)");
 }
 
 #[test]
@@ -324,7 +324,10 @@ fn build_entry_list_lines_empty() {
 
 #[test]
 fn build_entry_list_lines_single_entry() {
-    let key = JournalKey::Material { seed: 1, planet_seed: None };
+    let key = JournalKey::Material {
+        seed: 1,
+        planet_seed: None,
+    };
     let mut entry = JournalEntry::new(key, "Test Material".to_string(), 0);
     entry.add_observation(Observation {
         category: ObservationCategory::SurfaceAppearance,
@@ -332,11 +335,11 @@ fn build_entry_list_lines_single_entry() {
         confidence: ConfidenceLevel::Tentative,
         recorded_at: 0,
     });
-    
+
     let entries = vec![&entry];
     let state = JournalUiState::default();
     let result = build_entry_list_lines(&entries, &state);
-    
+
     assert_eq!(result.len(), 1);
     assert_eq!(result[0].text, "> Test Material (1 obs)");
     assert!(result[0].selected);
@@ -344,7 +347,10 @@ fn build_entry_list_lines_single_entry() {
 
 #[test]
 fn build_entry_list_lines_multiple_entries() {
-    let key1 = JournalKey::Material { seed: 1, planet_seed: None };
+    let key1 = JournalKey::Material {
+        seed: 1,
+        planet_seed: None,
+    };
     let mut entry1 = JournalEntry::new(key1, "Material A".to_string(), 0);
     entry1.add_observation(Observation {
         category: ObservationCategory::SurfaceAppearance,
@@ -352,8 +358,11 @@ fn build_entry_list_lines_multiple_entries() {
         confidence: ConfidenceLevel::Tentative,
         recorded_at: 0,
     });
-    
-    let key2 = JournalKey::Material { seed: 2, planet_seed: None };
+
+    let key2 = JournalKey::Material {
+        seed: 2,
+        planet_seed: None,
+    };
     let mut entry2 = JournalEntry::new(key2, "Material B".to_string(), 0);
     entry2.add_observation(Observation {
         category: ObservationCategory::Weight,
@@ -367,13 +376,13 @@ fn build_entry_list_lines_multiple_entries() {
         confidence: ConfidenceLevel::Tentative,
         recorded_at: 0,
     });
-    
+
     let entries = vec![&entry1, &entry2];
     let mut state = JournalUiState::default();
     state.selected_index = 1;
-    
+
     let result = build_entry_list_lines(&entries, &state);
-    
+
     assert_eq!(result.len(), 2);
     assert_eq!(result[0].text, "  Material A (1 obs)");
     assert!(!result[0].selected);
@@ -385,7 +394,10 @@ fn build_entry_list_lines_multiple_entries() {
 fn build_entry_list_lines_pagination() {
     let mut entries = Vec::new();
     for i in 0..10 {
-        let key = JournalKey::Material { seed: i, planet_seed: None };
+        let key = JournalKey::Material {
+            seed: i,
+            planet_seed: None,
+        };
         let mut entry = JournalEntry::new(key, format!("Material {}", i), 0);
         entry.add_observation(Observation {
             category: ObservationCategory::SurfaceAppearance,
@@ -395,15 +407,15 @@ fn build_entry_list_lines_pagination() {
         });
         entries.push(entry);
     }
-    
+
     let entry_refs: Vec<&JournalEntry> = entries.iter().collect();
     let mut state = JournalUiState::default();
     state.entries_per_page = 3;
     state.scroll_offset = 2;
     state.selected_index = 3;
-    
+
     let result = build_entry_list_lines(&entry_refs, &state);
-    
+
     assert_eq!(result.len(), 3);
     assert_eq!(result[0].text, "  Material 2 (1 obs)");
     assert!(!result[0].selected);
@@ -418,7 +430,7 @@ fn build_detail_spans_empty_no_entries() {
     let entries: Vec<&JournalEntry> = vec![];
     let state = JournalUiState::default();
     let result = build_detail_spans(&entries, &state, false);
-    
+
     assert_eq!(result.len(), 1);
     assert_eq!(result[0].text, "No observations yet.");
     assert_eq!(result[0].kind, DetailSpanKind::Placeholder);
@@ -429,7 +441,7 @@ fn build_detail_spans_empty_with_filter() {
     let entries: Vec<&JournalEntry> = vec![];
     let state = JournalUiState::default();
     let result = build_detail_spans(&entries, &state, true);
-    
+
     assert_eq!(result.len(), 1);
     assert_eq!(result[0].text, "No matching entries");
     assert_eq!(result[0].kind, DetailSpanKind::Placeholder);
@@ -437,7 +449,10 @@ fn build_detail_spans_empty_with_filter() {
 
 #[test]
 fn build_detail_spans_single_entry() {
-    let key = JournalKey::Material { seed: 1, planet_seed: None };
+    let key = JournalKey::Material {
+        seed: 1,
+        planet_seed: None,
+    };
     let mut entry = JournalEntry::new(key, "Test Material".to_string(), 0);
     entry.add_observation(Observation {
         category: ObservationCategory::SurfaceAppearance,
@@ -445,11 +460,11 @@ fn build_detail_spans_single_entry() {
         confidence: ConfidenceLevel::Tentative,
         recorded_at: 0,
     });
-    
+
     let entries = vec![&entry];
     let state = JournalUiState::default();
     let result = build_detail_spans(&entries, &state, true);
-    
+
     // Should have: header, category header, description, confidence
     assert!(result.len() >= 4);
     assert_eq!(result[0].text, "Test Material");
@@ -464,7 +479,10 @@ fn build_detail_spans_single_entry() {
 
 #[test]
 fn build_detail_spans_multiple_categories() {
-    let key = JournalKey::Material { seed: 1, planet_seed: None };
+    let key = JournalKey::Material {
+        seed: 1,
+        planet_seed: None,
+    };
     let mut entry = JournalEntry::new(key, "Complex Material".to_string(), 0);
     entry.add_observation(Observation {
         category: ObservationCategory::SurfaceAppearance,
@@ -478,21 +496,27 @@ fn build_detail_spans_multiple_categories() {
         confidence: ConfidenceLevel::Tentative,
         recorded_at: 0,
     });
-    
+
     let entries = vec![&entry];
     let state = JournalUiState::default();
     let result = build_detail_spans(&entries, &state, true);
-    
+
     // Should have header, then Surface section, then Weight section
     let surface_header_pos = result.iter().position(|s| s.text == "\n\nSurface").unwrap();
     let weight_header_pos = result.iter().position(|s| s.text == "\n\nWeight").unwrap();
-    
-    assert!(surface_header_pos < weight_header_pos, "Surface should come before Weight");
+
+    assert!(
+        surface_header_pos < weight_header_pos,
+        "Surface should come before Weight"
+    );
 }
 
 #[test]
 fn build_detail_spans_multiline_description() {
-    let key = JournalKey::Material { seed: 1, planet_seed: None };
+    let key = JournalKey::Material {
+        seed: 1,
+        planet_seed: None,
+    };
     let mut entry = JournalEntry::new(key, "Test Material".to_string(), 0);
     entry.add_observation(Observation {
         category: ObservationCategory::SurfaceAppearance,
@@ -500,19 +524,25 @@ fn build_detail_spans_multiline_description() {
         confidence: ConfidenceLevel::Tentative,
         recorded_at: 0,
     });
-    
+
     let entries = vec![&entry];
     let state = JournalUiState::default();
     let result = build_detail_spans(&entries, &state, true);
-    
+
     // Find the body span
-    let body_span = result.iter().find(|s| s.kind == DetailSpanKind::Body).unwrap();
+    let body_span = result
+        .iter()
+        .find(|s| s.kind == DetailSpanKind::Body)
+        .unwrap();
     assert_eq!(body_span.text, "\n  Line 1\n  Line 2\n  Line 3");
 }
 
 #[test]
 fn build_detail_spans_selected_index_clamping() {
-    let key1 = JournalKey::Material { seed: 1, planet_seed: None };
+    let key1 = JournalKey::Material {
+        seed: 1,
+        planet_seed: None,
+    };
     let mut entry1 = JournalEntry::new(key1, "Material 1".to_string(), 0);
     entry1.add_observation(Observation {
         category: ObservationCategory::SurfaceAppearance,
@@ -520,8 +550,11 @@ fn build_detail_spans_selected_index_clamping() {
         confidence: ConfidenceLevel::Tentative,
         recorded_at: 0,
     });
-    
-    let key2 = JournalKey::Material { seed: 2, planet_seed: None };
+
+    let key2 = JournalKey::Material {
+        seed: 2,
+        planet_seed: None,
+    };
     let mut entry2 = JournalEntry::new(key2, "Material 2".to_string(), 0);
     entry2.add_observation(Observation {
         category: ObservationCategory::SurfaceAppearance,
@@ -529,13 +562,13 @@ fn build_detail_spans_selected_index_clamping() {
         confidence: ConfidenceLevel::Tentative,
         recorded_at: 0,
     });
-    
+
     let entries = vec![&entry1, &entry2];
     let mut state = JournalUiState::default();
     state.selected_index = 10; // Out of bounds
-    
+
     let result = build_detail_spans(&entries, &state, true);
-    
+
     // Should show the last entry (Material 2)
     assert_eq!(result[0].text, "Material 2");
     assert_eq!(result[0].kind, DetailSpanKind::Header);
@@ -562,7 +595,7 @@ fn build_help_text_pagination() {
     let mut state = JournalUiState::default();
     state.entries_per_page = 5;
     state.scroll_offset = 10;
-    
+
     let result = build_help_text(25, &state);
     assert!(result.contains("[11-15 of 25]"));
 }
@@ -574,7 +607,7 @@ fn build_help_text_with_category_filter() {
         category: Some(ObservationCategory::SurfaceAppearance),
         context: None,
     });
-    
+
     let result = build_help_text(5, &state);
     assert!(result.contains("[Filter: Category]"));
 }
@@ -586,7 +619,7 @@ fn build_help_text_with_planet_filter() {
         category: None,
         context: Some(JournalContext::CurrentPlanet { planet_seed: 123 }),
     });
-    
+
     let result = build_help_text(5, &state);
     assert!(result.contains("[Filter: Current Planet]"));
 }
@@ -597,12 +630,12 @@ fn build_help_text_with_combined_filter() {
     state.set_filter(JournalFilter {
         category: Some(ObservationCategory::Weight),
         context: Some(JournalContext::CurrentBiome {
-            biome_key: "forest".to_string(),
+            biome_key: BiomeKey::from(BiomeType::FrostShelf),
         }),
     });
-    
+
     let result = build_help_text(5, &state);
-    assert!(result.contains("[Filter: Category | Current Biome]"));
+    assert!(result.contains("[Filter: Category | Current Biome (frost_shelf)]"));
 }
 
 #[test]
