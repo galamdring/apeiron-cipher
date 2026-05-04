@@ -1590,22 +1590,22 @@ fn process_cycle_carry_intent(
         };
 
         // Extract held item data before mutating carry state.
-        // Only density is needed for the capacity check; the full &GameMaterial
-        // reference is re-acquired after stashing for the weight observation.
+        // Only density is needed for the capacity check; extract just that value
+        // to avoid cloning the entire GameMaterial.
         let held_info = held_query
             .iter()
             .next()
-            .map(|(entity, material)| (entity, material.clone()));
-        if let Some((held_entity, held_material)) = held_info.as_ref() {
-            if !carry_state.can_stash(held_material) {
+            .map(|(entity, material)| (entity, material.density.value));
+        if let Some((held_entity, held_density)) = held_info {
+            if !carry_state.can_accept(held_density) {
                 continue;
             }
             // Re-acquire the material ref — entity is still alive, query is
             // still valid since we only mutated CarryState (separate component).
-            let Ok((_, held_material)) = held_query.get(*held_entity) else {
+            let Ok((_, held_material)) = held_query.get(held_entity) else {
                 continue;
             };
-            stash_entity_into_carry(&mut commands, &mut carry_state, *held_entity, held_material);
+            stash_entity_into_carry(&mut commands, &mut carry_state, held_entity, held_material);
             record_weight_observation(
                 held_material,
                 carry_strength.current,
