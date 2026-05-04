@@ -13,8 +13,9 @@ use leafwing_input_manager::prelude::*;
 use serde::{Deserialize, Serialize};
 use strum::IntoEnumIterator;
 
+use crate::carry::WeightDescriptionBand;
 use crate::input::InputAction;
-use crate::observation::ConfidenceLevel;
+use crate::observation::{ConfidenceLevel, describe_weight_observation};
 use crate::player::{Player, cursor_is_captured, spawn_player};
 use crate::world_generation::{BiomeType, WorldProfile};
 
@@ -448,6 +449,7 @@ pub enum JournalSet {
 impl Plugin for JournalPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<RecordObservation>()
+            .add_message::<RecordWeightObservation>()
             .add_message::<ToggleJournalIntent>()
             .init_resource::<JournalUiState>()
             .init_resource::<JournalSelectionTracker>()
@@ -477,6 +479,7 @@ impl Plugin for JournalPlugin {
                         .in_set(JournalSet::Navigate)
                         .after(journal_navigation),
                     apply_observations.in_set(JournalSet::Navigate),
+                    apply_weight_records.in_set(JournalSet::Navigate),
                     compute_journal_panels.in_set(JournalSet::Compute),
                     sync_journal_ui.in_set(JournalSet::Sync),
                 ),
@@ -511,6 +514,28 @@ pub struct RecordObservation {
     /// The observation payload including category, confidence, description,
     /// and game-time tick.
     pub observation: Observation,
+}
+
+/// Message for recording weight observations with raw data instead of pre-rendered descriptions.
+///
+/// This message carries the raw density, carry strength, and confidence data, allowing the
+/// journal system to call the descriptor function rather than having the carry system
+/// pre-render the description. This aligns the weight observation pattern with the thermal
+/// observation pattern for consistency.
+#[derive(Message, Clone)]
+pub struct RecordWeightObservation {
+    /// Which journal subject this weight observation belongs to.
+    pub key: JournalKey,
+    /// Player-facing display name for the subject.
+    pub name: String,
+    /// Raw material density value.
+    pub density: f32,
+    /// Player's current carry strength.
+    pub carry_strength: f32,
+    /// Confidence level based on observation count.
+    pub confidence: ConfidenceLevel,
+    /// Weight description bands from carry configuration.
+    pub weight_bands: Vec<WeightDescriptionBand>,
 }
 
 // ── Player-owned journal data ───────────────────────────────────────────
@@ -1331,6 +1356,42 @@ pub fn apply_observations(
         };
 
         journal.record(key, &event.name, obs);
+    }
+}
+
+/// Processes weight observation messages and converts them to journal entries.
+///
+/// This system reads [`RecordWeightObservation`] messages containing raw weight data
+/// and calls the descriptor function to generate the final observation text. This
+/// aligns the weight observation pattern with the thermal observation pattern where
+/// the journal system handles description generation rather than the originating system.
+fn apply_weight_records(
+    mut reader: MessageReader<RecordWeightObservation>,
+    mut player_query: Query<&mut Journal, With<Player>>,
+    time: Res<Time>,
+) {
+    let Ok(mut journal) = player_query.single_mut() else {
+        return;
+    };
+
+    let tick = time.elapsed().as_millis() as u64;
+
+    for event in reader.read() {
+        let description = describe_weight_observation(
+            event.density,
+            event.carry_strength,
+            event.confidence,
+            &event.weight_bands,
+        );
+
+        let observation = Observation {
+            category: ObservationCategory::Weight,
+            confidence: event.confidence,
+            description,
+            recorded_at: tick,
+        };
+
+        journal.record(event.key.clone(), &event.name, observation);
     }
 }
 
