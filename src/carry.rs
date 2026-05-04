@@ -233,7 +233,7 @@ pub struct CarryState {
     /// Whether stashing is rejected when weight exceeds capacity.
     pub hard_limit_enabled: bool,
     /// Ordered list of items currently stashed in carry.
-    pub carried_items: Vec<CarriedItem>,
+    carried_items: Vec<CarriedItem>,
 }
 
 impl CarryState {
@@ -247,12 +247,63 @@ impl CarryState {
         }
     }
 
+    /// Push an item into the carry container using the configured order.
+    /// 
+    /// For both FIFO and LIFO, items are added to the end of the internal storage.
+    /// The difference is in retrieval order via `pop()` and `cycle()`.
+    pub fn push(&mut self, item: CarriedItem) {
+        self.carried_items.push(item);
+    }
+
+    /// Pop an item from the carry container using the configured order.
+    /// 
+    /// FIFO: removes the oldest item (first in the list).
+    /// LIFO: removes the newest item (last in the list).
+    pub fn pop(&mut self, cycle_order: CarryCycleOrder) -> Option<CarriedItem> {
+        match cycle_order {
+            CarryCycleOrder::Fifo => {
+                if self.carried_items.is_empty() {
+                    None
+                } else {
+                    Some(self.carried_items.remove(0))
+                }
+            }
+            CarryCycleOrder::Lifo => self.carried_items.pop(),
+        }
+    }
+
+    /// Get the next item that would be returned by `pop()` without removing it.
+    /// 
+    /// This is used for cycle operations where we need to check the item before
+    /// deciding whether to actually remove it.
+    pub fn cycle(&self, cycle_order: CarryCycleOrder) -> Option<&CarriedItem> {
+        match cycle_order {
+            CarryCycleOrder::Fifo => self.carried_items.first(),
+            CarryCycleOrder::Lifo => self.carried_items.last(),
+        }
+    }
+
+    /// Returns true if the carry container is empty.
+    pub fn is_empty(&self) -> bool {
+        self.carried_items.is_empty()
+    }
+
+    /// Returns the number of items in the carry container.
+    pub fn len(&self) -> usize {
+        self.carried_items.len()
+    }
+
+    /// Iterate over all carried items.
+    pub fn iter(&self) -> impl Iterator<Item = &CarriedItem> {
+        self.carried_items.iter()
+    }
+
     /// Adds a material into carry using that material's density as its weight cost.
     ///
     /// Story 4.1 does not wire the stash interaction yet, but this method is the
     /// server-side accounting rule that later intent-processing systems will call.
     pub fn add_material(&mut self, entity: Entity, material: &GameMaterial) {
-        self.carried_items.push(CarriedItem::new(entity));
+        self.push(CarriedItem::new(entity));
         self.current_weight += material.density.value;
     }
 
@@ -298,10 +349,7 @@ impl CarryState {
     /// systems can decide the order of multi-step operations like "stash current
     /// hand item, then retrieve an older carried item."
     pub fn next_carried_entity(&self, cycle_order: CarryCycleOrder) -> Option<Entity> {
-        match cycle_order {
-            CarryCycleOrder::Fifo => self.carried_items.first().map(|item| item.entity),
-            CarryCycleOrder::Lifo => self.carried_items.last().map(|item| item.entity),
-        }
+        self.cycle(cycle_order).map(|item| item.entity)
     }
 
     /// Returns true when the carry container can accept an item of the given weight.
@@ -1775,7 +1823,8 @@ exponent = 1.0
         state.add_material(entity, &material);
 
         assert_eq!(state.current_weight, 0.8);
-        assert_eq!(state.carried_items, vec![CarriedItem::new(entity)]);
+        assert_eq!(state.len(), 1);
+        assert_eq!(state.iter().next().unwrap(), &CarriedItem::new(entity));
     }
 
     #[test]
@@ -1792,7 +1841,8 @@ exponent = 1.0
 
         assert_eq!(removed, Some(CarriedItem::new(second)));
         assert!((state.current_weight - 0.2).abs() < f32::EPSILON);
-        assert_eq!(state.carried_items, vec![CarriedItem::new(first)]);
+        assert_eq!(state.len(), 1);
+        assert_eq!(state.iter().next().unwrap(), &CarriedItem::new(first));
     }
 
     #[test]
@@ -1818,7 +1868,8 @@ exponent = 1.0
         let first = Entity::from_bits(1);
         let second = Entity::from_bits(2);
         let mut state = CarryState::new(5.0, true);
-        state.carried_items = vec![CarriedItem::new(first), CarriedItem::new(second)];
+        state.push(CarriedItem::new(first));
+        state.push(CarriedItem::new(second));
 
         assert_eq!(
             state.next_carried_entity(CarryCycleOrder::Fifo),
@@ -1831,7 +1882,8 @@ exponent = 1.0
         let first = Entity::from_bits(1);
         let second = Entity::from_bits(2);
         let mut state = CarryState::new(5.0, true);
-        state.carried_items = vec![CarriedItem::new(first), CarriedItem::new(second)];
+        state.push(CarriedItem::new(first));
+        state.push(CarriedItem::new(second));
 
         assert_eq!(
             state.next_carried_entity(CarryCycleOrder::Lifo),
@@ -1869,16 +1921,90 @@ exponent = 1.0
         let first = Entity::from_bits(1);
         let second = Entity::from_bits(2);
         let mut state = CarryState::new(5.0, true);
-        state.carried_items = vec![CarriedItem::new(first), CarriedItem::new(second)];
+        state.push(CarriedItem::new(first));
+        state.push(CarriedItem::new(second));
 
         assert!(state.evict_stale_entity(first));
-        assert_eq!(state.carried_items, vec![CarriedItem::new(second)]);
+        assert_eq!(state.len(), 1);
+        assert_eq!(state.iter().next().unwrap(), &CarriedItem::new(second));
     }
 
     #[test]
     fn evict_stale_entity_returns_false_for_unknown() {
         let mut state = CarryState::new(5.0, true);
         assert!(!state.evict_stale_entity(Entity::from_bits(999)));
+    }
+
+    #[test]
+    fn push_and_pop_fifo_order() {
+        let first = Entity::from_bits(1);
+        let second = Entity::from_bits(2);
+        let mut state = CarryState::new(5.0, true);
+        
+        state.push(CarriedItem::new(first));
+        state.push(CarriedItem::new(second));
+        
+        // FIFO: first in, first out
+        assert_eq!(state.pop(CarryCycleOrder::Fifo), Some(CarriedItem::new(first)));
+        assert_eq!(state.pop(CarryCycleOrder::Fifo), Some(CarriedItem::new(second)));
+        assert_eq!(state.pop(CarryCycleOrder::Fifo), None);
+    }
+
+    #[test]
+    fn push_and_pop_lifo_order() {
+        let first = Entity::from_bits(1);
+        let second = Entity::from_bits(2);
+        let mut state = CarryState::new(5.0, true);
+        
+        state.push(CarriedItem::new(first));
+        state.push(CarriedItem::new(second));
+        
+        // LIFO: last in, first out
+        assert_eq!(state.pop(CarryCycleOrder::Lifo), Some(CarriedItem::new(second)));
+        assert_eq!(state.pop(CarryCycleOrder::Lifo), Some(CarriedItem::new(first)));
+        assert_eq!(state.pop(CarryCycleOrder::Lifo), None);
+    }
+
+    #[test]
+    fn cycle_returns_next_without_removing() {
+        let first = Entity::from_bits(1);
+        let second = Entity::from_bits(2);
+        let mut state = CarryState::new(5.0, true);
+        
+        state.push(CarriedItem::new(first));
+        state.push(CarriedItem::new(second));
+        
+        // FIFO: cycle returns first, but doesn't remove it
+        assert_eq!(state.cycle(CarryCycleOrder::Fifo), Some(&CarriedItem::new(first)));
+        assert_eq!(state.len(), 2);
+        
+        // LIFO: cycle returns last, but doesn't remove it
+        assert_eq!(state.cycle(CarryCycleOrder::Lifo), Some(&CarriedItem::new(second)));
+        assert_eq!(state.len(), 2);
+    }
+
+    #[test]
+    fn is_empty_and_len_work_correctly() {
+        let mut state = CarryState::new(5.0, true);
+        
+        assert!(state.is_empty());
+        assert_eq!(state.len(), 0);
+        
+        state.push(CarriedItem::new(Entity::from_bits(1)));
+        assert!(!state.is_empty());
+        assert_eq!(state.len(), 1);
+        
+        state.push(CarriedItem::new(Entity::from_bits(2)));
+        assert!(!state.is_empty());
+        assert_eq!(state.len(), 2);
+        
+        state.pop(CarryCycleOrder::Fifo);
+        assert!(!state.is_empty());
+        assert_eq!(state.len(), 1);
+        
+        state.pop(CarryCycleOrder::Fifo);
+        assert!(state.is_empty());
+        assert_eq!(state.len(), 0);
     }
 
     #[test]
