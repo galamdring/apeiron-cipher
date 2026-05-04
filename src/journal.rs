@@ -16,6 +16,60 @@ use strum::IntoEnumIterator;
 use crate::input::InputAction;
 use crate::observation::ConfidenceLevel;
 use crate::player::{Player, cursor_is_captured, spawn_player};
+use crate::world_generation::BiomeType;
+
+// ── Biome key type safety ──────────────────────────────────────────────
+
+/// Type-safe wrapper for biome identifiers used in journal filtering.
+///
+/// Prevents silent filter failures from string typos by ensuring biome keys
+/// are always constructed from valid [`BiomeType`] enum values.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct BiomeKey(BiomeType);
+
+impl BiomeKey {
+    /// Create a new biome key from a biome type.
+    ///
+    /// This is the only way to construct a `BiomeKey`, ensuring all instances
+    /// correspond to valid biome registry entries.
+    pub fn new(biome_type: BiomeType) -> Self {
+        Self(biome_type)
+    }
+
+    /// Get the underlying biome type.
+    pub fn biome_type(&self) -> BiomeType {
+        self.0
+    }
+
+    /// Get the string representation used for serialization and display.
+    ///
+    /// This returns the snake_case string that matches the biome registry's
+    /// text key format (e.g., "scorched_flats", "mineral_steppe", "frost_shelf").
+    ///
+    /// Note: These strings must match BiomeType's serde serialization format
+    /// (snake_case). The match is exhaustive, so adding a new BiomeType variant
+    /// will cause a compile error here, prompting the developer to add the
+    /// corresponding snake_case string.
+    pub fn as_str(&self) -> &'static str {
+        match self.0 {
+            BiomeType::ScorchedFlats => "scorched_flats",
+            BiomeType::MineralSteppe => "mineral_steppe",
+            BiomeType::FrostShelf => "frost_shelf",
+        }
+    }
+}
+
+impl From<BiomeType> for BiomeKey {
+    fn from(biome_type: BiomeType) -> Self {
+        Self::new(biome_type)
+    }
+}
+
+impl std::fmt::Display for BiomeKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
 
 // ── Observation data model ──────────────────────────────────────────────
 
@@ -240,13 +294,13 @@ pub enum JournalContext {
         planet_seed: u64,
     },
     /// Restrict to entries that were observed within the named biome.
-    /// The key matches the biome registry's text key (e.g. `"tundra"`,
-    /// `"basalt_flats"`); a `String` is used here because the biome
-    /// taxonomy is data-driven and not represented as a typed enum.
+    /// The key is a type-safe wrapper around [`BiomeType`] that ensures
+    /// consistency with the biome registry and prevents silent filter
+    /// failures from typos or mismatched strings.
     CurrentBiome {
-        /// Biome registry key used as the equality value when matching
-        /// entries against this context.
-        biome_key: String,
+        /// Type-safe biome identifier that corresponds to a valid biome
+        /// registry entry. Constructed only from [`BiomeType`] enum values.
+        biome_key: BiomeKey,
     },
     // Future variants (CurrentSystem, TimePeriod, …) will be added when
     // the underlying world metadata is captured on JournalKey.  They are
@@ -345,6 +399,10 @@ pub fn matches_filter(entry: &JournalEntry, filter: &JournalFilter) -> bool {
         // UI affordance usable without producing a misleading "no
         // matching entries" panel for a filter that hasn't been
         // wired through to the data model yet.
+        //
+        // When biome capture is added, this arm will compare the entry's
+        // recorded biome key against `biome_key.biome_type()` — no other
+        // call site needs to change.
         JournalContext::CurrentBiome { .. } => true,
     });
 
@@ -1560,12 +1618,18 @@ fn build_filter_bar_text(filter: &JournalFilter) -> String {
         (None, None) => String::new(), // All filter - no text needed
         (Some(category), None) => format!("Filter: {}", category.display_label()),
         (None, Some(JournalContext::CurrentPlanet { .. })) => "Filter: Current Planet".to_string(),
-        (None, Some(JournalContext::CurrentBiome { .. })) => "Filter: Current Biome".to_string(),
+        (None, Some(JournalContext::CurrentBiome { biome_key })) => {
+            format!("Filter: Current Biome ({})", biome_key)
+        }
         (Some(category), Some(JournalContext::CurrentPlanet { .. })) => {
             format!("Filter: {} | Current Planet", category.display_label())
         }
-        (Some(category), Some(JournalContext::CurrentBiome { .. })) => {
-            format!("Filter: {} | Current Biome", category.display_label())
+        (Some(category), Some(JournalContext::CurrentBiome { biome_key })) => {
+            format!(
+                "Filter: {} | Current Biome ({})",
+                category.display_label(),
+                biome_key
+            )
         }
     }
 }
@@ -1702,12 +1766,14 @@ fn build_help_text(entry_count: usize, state: &JournalUiState) -> String {
         (None, Some(JournalContext::CurrentPlanet { .. })) => {
             " [Filter: Current Planet]".to_string()
         }
-        (None, Some(JournalContext::CurrentBiome { .. })) => " [Filter: Current Biome]".to_string(),
+        (None, Some(JournalContext::CurrentBiome { biome_key })) => {
+            format!(" [Filter: Current Biome ({})]", biome_key)
+        }
         (Some(_), Some(JournalContext::CurrentPlanet { .. })) => {
             " [Filter: Category | Current Planet]".to_string()
         }
-        (Some(_), Some(JournalContext::CurrentBiome { .. })) => {
-            " [Filter: Category | Current Biome]".to_string()
+        (Some(_), Some(JournalContext::CurrentBiome { biome_key })) => {
+            format!(" [Filter: Category | Current Biome ({})]", biome_key)
         }
     };
 

@@ -334,18 +334,18 @@ fn journal_ui_state_filter_persists_across_visibility_toggle() {
 }
 
 #[test]
-fn journal_context_biome_equality_is_string_based() {
-    // CurrentBiome carries a registry key as a String; equality is
-    // straightforward string equality, which is what the matching
-    // logic in later tasks will rely on.
+fn journal_context_biome_equality_is_type_safe() {
+    // CurrentBiome carries a type-safe BiomeKey; equality is based on
+    // the underlying BiomeType, ensuring consistency with the biome
+    // registry and preventing silent filter failures from typos.
     let a = JournalContext::CurrentBiome {
-        biome_key: "tundra".to_string(),
+        biome_key: BiomeKey::from(BiomeType::ScorchedFlats),
     };
     let b = JournalContext::CurrentBiome {
-        biome_key: "tundra".to_string(),
+        biome_key: BiomeKey::from(BiomeType::ScorchedFlats),
     };
     let c = JournalContext::CurrentBiome {
-        biome_key: "basalt_flats".to_string(),
+        biome_key: BiomeKey::from(BiomeType::FrostShelf),
     };
     assert_eq!(a, b);
     assert_ne!(a, c);
@@ -542,7 +542,7 @@ fn matches_filter_current_biome_is_no_op_until_data_capture() {
     let filter = JournalFilter {
         category: None,
         context: Some(JournalContext::CurrentBiome {
-            biome_key: "tundra".to_string(),
+            biome_key: BiomeKey::from(BiomeType::ScorchedFlats),
         }),
     };
     let entry = entry_with_observation(
@@ -5306,12 +5306,12 @@ fn filter_bar_renders_correctly() {
     let filter_biome = JournalFilter {
         category: None,
         context: Some(JournalContext::CurrentBiome {
-            biome_key: "tundra".to_string(),
+            biome_key: BiomeKey::from(BiomeType::ScorchedFlats),
         }),
     };
     let filter_bar_biome = build_filter_bar_text(&filter_biome);
     assert_eq!(
-        filter_bar_biome, "Filter: Current Biome",
+        filter_bar_biome, "Filter: Current Biome (scorched_flats)",
         "Biome filter should show biome context"
     );
 
@@ -5330,12 +5330,12 @@ fn filter_bar_renders_correctly() {
     let filter_combined_biome = JournalFilter {
         category: Some(ObservationCategory::Weight),
         context: Some(JournalContext::CurrentBiome {
-            biome_key: "basalt_flats".to_string(),
+            biome_key: BiomeKey::from(BiomeType::FrostShelf),
         }),
     };
     let filter_bar_combined_biome = build_filter_bar_text(&filter_combined_biome);
     assert_eq!(
-        filter_bar_combined_biome, "Filter: Weight | Current Biome",
+        filter_bar_combined_biome, "Filter: Weight | Current Biome (frost_shelf)",
         "Combined category+biome filter should show both"
     );
 }
@@ -5561,7 +5561,7 @@ fn test_planet_switch_updates_context_filter() {
         state.set_filter(JournalFilter {
             category: None,
             context: Some(JournalContext::CurrentBiome {
-                biome_key: "tundra".to_string(),
+                biome_key: BiomeKey::from(BiomeType::ScorchedFlats),
             }),
         });
     }
@@ -5582,7 +5582,7 @@ fn test_planet_switch_updates_context_filter() {
         assert_eq!(
             state.filter().context,
             Some(JournalContext::CurrentBiome {
-                biome_key: "tundra".to_string()
+                biome_key: BiomeKey::from(BiomeType::ScorchedFlats)
             }),
             "CurrentBiome filter should not be affected by planet changes"
         );
@@ -5617,6 +5617,34 @@ fn test_planet_switch_updates_context_filter() {
                 context: None,
             },
             "Filter with no context should not be affected by planet changes"
+        );
+    }
+}
+
+#[test]
+fn biome_key_as_str_matches_serde_serialization() {
+    // Verify that BiomeKey::as_str() produces the same strings as serde
+    // serialization of BiomeType. This ensures the manual mapping stays
+    // in sync with BiomeType's #[serde(rename_all = "snake_case")] configuration.
+
+    let test_cases = [
+        BiomeType::ScorchedFlats,
+        BiomeType::MineralSteppe,
+        BiomeType::FrostShelf,
+    ];
+
+    for biome_type in test_cases {
+        let biome_key = BiomeKey::from(biome_type);
+        let manual_string = biome_key.as_str();
+        let serde_string = serde_json::to_string(&biome_type)
+            .unwrap()
+            .trim_matches('"')
+            .to_string();
+
+        assert_eq!(
+            manual_string, serde_string,
+            "BiomeKey::as_str() for {:?} should match serde serialization",
+            biome_type
         );
     }
 }
