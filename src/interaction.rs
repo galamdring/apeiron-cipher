@@ -1206,4 +1206,195 @@ mod tests {
         clear_output_slot_reference(&mut slot, target);
         assert_eq!(slot.material, Some(other));
     }
+
+    // ── Tests for pure utility functions ──────────────────────────────────
+
+    #[test]
+    fn ray_horizontal_intersection_basic_case() {
+        let origin = Vec3::new(0.0, 5.0, 0.0);
+        let direction = Vec3::new(0.0, -1.0, 0.0); // pointing down
+        let plane_y = 0.0;
+        
+        let result = ray_horizontal_intersection(origin, direction, plane_y);
+        assert_eq!(result, Some(Vec3::new(0.0, 0.0, 0.0)));
+    }
+
+    #[test]
+    fn ray_horizontal_intersection_diagonal_ray() {
+        let origin = Vec3::new(1.0, 2.0, 1.0);
+        let direction = Vec3::new(1.0, -1.0, 1.0).normalize(); // diagonal down
+        let plane_y = 0.0;
+        
+        let result = ray_horizontal_intersection(origin, direction, plane_y).unwrap();
+        assert!((result.y - 0.0).abs() < f32::EPSILON);
+        assert!(result.x > 1.0); // moved forward in x
+        assert!(result.z > 1.0); // moved forward in z
+    }
+
+    #[test]
+    fn ray_horizontal_intersection_horizontal_ray_returns_none() {
+        let origin = Vec3::new(0.0, 5.0, 0.0);
+        let direction = Vec3::new(1.0, 0.0, 0.0); // horizontal
+        let plane_y = 0.0;
+        
+        let result = ray_horizontal_intersection(origin, direction, plane_y);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn ray_horizontal_intersection_nearly_horizontal_returns_none() {
+        let origin = Vec3::new(0.0, 5.0, 0.0);
+        let direction = Vec3::new(1.0, 1e-7, 0.0); // nearly horizontal
+        let plane_y = 0.0;
+        
+        let result = ray_horizontal_intersection(origin, direction, plane_y);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn ray_horizontal_intersection_upward_ray_returns_none() {
+        let origin = Vec3::new(0.0, 5.0, 0.0);
+        let direction = Vec3::new(0.0, 1.0, 0.0); // pointing up
+        let plane_y = 0.0; // plane below origin
+        
+        let result = ray_horizontal_intersection(origin, direction, plane_y);
+        assert_eq!(result, None); // t would be negative
+    }
+
+    #[test]
+    fn ray_horizontal_intersection_plane_above_origin() {
+        let origin = Vec3::new(0.0, 5.0, 0.0);
+        let direction = Vec3::new(0.0, 1.0, 0.0); // pointing up
+        let plane_y = 10.0;
+        
+        let result = ray_horizontal_intersection(origin, direction, plane_y);
+        assert_eq!(result, Some(Vec3::new(0.0, 10.0, 0.0)));
+    }
+
+    #[test]
+    fn should_emit_pickup_logic() {
+        // Both conditions must be true
+        assert!(should_emit_pickup(true, true));
+        
+        // Missing either condition should fail
+        assert!(!should_emit_pickup(false, true));
+        assert!(!should_emit_pickup(true, false));
+        assert!(!should_emit_pickup(false, false));
+    }
+
+    #[test]
+    fn should_emit_place_logic() {
+        // Place pressed while holding (regardless of targeting)
+        assert!(should_emit_place(false, true, true, false));
+        assert!(should_emit_place(false, true, true, true));
+        
+        // Interact pressed while holding and not targeting material
+        assert!(should_emit_place(true, false, true, false));
+        
+        // Should not place when interact pressed while targeting material
+        assert!(!should_emit_place(true, false, true, true));
+        
+        // Should not place when not holding
+        assert!(!should_emit_place(true, true, false, false));
+        assert!(!should_emit_place(false, true, false, false));
+        
+        // Should not place when no input
+        assert!(!should_emit_place(false, false, true, false));
+    }
+
+    #[test]
+    fn append_prop_observable_property() {
+        let mut lines = Vec::new();
+        let prop = MaterialProperty {
+            value: 0.8,
+            visibility: PropertyVisibility::Observable,
+        };
+        
+        append_prop(&mut lines, "Test", &prop, |v| {
+            if v > 0.5 { "High" } else { "Low" }
+        });
+        
+        assert_eq!(lines, vec!["Test: High"]);
+    }
+
+    #[test]
+    fn append_prop_revealed_property() {
+        let mut lines = Vec::new();
+        let prop = MaterialProperty {
+            value: 0.3,
+            visibility: PropertyVisibility::Revealed,
+        };
+        
+        append_prop(&mut lines, "Weight", &prop, |v| {
+            if v > 0.5 { "Heavy" } else { "Light" }
+        });
+        
+        assert_eq!(lines, vec!["Weight: Light"]);
+    }
+
+    #[test]
+    fn append_prop_hidden_property() {
+        let mut lines = Vec::new();
+        let prop = MaterialProperty {
+            value: 0.9,
+            visibility: PropertyVisibility::Hidden,
+        };
+        
+        append_prop(&mut lines, "Secret", &prop, |_| "Should not see this");
+        
+        assert_eq!(lines, vec!["Secret: ???"]);
+    }
+
+    #[test]
+    fn append_thermal_prop_hidden_no_knowledge() {
+        let mut lines = Vec::new();
+        let mat = test_material(); // thermal_resistance is Hidden
+        let tracker = ConfidenceTracker::default(); // no observations
+        
+        append_thermal_prop(&mut lines, &mat, &tracker);
+        
+        assert_eq!(lines, vec!["Heat response: ???"]);
+    }
+
+    #[test]
+    fn append_thermal_prop_hidden_with_knowledge() {
+        let mut lines = Vec::new();
+        let mat = test_material(); // thermal_resistance is Hidden
+        let mut tracker = ConfidenceTracker::default();
+        tracker.record(mat.seed, PropertyName::ThermalResistance);
+        
+        append_thermal_prop(&mut lines, &mat, &tracker);
+        
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].starts_with("Heat response: "));
+        assert!(!lines[0].contains("???"));
+    }
+
+    #[test]
+    fn append_thermal_prop_observable() {
+        let mut lines = Vec::new();
+        let mut mat = test_material();
+        mat.thermal_resistance.visibility = PropertyVisibility::Observable;
+        let tracker = ConfidenceTracker::default();
+        
+        append_thermal_prop(&mut lines, &mat, &tracker);
+        
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].starts_with("Heat response: "));
+        assert!(!lines[0].contains("???"));
+    }
+
+    #[test]
+    fn append_thermal_prop_revealed() {
+        let mut lines = Vec::new();
+        let mut mat = test_material();
+        mat.thermal_resistance.visibility = PropertyVisibility::Revealed;
+        let tracker = ConfidenceTracker::default();
+        
+        append_thermal_prop(&mut lines, &mat, &tracker);
+        
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].starts_with("Heat response: "));
+        assert!(!lines[0].contains("???"));
+    }
 }

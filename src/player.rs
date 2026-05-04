@@ -215,6 +215,68 @@ fn player_look(
     camera_tf.rotation = Quat::from_rotation_x(pitch.0);
 }
 
+/// Calculate stamina changes based on movement state and time delta.
+///
+/// Returns the new stamina value after applying drain or regeneration.
+/// Stamina drains when sprinting and regenerates when not sprinting.
+fn update_stamina(
+    current_stamina: f32,
+    max_stamina: f32,
+    is_sprinting: bool,
+    creative_mode: bool,
+    carry_movement: &CarryMovementState,
+    delta_secs: f32,
+) -> f32 {
+    if creative_mode {
+        max_stamina
+    } else if is_sprinting {
+        let drain = carry_movement.stamina_drain_per_second
+            * carry_movement.stamina_drain_multiplier
+            * delta_secs;
+        (current_stamina - drain).max(0.0)
+    } else {
+        let regen = carry_movement.stamina_regen_per_second * delta_secs;
+        (current_stamina + regen).min(max_stamina)
+    }
+}
+
+/// Calculate whether the player can and should sprint based on input and stamina.
+///
+/// Returns true if all sprint conditions are met: wants to sprint, has stamina,
+/// is moving, and either in creative mode or has sufficient stamina.
+fn calculate_sprint_state(
+    wants_sprint: bool,
+    is_moving: bool,
+    current_stamina: f32,
+    creative_mode: bool,
+) -> bool {
+    let can_sprint = creative_mode || current_stamina > f32::EPSILON;
+    wants_sprint && can_sprint && is_moving
+}
+
+/// Calculate movement direction in world space from input and transform.
+///
+/// Projects the forward and right vectors onto the XZ plane and combines them
+/// based on input to get a normalized movement direction.
+fn calculate_movement_direction(input: Vec2, forward: Vec3, right: Vec3) -> Vec3 {
+    // Project onto the XZ plane so the player doesn't fly when looking up.
+    let forward_xz = Vec3::new(forward.x, 0.0, forward.z).normalize_or_zero();
+    let right_xz = Vec3::new(right.x, 0.0, right.z).normalize_or_zero();
+
+    (forward_xz * input.y + right_xz * input.x).normalize_or_zero()
+}
+
+/// Calculate effective movement speed including sprint and carry modifiers.
+fn calculate_effective_speed(
+    base_speed: f32,
+    speed_modifier: f32,
+    is_sprinting: bool,
+    sprint_multiplier: f32,
+) -> f32 {
+    let sprint_factor = if is_sprinting { sprint_multiplier } else { 1.0 };
+    base_speed * speed_modifier * sprint_factor
+}
+
 /// Translates the player along the XZ plane in the direction they're facing.
 /// Movement is normalised so diagonals aren't faster than cardinals. The player
 /// is clamped to the ground plane boundaries and locked to eye height.
@@ -258,21 +320,22 @@ fn player_move(
     // Stamina must update even when stationary so the player can "catch their
     // breath" by standing still after exhausting sprint.
     let wants_sprint = action_state.pressed(&InputAction::Sprint);
-    let can_sprint = carry_movement.creative_mode || stamina.current > f32::EPSILON;
     let is_moving = input != Vec2::ZERO;
-    let is_sprinting = wants_sprint && can_sprint && is_moving;
+    let is_sprinting = calculate_sprint_state(
+        wants_sprint,
+        is_moving,
+        stamina.current,
+        carry_movement.creative_mode,
+    );
 
-    if carry_movement.creative_mode {
-        stamina.current = stamina.max;
-    } else if is_sprinting {
-        let drain = carry_movement.stamina_drain_per_second
-            * carry_movement.stamina_drain_multiplier
-            * time.delta_secs();
-        stamina.current = (stamina.current - drain).max(0.0);
-    } else {
-        let regen = carry_movement.stamina_regen_per_second * time.delta_secs();
-        stamina.current = (stamina.current + regen).min(stamina.max);
-    }
+    stamina.current = update_stamina(
+        stamina.current,
+        stamina.max,
+        is_sprinting,
+        carry_movement.creative_mode,
+        &carry_movement,
+        time.delta_secs(),
+    );
 
     if !is_moving {
         return;
@@ -281,18 +344,14 @@ fn player_move(
     let forward = *transform.forward();
     let right = *transform.right();
 
-    // Project onto the XZ plane so the player doesn't fly when looking up.
-    let forward_xz = Vec3::new(forward.x, 0.0, forward.z).normalize_or_zero();
-    let right_xz = Vec3::new(right.x, 0.0, right.z).normalize_or_zero();
+    let direction = calculate_movement_direction(input, forward, right);
 
-    let direction = (forward_xz * input.y + right_xz * input.x).normalize_or_zero();
-
-    let sprint_multiplier = if is_sprinting {
-        carry_movement.sprint_speed_multiplier
-    } else {
-        1.0
-    };
-    let effective_speed = scene.move_speed * carry_movement.speed_modifier * sprint_multiplier;
+    let effective_speed = calculate_effective_speed(
+        scene.move_speed,
+        carry_movement.speed_modifier,
+        is_sprinting,
+        carry_movement.sprint_speed_multiplier,
+    );
     let delta = direction * effective_speed * time.delta_secs();
     let mut proposed = transform.translation;
     proposed.x += delta.x;
@@ -387,5 +446,177 @@ mod tests {
     fn room_shell_blocks_south_wall_outside_doorway() {
         let shell = crate::scene::build_room_shell_collision(4.0, 4.0, 0.2);
         assert!(shell.blocks_circle_xz(PositionXZ::new(2.0, -4.1), PLAYER_COLLISION_RADIUS));
+    }
+
+    #[test]
+    fn update_stamina_creative_mode_always_max() {
+        let carry_movement = CarryMovementState::default();
+        
+        let result = update_stamina(50.0, 100.0, true, true, &carry_movement, 0.1);
+        assert_eq!(result, 100.0);
+        
+        let result = update_stamina(50.0, 100.0, false, true, &carry_movement, 0.1);
+        assert_eq!(result, 100.0);
+    }
+
+    #[test]
+    fn update_stamina_drains_when_sprinting() {
+        let carry_movement = CarryMovementState {
+            stamina_drain_per_second: 10.0,
+            stamina_drain_multiplier: 2.0,
+            ..Default::default()
+        };
+        
+        let result = update_stamina(50.0, 100.0, true, false, &carry_movement, 0.1);
+        // Should drain 10.0 * 2.0 * 0.1 = 2.0
+        assert!((result - 48.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn update_stamina_regenerates_when_not_sprinting() {
+        let carry_movement = CarryMovementState {
+            stamina_regen_per_second: 5.0,
+            ..Default::default()
+        };
+        
+        let result = update_stamina(50.0, 100.0, false, false, &carry_movement, 0.2);
+        // Should regen 5.0 * 0.2 = 1.0
+        assert!((result - 51.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn update_stamina_clamps_to_zero() {
+        let carry_movement = CarryMovementState {
+            stamina_drain_per_second: 100.0,
+            stamina_drain_multiplier: 1.0,
+            ..Default::default()
+        };
+        
+        let result = update_stamina(5.0, 100.0, true, false, &carry_movement, 1.0);
+        assert_eq!(result, 0.0);
+    }
+
+    #[test]
+    fn update_stamina_clamps_to_max() {
+        let carry_movement = CarryMovementState {
+            stamina_regen_per_second: 100.0,
+            ..Default::default()
+        };
+        
+        let result = update_stamina(95.0, 100.0, false, false, &carry_movement, 1.0);
+        assert_eq!(result, 100.0);
+    }
+
+    #[test]
+    fn calculate_sprint_state_requires_all_conditions() {
+        // All conditions met
+        assert!(calculate_sprint_state(true, true, 10.0, false));
+        
+        // Missing want to sprint
+        assert!(!calculate_sprint_state(false, true, 10.0, false));
+        
+        // Missing movement
+        assert!(!calculate_sprint_state(true, false, 10.0, false));
+        
+        // No stamina (but not creative)
+        assert!(!calculate_sprint_state(true, true, 0.0, false));
+        
+        // No stamina but creative mode
+        assert!(calculate_sprint_state(true, true, 0.0, true));
+    }
+
+    #[test]
+    fn calculate_sprint_state_creative_mode_bypasses_stamina() {
+        assert!(calculate_sprint_state(true, true, 0.0, true));
+        assert!(calculate_sprint_state(true, true, -5.0, true));
+    }
+
+    #[test]
+    fn calculate_movement_direction_forward_input() {
+        let forward = Vec3::new(0.0, 0.0, -1.0); // Negative Z is forward in Bevy
+        let right = Vec3::new(1.0, 0.0, 0.0);
+        let input = Vec2::new(0.0, 1.0); // Forward input
+        
+        let result = calculate_movement_direction(input, forward, right);
+        assert!((result - Vec3::new(0.0, 0.0, -1.0)).length() < f32::EPSILON);
+    }
+
+    #[test]
+    fn calculate_movement_direction_right_input() {
+        let forward = Vec3::new(0.0, 0.0, -1.0);
+        let right = Vec3::new(1.0, 0.0, 0.0);
+        let input = Vec2::new(1.0, 0.0); // Right input
+        
+        let result = calculate_movement_direction(input, forward, right);
+        assert!((result - Vec3::new(1.0, 0.0, 0.0)).length() < f32::EPSILON);
+    }
+
+    #[test]
+    fn calculate_movement_direction_diagonal_normalized() {
+        let forward = Vec3::new(0.0, 0.0, -1.0);
+        let right = Vec3::new(1.0, 0.0, 0.0);
+        let input = Vec2::new(1.0, 1.0); // Diagonal input
+        
+        let result = calculate_movement_direction(input, forward, right);
+        // Should be normalized diagonal
+        assert!((result.length() - 1.0).abs() < f32::EPSILON);
+        assert!((result.x - result.z.abs()).abs() < f32::EPSILON); // Equal X and Z components
+    }
+
+    #[test]
+    fn calculate_movement_direction_projects_to_xz_plane() {
+        let forward = Vec3::new(0.0, 0.5, -1.0); // Forward with Y component
+        let right = Vec3::new(1.0, 0.3, 0.0); // Right with Y component
+        let input = Vec2::new(1.0, 1.0);
+        
+        let result = calculate_movement_direction(input, forward, right);
+        assert!((result.y).abs() < f32::EPSILON); // Y should be zero
+    }
+
+    #[test]
+    fn calculate_movement_direction_zero_input() {
+        let forward = Vec3::new(0.0, 0.0, -1.0);
+        let right = Vec3::new(1.0, 0.0, 0.0);
+        let input = Vec2::ZERO;
+        
+        let result = calculate_movement_direction(input, forward, right);
+        assert_eq!(result, Vec3::ZERO);
+    }
+
+    #[test]
+    fn calculate_effective_speed_base_case() {
+        let result = calculate_effective_speed(5.0, 1.0, false, 2.0);
+        assert!((result - 5.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn calculate_effective_speed_with_sprint() {
+        let result = calculate_effective_speed(5.0, 1.0, true, 2.0);
+        assert!((result - 10.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn calculate_effective_speed_with_modifier() {
+        let result = calculate_effective_speed(5.0, 0.5, false, 2.0);
+        assert!((result - 2.5).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn calculate_effective_speed_all_modifiers() {
+        let result = calculate_effective_speed(5.0, 0.8, true, 1.5);
+        // 5.0 * 0.8 * 1.5 = 6.0
+        assert!((result - 6.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn calculate_effective_speed_zero_base() {
+        let result = calculate_effective_speed(0.0, 1.0, true, 2.0);
+        assert_eq!(result, 0.0);
+    }
+
+    #[test]
+    fn calculate_effective_speed_zero_modifier() {
+        let result = calculate_effective_speed(5.0, 0.0, true, 2.0);
+        assert_eq!(result, 0.0);
     }
 }

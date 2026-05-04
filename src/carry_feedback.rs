@@ -349,12 +349,45 @@ fn lerp(start: f32, end: f32, t: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bevy::window::CursorGrabMode;
+    use leafwing_input_manager::prelude::*;
 
     #[test]
     fn bob_amplitude_increases_with_encumbrance() {
         let config = CarryCueConfig::default();
 
         assert!(bob_amplitude(&config, 1.0, 1.0) > bob_amplitude(&config, 0.0, 1.0));
+    }
+
+    #[test]
+    fn bob_amplitude_scales_with_sprint_multiplier() {
+        let config = CarryCueConfig::default();
+        let encumbrance = 0.5;
+
+        assert!(bob_amplitude(&config, encumbrance, 2.0) > bob_amplitude(&config, encumbrance, 1.0));
+    }
+
+    #[test]
+    fn bob_amplitude_clamps_encumbrance_to_unit_range() {
+        let config = CarryCueConfig::default();
+
+        // Negative encumbrance should be treated as 0
+        let negative_result = bob_amplitude(&config, -0.5, 1.0);
+        let zero_result = bob_amplitude(&config, 0.0, 1.0);
+        assert!((negative_result - zero_result).abs() < f32::EPSILON);
+
+        // Encumbrance > 1 should be treated as 1
+        let over_result = bob_amplitude(&config, 1.5, 1.0);
+        let one_result = bob_amplitude(&config, 1.0, 1.0);
+        assert!((over_result - one_result).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn bob_amplitude_zero_sprint_multiplier() {
+        let config = CarryCueConfig::default();
+
+        let result = bob_amplitude(&config, 0.5, 0.0);
+        assert_eq!(result, 0.0);
     }
 
     #[test]
@@ -372,8 +405,66 @@ mod tests {
     }
 
     #[test]
+    fn breathing_mix_interpolates_between_thresholds() {
+        let config = CarryCueConfig::default();
+        let mid_point = (config.breathing_start_ratio + config.breathing_full_ratio) / 2.0;
+
+        let result = breathing_mix(mid_point, &config);
+        assert!(result > 0.0);
+        assert!(result < 1.0);
+        assert!((result - 0.5).abs() < 0.1); // Should be approximately halfway
+    }
+
+    #[test]
+    fn breathing_mix_handles_edge_case_equal_thresholds() {
+        let mut config = CarryCueConfig::default();
+        config.breathing_start_ratio = 0.8;
+        config.breathing_full_ratio = 0.8;
+
+        // At the threshold, should return 0.0 (since encumbrance_ratio <= start)
+        assert_eq!(breathing_mix(0.8, &config), 0.0);
+        
+        // Below threshold, should return 0.0
+        assert_eq!(breathing_mix(0.7, &config), 0.0);
+        
+        // Above threshold should return 1.0 (clamped)
+        assert_eq!(breathing_mix(0.9, &config), 1.0);
+    }
+
+    #[test]
+    fn breathing_mix_clamps_output_to_unit_range() {
+        let config = CarryCueConfig::default();
+
+        // Test with extreme values
+        let result_high = breathing_mix(10.0, &config);
+        assert!(result_high <= 1.0);
+
+        let result_low = breathing_mix(-1.0, &config);
+        assert_eq!(result_low, 0.0);
+    }
+
+    #[test]
     fn lerp_moves_between_endpoints() {
         assert!((lerp(2.0, 6.0, 0.25) - 3.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn lerp_clamps_t_parameter() {
+        // t < 0 should return start
+        assert!((lerp(2.0, 6.0, -0.5) - 2.0).abs() < f32::EPSILON);
+        
+        // t > 1 should return end
+        assert!((lerp(2.0, 6.0, 1.5) - 6.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn lerp_handles_equal_endpoints() {
+        assert!((lerp(5.0, 5.0, 0.7) - 5.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn lerp_handles_negative_values() {
+        assert!((lerp(-10.0, -5.0, 0.5) - (-7.5)).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -410,5 +501,85 @@ mod tests {
 
         // Both should converge to approximately the same value
         assert!((pos_60.x - pos_30.x).abs() < 1e-4);
+    }
+
+    #[test]
+    fn decay_toward_zero_handles_zero_rate() {
+        let start = Vec3::new(1.0, 2.0, 3.0);
+        let result = decay_toward_zero(start, 0.0, 0.016);
+        assert_eq!(result, start); // Should not change
+    }
+
+    #[test]
+    fn decay_toward_zero_handles_zero_delta() {
+        let start = Vec3::new(1.0, 2.0, 3.0);
+        let result = decay_toward_zero(start, 5.0, 0.0);
+        assert_eq!(result, start); // Should not change
+    }
+
+    #[test]
+    fn decay_toward_zero_handles_negative_components() {
+        let start = Vec3::new(-1.0, -0.5, 0.0);
+        let result = decay_toward_zero(start, 5.0, 0.1);
+        
+        // Should decay toward zero from negative values
+        assert!(result.x > -1.0 && result.x < 0.0);
+        assert!(result.y > -0.5 && result.y < 0.0);
+    }
+
+    #[test]
+    fn is_player_moving_requires_cursor_captured() {
+        let mut action_state = ActionState::<InputAction>::default();
+        action_state.set_axis_pair(&InputAction::Move, Vec2::new(1.0, 0.0));
+        
+        let carry_movement = CarryMovementState {
+            creative_mode: false,
+            ..Default::default()
+        };
+
+        // Not captured
+        assert!(!is_player_moving(CursorGrabMode::None, &action_state, &carry_movement));
+        
+        // Captured
+        assert!(is_player_moving(CursorGrabMode::Locked, &action_state, &carry_movement));
+        assert!(is_player_moving(CursorGrabMode::Confined, &action_state, &carry_movement));
+    }
+
+    #[test]
+    fn is_player_moving_requires_movement_input() {
+        let action_state = ActionState::<InputAction>::default(); // No input
+        
+        let carry_movement = CarryMovementState {
+            creative_mode: false,
+            ..Default::default()
+        };
+
+        assert!(!is_player_moving(CursorGrabMode::Locked, &action_state, &carry_movement));
+    }
+
+    #[test]
+    fn is_player_moving_blocked_by_creative_mode() {
+        let mut action_state = ActionState::<InputAction>::default();
+        action_state.set_axis_pair(&InputAction::Move, Vec2::new(1.0, 0.0));
+        
+        let carry_movement = CarryMovementState {
+            creative_mode: true,
+            ..Default::default()
+        };
+
+        assert!(!is_player_moving(CursorGrabMode::Locked, &action_state, &carry_movement));
+    }
+
+    #[test]
+    fn is_player_moving_all_conditions_met() {
+        let mut action_state = ActionState::<InputAction>::default();
+        action_state.set_axis_pair(&InputAction::Move, Vec2::new(0.5, 0.8));
+        
+        let carry_movement = CarryMovementState {
+            creative_mode: false,
+            ..Default::default()
+        };
+
+        assert!(is_player_moving(CursorGrabMode::Locked, &action_state, &carry_movement));
     }
 }
