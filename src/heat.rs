@@ -309,11 +309,7 @@ fn reveal_thermal_property(
             journal_writer.write(RecordObservation {
                 key: JournalKey::Material {
                     seed: mat.seed,
-                    // Planet seed is automatically resolved by the journal
-                    // ingestion system from the current WorldProfile resource.
-                    // This eliminates the need for manual extraction and
-                    // prevents silent failures when observation sites forget
-                    // the extraction pattern.
+                    // See JournalKey::Material::planet_seed docs.
                     planet_seed: None,
                 },
                 name: mat.name.clone(),
