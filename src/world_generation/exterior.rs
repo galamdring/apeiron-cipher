@@ -638,7 +638,7 @@ fn sync_active_exterior_chunks(
             let render_material = render_materials.add(StandardMaterial {
                 base_color: deposit_material.bevy_color(),
                 perceptual_roughness: 0.82,
-                metallic: if deposit_material.conductivity.value > 0.6 {
+                metallic: if deposit_material.conductivity.value() > 0.6 {
                     0.35
                 } else {
                     0.05
@@ -693,7 +693,7 @@ fn sync_active_exterior_chunks(
                 let render_material = render_materials.add(StandardMaterial {
                     base_color: record.material.bevy_color(),
                     perceptual_roughness: 0.82,
-                    metallic: if record.material.conductivity.value > 0.6 {
+                    metallic: if record.material.conductivity.value() > 0.6 {
                         0.35
                     } else {
                         0.05

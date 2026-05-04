@@ -251,7 +251,7 @@ fn tick_processing(
     let render_mat = std_materials.add(StandardMaterial {
         base_color: output_mat.bevy_color(),
         perceptual_roughness: 0.5,
-        metallic: if output_mat.conductivity.value > 0.6 {
+        metallic: if output_mat.conductivity.value() > 0.6 {
             0.6
         } else {
             0.1
@@ -350,7 +350,7 @@ fn apply_rule_with_perturbation(
     seed: u64,
     channel: u64,
 ) -> MaterialProperty {
-    let base = rule.apply(a.value, b.value);
+    let base = rule.apply(a.value(), b.value());
     let value = match rule {
         PropertyRule::Blend { .. } => {
             let noise = seeded_noise(seed, channel) * PERTURBATION_SCALE;
@@ -358,10 +358,7 @@ fn apply_rule_with_perturbation(
         }
         _ => base,
     };
-    MaterialProperty {
-        value,
-        visibility: PropertyVisibility::Hidden,
-    }
+    MaterialProperty::new(value, PropertyVisibility::Hidden)
 }
 
 // ── Procedural naming ────────────────────────────────────────────────────
@@ -430,22 +427,22 @@ fn rule_combine(rules: &CombinationRules, a: &GameMaterial, b: &GameMaterial) ->
             combined_seed,
             3,
         ),
-        thermal_resistance.value,
+        thermal_resistance.value(),
     );
 
     GameMaterial {
         name,
         seed: combined_seed,
         color,
-        density: MaterialProperty {
-            visibility: PropertyVisibility::Observable,
-            ..apply_rule_with_perturbation(
+        density: {
+            let base_density = apply_rule_with_perturbation(
                 &pair_rules.density,
                 &a.density,
                 &b.density,
                 combined_seed,
                 0,
-            )
+            );
+            MaterialProperty::new(base_density.value(), PropertyVisibility::Observable)
         },
         thermal_resistance,
         reactivity: apply_rule_with_perturbation(
@@ -471,7 +468,7 @@ fn align_conductivity_with_thermal_behavior(
     thermal_resistance: f32,
 ) -> MaterialProperty {
     let thermal_conductivity = 1.0 - thermal_resistance;
-    conductivity.value = ((conductivity.value * 2.0) + thermal_conductivity) / 3.0;
+    conductivity.set_value(((conductivity.value() * 2.0) + thermal_conductivity) / 3.0);
     conductivity
 }
 
@@ -483,18 +480,12 @@ mod tests {
     use crate::combination::PairRuleSet;
 
     fn test_material(name: &str, seed: u64, density: f32) -> GameMaterial {
-        let prop = |v: f32| MaterialProperty {
-            value: v,
-            visibility: PropertyVisibility::Hidden,
-        };
+        let prop = |v: f32| MaterialProperty::new(v, PropertyVisibility::Hidden);
         GameMaterial {
             name: name.into(),
             seed,
             color: [0.5, 0.5, 0.5],
-            density: MaterialProperty {
-                value: density,
-                visibility: PropertyVisibility::Observable,
-            },
+            density: MaterialProperty::new(density, PropertyVisibility::Observable),
             thermal_resistance: prop(0.4),
             reactivity: prop(0.6),
             conductivity: prop(0.3),
@@ -514,9 +505,11 @@ mod tests {
         let result = rule_combine(&rules, &a, &b);
 
         // With perturbation, values should be near average (within PERTURBATION_SCALE)
-        assert!((result.density.value - 0.5).abs() < PERTURBATION_SCALE + f32::EPSILON);
-        assert!((result.thermal_resistance.value - 0.4).abs() < PERTURBATION_SCALE + f32::EPSILON);
-        assert!((result.reactivity.value - 0.6).abs() < PERTURBATION_SCALE + f32::EPSILON);
+        assert!((result.density.value() - 0.5).abs() < PERTURBATION_SCALE + f32::EPSILON);
+        assert!(
+            (result.thermal_resistance.value() - 0.4).abs() < PERTURBATION_SCALE + f32::EPSILON
+        );
+        assert!((result.reactivity.value() - 0.6).abs() < PERTURBATION_SCALE + f32::EPSILON);
     }
 
     #[test]
@@ -543,8 +536,10 @@ mod tests {
         let r2 = rule_combine(&rules, &a, &b);
         assert_eq!(r1.seed, r2.seed);
         assert_eq!(r1.name, r2.name);
-        assert!((r1.density.value - r2.density.value).abs() < f32::EPSILON);
-        assert!((r1.thermal_resistance.value - r2.thermal_resistance.value).abs() < f32::EPSILON);
+        assert!((r1.density.value() - r2.density.value()).abs() < f32::EPSILON);
+        assert!(
+            (r1.thermal_resistance.value() - r2.thermal_resistance.value()).abs() < f32::EPSILON
+        );
     }
 
     #[test]
@@ -624,42 +619,24 @@ mod tests {
     #[test]
     fn perturbation_not_applied_to_non_blend_rules() {
         let rule = PropertyRule::Max;
-        let a = MaterialProperty {
-            value: 0.3,
-            visibility: PropertyVisibility::Observable,
-        };
-        let b = MaterialProperty {
-            value: 0.7,
-            visibility: PropertyVisibility::Observable,
-        };
+        let a = MaterialProperty::new(0.3, PropertyVisibility::Observable);
+        let b = MaterialProperty::new(0.7, PropertyVisibility::Observable);
         let result = apply_rule_with_perturbation(&rule, &a, &b, 42, 0);
-        assert!((result.value - 0.7).abs() < f32::EPSILON);
+        assert!((result.value() - 0.7).abs() < f32::EPSILON);
     }
 
     #[test]
     fn hidden_input_produces_hidden_output() {
-        let a = MaterialProperty {
-            value: 0.5,
-            visibility: PropertyVisibility::Observable,
-        };
-        let b = MaterialProperty {
-            value: 0.5,
-            visibility: PropertyVisibility::Hidden,
-        };
+        let a = MaterialProperty::new(0.5, PropertyVisibility::Observable);
+        let b = MaterialProperty::new(0.5, PropertyVisibility::Hidden);
         let result = apply_rule_with_perturbation(&PropertyRule::default(), &a, &b, 1, 0);
         assert_eq!(result.visibility, PropertyVisibility::Hidden);
     }
 
     #[test]
     fn non_surface_output_properties_remain_hidden_even_if_inputs_were_known() {
-        let a = MaterialProperty {
-            value: 0.5,
-            visibility: PropertyVisibility::Observable,
-        };
-        let b = MaterialProperty {
-            value: 0.5,
-            visibility: PropertyVisibility::Revealed,
-        };
+        let a = MaterialProperty::new(0.5, PropertyVisibility::Observable);
+        let b = MaterialProperty::new(0.5, PropertyVisibility::Revealed);
         let result = apply_rule_with_perturbation(&PropertyRule::default(), &a, &b, 1, 0);
         assert_eq!(result.visibility, PropertyVisibility::Hidden);
     }
@@ -684,19 +661,13 @@ mod tests {
     #[test]
     fn catalyze_rule_exceeds_both_inputs() {
         let rule = PropertyRule::Catalyze { multiplier: 1.5 };
-        let a = MaterialProperty {
-            value: 0.4,
-            visibility: PropertyVisibility::Observable,
-        };
-        let b = MaterialProperty {
-            value: 0.6,
-            visibility: PropertyVisibility::Observable,
-        };
+        let a = MaterialProperty::new(0.4, PropertyVisibility::Observable);
+        let b = MaterialProperty::new(0.6, PropertyVisibility::Observable);
         let result = apply_rule_with_perturbation(&rule, &a, &b, 1, 0);
         assert!(
-            result.value > a.value && result.value > b.value,
+            result.value() > a.value() && result.value() > b.value(),
             "catalyze should exceed both inputs: got {}",
-            result.value
+            result.value()
         );
     }
 
@@ -712,45 +683,33 @@ mod tests {
         let result = rule_combine(&rules, &a, &b);
 
         assert!(
-            (result.density.value - 0.1).abs() < f32::EPSILON,
+            (result.density.value() - 0.1).abs() < f32::EPSILON,
             "inert density: {}",
-            result.density.value
+            result.density.value()
         );
         assert!(
-            (result.thermal_resistance.value - 0.1).abs() < f32::EPSILON,
+            (result.thermal_resistance.value() - 0.1).abs() < f32::EPSILON,
             "inert thermal_resistance: {}",
-            result.thermal_resistance.value
+            result.thermal_resistance.value()
         );
     }
 
     #[test]
     fn max_rule_picks_higher_value() {
         let rule = PropertyRule::Max;
-        let a = MaterialProperty {
-            value: 0.3,
-            visibility: PropertyVisibility::Observable,
-        };
-        let b = MaterialProperty {
-            value: 0.7,
-            visibility: PropertyVisibility::Observable,
-        };
+        let a = MaterialProperty::new(0.3, PropertyVisibility::Observable);
+        let b = MaterialProperty::new(0.7, PropertyVisibility::Observable);
         let result = apply_rule_with_perturbation(&rule, &a, &b, 1, 0);
-        assert!((result.value - 0.7).abs() < f32::EPSILON);
+        assert!((result.value() - 0.7).abs() < f32::EPSILON);
     }
 
     #[test]
     fn min_rule_picks_lower_value() {
         let rule = PropertyRule::Min;
-        let a = MaterialProperty {
-            value: 0.3,
-            visibility: PropertyVisibility::Observable,
-        };
-        let b = MaterialProperty {
-            value: 0.7,
-            visibility: PropertyVisibility::Observable,
-        };
+        let a = MaterialProperty::new(0.3, PropertyVisibility::Observable);
+        let b = MaterialProperty::new(0.7, PropertyVisibility::Observable);
         let result = apply_rule_with_perturbation(&rule, &a, &b, 1, 0);
-        assert!((result.value - 0.3).abs() < f32::EPSILON);
+        assert!((result.value() - 0.3).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -772,9 +731,11 @@ mod tests {
         let r1 = rule_combine(&rules, &a, &b);
         let r2 = rule_combine(&rules, &b, &a);
 
-        assert!((r1.density.value - r2.density.value).abs() < f32::EPSILON);
-        assert!((r1.thermal_resistance.value - r2.thermal_resistance.value).abs() < f32::EPSILON);
-        assert!((r1.toxicity.value - r2.toxicity.value).abs() < f32::EPSILON);
+        assert!((r1.density.value() - r2.density.value()).abs() < f32::EPSILON);
+        assert!(
+            (r1.thermal_resistance.value() - r2.thermal_resistance.value()).abs() < f32::EPSILON
+        );
+        assert!((r1.toxicity.value() - r2.toxicity.value()).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -782,14 +743,14 @@ mod tests {
         let rules = default_rules();
         let mut a = test_material("Alpha", 1, 0.2);
         let mut b = test_material("Beta", 2, 0.3);
-        a.thermal_resistance.value = 0.1;
-        b.thermal_resistance.value = 0.2;
-        a.conductivity.value = 0.2;
-        b.conductivity.value = 0.2;
+        a.thermal_resistance.set_value(0.1);
+        b.thermal_resistance.set_value(0.2);
+        a.conductivity.set_value(0.2);
+        b.conductivity.set_value(0.2);
 
         let result = rule_combine(&rules, &a, &b);
         assert!(
-            result.conductivity.value > 0.2,
+            result.conductivity.value() > 0.2,
             "expected conductivity to move upward for a thermally conductive result"
         );
     }
@@ -846,7 +807,7 @@ mod tests {
             );
 
             // Registration via `register_fabricated` must preserve blended properties.
-            let blended_density = output.density.value;
+            let blended_density = output.density.value();
             let registered = catalog.register_fabricated(output);
             assert_eq!(
                 registered.seed,
@@ -859,7 +820,7 @@ mod tests {
             );
             // The catalog must store the actual blended properties, not re-derived ones.
             assert!(
-                (registered.density.value - blended_density).abs() < f32::EPSILON,
+                (registered.density.value() - blended_density).abs() < f32::EPSILON,
                 "catalog must preserve fabricated (blended) properties, not re-derive from seed for seeds ({seed_a}, {seed_b})"
             );
         }
@@ -963,7 +924,7 @@ mod tests {
         let output1 = rule_combine(&rules, &a1, &b1);
         let seed1 = output1.seed;
         let name1 = output1.name.clone();
-        let density1 = output1.density.value;
+        let density1 = output1.density.value();
         catalog.register_fabricated(output1);
 
         // Second fabrication: seeds 1003 + 1004
@@ -972,7 +933,7 @@ mod tests {
         let output2 = rule_combine(&rules, &a2, &b2);
         let seed2 = output2.seed;
         let name2 = output2.name.clone();
-        let density2 = output2.density.value;
+        let density2 = output2.density.value();
         catalog.register_fabricated(output2);
 
         // Both seeds must differ (fabrication produces distinct combined seeds).
@@ -994,7 +955,7 @@ mod tests {
             .expect("first fabricated material must be in catalog");
         assert_eq!(entry1.name, name1);
         assert!(
-            (entry1.density.value - density1).abs() < f32::EPSILON,
+            (entry1.density.value() - density1).abs() < f32::EPSILON,
             "catalog must preserve blended density for first material"
         );
 
@@ -1004,7 +965,7 @@ mod tests {
             .expect("second fabricated material must be in catalog");
         assert_eq!(entry2.name, name2);
         assert!(
-            (entry2.density.value - density2).abs() < f32::EPSILON,
+            (entry2.density.value() - density2).abs() < f32::EPSILON,
             "catalog must preserve blended density for second material"
         );
 

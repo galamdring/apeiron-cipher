@@ -183,7 +183,7 @@ fn track_heat_exposure(
                     exp.elapsed,
                     inside,
                     dt,
-                    mat.thermal_resistance.value,
+                    mat.thermal_resistance.value(),
                 );
             }
             None if inside => {
@@ -240,12 +240,12 @@ fn apply_thermal_reaction(
 
     for (exp, mat, mat_handle) in &exposure_query {
         let frac = (exp.elapsed / reaction_secs).clamp(0.0, 1.0);
-        let intensity = reaction_intensity(frac, mat.thermal_resistance.value);
+        let intensity = reaction_intensity(frac, mat.thermal_resistance.value());
 
         if let Some(std_mat) = std_materials.get_mut(mat_handle) {
             std_mat.emissive = reaction_emissive(intensity);
 
-            let warm_shift = intensity * (1.0 - mat.thermal_resistance.value) * 0.3;
+            let warm_shift = intensity * (1.0 - mat.thermal_resistance.value()) * 0.3;
             let [r, g, b] = mat.color;
             std_mat.base_color = Color::srgb(
                 (r + warm_shift).min(1.0),
@@ -257,8 +257,8 @@ fn apply_thermal_reaction(
 
     for (exp, mat, mut tf) in &mut transform_query {
         let frac = (exp.elapsed / reaction_secs).clamp(0.0, 1.0);
-        let intensity = reaction_intensity(frac, mat.thermal_resistance.value);
-        tf.scale = reaction_scale(intensity, mat.thermal_resistance.value);
+        let intensity = reaction_intensity(frac, mat.thermal_resistance.value());
+        tf.scale = reaction_scale(intensity, mat.thermal_resistance.value());
     }
 }
 
@@ -321,7 +321,7 @@ fn reveal_thermal_property(
                     category: ObservationCategory::ThermalBehavior,
                     confidence: tracker.level(mat.seed, PropertyName::ThermalResistance),
                     description: describe_thermal_observation(
-                        mat.thermal_resistance.value,
+                        mat.thermal_resistance.value(),
                         tracker.level(mat.seed, PropertyName::ThermalResistance),
                     ),
                     recorded_at: 0,
@@ -357,26 +357,11 @@ mod tests {
             name: format!("TestMat-{seed}"),
             seed,
             color: [0.5, 0.5, 0.5],
-            density: MaterialProperty {
-                value: 0.5,
-                visibility: PropertyVisibility::Observable,
-            },
-            thermal_resistance: MaterialProperty {
-                value: 0.65,
-                visibility: PropertyVisibility::Hidden,
-            },
-            reactivity: MaterialProperty {
-                value: 0.35,
-                visibility: PropertyVisibility::Hidden,
-            },
-            conductivity: MaterialProperty {
-                value: 0.4,
-                visibility: PropertyVisibility::Hidden,
-            },
-            toxicity: MaterialProperty {
-                value: 0.05,
-                visibility: PropertyVisibility::Hidden,
-            },
+            density: MaterialProperty::new(0.5, PropertyVisibility::Observable),
+            thermal_resistance: MaterialProperty::new(0.65, PropertyVisibility::Hidden),
+            reactivity: MaterialProperty::new(0.35, PropertyVisibility::Hidden),
+            conductivity: MaterialProperty::new(0.4, PropertyVisibility::Hidden),
+            toxicity: MaterialProperty::new(0.05, PropertyVisibility::Hidden),
         }
     }
 

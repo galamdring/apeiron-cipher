@@ -304,7 +304,7 @@ impl CarryState {
     /// server-side accounting rule that later intent-processing systems will call.
     pub fn add_material(&mut self, entity: Entity, material: &GameMaterial) {
         self.push(CarriedItem::new(entity));
-        self.current_weight += material.density.value;
+        self.current_weight += material.density.value();
     }
 
     /// Removes one carried material and subtracts that material's density cost.
@@ -322,7 +322,7 @@ impl CarryState {
             .iter()
             .position(|item| item.entity == entity)?;
         let removed = self.carried_items.remove(index);
-        self.current_weight = (self.current_weight - material.density.value).max(0.0);
+        self.current_weight = (self.current_weight - material.density.value()).max(0.0);
         // Snap to zero when carry is empty to prevent IEEE 754 drift from
         // leaving a small positive residual after many add/remove cycles.
         if self.carried_items.is_empty() {
@@ -339,7 +339,7 @@ impl CarryState {
     /// tolerance and capacity policy — adding a new method that diverges
     /// here is a bug.
     pub fn can_stash(&self, material: &GameMaterial) -> bool {
-        self.can_accept(material.density.value)
+        self.can_accept(material.density.value())
     }
 
     /// Select which carried entity should be returned next when cycling or dropping.
@@ -1404,7 +1404,7 @@ pub fn record_weight_observation(
             planet_seed: None, // Automatically resolved by apply_observations system
         },
         name: material.name.clone(),
-        density: material.density.value,
+        density: material.density.value(),
         carry_strength,
         confidence,
         weight_bands: config.weight_descriptions.clone(),
@@ -1678,10 +1678,8 @@ mod tests {
     use crate::observation::ConfidenceLevel;
 
     fn material_with_density(value: f32) -> GameMaterial {
-        let property = |density: f32| MaterialProperty {
-            value: density,
-            visibility: PropertyVisibility::Observable,
-        };
+        let property =
+            |density: f32| MaterialProperty::new(density, PropertyVisibility::Observable);
 
         GameMaterial {
             name: "Testite".into(),

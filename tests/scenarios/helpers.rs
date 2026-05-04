@@ -13,10 +13,7 @@ use bevy::prelude::*;
 /// properties use neutral defaults.  Pass a unique `seed` per material
 /// so that combination / fabrication determinism tests don't collide.
 pub fn test_material(name: &str, density: f32, seed: u64) -> GameMaterial {
-    let prop = |v| MaterialProperty {
-        value: v,
-        visibility: PropertyVisibility::Observable,
-    };
+    let prop = |v| MaterialProperty::new(v, PropertyVisibility::Observable);
     GameMaterial {
         name: name.into(),
         seed,

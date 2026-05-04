@@ -802,26 +802,11 @@ fn sample_game_material(name: &str) -> GameMaterial {
         name: name.to_string(),
         seed: 42,
         color: [0.5, 0.5, 0.5],
-        density: MaterialProperty {
-            value: 0.5,
-            visibility: PropertyVisibility::Observable,
-        },
-        thermal_resistance: MaterialProperty {
-            value: 0.5,
-            visibility: PropertyVisibility::Observable,
-        },
-        reactivity: MaterialProperty {
-            value: 0.5,
-            visibility: PropertyVisibility::Observable,
-        },
-        conductivity: MaterialProperty {
-            value: 0.5,
-            visibility: PropertyVisibility::Observable,
-        },
-        toxicity: MaterialProperty {
-            value: 0.5,
-            visibility: PropertyVisibility::Hidden,
-        },
+        density: MaterialProperty::new(0.5, PropertyVisibility::Observable),
+        thermal_resistance: MaterialProperty::new(0.5, PropertyVisibility::Observable),
+        reactivity: MaterialProperty::new(0.5, PropertyVisibility::Observable),
+        conductivity: MaterialProperty::new(0.5, PropertyVisibility::Observable),
+        toxicity: MaterialProperty::new(0.5, PropertyVisibility::Observable),
     }
 }
 
@@ -3288,11 +3273,11 @@ fn cross_biome_materials_have_distinct_properties() {
         mats.iter()
             .map(|m| {
                 [
-                    m.density.value,
-                    m.reactivity.value,
-                    m.conductivity.value,
-                    m.thermal_resistance.value,
-                    m.toxicity.value,
+                    m.density.value(),
+                    m.reactivity.value(),
+                    m.conductivity.value(),
+                    m.thermal_resistance.value(),
+                    m.toxicity.value(),
                 ]
             })
             .collect::<Vec<_>>()
@@ -3449,11 +3434,11 @@ fn every_deposit_material_is_pickup_ready() {
 
                 // At least one property must be non-zero so the material
                 // is distinguishable from a default stub.
-                let any_nonzero = mat.density.value != 0.0
-                    || mat.thermal_resistance.value != 0.0
-                    || mat.reactivity.value != 0.0
-                    || mat.conductivity.value != 0.0
-                    || mat.toxicity.value != 0.0;
+                let any_nonzero = mat.density.value() != 0.0
+                    || mat.thermal_resistance.value() != 0.0
+                    || mat.reactivity.value() != 0.0
+                    || mat.conductivity.value() != 0.0
+                    || mat.toxicity.value() != 0.0;
                 assert!(
                     any_nonzero,
                     "deposit seed {} has all-zero properties",
@@ -3649,29 +3634,39 @@ fn restart_same_seed_same_biome_yields_identical_materials() {
             mat_a.seed, mat_a.name
         );
         assert_eq!(
-            mat_a.density.value, mat_b.density.value,
+            mat_a.density.value(),
+            mat_b.density.value(),
             "density mismatch for seed {} ({})",
-            mat_a.seed, mat_a.name
+            mat_a.seed,
+            mat_a.name
         );
         assert_eq!(
-            mat_a.thermal_resistance.value, mat_b.thermal_resistance.value,
+            mat_a.thermal_resistance.value(),
+            mat_b.thermal_resistance.value(),
             "thermal_resistance mismatch for seed {} ({})",
-            mat_a.seed, mat_a.name
+            mat_a.seed,
+            mat_a.name
         );
         assert_eq!(
-            mat_a.reactivity.value, mat_b.reactivity.value,
+            mat_a.reactivity.value(),
+            mat_b.reactivity.value(),
             "reactivity mismatch for seed {} ({})",
-            mat_a.seed, mat_a.name
+            mat_a.seed,
+            mat_a.name
         );
         assert_eq!(
-            mat_a.conductivity.value, mat_b.conductivity.value,
+            mat_a.conductivity.value(),
+            mat_b.conductivity.value(),
             "conductivity mismatch for seed {} ({})",
-            mat_a.seed, mat_a.name
+            mat_a.seed,
+            mat_a.name
         );
         assert_eq!(
-            mat_a.toxicity.value, mat_b.toxicity.value,
+            mat_a.toxicity.value(),
+            mat_b.toxicity.value(),
             "toxicity mismatch for seed {} ({})",
-            mat_a.seed, mat_a.name
+            mat_a.seed,
+            mat_a.name
         );
     }
 
@@ -3692,7 +3687,8 @@ fn restart_same_seed_same_biome_yields_identical_materials() {
             mat_a.seed
         );
         assert_eq!(
-            raw_1.density.value, raw_2.density.value,
+            raw_1.density.value(),
+            raw_2.density.value(),
             "raw derivation density mismatch for seed {}",
             mat_a.seed
         );
@@ -3933,29 +3929,39 @@ fn restart_system_seed_chain_yields_identical_world() {
             mat_a.seed, mat_a.name
         );
         assert_eq!(
-            mat_a.density.value, mat_b.density.value,
+            mat_a.density.value(),
+            mat_b.density.value(),
             "density mismatch for seed {} ({})",
-            mat_a.seed, mat_a.name
+            mat_a.seed,
+            mat_a.name
         );
         assert_eq!(
-            mat_a.thermal_resistance.value, mat_b.thermal_resistance.value,
+            mat_a.thermal_resistance.value(),
+            mat_b.thermal_resistance.value(),
             "thermal_resistance mismatch for seed {} ({})",
-            mat_a.seed, mat_a.name
+            mat_a.seed,
+            mat_a.name
         );
         assert_eq!(
-            mat_a.reactivity.value, mat_b.reactivity.value,
+            mat_a.reactivity.value(),
+            mat_b.reactivity.value(),
             "reactivity mismatch for seed {} ({})",
-            mat_a.seed, mat_a.name
+            mat_a.seed,
+            mat_a.name
         );
         assert_eq!(
-            mat_a.conductivity.value, mat_b.conductivity.value,
+            mat_a.conductivity.value(),
+            mat_b.conductivity.value(),
             "conductivity mismatch for seed {} ({})",
-            mat_a.seed, mat_a.name
+            mat_a.seed,
+            mat_a.name
         );
         assert_eq!(
-            mat_a.toxicity.value, mat_b.toxicity.value,
+            mat_a.toxicity.value(),
+            mat_b.toxicity.value(),
             "toxicity mismatch for seed {} ({})",
-            mat_a.seed, mat_a.name
+            mat_a.seed,
+            mat_a.name
         );
     }
 
@@ -3975,7 +3981,8 @@ fn restart_system_seed_chain_yields_identical_world() {
             mat_a.seed
         );
         assert_eq!(
-            raw_1.density.value, raw_2.density.value,
+            raw_1.density.value(),
+            raw_2.density.value(),
             "raw derivation density mismatch for seed {}",
             mat_a.seed
         );
