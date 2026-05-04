@@ -22,28 +22,8 @@ use crate::world_generation::BiomeType;
 
 /// Type-safe wrapper for biome identifiers used in journal filtering.
 ///
-/// This newtype ensures that biome keys used in [`JournalContext::CurrentBiome`]
-/// are always valid biome registry identifiers, preventing silent filter
-/// failures caused by typos or mismatched strings (e.g., "basalt_flat" vs
-/// "basalt_flats").
-///
-/// The key is constructed only from a [`BiomeType`] enum value, which is the
-/// single source of truth for biome identity in the registry. This eliminates
-/// the possibility of constructing an invalid biome key that would silently
-/// match nothing during filtering.
-///
-/// # Example
-///
-/// ```rust
-/// use apeiron_cipher::journal::{BiomeKey, JournalContext};
-/// use apeiron_cipher::world_generation::BiomeType;
-///
-/// // Type-safe construction from registry enum
-/// let key = BiomeKey::from(BiomeType::ScorchedFlats);
-/// 
-/// // Use in journal context
-/// let context = JournalContext::CurrentBiome { biome_key: key };
-/// ```
+/// Prevents silent filter failures from string typos by ensuring biome keys
+/// are always constructed from valid [`BiomeType`] enum values.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct BiomeKey(BiomeType);
 
@@ -65,6 +45,11 @@ impl BiomeKey {
     ///
     /// This returns the snake_case string that matches the biome registry's
     /// text key format (e.g., "scorched_flats", "mineral_steppe", "frost_shelf").
+    ///
+    /// Note: These strings must match BiomeType's serde serialization format
+    /// (snake_case). The match is exhaustive, so adding a new BiomeType variant
+    /// will cause a compile error here, prompting the developer to add the
+    /// corresponding snake_case string.
     pub fn as_str(&self) -> &'static str {
         match self.0 {
             BiomeType::ScorchedFlats => "scorched_flats",
@@ -1640,7 +1625,11 @@ fn build_filter_bar_text(filter: &JournalFilter) -> String {
             format!("Filter: {} | Current Planet", category.display_label())
         }
         (Some(category), Some(JournalContext::CurrentBiome { biome_key })) => {
-            format!("Filter: {} | Current Biome ({})", category.display_label(), biome_key)
+            format!(
+                "Filter: {} | Current Biome ({})",
+                category.display_label(),
+                biome_key
+            )
         }
     }
 }

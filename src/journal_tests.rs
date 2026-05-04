@@ -5620,3 +5620,31 @@ fn test_planet_switch_updates_context_filter() {
         );
     }
 }
+
+#[test]
+fn biome_key_as_str_matches_serde_serialization() {
+    // Verify that BiomeKey::as_str() produces the same strings as serde
+    // serialization of BiomeType. This ensures the manual mapping stays
+    // in sync with BiomeType's #[serde(rename_all = "snake_case")] configuration.
+
+    let test_cases = [
+        BiomeType::ScorchedFlats,
+        BiomeType::MineralSteppe,
+        BiomeType::FrostShelf,
+    ];
+
+    for biome_type in test_cases {
+        let biome_key = BiomeKey::from(biome_type);
+        let manual_string = biome_key.as_str();
+        let serde_string = serde_json::to_string(&biome_type)
+            .unwrap()
+            .trim_matches('"')
+            .to_string();
+
+        assert_eq!(
+            manual_string, serde_string,
+            "BiomeKey::as_str() for {:?} should match serde serialization",
+            biome_type
+        );
+    }
+}
