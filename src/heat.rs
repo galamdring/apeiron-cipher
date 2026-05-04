@@ -19,8 +19,7 @@ use bevy::prelude::*;
 use crate::descriptions::describe_thermal_observation;
 use crate::journal::{JournalKey, Observation, ObservationCategory, RecordObservation};
 use crate::materials::{GameMaterial, MaterialObject, PropertyVisibility};
-use crate::observation::ConfidenceTracker;
-use crate::observation::PropertyName;
+use crate::observation::Confidence;
 use crate::scene::{FurnitureConfig, HeatSourceConfig, Workbench};
 use crate::world_generation::WorldProfile;
 
@@ -268,8 +267,8 @@ fn apply_thermal_reaction(
 fn reveal_thermal_property(
     mut commands: Commands,
     hs_cfg: Res<HeatSourceConfig>,
-    mut tracker: ResMut<ConfidenceTracker>,
     mut journal_writer: MessageWriter<RecordObservation>,
+    descriptor_vocab: Res<crate::observation::DescriptorVocabulary>,
     mut material_query: Query<
         (
             Entity,
@@ -305,10 +304,14 @@ fn reveal_thermal_property(
         revealed_seeds.push(mat.seed);
 
         if recorded.is_none() {
-            let count = tracker.record(mat.seed, PropertyName::ThermalResistance);
             commands
                 .entity(entity)
                 .insert(ThermalObservationRecordedThisCycle);
+
+            // Use initial confidence for new observations - the journal system
+            // will handle accumulation automatically for repeated observations
+            let initial_confidence = Confidence(0.2);
+
             journal_writer.write(RecordObservation {
                 key: JournalKey::Material {
                     seed: mat.seed,
@@ -326,17 +329,30 @@ fn reveal_thermal_property(
                 name: mat.name.clone(),
                 observation: Observation {
                     category: ObservationCategory::ThermalBehavior,
-                    confidence: tracker.level(mat.seed, PropertyName::ThermalResistance),
-                    description: describe_thermal_observation(
-                        mat.thermal_resistance.value,
-                        tracker.level(mat.seed, PropertyName::ThermalResistance),
-                    ),
+                    confidence: initial_confidence,
+                    description: {
+                        // Generate description using the DescriptorVocabulary system
+                        descriptor_vocab
+                            .describe(
+                                &ObservationCategory::ThermalBehavior,
+                                mat.thermal_resistance.value,
+                                initial_confidence,
+                            )
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|| {
+                                // Fallback to old system if vocabulary lookup fails
+                                describe_thermal_observation(
+                                    mat.thermal_resistance.value,
+                                    initial_confidence,
+                                )
+                            })
+                    },
                     recorded_at: 0,
                 },
             });
             info!(
-                "'{}' thermal observation recorded (count = {})",
-                mat.name, count
+                "'{}' thermal observation recorded with initial confidence",
+                mat.name
             );
         }
     }
@@ -479,7 +495,8 @@ mod tests {
         let mut app = App::new();
         app.add_message::<RecordObservation>();
         app.insert_resource(HeatSourceConfig::default());
-        app.insert_resource(ConfidenceTracker::default());
+        // ConfidenceTracker removed - confidence is now tracked per-observation in journal
+        app.insert_resource(crate::observation::DescriptorVocabulary::default());
         app.add_systems(Update, reveal_thermal_property);
 
         let entity = app
@@ -495,12 +512,13 @@ mod tests {
             .id();
 
         app.update();
-        assert_eq!(
-            app.world()
-                .resource::<ConfidenceTracker>()
-                .count(7, PropertyName::ThermalResistance),
-            1
-        );
+        // Check that an observation was recorded by examining the message queue
+        let mut messages = app
+            .world_mut()
+            .resource_mut::<Messages<RecordObservation>>();
+        let first_batch: Vec<RecordObservation> = messages.drain().collect();
+        let recorded_count = first_batch.len();
+        assert_eq!(recorded_count, 1, "Should record one thermal observation");
 
         app.world_mut()
             .entity_mut(entity)
@@ -509,6 +527,16 @@ mod tests {
             .elapsed = 0.0;
         app.update();
 
+        let mut messages = app
+            .world_mut()
+            .resource_mut::<Messages<RecordObservation>>();
+        let cooling_batch: Vec<RecordObservation> = messages.drain().collect();
+        assert_eq!(
+            cooling_batch.len(),
+            0,
+            "Should not record observation while cooling"
+        );
+
         app.world_mut()
             .entity_mut(entity)
             .get_mut::<HeatExposure>()
@@ -516,11 +544,15 @@ mod tests {
             .elapsed = 5.0;
         app.update();
 
+        // Check that a second observation was recorded
+        let mut messages = app
+            .world_mut()
+            .resource_mut::<Messages<RecordObservation>>();
+        let second_batch: Vec<RecordObservation> = messages.drain().collect();
+        let second_count = second_batch.len();
         assert_eq!(
-            app.world()
-                .resource::<ConfidenceTracker>()
-                .count(7, PropertyName::ThermalResistance),
-            2
+            second_count, 1,
+            "Should record second thermal observation after cooling cycle"
         );
     }
 
@@ -529,7 +561,8 @@ mod tests {
         let mut app = App::new();
         app.add_message::<RecordObservation>();
         app.insert_resource(HeatSourceConfig::default());
-        app.insert_resource(ConfidenceTracker::default());
+        // ConfidenceTracker removed - confidence is now tracked per-observation in journal
+        app.insert_resource(crate::observation::DescriptorVocabulary::default());
         app.add_systems(Update, reveal_thermal_property);
 
         app.world_mut().spawn((
@@ -597,7 +630,8 @@ mod tests {
         let mut app = App::new();
         app.add_message::<RecordObservation>();
         app.insert_resource(HeatSourceConfig::default());
-        app.insert_resource(ConfidenceTracker::default());
+        // ConfidenceTracker removed - confidence is now tracked per-observation in journal
+        app.insert_resource(crate::observation::DescriptorVocabulary::default());
         app.insert_resource(profile);
         app.add_systems(Update, reveal_thermal_property);
 
@@ -647,7 +681,8 @@ mod tests {
         let mut app = App::new();
         app.add_message::<RecordObservation>();
         app.insert_resource(HeatSourceConfig::default());
-        app.insert_resource(ConfidenceTracker::default());
+        // ConfidenceTracker removed - confidence is now tracked per-observation in journal
+        app.insert_resource(crate::observation::DescriptorVocabulary::default());
         // Deliberately do *not* insert WorldProfile.
         app.add_systems(Update, reveal_thermal_property);
 

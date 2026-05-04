@@ -1,0 +1,35 @@
+# Confidence Evolution Configuration
+#
+# Controls how player confidence in observations evolves through repeated
+# testing and degrades through death. All values are tunable to adjust
+# the balance between meaningful death consequences and player progression.
+
+# Death Impact Settings
+# ---------------------
+
+# Multiplier applied to all confidence on death (0.0 = total loss, 1.0 = no loss)
+# Lower values make death more impactful but risk frustrating players
+death_degradation_factor = 0.6
+
+# Minimum confidence retained after death (prevents total knowledge loss)
+# Should be low enough that death feels meaningful but high enough to preserve progress
+death_floor = 0.2
+
+# Recovery Settings
+# -----------------
+
+# Recovery rate multiplier when re-engaging the domain that caused death
+# Values > 1.0 encourage players to confront their failures rather than avoid them
+domain_recovery_multiplier = 2.0
+
+# Recovery rate multiplier for domains unrelated to the death cause
+# Values < 1.0 represent slower general confidence restoration
+passive_recovery_multiplier = 0.7
+
+# Observation Settings
+# --------------------
+
+# Base evidence strength for a single observation
+# Higher values = fewer observations needed for high confidence
+# Lower values = more repeated testing required
+base_observation_weight = 0.2
