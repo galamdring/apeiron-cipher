@@ -121,9 +121,31 @@ pub enum PropertyVisibility {
 #[derive(Clone, Debug, Serialize, Deserialize, Reflect)]
 pub struct MaterialProperty {
     /// Normalised property value in \[0.0, 1.0\].
-    pub value: f32,
+    value: f32,
     /// Whether the player can currently see this property.
     pub visibility: PropertyVisibility,
+}
+
+impl MaterialProperty {
+    /// Creates a new material property with the given value and visibility.
+    ///
+    /// The value is automatically clamped to the valid range \[0.0, 1.0\].
+    pub fn new(value: f32, visibility: PropertyVisibility) -> Self {
+        Self {
+            value: value.clamp(0.0, 1.0),
+            visibility,
+        }
+    }
+
+    /// Returns the normalised property value in \[0.0, 1.0\].
+    pub fn value(&self) -> f32 {
+        self.value
+    }
+
+    /// Sets the property value, automatically clamping to \[0.0, 1.0\].
+    pub fn set_value(&mut self, value: f32) {
+        self.value = value.clamp(0.0, 1.0);
+    }
 }
 
 // ── Material definition (TOML ↔ Rust) ────────────────────────────────────
@@ -166,7 +188,7 @@ impl GameMaterial {
     /// Chooses a mesh shape based on material density.
     /// Light materials → sphere, heavy → cube, medium → capsule.
     pub fn mesh_for_density(&self, meshes: &mut Assets<Mesh>) -> Handle<Mesh> {
-        let density = self.density.value;
+        let density = self.density.value();
         if density < 0.3 {
             meshes.add(Sphere::new(0.12).mesh().build())
         } else if density < 0.7 {
@@ -178,7 +200,7 @@ impl GameMaterial {
 
     /// Height from the support surface to the entity origin for the selected mesh.
     pub fn support_height(&self) -> f32 {
-        let density = self.density.value;
+        let density = self.density.value();
         if density < 0.3 {
             0.12
         } else if density < 0.7 {
@@ -195,7 +217,7 @@ impl GameMaterial {
 
     /// Returns the horizontal collision radius of the mesh for this material's density.
     pub fn footprint_radius(&self) -> f32 {
-        let density = self.density.value;
+        let density = self.density.value();
         if density < 0.3 {
             0.12
         } else if density < 0.7 {
@@ -237,26 +259,26 @@ pub fn derive_material_from_seed(seed: u64) -> GameMaterial {
         name,
         seed,
         color,
-        density: MaterialProperty {
-            value: unit_interval_01(mix_seed(seed, MAT_DENSITY_CHANNEL)),
-            visibility: PropertyVisibility::Hidden,
-        },
-        thermal_resistance: MaterialProperty {
-            value: unit_interval_01(mix_seed(seed, MAT_THERMAL_RESISTANCE_CHANNEL)),
-            visibility: PropertyVisibility::Hidden,
-        },
-        reactivity: MaterialProperty {
-            value: unit_interval_01(mix_seed(seed, MAT_REACTIVITY_CHANNEL)),
-            visibility: PropertyVisibility::Hidden,
-        },
-        conductivity: MaterialProperty {
-            value: unit_interval_01(mix_seed(seed, MAT_CONDUCTIVITY_CHANNEL)),
-            visibility: PropertyVisibility::Hidden,
-        },
-        toxicity: MaterialProperty {
-            value: unit_interval_01(mix_seed(seed, MAT_TOXICITY_CHANNEL)),
-            visibility: PropertyVisibility::Hidden,
-        },
+        density: MaterialProperty::new(
+            unit_interval_01(mix_seed(seed, MAT_DENSITY_CHANNEL)),
+            PropertyVisibility::Hidden,
+        ),
+        thermal_resistance: MaterialProperty::new(
+            unit_interval_01(mix_seed(seed, MAT_THERMAL_RESISTANCE_CHANNEL)),
+            PropertyVisibility::Hidden,
+        ),
+        reactivity: MaterialProperty::new(
+            unit_interval_01(mix_seed(seed, MAT_REACTIVITY_CHANNEL)),
+            PropertyVisibility::Hidden,
+        ),
+        conductivity: MaterialProperty::new(
+            unit_interval_01(mix_seed(seed, MAT_CONDUCTIVITY_CHANNEL)),
+            PropertyVisibility::Hidden,
+        ),
+        toxicity: MaterialProperty::new(
+            unit_interval_01(mix_seed(seed, MAT_TOXICITY_CHANNEL)),
+            PropertyVisibility::Hidden,
+        ),
     }
 }
 
@@ -434,7 +456,7 @@ fn spawn_material_objects(
         let render_mat = std_materials.add(StandardMaterial {
             base_color: mat.bevy_color(),
             perceptual_roughness: 0.5,
-            metallic: if mat.conductivity.value > 0.6 {
+            metallic: if mat.conductivity.value() > 0.6 {
                 0.6
             } else {
                 0.1
@@ -491,10 +513,7 @@ mod tests {
     use super::*;
 
     fn prop(value: f32, visibility: PropertyVisibility) -> MaterialProperty {
-        MaterialProperty {
-            value: value.clamp(0.0, 1.0),
-            visibility,
-        }
+        MaterialProperty::new(value, visibility)
     }
 
     fn sample_material() -> GameMaterial {
@@ -513,11 +532,11 @@ mod tests {
     #[test]
     fn support_height_matches_density_mesh_shape() {
         let mut light = sample_material();
-        light.density.value = 0.2;
+        light.density.set_value(0.2);
         assert!((light.support_height() - 0.12).abs() < f32::EPSILON);
 
         let mut medium = sample_material();
-        medium.density.value = 0.5;
+        medium.density.set_value(0.5);
         assert!((medium.support_height() - 0.17).abs() < f32::EPSILON);
 
         let heavy = sample_material();
@@ -527,11 +546,11 @@ mod tests {
     #[test]
     fn footprint_radius_matches_density_mesh_shape() {
         let mut light = sample_material();
-        light.density.value = 0.2;
+        light.density.set_value(0.2);
         assert!((light.footprint_radius() - 0.12).abs() < f32::EPSILON);
 
         let mut medium = sample_material();
-        medium.density.value = 0.5;
+        medium.density.set_value(0.5);
         assert!((medium.footprint_radius() - 0.10).abs() < f32::EPSILON);
 
         let heavy = sample_material();
@@ -546,7 +565,7 @@ mod tests {
 
         assert_eq!(parsed.name, original.name);
         assert_eq!(parsed.seed, original.seed);
-        assert!((parsed.density.value - original.density.value).abs() < f32::EPSILON);
+        assert!((parsed.density.value() - original.density.value()).abs() < f32::EPSILON);
         assert_eq!(
             parsed.thermal_resistance.visibility,
             PropertyVisibility::Hidden
@@ -557,8 +576,8 @@ mod tests {
     fn property_values_clamped_to_unit_range() {
         let over = prop(1.5, PropertyVisibility::Observable);
         let under = prop(-0.3, PropertyVisibility::Hidden);
-        assert!((over.value - 1.0).abs() < f32::EPSILON);
-        assert!(under.value.abs() < f32::EPSILON);
+        assert!((over.value() - 1.0).abs() < f32::EPSILON);
+        assert!(under.value().abs() < f32::EPSILON);
     }
 
     #[test]
@@ -600,9 +619,9 @@ visibility = "Hidden"
         let second: GameMaterial = toml::from_str(toml_str).expect("second parse");
 
         assert_eq!(first.seed, second.seed);
-        assert!((first.density.value - second.density.value).abs() < f32::EPSILON);
-        assert!((first.reactivity.value - second.reactivity.value).abs() < f32::EPSILON);
-        assert!((first.conductivity.value - second.conductivity.value).abs() < f32::EPSILON);
+        assert!((first.density.value() - second.density.value()).abs() < f32::EPSILON);
+        assert!((first.reactivity.value() - second.reactivity.value()).abs() < f32::EPSILON);
+        assert!((first.conductivity.value() - second.conductivity.value()).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -619,11 +638,11 @@ visibility = "Hidden"
         let b = derive_material_from_seed(0xDEAD_BEEF);
         assert_eq!(a.name, b.name);
         assert_eq!(a.seed, b.seed);
-        assert!((a.density.value - b.density.value).abs() < f32::EPSILON);
-        assert!((a.thermal_resistance.value - b.thermal_resistance.value).abs() < f32::EPSILON);
-        assert!((a.reactivity.value - b.reactivity.value).abs() < f32::EPSILON);
-        assert!((a.conductivity.value - b.conductivity.value).abs() < f32::EPSILON);
-        assert!((a.toxicity.value - b.toxicity.value).abs() < f32::EPSILON);
+        assert!((a.density.value() - b.density.value()).abs() < f32::EPSILON);
+        assert!((a.thermal_resistance.value() - b.thermal_resistance.value()).abs() < f32::EPSILON);
+        assert!((a.reactivity.value() - b.reactivity.value()).abs() < f32::EPSILON);
+        assert!((a.conductivity.value() - b.conductivity.value()).abs() < f32::EPSILON);
+        assert!((a.toxicity.value() - b.toxicity.value()).abs() < f32::EPSILON);
         assert_eq!(a.color, b.color);
     }
 
@@ -632,9 +651,10 @@ visibility = "Hidden"
         let a = derive_material_from_seed(1);
         let b = derive_material_from_seed(2);
         // With good mixing, at least one property should differ.
-        let same_density = (a.density.value - b.density.value).abs() < f32::EPSILON;
-        let same_reactivity = (a.reactivity.value - b.reactivity.value).abs() < f32::EPSILON;
-        let same_conductivity = (a.conductivity.value - b.conductivity.value).abs() < f32::EPSILON;
+        let same_density = (a.density.value() - b.density.value()).abs() < f32::EPSILON;
+        let same_reactivity = (a.reactivity.value() - b.reactivity.value()).abs() < f32::EPSILON;
+        let same_conductivity =
+            (a.conductivity.value() - b.conductivity.value()).abs() < f32::EPSILON;
         assert!(
             !(same_density && same_reactivity && same_conductivity),
             "different seeds should produce different materials"
@@ -660,11 +680,11 @@ visibility = "Hidden"
         for seed in [0, 1, u64::MAX, 0xCAFE_BABE, 0x1234_5678_9ABC_DEF0] {
             let mat = derive_material_from_seed(seed);
             for (label, val) in [
-                ("density", mat.density.value),
-                ("thermal_resistance", mat.thermal_resistance.value),
-                ("reactivity", mat.reactivity.value),
-                ("conductivity", mat.conductivity.value),
-                ("toxicity", mat.toxicity.value),
+                ("density", mat.density.value()),
+                ("thermal_resistance", mat.thermal_resistance.value()),
+                ("reactivity", mat.reactivity.value()),
+                ("conductivity", mat.conductivity.value()),
+                ("toxicity", mat.toxicity.value()),
                 ("color_r", mat.color[0]),
                 ("color_g", mat.color[1]),
                 ("color_b", mat.color[2]),
@@ -715,11 +735,11 @@ visibility = "Hidden"
         let mut unique_colors = HashSet::new();
 
         for mat in &materials {
-            unique_density.insert(mat.density.value.to_bits());
-            unique_thermal.insert(mat.thermal_resistance.value.to_bits());
-            unique_reactivity.insert(mat.reactivity.value.to_bits());
-            unique_conductivity.insert(mat.conductivity.value.to_bits());
-            unique_toxicity.insert(mat.toxicity.value.to_bits());
+            unique_density.insert(mat.density.value().to_bits());
+            unique_thermal.insert(mat.thermal_resistance.value().to_bits());
+            unique_reactivity.insert(mat.reactivity.value().to_bits());
+            unique_conductivity.insert(mat.conductivity.value().to_bits());
+            unique_toxicity.insert(mat.toxicity.value().to_bits());
             unique_names.insert(mat.name.clone());
             unique_colors.insert((
                 mat.color[0].to_bits(),
@@ -773,11 +793,12 @@ visibility = "Hidden"
             for j in (i + 1)..materials.len() {
                 let a = &materials[i];
                 let b = &materials[j];
-                let all_same = a.density.value.to_bits() == b.density.value.to_bits()
-                    && a.thermal_resistance.value.to_bits() == b.thermal_resistance.value.to_bits()
-                    && a.reactivity.value.to_bits() == b.reactivity.value.to_bits()
-                    && a.conductivity.value.to_bits() == b.conductivity.value.to_bits()
-                    && a.toxicity.value.to_bits() == b.toxicity.value.to_bits()
+                let all_same = a.density.value().to_bits() == b.density.value().to_bits()
+                    && a.thermal_resistance.value().to_bits()
+                        == b.thermal_resistance.value().to_bits()
+                    && a.reactivity.value().to_bits() == b.reactivity.value().to_bits()
+                    && a.conductivity.value().to_bits() == b.conductivity.value().to_bits()
+                    && a.toxicity.value().to_bits() == b.toxicity.value().to_bits()
                     && a.color[0].to_bits() == b.color[0].to_bits()
                     && a.color[1].to_bits() == b.color[1].to_bits()
                     && a.color[2].to_bits() == b.color[2].to_bits();
@@ -979,11 +1000,12 @@ visibility = "Hidden"
             for j in (i + 1)..materials.len() {
                 let a = &materials[i];
                 let b = &materials[j];
-                let all_same = a.density.value.to_bits() == b.density.value.to_bits()
-                    && a.thermal_resistance.value.to_bits() == b.thermal_resistance.value.to_bits()
-                    && a.reactivity.value.to_bits() == b.reactivity.value.to_bits()
-                    && a.conductivity.value.to_bits() == b.conductivity.value.to_bits()
-                    && a.toxicity.value.to_bits() == b.toxicity.value.to_bits();
+                let all_same = a.density.value().to_bits() == b.density.value().to_bits()
+                    && a.thermal_resistance.value().to_bits()
+                        == b.thermal_resistance.value().to_bits()
+                    && a.reactivity.value().to_bits() == b.reactivity.value().to_bits()
+                    && a.conductivity.value().to_bits() == b.conductivity.value().to_bits()
+                    && a.toxicity.value().to_bits() == b.toxicity.value().to_bits();
                 assert!(
                     !all_same,
                     "well-known seeds {} ({}) and {} ({}) produced identical properties",
@@ -997,7 +1019,7 @@ visibility = "Hidden"
         // is not collapsing small sequential seeds into the same bucket.
         let unique_densities: std::collections::HashSet<u32> = materials
             .iter()
-            .map(|m| m.density.value.to_bits())
+            .map(|m| m.density.value().to_bits())
             .collect();
         assert!(
             unique_densities.len() >= 5,

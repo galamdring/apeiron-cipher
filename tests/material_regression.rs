@@ -33,23 +33,28 @@ fn same_seed_produces_identical_material() {
         assert_eq!(a.name, b.name, "seed {seed:#x}: name mismatch");
         assert_eq!(a.seed, b.seed, "seed {seed:#x}: seed field mismatch");
         assert_eq!(
-            a.density.value, b.density.value,
+            a.density.value(),
+            b.density.value(),
             "seed {seed:#x}: density mismatch"
         );
         assert_eq!(
-            a.thermal_resistance.value, b.thermal_resistance.value,
+            a.thermal_resistance.value(),
+            b.thermal_resistance.value(),
             "seed {seed:#x}: thermal_resistance mismatch"
         );
         assert_eq!(
-            a.reactivity.value, b.reactivity.value,
+            a.reactivity.value(),
+            b.reactivity.value(),
             "seed {seed:#x}: reactivity mismatch"
         );
         assert_eq!(
-            a.conductivity.value, b.conductivity.value,
+            a.conductivity.value(),
+            b.conductivity.value(),
             "seed {seed:#x}: conductivity mismatch"
         );
         assert_eq!(
-            a.toxicity.value, b.toxicity.value,
+            a.toxicity.value(),
+            b.toxicity.value(),
             "seed {seed:#x}: toxicity mismatch"
         );
         assert_eq!(a.color, b.color, "seed {seed:#x}: color mismatch");
@@ -72,14 +77,14 @@ fn material_properties_vary_across_seeds() {
         &str,
         Box<dyn Fn(&apeiron_cipher::materials::GameMaterial) -> f32>,
     )> = vec![
-        ("density", Box::new(|m| m.density.value)),
+        ("density", Box::new(|m| m.density.value())),
         (
             "thermal_resistance",
-            Box::new(|m| m.thermal_resistance.value),
+            Box::new(|m| m.thermal_resistance.value()),
         ),
-        ("reactivity", Box::new(|m| m.reactivity.value)),
-        ("conductivity", Box::new(|m| m.conductivity.value)),
-        ("toxicity", Box::new(|m| m.toxicity.value)),
+        ("reactivity", Box::new(|m| m.reactivity.value())),
+        ("conductivity", Box::new(|m| m.conductivity.value())),
+        ("toxicity", Box::new(|m| m.toxicity.value())),
     ];
 
     for (name, getter) in &properties {
@@ -114,11 +119,11 @@ fn all_properties_in_valid_range() {
     for seed in 0..500_u64 {
         let mat = derive_material_from_seed(seed);
         for (name, val) in [
-            ("density", mat.density.value),
-            ("thermal_resistance", mat.thermal_resistance.value),
-            ("reactivity", mat.reactivity.value),
-            ("conductivity", mat.conductivity.value),
-            ("toxicity", mat.toxicity.value),
+            ("density", mat.density.value()),
+            ("thermal_resistance", mat.thermal_resistance.value()),
+            ("reactivity", mat.reactivity.value()),
+            ("conductivity", mat.conductivity.value()),
+            ("toxicity", mat.toxicity.value()),
         ] {
             assert!(
                 (0.0..=1.0).contains(&val),
@@ -291,7 +296,7 @@ fn well_known_seeds_produce_distinct_materials() {
     // No two should have identical density (extremely unlikely for different seeds).
     let densities: HashSet<u32> = materials
         .iter()
-        .map(|m| m.density.value.to_bits())
+        .map(|m| m.density.value().to_bits())
         .collect();
     assert_eq!(
         densities.len(),

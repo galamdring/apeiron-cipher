@@ -285,11 +285,11 @@ fn build_filter_bar_text_current_biome_only() {
     let filter = JournalFilter {
         category: None,
         context: Some(JournalContext::CurrentBiome {
-            biome_key: "desert".to_string(),
+            biome_key: BiomeKey::from(BiomeType::ScorchedFlats),
         }),
     };
     let result = build_filter_bar_text(&filter);
-    assert_eq!(result, "Filter: Current Biome");
+    assert_eq!(result, "Filter: Current Biome (scorched_flats)");
 }
 
 #[test]
@@ -307,11 +307,11 @@ fn build_filter_bar_text_category_and_biome() {
     let filter = JournalFilter {
         category: Some(ObservationCategory::Weight),
         context: Some(JournalContext::CurrentBiome {
-            biome_key: "forest".to_string(),
+            biome_key: BiomeKey::from(BiomeType::MineralSteppe),
         }),
     };
     let result = build_filter_bar_text(&filter);
-    assert_eq!(result, "Filter: Weight | Current Biome");
+    assert_eq!(result, "Filter: Weight | Current Biome (mineral_steppe)");
 }
 
 #[test]
@@ -597,12 +597,12 @@ fn build_help_text_with_combined_filter() {
     state.set_filter(JournalFilter {
         category: Some(ObservationCategory::Weight),
         context: Some(JournalContext::CurrentBiome {
-            biome_key: "forest".to_string(),
+            biome_key: BiomeKey::from(BiomeType::MineralSteppe),
         }),
     });
     
     let result = build_help_text(5, &state);
-    assert!(result.contains("[Filter: Category | Current Biome]"));
+    assert!(result.contains("[Filter: Category | Current Biome (mineral_steppe)]"));
 }
 
 #[test]

@@ -203,7 +203,7 @@ fn update_interaction_target(
                 description: format!(
                     "Color: {}\nWeight: {}",
                     describe_color(&material.color),
-                    describe_density(material.density.value)
+                    describe_density(material.density.value())
                 ),
                 recorded_at: 0,
             },
@@ -867,7 +867,7 @@ fn append_prop(
     if prop.visibility == PropertyVisibility::Observable
         || prop.visibility == PropertyVisibility::Revealed
     {
-        lines.push(format!("{label}: {}", describer(prop.value)));
+        lines.push(format!("{label}: {}", describer(prop.value())));
     } else {
         lines.push(format!("{label}: ???"));
     }
@@ -884,7 +884,7 @@ fn append_thermal_prop(lines: &mut Vec<String>, mat: &GameMaterial, tracker: &Co
         | PropertyVisibility::Revealed => {
             let confidence = tracker.level(mat.seed, PropertyName::ThermalResistance);
             let description =
-                describe_thermal_observation(mat.thermal_resistance.value, confidence);
+                describe_thermal_observation(mat.thermal_resistance.value(), confidence);
             lines.push(format!("Heat response: {description}"));
         }
     }
@@ -920,26 +920,11 @@ mod tests {
             name: "TestMat".into(),
             seed: 1,
             color: [0.5, 0.5, 0.5],
-            density: MaterialProperty {
-                value: 0.78,
-                visibility: PropertyVisibility::Observable,
-            },
-            thermal_resistance: MaterialProperty {
-                value: 0.65,
-                visibility: PropertyVisibility::Hidden,
-            },
-            reactivity: MaterialProperty {
-                value: 0.35,
-                visibility: PropertyVisibility::Hidden,
-            },
-            conductivity: MaterialProperty {
-                value: 0.72,
-                visibility: PropertyVisibility::Revealed,
-            },
-            toxicity: MaterialProperty {
-                value: 0.05,
-                visibility: PropertyVisibility::Hidden,
-            },
+            density: MaterialProperty::new(0.78, PropertyVisibility::Observable),
+            thermal_resistance: MaterialProperty::new(0.65, PropertyVisibility::Hidden),
+            reactivity: MaterialProperty::new(0.35, PropertyVisibility::Hidden),
+            conductivity: MaterialProperty::new(0.72, PropertyVisibility::Revealed),
+            toxicity: MaterialProperty::new(0.05, PropertyVisibility::Hidden),
         }
     }
 
@@ -1305,10 +1290,7 @@ mod tests {
     #[test]
     fn append_prop_observable_property() {
         let mut lines = Vec::new();
-        let prop = MaterialProperty {
-            value: 0.8,
-            visibility: PropertyVisibility::Observable,
-        };
+        let prop = MaterialProperty::new(0.8, PropertyVisibility::Observable);
         
         append_prop(&mut lines, "Test", &prop, |v| {
             if v > 0.5 { "High" } else { "Low" }
@@ -1320,10 +1302,7 @@ mod tests {
     #[test]
     fn append_prop_revealed_property() {
         let mut lines = Vec::new();
-        let prop = MaterialProperty {
-            value: 0.3,
-            visibility: PropertyVisibility::Revealed,
-        };
+        let prop = MaterialProperty::new(0.3, PropertyVisibility::Revealed);
         
         append_prop(&mut lines, "Weight", &prop, |v| {
             if v > 0.5 { "Heavy" } else { "Light" }
@@ -1335,10 +1314,7 @@ mod tests {
     #[test]
     fn append_prop_hidden_property() {
         let mut lines = Vec::new();
-        let prop = MaterialProperty {
-            value: 0.9,
-            visibility: PropertyVisibility::Hidden,
-        };
+        let prop = MaterialProperty::new(0.9, PropertyVisibility::Hidden);
         
         append_prop(&mut lines, "Secret", &prop, |_| "Should not see this");
         
