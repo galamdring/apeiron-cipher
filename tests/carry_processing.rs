@@ -7,7 +7,7 @@
 
 use apeiron_cipher::carry::{CarryPlugin, CarryState, CarryStrength, InCarry, StashIntent, CycleCarryIntent};
 use apeiron_cipher::interaction::HeldItem;
-use apeiron_cipher::journal::RecordObservation;
+use apeiron_cipher::journal::{RecordObservation, RecordWeightObservation};
 use apeiron_cipher::materials::{GameMaterial, MaterialObject, MaterialProperty, PropertyVisibility};
 use apeiron_cipher::observation::ConfidenceTracker;
 use apeiron_cipher::player::{Player, PlayerCamera, PlayerPlugin};
@@ -17,10 +17,7 @@ use bevy::ecs::system::RunSystemOnce;
 
 /// Creates a test material with the given density and unique seed.
 fn test_material(name: &str, density: f32, seed: u64) -> GameMaterial {
-    let prop = |v| MaterialProperty {
-        value: v,
-        visibility: PropertyVisibility::Observable,
-    };
+    let prop = |v| MaterialProperty::new(v, PropertyVisibility::Observable);
     GameMaterial {
         name: name.into(),
         seed,
@@ -38,12 +35,11 @@ fn setup_carry_test_app() -> App {
     let mut app = App::new();
     app.add_plugins(MinimalPlugins);
     app.add_message::<RecordObservation>();
+    app.add_message::<RecordWeightObservation>();
     app.init_resource::<ConfidenceTracker>();
-    app.add_plugins(PlayerPlugin);
     app.add_plugins(CarryPlugin);
     
     // Add MaterialPlugin for GameMaterial support
-    app.add_plugins(apeiron_cipher::materials::MaterialPlugin);
     
     app
 }
@@ -54,7 +50,6 @@ fn spawn_test_player(app: &mut App) -> Entity {
         .world_mut()
         .spawn((
             Player,
-            CarryState::new(5.0, true), // 5.0 capacity, hard limit enabled
             CarryStrength { current: 1.0 },
             Transform::default(),
         ))
@@ -66,6 +61,9 @@ fn spawn_test_player(app: &mut App) -> Entity {
         Transform::default(),
         GlobalTransform::default(),
     ));
+
+    // Run one frame to trigger Startup systems (attach_carry_state_to_player)
+    app.update();
 
     player_entity
 }
@@ -146,12 +144,10 @@ fn test_setup_works() {
     let mut app = setup_carry_test_app();
     let _player_entity = spawn_test_player(&mut app);
     
-    // Run startup
-    app.update();
-    
+
     // Verify basic setup works
     let carry_state = get_carry_state(app.world_mut());
-    assert_eq!(carry_state.carried_items.len(), 0);
+    assert_eq!(carry_state.len(), 0);
 }
 
 #[test]
@@ -159,19 +155,17 @@ fn stash_at_capacity_rejected() {
     let mut app = setup_carry_test_app();
     let player_entity = spawn_test_player(&mut app);
     
-    // Fill carry to capacity (5.0) with existing items
-    let (heavy1_entity, heavy1_material) = spawn_material_entity(&mut app, "Heavy1", 2.5, 1);
-    let (heavy2_entity, heavy2_material) = spawn_material_entity(&mut app, "Heavy2", 2.5, 2);
-    add_entity_to_carry(&mut app, player_entity, heavy1_entity, &heavy1_material);
-    add_entity_to_carry(&mut app, player_entity, heavy2_entity, &heavy2_material);
+
+    // Fill carry to capacity (5.0) with items of density 1.0 each
+    for i in 1..=5 {
+        let (entity, material) = spawn_material_entity(&mut app, &format!("Heavy{i}"), 1.0, i);
+        add_entity_to_carry(&mut app, player_entity, entity, &material);
+    }
     
     // Create a held item that would exceed capacity
     let camera_entity = get_camera_entity(app.world_mut());
     let (held_entity, _held_material) = spawn_material_entity(&mut app, "TooHeavy", 1.0, 3);
     make_entity_held(&mut app, held_entity, camera_entity);
-    
-    // Run startup to initialize carry state
-    app.update();
     
     // Trigger stash action
     trigger_stash_action(&mut app);
@@ -185,7 +179,7 @@ fn stash_at_capacity_rejected() {
     
     // Verify carry state unchanged
     let carry_state = get_carry_state(app.world_mut());
-    assert_eq!(carry_state.carried_items.len(), 2);
+    assert_eq!(carry_state.len(), 5);
 }
 
 #[test]
@@ -197,9 +191,7 @@ fn cycle_with_empty_hand_retrieves_from_carry() {
     let (carried_entity, carried_material) = spawn_material_entity(&mut app, "Carried", 1.0, 1);
     add_entity_to_carry(&mut app, player_entity, carried_entity, &carried_material);
     
-    // Run startup
-    app.update();
-    
+
     // Trigger cycle action with empty hand
     trigger_cycle_carry_action(&mut app);
     
@@ -212,7 +204,7 @@ fn cycle_with_empty_hand_retrieves_from_carry() {
     
     // Verify carry state updated
     let carry_state = get_carry_state(app.world_mut());
-    assert_eq!(carry_state.carried_items.len(), 0);
+    assert_eq!(carry_state.len(), 0);
     assert!((carry_state.current_weight - 0.0).abs() < f32::EPSILON);
 }
 
@@ -230,9 +222,7 @@ fn cycle_with_full_hand_swaps() {
     let (held_entity, held_material) = spawn_material_entity(&mut app, "Held", 0.5, 2);
     make_entity_held(&mut app, held_entity, camera_entity);
     
-    // Run startup
-    app.update();
-    
+
     // Trigger cycle action
     trigger_cycle_carry_action(&mut app);
     
@@ -250,9 +240,9 @@ fn cycle_with_full_hand_swaps() {
     
     // Verify carry state reflects the swap
     let carry_state = get_carry_state(app.world_mut());
-    assert_eq!(carry_state.carried_items.len(), 1);
-    assert_eq!(carry_state.carried_items[0].entity, held_entity);
-    assert!((carry_state.current_weight - held_material.density.value).abs() < f32::EPSILON);
+    assert_eq!(carry_state.len(), 1);
+    assert_eq!(carry_state.iter().next().unwrap().entity, held_entity);
+    assert!((carry_state.current_weight - held_material.density.value()).abs() < f32::EPSILON);
 }
 
 #[test]
@@ -271,7 +261,7 @@ fn cycle_with_empty_carry_does_nothing() {
     
     // Verify carry remains empty (no crash or unexpected behavior)
     let carry_state = get_carry_state(app.world_mut());
-    assert_eq!(carry_state.carried_items.len(), 0);
+    assert_eq!(carry_state.len(), 0);
 }
 
 #[test]
@@ -285,9 +275,7 @@ fn stale_despawned_entity_evicted() {
     add_entity_to_carry(&mut app, player_entity, carried1_entity, &carried1_material);
     add_entity_to_carry(&mut app, player_entity, carried2_entity, &carried2_material);
     
-    // Run startup
-    app.update();
-    
+
     // Despawn the first carried entity (simulating stale reference)
     app.world_mut().despawn(carried1_entity);
     
@@ -299,8 +287,8 @@ fn stale_despawned_entity_evicted() {
     
     // Verify the stale entity was evicted from carry state
     let carry_state = get_carry_state(app.world_mut());
-    assert_eq!(carry_state.carried_items.len(), 1);
-    assert_eq!(carry_state.carried_items[0].entity, carried2_entity);
+    assert_eq!(carry_state.len(), 1);
+    assert_eq!(carry_state.iter().next().unwrap().entity, carried2_entity);
     
     // Note: Weight is not adjusted when evicting stale entities (by design)
     // to prevent soft-locking on dead entities
@@ -322,7 +310,7 @@ fn stash_with_nothing_held_does_nothing() {
     
     // Verify carry remains empty (no crash or unexpected behavior)
     let carry_state = get_carry_state(app.world_mut());
-    assert_eq!(carry_state.carried_items.len(), 0);
+    assert_eq!(carry_state.len(), 0);
 }
 
 #[test]
@@ -340,9 +328,7 @@ fn successful_stash_updates_state_and_components() {
         .entity_mut(held_entity)
         .insert(MaterialObject);
     
-    // Run startup
-    app.update();
-    
+
     // Trigger stash action
     trigger_stash_action(&mut app);
     
@@ -360,9 +346,9 @@ fn successful_stash_updates_state_and_components() {
     
     // Verify carry state updated
     let carry_state = get_carry_state(app.world_mut());
-    assert_eq!(carry_state.carried_items.len(), 1);
-    assert_eq!(carry_state.carried_items[0].entity, held_entity);
-    assert!((carry_state.current_weight - held_material.density.value).abs() < f32::EPSILON);
+    assert_eq!(carry_state.len(), 1);
+    assert_eq!(carry_state.iter().next().unwrap().entity, held_entity);
+    assert!((carry_state.current_weight - held_material.density.value()).abs() < f32::EPSILON);
 }
 
 #[test]
@@ -389,9 +375,7 @@ fn cycle_with_capacity_check_prevents_swap() {
     let (held_entity, _held_material) = spawn_material_entity(&mut app, "TooHeavy", 1.0, 2);
     make_entity_held(&mut app, held_entity, camera_entity);
     
-    // Run startup
-    app.update();
-    
+
     // Trigger cycle action
     trigger_cycle_carry_action(&mut app);
     
@@ -402,7 +386,7 @@ fn cycle_with_capacity_check_prevents_swap() {
     assert!(has_component::<HeldItem>(app.world_mut(), held_entity));
     assert!(!has_component::<InCarry>(app.world_mut(), held_entity));
     
-    // Verify the carried item was still retrieved
-    assert!(has_component::<HeldItem>(app.world_mut(), carried_entity));
-    assert!(!has_component::<InCarry>(app.world_mut(), carried_entity));
+    // Verify the carried item stayed in carry (entire cycle was rejected)
+    assert!(!has_component::<HeldItem>(app.world_mut(), carried_entity));
+    assert!(has_component::<InCarry>(app.world_mut(), carried_entity));
 }
