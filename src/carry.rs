@@ -19,17 +19,17 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
-use crate::observation::PropertyName;
 
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::input::InputAction;
 use crate::interaction::HeldItem;
-use crate::journal::{JournalKey, RecordWeightObservation};
+use crate::journal::{JournalKey, Observation, ObservationCategory, RecordObservation};
 use crate::materials::{GameMaterial, MaterialObject};
-use crate::observation::ConfidenceTracker;
+use crate::observation::Confidence;
 use crate::player::{Player, PlayerCamera, cursor_is_captured};
+use crate::world_generation::WorldProfile;
 use leafwing_input_manager::prelude::*;
 
 const CONFIG_PATH: &str = "assets/config/carry.toml";
@@ -233,7 +233,7 @@ pub struct CarryState {
     /// Whether stashing is rejected when weight exceeds capacity.
     pub hard_limit_enabled: bool,
     /// Ordered list of items currently stashed in carry.
-    carried_items: Vec<CarriedItem>,
+    pub carried_items: Vec<CarriedItem>,
 }
 
 impl CarryState {
@@ -247,53 +247,17 @@ impl CarryState {
         }
     }
 
-    /// Push an item into the carry container using the configured order.
-    /// 
-    /// For both FIFO and LIFO, items are added to the end of the internal storage.
-    /// The difference is in retrieval order via `pop()` and `cycle()`.
-    pub fn push(&mut self, item: CarriedItem) {
-        self.carried_items.push(item);
-    }
-
-    /// Pop an item from the carry container using the configured order.
-    /// 
-    /// FIFO: removes the oldest item (first in the list).
-    /// LIFO: removes the newest item (last in the list).
-    pub fn pop(&mut self, cycle_order: CarryCycleOrder) -> Option<CarriedItem> {
-        match cycle_order {
-            CarryCycleOrder::Fifo => {
-                if self.carried_items.is_empty() {
-                    None
-                } else {
-                    Some(self.carried_items.remove(0))
-                }
-            }
-            CarryCycleOrder::Lifo => self.carried_items.pop(),
-        }
-    }
-
-    /// Get the next item that would be returned by `pop()` without removing it.
-    /// 
-    /// This is used for cycle operations where we need to check the item before
-    /// deciding whether to actually remove it.
-    pub fn cycle(&self, cycle_order: CarryCycleOrder) -> Option<&CarriedItem> {
-        match cycle_order {
-            CarryCycleOrder::Fifo => self.carried_items.first(),
-            CarryCycleOrder::Lifo => self.carried_items.last(),
-        }
-    }
-
-    /// Returns true if the carry container is empty.
-    pub fn is_empty(&self) -> bool {
-        self.carried_items.is_empty()
-    }
-
-    /// Returns the number of items in the carry container.
+    /// Returns the number of items currently carried.
     pub fn len(&self) -> usize {
         self.carried_items.len()
     }
 
-    /// Iterate over all carried items.
+    /// Returns true if no items are carried.
+    pub fn is_empty(&self) -> bool {
+        self.carried_items.is_empty()
+    }
+
+    /// Returns an iterator over carried items.
     pub fn iter(&self) -> impl Iterator<Item = &CarriedItem> {
         self.carried_items.iter()
     }
@@ -303,7 +267,7 @@ impl CarryState {
     /// Story 4.1 does not wire the stash interaction yet, but this method is the
     /// server-side accounting rule that later intent-processing systems will call.
     pub fn add_material(&mut self, entity: Entity, material: &GameMaterial) {
-        self.push(CarriedItem::new(entity));
+        self.carried_items.push(CarriedItem::new(entity));
         self.current_weight += material.density.value();
     }
 
@@ -349,7 +313,10 @@ impl CarryState {
     /// systems can decide the order of multi-step operations like "stash current
     /// hand item, then retrieve an older carried item."
     pub fn next_carried_entity(&self, cycle_order: CarryCycleOrder) -> Option<Entity> {
-        self.cycle(cycle_order).map(|item| item.entity)
+        match cycle_order {
+            CarryCycleOrder::Fifo => self.carried_items.first().map(|item| item.entity),
+            CarryCycleOrder::Lifo => self.carried_items.last().map(|item| item.entity),
+        }
     }
 
     /// Returns true when the carry container can accept an item of the given weight.
@@ -1282,6 +1249,30 @@ fn carry_strength_delta(
     }
 }
 
+fn describe_weight_observation(
+    density: f32,
+    carry_strength: f32,
+    confidence: Confidence,
+    bands: &[WeightDescriptionBand],
+) -> String {
+    let ratio = if carry_strength <= f32::EPSILON {
+        f32::INFINITY
+    } else {
+        density / carry_strength
+    };
+    let base = bands
+        .iter()
+        .find(|band| ratio <= band.max_ratio)
+        .map(|band| band.text.as_str())
+        .unwrap_or("Barely able to lift");
+
+    match confidence.tier() {
+        crate::observation::ConfidenceTier::Tentative => format!("Seemed {}", base.to_lowercase()),
+        crate::observation::ConfidenceTier::Observed
+        | crate::observation::ConfidenceTier::Confident => base.to_string(),
+    }
+}
+
 /// Capacity depends on both the configured base capacity and the carry-device rule.
 ///
 /// If the config names a carry-enabling item and the player does not have that
@@ -1377,37 +1368,57 @@ pub fn stash_entity_into_carry(
         .insert(Visibility::Hidden);
 }
 
-/// Records a weight observation using the new pattern that sends raw data to the journal.
+/// Records a weight observation for a material, updating confidence and journal.
 ///
-/// This function was updated to align with the thermal observation pattern where raw data
-/// is sent to the journal and the descriptor function is called by the journal system
-/// rather than pre-rendering the description in the carry system.
-///
-/// **Planet seed handling:** This function passes `planet_seed: None` to
-/// the journal system, which automatically resolves the current planet
-/// from the [`WorldProfile`] resource. This eliminates the need for callers
-/// to manually extract planet seed information and prevents silent failures
-/// when observation sites forget the extraction pattern.
+/// `planet_seed` is the player's current planet seed (taken from
+/// `WorldProfile::planet_seed.0` at the call site), or `None` when no
+/// `WorldProfile` is in scope.  It is stamped onto the resulting
+/// [`JournalKey::Material`] so the journal's "current planet" filter
+/// (Story 10.3) can match this entry against the player's current
+/// planet without re-deriving provenance from observation history.
 pub fn record_weight_observation(
     material: &GameMaterial,
     carry_strength: f32,
     config: &CarryConfig,
-    tracker: &mut ConfidenceTracker,
-    journal_writer: &mut MessageWriter<RecordWeightObservation>,
+    journal_writer: &mut MessageWriter<RecordObservation>,
+    descriptor_vocab: &crate::observation::DescriptorVocabulary,
+    planet_seed: Option<u64>,
 ) {
-    tracker.record(material.seed, PropertyName::Density);
-    let confidence = tracker.level(material.seed, PropertyName::Density);
+    // Use initial confidence for new observations - the journal system
+    // will handle accumulation automatically for repeated observations
+    let initial_confidence = Confidence(0.2);
 
-    journal_writer.write(RecordWeightObservation {
+    // Generate description using the DescriptorVocabulary system
+    let description = descriptor_vocab
+        .describe(
+            &ObservationCategory::Weight,
+            material.density.value(),
+            initial_confidence,
+        )
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| {
+            // Fallback to old system if vocabulary lookup fails
+            describe_weight_observation(
+                material.density.value(),
+                carry_strength,
+                initial_confidence,
+                &config.weight_descriptions,
+            )
+        });
+
+
+    journal_writer.write(RecordObservation {
         key: JournalKey::Material {
             seed: material.seed,
-            planet_seed: None, // Automatically resolved by apply_observations system
+            planet_seed,
         },
         name: material.name.clone(),
-        density: material.density.value(),
-        carry_strength,
-        confidence,
-        weight_bands: config.weight_descriptions.clone(),
+        observation: Observation {
+            category: ObservationCategory::Weight,
+            confidence: initial_confidence,
+            description,
+            recorded_at: 0,
+        },
     });
 }
 
@@ -1453,12 +1464,14 @@ fn process_stash_intent(
     mut reader: MessageReader<StashIntent>,
     mut weight_writer: MessageWriter<CarryWeightChanged>,
     mut reject_writer: MessageWriter<CarryActionRejected>,
-    mut journal_writer: MessageWriter<RecordWeightObservation>,
-    mut tracker: ResMut<ConfidenceTracker>,
+    mut journal_writer: MessageWriter<RecordObservation>,
     config: Res<CarryConfig>,
+    descriptor_vocab: Res<crate::observation::DescriptorVocabulary>,
     mut player_query: Query<(&mut CarryState, &CarryStrength), With<Player>>,
     held_query: Query<(Entity, &GameMaterial), With<HeldItem>>,
+    world_profile: Option<Res<WorldProfile>>,
 ) {
+    let planet_seed = world_profile.as_deref().map(|p| p.planet_seed.0);
     for _intent in reader.read() {
         let Some((held_entity, held_material)) = held_query.iter().next() else {
             reject_writer.write(CarryActionRejected {
@@ -1485,8 +1498,9 @@ fn process_stash_intent(
             held_material,
             carry_strength.current,
             &config,
-            &mut tracker,
             &mut journal_writer,
+            &descriptor_vocab,
+            planet_seed,
         );
         emit_carry_weight_changed(&mut weight_writer, &carry_state);
     }
@@ -1501,11 +1515,13 @@ fn process_stash_held_for_pickup(
     mut commands: Commands,
     mut reader: MessageReader<StashHeldForPickup>,
     mut weight_writer: MessageWriter<CarryWeightChanged>,
-    mut journal_writer: MessageWriter<RecordWeightObservation>,
-    mut tracker: ResMut<ConfidenceTracker>,
+    mut journal_writer: MessageWriter<RecordObservation>,
     config: Res<CarryConfig>,
+    descriptor_vocab: Res<crate::observation::DescriptorVocabulary>,
     mut player_query: Query<(&mut CarryState, &CarryStrength), With<Player>>,
+    world_profile: Option<Res<WorldProfile>>,
 ) {
+    let planet_seed = world_profile.as_deref().map(|p| p.planet_seed.0);
     for request in reader.read() {
         let Ok((mut carry_state, carry_strength)) = player_query.single_mut() else {
             continue;
@@ -1521,16 +1537,18 @@ fn process_stash_held_for_pickup(
             &request.held_material,
             carry_strength.current,
             &config,
-            &mut tracker,
             &mut journal_writer,
+            &descriptor_vocab,
+            planet_seed,
         );
         // Also record weight for the newly picked material.
         record_weight_observation(
             &request.picked_material,
             carry_strength.current,
             &config,
-            &mut tracker,
             &mut journal_writer,
+            &descriptor_vocab,
+            planet_seed,
         );
         emit_carry_weight_changed(&mut weight_writer, &carry_state);
     }
@@ -1539,11 +1557,13 @@ fn process_stash_held_for_pickup(
 /// Handle standalone weight observation requests from interaction (pickup without stash).
 fn process_observe_weight(
     mut reader: MessageReader<ObserveWeight>,
-    mut journal_writer: MessageWriter<RecordWeightObservation>,
-    mut tracker: ResMut<ConfidenceTracker>,
+    mut journal_writer: MessageWriter<RecordObservation>,
     config: Res<CarryConfig>,
+    descriptor_vocab: Res<crate::observation::DescriptorVocabulary>,
     player_query: Query<&CarryStrength, With<Player>>,
+    world_profile: Option<Res<WorldProfile>>,
 ) {
+    let planet_seed = world_profile.as_deref().map(|p| p.planet_seed.0);
     for request in reader.read() {
         let Ok(carry_strength) = player_query.single() else {
             continue;
@@ -1552,8 +1572,9 @@ fn process_observe_weight(
             &request.material,
             carry_strength.current,
             &config,
-            &mut tracker,
             &mut journal_writer,
+            &descriptor_vocab,
+            planet_seed,
         );
     }
 }
@@ -1567,14 +1588,16 @@ fn process_cycle_carry_intent(
     mut reader: MessageReader<CycleCarryIntent>,
     mut weight_writer: MessageWriter<CarryWeightChanged>,
     mut reject_writer: MessageWriter<CarryActionRejected>,
-    mut journal_writer: MessageWriter<RecordWeightObservation>,
-    mut tracker: ResMut<ConfidenceTracker>,
+    mut journal_writer: MessageWriter<RecordObservation>,
     config: Res<CarryConfig>,
+    descriptor_vocab: Res<crate::observation::DescriptorVocabulary>,
     mut player_query: Query<(&mut CarryState, &CarryStrength), With<Player>>,
     camera_query: Query<Entity, With<PlayerCamera>>,
     held_query: Query<(Entity, &GameMaterial), With<HeldItem>>,
     carried_material_query: Query<&GameMaterial, With<InCarry>>,
+    world_profile: Option<Res<WorldProfile>>,
 ) {
+    let planet_seed = world_profile.as_deref().map(|p| p.planet_seed.0);
     for _intent in reader.read() {
         let Ok((mut carry_state, carry_strength)) = player_query.single_mut() else {
             continue;
@@ -1620,8 +1643,9 @@ fn process_cycle_carry_intent(
                 held_material,
                 carry_strength.current,
                 &config,
-                &mut tracker,
                 &mut journal_writer,
+                &descriptor_vocab,
+                planet_seed,
             );
         }
 
@@ -1639,8 +1663,9 @@ fn process_cycle_carry_intent(
             next_material,
             carry_strength.current,
             &config,
-            &mut tracker,
             &mut journal_writer,
+            &descriptor_vocab,
+            planet_seed,
         );
         emit_carry_weight_changed(&mut weight_writer, &carry_state);
     }
@@ -1650,12 +1675,6 @@ fn process_cycle_carry_intent(
 // decoupled from interaction.rs but `floor_drop_position` and
 // `move_entity_from_carry_to_floor` were never ported. Commented out to fix
 // dead-code lint. Restore when the drop-from-carry flow is completed.
-//
-// NOTE: When this function is restored, weight recording should be deliberately
-// omitted on drop. The player already observed the material's weight when they
-// picked it up or cycled to it, so dropping doesn't provide new information
-// about the material's density. This differs from stash/cycle operations where
-// the player actively handles the material and may gain additional weight insight.
 //
 // #[allow(clippy::too_many_arguments)]
 // fn process_drop_carry_intent(
@@ -1675,11 +1694,9 @@ fn process_cycle_carry_intent(
 mod tests {
     use super::*;
     use crate::materials::{GameMaterial, MaterialProperty, PropertyVisibility};
-    use crate::observation::ConfidenceLevel;
 
     fn material_with_density(value: f32) -> GameMaterial {
-        let property =
-            |density: f32| MaterialProperty::new(density, PropertyVisibility::Observable);
+        let property = |density: f32| MaterialProperty::new(density, PropertyVisibility::Observable);
 
         GameMaterial {
             name: "Testite".into(),
@@ -1802,8 +1819,7 @@ exponent = 1.0
         state.add_material(entity, &material);
 
         assert_eq!(state.current_weight, 0.8);
-        assert_eq!(state.len(), 1);
-        assert_eq!(state.iter().next().unwrap(), &CarriedItem::new(entity));
+        assert_eq!(state.carried_items, vec![CarriedItem::new(entity)]);
     }
 
     #[test]
@@ -1820,8 +1836,7 @@ exponent = 1.0
 
         assert_eq!(removed, Some(CarriedItem::new(second)));
         assert!((state.current_weight - 0.2).abs() < f32::EPSILON);
-        assert_eq!(state.len(), 1);
-        assert_eq!(state.iter().next().unwrap(), &CarriedItem::new(first));
+        assert_eq!(state.carried_items, vec![CarriedItem::new(first)]);
     }
 
     #[test]
@@ -1847,8 +1862,7 @@ exponent = 1.0
         let first = Entity::from_bits(1);
         let second = Entity::from_bits(2);
         let mut state = CarryState::new(5.0, true);
-        state.push(CarriedItem::new(first));
-        state.push(CarriedItem::new(second));
+        state.carried_items = vec![CarriedItem::new(first), CarriedItem::new(second)];
 
         assert_eq!(
             state.next_carried_entity(CarryCycleOrder::Fifo),
@@ -1861,8 +1875,7 @@ exponent = 1.0
         let first = Entity::from_bits(1);
         let second = Entity::from_bits(2);
         let mut state = CarryState::new(5.0, true);
-        state.push(CarriedItem::new(first));
-        state.push(CarriedItem::new(second));
+        state.carried_items = vec![CarriedItem::new(first), CarriedItem::new(second)];
 
         assert_eq!(
             state.next_carried_entity(CarryCycleOrder::Lifo),
@@ -1900,90 +1913,16 @@ exponent = 1.0
         let first = Entity::from_bits(1);
         let second = Entity::from_bits(2);
         let mut state = CarryState::new(5.0, true);
-        state.push(CarriedItem::new(first));
-        state.push(CarriedItem::new(second));
+        state.carried_items = vec![CarriedItem::new(first), CarriedItem::new(second)];
 
         assert!(state.evict_stale_entity(first));
-        assert_eq!(state.len(), 1);
-        assert_eq!(state.iter().next().unwrap(), &CarriedItem::new(second));
+        assert_eq!(state.carried_items, vec![CarriedItem::new(second)]);
     }
 
     #[test]
     fn evict_stale_entity_returns_false_for_unknown() {
         let mut state = CarryState::new(5.0, true);
         assert!(!state.evict_stale_entity(Entity::from_bits(999)));
-    }
-
-    #[test]
-    fn push_and_pop_fifo_order() {
-        let first = Entity::from_bits(1);
-        let second = Entity::from_bits(2);
-        let mut state = CarryState::new(5.0, true);
-        
-        state.push(CarriedItem::new(first));
-        state.push(CarriedItem::new(second));
-        
-        // FIFO: first in, first out
-        assert_eq!(state.pop(CarryCycleOrder::Fifo), Some(CarriedItem::new(first)));
-        assert_eq!(state.pop(CarryCycleOrder::Fifo), Some(CarriedItem::new(second)));
-        assert_eq!(state.pop(CarryCycleOrder::Fifo), None);
-    }
-
-    #[test]
-    fn push_and_pop_lifo_order() {
-        let first = Entity::from_bits(1);
-        let second = Entity::from_bits(2);
-        let mut state = CarryState::new(5.0, true);
-        
-        state.push(CarriedItem::new(first));
-        state.push(CarriedItem::new(second));
-        
-        // LIFO: last in, first out
-        assert_eq!(state.pop(CarryCycleOrder::Lifo), Some(CarriedItem::new(second)));
-        assert_eq!(state.pop(CarryCycleOrder::Lifo), Some(CarriedItem::new(first)));
-        assert_eq!(state.pop(CarryCycleOrder::Lifo), None);
-    }
-
-    #[test]
-    fn cycle_returns_next_without_removing() {
-        let first = Entity::from_bits(1);
-        let second = Entity::from_bits(2);
-        let mut state = CarryState::new(5.0, true);
-        
-        state.push(CarriedItem::new(first));
-        state.push(CarriedItem::new(second));
-        
-        // FIFO: cycle returns first, but doesn't remove it
-        assert_eq!(state.cycle(CarryCycleOrder::Fifo), Some(&CarriedItem::new(first)));
-        assert_eq!(state.len(), 2);
-        
-        // LIFO: cycle returns last, but doesn't remove it
-        assert_eq!(state.cycle(CarryCycleOrder::Lifo), Some(&CarriedItem::new(second)));
-        assert_eq!(state.len(), 2);
-    }
-
-    #[test]
-    fn is_empty_and_len_work_correctly() {
-        let mut state = CarryState::new(5.0, true);
-        
-        assert!(state.is_empty());
-        assert_eq!(state.len(), 0);
-        
-        state.push(CarriedItem::new(Entity::from_bits(1)));
-        assert!(!state.is_empty());
-        assert_eq!(state.len(), 1);
-        
-        state.push(CarriedItem::new(Entity::from_bits(2)));
-        assert!(!state.is_empty());
-        assert_eq!(state.len(), 2);
-        
-        state.pop(CarryCycleOrder::Fifo);
-        assert!(!state.is_empty());
-        assert_eq!(state.len(), 1);
-        
-        state.pop(CarryCycleOrder::Fifo);
-        assert!(state.is_empty());
-        assert_eq!(state.len(), 0);
     }
 
     #[test]
@@ -2275,12 +2214,10 @@ exponent = 1.0
 
     #[test]
     fn weight_observation_uses_tentative_language_for_first_carry() {
-        use crate::observation::describe_weight_observation;
-
         let text = describe_weight_observation(
             0.8,
             1.0,
-            ConfidenceLevel::Tentative,
+            Confidence(0.2), // Tentative
             &default_weight_descriptions(),
         );
 
@@ -2289,62 +2226,76 @@ exponent = 1.0
 
     #[test]
     fn weight_observation_strengthens_with_confidence() {
-        use crate::observation::describe_weight_observation;
-
         let text = describe_weight_observation(
             0.8,
             1.0,
-            ConfidenceLevel::Observed,
+            Confidence(0.5), // Observed
             &default_weight_descriptions(),
         );
 
         assert_eq!(text, "Straining under the weight");
     }
 
-    /// Verify that `record_weight_observation` emits a `RecordWeightObservation`
-    /// message with `planet_seed: None`, allowing the journal ingestion
-    /// system to automatically resolve the current planet from the
-    /// `WorldProfile` resource. This eliminates the implicit contract
-    /// fragility where every observation site had to manually extract
-    /// the planet seed.
+    /// Story 10.3 / Phase 2 Task 4: `record_weight_observation` is the
+    /// shared sink for every carry-path weight observation (stash, swap,
+    /// standalone observe, cycle).  It must stamp its caller-supplied
+    /// `planet_seed` directly onto the emitted `JournalKey::Material` so
+    /// the journal's "current planet" filter can later match the entry
+    /// against the player's `WorldProfile::planet_seed`.  Verifying the
+    /// pure function here pins the contract that every system call site
+    /// (which all read `world_profile.as_deref().map(|p| p.planet_seed.0)`
+    /// before calling) relies on.
     #[test]
-    fn record_weight_observation_emits_observation_with_none_planet_seed() {
+    fn record_weight_observation_stamps_supplied_planet_seed_on_key() {
         use bevy::prelude::Messages;
 
-        // Drive the function through a Bevy one-shot system because
+        // Run the function twice — once with a known planet seed and once
+        // with `None` — and assert the recorded key faithfully reflects
+        // each input.  We drive it through a Bevy one-shot system because
         // `record_weight_observation` takes a real `MessageWriter`, which
         // can only be obtained from a `World`.
         fn drive(
-            inputs: bevy::ecs::system::In<GameMaterial>,
-            mut writer: MessageWriter<RecordWeightObservation>,
+            inputs: bevy::ecs::system::In<(GameMaterial, Option<u64>)>,
+            mut writer: MessageWriter<RecordObservation>,
+            descriptor_vocab: Res<crate::observation::DescriptorVocabulary>,
         ) {
-            let mat = inputs.0;
-            let mut tracker = ConfidenceTracker::default();
+            let (mat, seed) = inputs.0;
             let cfg = CarryConfig::default();
-            record_weight_observation(&mat, 1.0, &cfg, &mut tracker, &mut writer);
+            record_weight_observation(&mat, 1.0, &cfg, &mut writer, &descriptor_vocab, seed);
         }
 
         let material = material_with_density(0.8);
-        let mut app = App::new();
-        app.add_message::<RecordWeightObservation>();
-        app.world_mut()
-            .run_system_cached_with(drive, material.clone())
-            .expect("one-shot system should run");
 
-        let mut messages = app
-            .world_mut()
-            .resource_mut::<Messages<RecordWeightObservation>>();
-        let recorded: Vec<RecordWeightObservation> = messages.drain().collect();
-        assert_eq!(recorded.len(), 1, "expected one observation");
-        match &recorded[0].key {
-            JournalKey::Material { seed, planet_seed } => {
-                assert_eq!(*seed, material.seed, "material seed must match");
-                assert_eq!(
-                    *planet_seed, None,
-                    "planet_seed should be None for automatic resolution by apply_observations"
-                );
+        for (label, supplied, expected) in [
+            (
+                "with current planet",
+                Some(0xDEAD_BEEFu64),
+                Some(0xDEAD_BEEFu64),
+            ),
+            ("without WorldProfile", None, None),
+        ] {
+            let mut app = App::new();
+            app.add_message::<RecordObservation>();
+            app.insert_resource(crate::observation::DescriptorVocabulary::default());
+            app.world_mut()
+                .run_system_cached_with(drive, (material.clone(), supplied))
+                .expect("one-shot system should run");
+
+            let mut messages = app
+                .world_mut()
+                .resource_mut::<Messages<RecordObservation>>();
+            let recorded: Vec<RecordObservation> = messages.drain().collect();
+            assert_eq!(recorded.len(), 1, "{label}: expected one observation");
+            match &recorded[0].key {
+                JournalKey::Material { seed, planet_seed } => {
+                    assert_eq!(*seed, material.seed, "{label}: material seed must match");
+                    assert_eq!(
+                        *planet_seed, expected,
+                        "{label}: recorded planet_seed must equal the supplied value (no sentinel substitution)"
+                    );
+                }
+                other => panic!("{label}: expected JournalKey::Material, got {other:?}"),
             }
-            other => panic!("expected JournalKey::Material, got {other:?}"),
         }
     }
 }

@@ -7,9 +7,9 @@
 
 use apeiron_cipher::carry::{CarryPlugin, CarryState, CarryStrength, InCarry, StashIntent, CycleCarryIntent};
 use apeiron_cipher::interaction::HeldItem;
-use apeiron_cipher::journal::{RecordObservation, RecordWeightObservation};
+use apeiron_cipher::journal::RecordObservation;
 use apeiron_cipher::materials::{GameMaterial, MaterialObject, MaterialProperty, PropertyVisibility};
-use apeiron_cipher::observation::ConfidenceTracker;
+use apeiron_cipher::observation::{ConfidenceConfig, DescriptorVocabulary};
 use apeiron_cipher::player::{Player, PlayerCamera, PlayerPlugin};
 use bevy::prelude::*;
 use bevy::ecs::message::MessageWriter;
@@ -35,8 +35,8 @@ fn setup_carry_test_app() -> App {
     let mut app = App::new();
     app.add_plugins(MinimalPlugins);
     app.add_message::<RecordObservation>();
-    app.add_message::<RecordWeightObservation>();
-    app.init_resource::<ConfidenceTracker>();
+    app.init_resource::<ConfidenceConfig>();
+    app.init_resource::<DescriptorVocabulary>();
     app.add_plugins(CarryPlugin);
     
     // Add MaterialPlugin for GameMaterial support

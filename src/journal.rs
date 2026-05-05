@@ -13,9 +13,8 @@ use leafwing_input_manager::prelude::*;
 use serde::{Deserialize, Serialize};
 use strum::IntoEnumIterator;
 
-use crate::carry::WeightDescriptionBand;
 use crate::input::InputAction;
-use crate::observation::{ConfidenceLevel, describe_weight_observation};
+use crate::observation::Confidence;
 use crate::player::{Player, cursor_is_captured, spawn_player};
 use crate::world_generation::{BiomeType, WorldProfile};
 
@@ -161,7 +160,7 @@ impl ObservationCategory {
 ///
 /// Observations are the atomic unit of player knowledge. Each one records
 /// *what* was observed ([`ObservationCategory`]), *how confident* the
-/// player should be ([`ConfidenceLevel`]), a human-readable description,
+/// player should be ([`Confidence`]), a human-readable description,
 /// and the game-time tick when it was recorded. Observations accumulate
 /// inside a [`JournalEntry`] over time — the journal never forgets.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -169,7 +168,7 @@ pub struct Observation {
     /// What kind of knowledge this observation represents.
     pub category: ObservationCategory,
     /// How certain the player is based on repeated evidence.
-    pub confidence: ConfidenceLevel,
+    pub confidence: Confidence,
     /// Player-facing prose description of the observation.
     pub description: String,
     /// Game-time tick when this observation was recorded.
@@ -449,7 +448,6 @@ pub enum JournalSet {
 impl Plugin for JournalPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<RecordObservation>()
-            .add_message::<RecordWeightObservation>()
             .add_message::<ToggleJournalIntent>()
             .init_resource::<JournalUiState>()
             .init_resource::<JournalSelectionTracker>()
@@ -479,7 +477,6 @@ impl Plugin for JournalPlugin {
                         .in_set(JournalSet::Navigate)
                         .after(journal_navigation),
                     apply_observations.in_set(JournalSet::Navigate),
-                    apply_weight_records.in_set(JournalSet::Navigate),
                     compute_journal_panels.in_set(JournalSet::Compute),
                     sync_journal_ui.in_set(JournalSet::Sync),
                 ),
@@ -516,27 +513,6 @@ pub struct RecordObservation {
     pub observation: Observation,
 }
 
-/// Message for recording weight observations with raw data instead of pre-rendered descriptions.
-///
-/// This message carries the raw density, carry strength, and confidence data, allowing the
-/// journal system to call the descriptor function rather than having the carry system
-/// pre-render the description. This aligns the weight observation pattern with the thermal
-/// observation pattern for consistency.
-#[derive(Message, Clone)]
-pub struct RecordWeightObservation {
-    /// Which journal subject this weight observation belongs to.
-    pub key: JournalKey,
-    /// Player-facing display name for the subject.
-    pub name: String,
-    /// Raw material density value.
-    pub density: f32,
-    /// Player's current carry strength.
-    pub carry_strength: f32,
-    /// Confidence level based on observation count.
-    pub confidence: ConfidenceLevel,
-    /// Weight description bands from carry configuration.
-    pub weight_bands: Vec<WeightDescriptionBand>,
-}
 
 // ── Player-owned journal data ───────────────────────────────────────────
 
@@ -608,9 +584,68 @@ impl JournalEntry {
             .find(|o| o.description == observation.description)
         {
             // Upgrade confidence if the new evidence is stronger.
-            if observation.confidence > existing.confidence {
+            if observation.confidence.0 > existing.confidence.0 {
                 existing.confidence = observation.confidence;
             }
+            return;
+        }
+
+        group.push(observation);
+    }
+
+    /// Record an observation with confidence accumulation for existing observations.
+    ///
+    /// This method implements the confidence evolution system described in Story 10.4.
+    /// When an observation with the same category and description already exists,
+    /// it calls `accumulate()` on the existing observation's confidence using the
+    /// base observation weight from the configuration. This provides diminishing
+    /// returns as evidence accumulates, matching the technical design.
+    ///
+    /// When the observation is genuinely new (different category or different
+    /// description), it is appended to the appropriate category group.
+    pub fn add_observation_with_accumulation(
+        &mut self,
+        observation: Observation,
+        config: &crate::observation::ConfidenceConfig,
+    ) {
+        self.add_observation_with_domain_weighted_accumulation(observation, config, 1.0);
+    }
+
+    /// Add an observation with domain-weighted confidence accumulation.
+    ///
+    /// This method extends the basic accumulation system with domain-weighted
+    /// recovery. The recovery multiplier adjusts the accumulation rate based
+    /// on recent death context and whether the player is engaging with the
+    /// death-relevant domain.
+    ///
+    /// # Arguments
+    /// * `recovery_multiplier` - Multiplier applied to base observation weight
+    ///   - > 1.0 for death-relevant domain (faster recovery)
+    ///   - < 1.0 for unrelated domains (slower recovery)
+    ///   - = 1.0 for no death context (normal rate)
+    pub fn add_observation_with_domain_weighted_accumulation(
+        &mut self,
+        observation: Observation,
+        config: &crate::observation::ConfidenceConfig,
+        recovery_multiplier: f32,
+    ) {
+        self.last_updated_at = observation.recorded_at;
+
+        let group = self
+            .observations
+            .entry(observation.category.clone())
+            .or_default();
+
+        // Look for an existing observation with the same description within this category.
+        if let Some(existing) = group
+            .iter_mut()
+            .find(|o| o.description == observation.description)
+        {
+            // Apply domain-weighted recovery to the accumulation weight
+            let adjusted_weight = config.base_observation_weight * recovery_multiplier;
+
+            // Accumulate evidence using the confidence system with diminishing returns.
+            existing.confidence.accumulate(adjusted_weight);
             return;
         }
 
@@ -700,6 +735,52 @@ impl Journal {
     pub fn record(&mut self, key: JournalKey, name: &str, observation: Observation) {
         let entry = self.ensure_entry(key, name, observation.recorded_at);
         entry.add_observation(observation);
+    }
+
+    /// Record an observation with confidence accumulation for existing observations.
+    ///
+    /// This method uses the confidence accumulation system to properly handle
+    /// repeated observations of the same property. When an observation with the
+    /// same category and description already exists, it calls `accumulate()` on
+    /// the existing observation's confidence using the base observation weight
+    /// from the configuration.
+    pub fn record_with_accumulation(
+        &mut self,
+        key: JournalKey,
+        name: &str,
+        observation: Observation,
+        config: &crate::observation::ConfidenceConfig,
+    ) {
+        let entry = self.ensure_entry(key, name, observation.recorded_at);
+        entry.add_observation_with_accumulation(observation, config);
+    }
+
+    /// Record an observation with domain-weighted confidence accumulation.
+    ///
+    /// This method extends the basic accumulation system with domain-weighted
+    /// recovery based on recent death context. The recovery multiplier adjusts
+    /// the accumulation rate based on whether the player is engaging with the
+    /// death-relevant domain or avoiding it.
+    ///
+    /// # Arguments
+    /// * `recovery_multiplier` - Multiplier applied to base observation weight
+    ///   - > 1.0 for death-relevant domain (faster recovery)
+    ///   - < 1.0 for unrelated domains (slower recovery)
+    ///   - = 1.0 for no death context (normal rate)
+    pub fn record_with_domain_weighted_accumulation(
+        &mut self,
+        key: JournalKey,
+        name: &str,
+        observation: Observation,
+        config: &crate::observation::ConfidenceConfig,
+        recovery_multiplier: f32,
+    ) {
+        let entry = self.ensure_entry(key, name, observation.recorded_at);
+        entry.add_observation_with_domain_weighted_accumulation(
+            observation,
+            config,
+            recovery_multiplier,
+        );
     }
 }
 
@@ -1312,23 +1393,21 @@ fn update_journal_context_on_planet_change(
 // ── Record ingestion ────────────────────────────────────────────────────
 
 /// Unified ingestion system — reads [`RecordObservation`] messages and
-/// writes them into the player's [`Journal`].
+/// writes them into the player's [`Journal`] with domain-weighted recovery.
 ///
 /// Callers pass `recorded_at: 0` — this system overwrites with real
 /// elapsed time so caller signatures stay lean.
 ///
-/// **Planet seed resolution:** For [`JournalKey::Material`] observations,
-/// this system automatically fills in the `planet_seed` field from the
-/// current [`WorldProfile`] resource if available. Observation producers
-/// no longer need to extract `planet_seed` manually — they can pass
-/// `planet_seed: None` and this system will resolve it centrally.
-/// This eliminates the implicit contract fragility where every observation
-/// site had to remember the exact `world_profile.as_deref().map(|p| p.planet_seed.0)`
-/// extraction pattern.
-pub fn apply_observations(
+/// The system applies domain-weighted confidence recovery based on recent
+/// death context. If the player died recently and is now observing the
+/// death-relevant domain, confidence accumulates faster. If they're
+/// avoiding the death domain, it accumulates slower.
+fn apply_observations(
     mut reader: MessageReader<RecordObservation>,
     mut player_query: Query<&mut Journal, With<Player>>,
     time: Res<Time>,
+    config: Res<crate::observation::ConfidenceConfig>,
+    death_context: Option<Res<crate::observation::DeathContext>>,
     world_profile: Option<Res<WorldProfile>>,
 ) {
     let Ok(mut journal) = player_query.single_mut() else {
@@ -1351,47 +1430,23 @@ pub fn apply_observations(
                 seed: *seed,
                 planet_seed: current_planet_seed,
             },
-            // For Material observations that already have planet_seed set, or non-Material observations, use as-is
             key => key.clone(),
         };
 
-        journal.record(key, &event.name, obs);
-    }
-}
-
-/// Processes weight observation messages and converts them to journal entries.
-///
-/// This system reads [`RecordWeightObservation`] messages containing raw weight data
-/// and calls the descriptor function to generate the final observation text. This
-/// aligns the weight observation pattern with the thermal observation pattern where
-/// the journal system handles description generation rather than the originating system.
-fn apply_weight_records(
-    mut reader: MessageReader<RecordWeightObservation>,
-    mut player_query: Query<&mut Journal, With<Player>>,
-    time: Res<Time>,
-) {
-    let Ok(mut journal) = player_query.single_mut() else {
-        return;
-    };
-
-    let tick = time.elapsed().as_millis() as u64;
-
-    for event in reader.read() {
-        let description = describe_weight_observation(
-            event.density,
-            event.carry_strength,
-            event.confidence,
-            &event.weight_bands,
-        );
-
-        let observation = Observation {
-            category: ObservationCategory::Weight,
-            confidence: event.confidence,
-            description,
-            recorded_at: tick,
+        // Calculate recovery multiplier based on death context
+        let recovery_multiplier = if let Some(death_ctx) = &death_context {
+            death_ctx.recovery_multiplier(&obs.category, tick, &config)
+        } else {
+            1.0 // No death context, use base rate
         };
 
-        journal.record(event.key.clone(), &event.name, observation);
+        journal.record_with_domain_weighted_accumulation(
+            key,
+            &event.name,
+            obs,
+            &config,
+            recovery_multiplier,
+        );
     }
 }
 
@@ -1835,7 +1890,7 @@ fn build_detail_spans(
             // Qualitative confidence indicator — communicates certainty
             // without exposing internal counts.
             spans.push(DetailSpan {
-                text: format!("  [{}]", obs.confidence.display_label()),
+                text: format!("  [{}]", obs.confidence.tier().display_label()),
                 kind: DetailSpanKind::ConfidenceLabel,
             });
         }
