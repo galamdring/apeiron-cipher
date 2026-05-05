@@ -1,4 +1,4 @@
-# State of the Game Address — 5/4/2026
+# State of the Game Address — 5/5/2026
 
 As we come to this momentous PR, we are proud to show you all the ways this world has grown. What began as an empty room has become a place where materials have weight, fire reveals secrets, and discovery rewards the curious. The ground beneath you now belongs to a planet — one that orbits a star, in a system generated from a single seed.
 
@@ -86,6 +86,8 @@ What happens next depends on the material. Some will begin to glow and shift col
 
 This is how you learn. After enough exposure, the material's **heat response** is revealed — visible the next time you examine it. The language starts uncertain ("Seemed to soften quickly") and grows more confident with repeated testing ("Reliably holds together under heat").
 
+Confidence is not binary — it's a continuous value that accumulates with each observation. The text you see in the journal evolves through tiers as your confidence grows: tentative hedging gives way to measured certainty. Die near something hot, and your confidence in thermal observations takes a hit — but recovers faster when you return to test the same domain again. The system rewards persistence and punishes avoidance without ever showing you a number.
+
 No indicator tells you when a property has been revealed. You discover it by examining the material again and noticing the `???` has been replaced with words.
 
 ---
@@ -108,10 +110,10 @@ Press **J** to open your journal. Everything you've learned is recorded here aut
 
 - **Surface observations** — the color and apparent weight of each material you've examined
 - **Heat observations** — what happened when you put it near the burner, described with increasing confidence as you repeat the test
-- **Weight observations** — how heavy the material felt when you picked it up, relative to your carry strength
+- **Weight observations** — how heavy the material felt when you picked it up, described relative to your carry strength. The same material feels different as you grow stronger — "Straining under the weight" becomes "Almost weightless" as your strength increases through practice
 - **Fabrication history** — which materials you combined and what they produced
 
-The journal is built on a typed data model — every observation is categorized, timestamped with real game time, and keyed by material identity. Observations are deduplicated automatically and confidence upgrades as you repeat experiments.
+The journal is built on a typed data model — every observation is categorized, timestamped with real game time, and keyed by material identity. Observations are deduplicated automatically and confidence evolves continuously as you repeat experiments — each observation nudges your certainty higher, and death erodes it in domain-specific ways. The text descriptions adapt to your current confidence tier, so re-reading old journal entries after more testing reveals richer, more precise language.
 
 **Contextual Filtering** — The journal adapts to what you're currently doing. Use **Tab** to cycle through observation categories (All → Materials → Locations → Fabrications → Heat → Weight). Use **Shift+Tab** to filter by context (All → Current Planet). Multiple filters combine with AND logic — filter by both "Materials" and "Current Planet" to see only materials you've found on this world. Active filters are shown in the filter bar above the entry list, and your filter choices persist when you close and reopen the journal. When no entries match your filters, the journal shows "No matching entries" rather than an empty panel.
 
@@ -128,6 +130,8 @@ The more weight you carry, the slower you move. A single light sphere barely aff
 **Sprinting** (hold **Shift**) gives you a burst of speed, but it costs stamina. Stamina drains faster when you're carrying more weight. Stop sprinting and it regenerates — stand still to catch your breath faster. If your stamina runs out, you can't sprint until it recovers.
 
 All of this is tunable in `assets/config/carry.toml` — sprint speed, base stamina, drain and regen rates are per-profile. Creative mode ignores weight and stamina entirely.
+
+Confidence decay on death, recovery rates, and domain-specific multipliers are tunable in `assets/config/confidence.toml`.
 
 ---
 
@@ -161,6 +165,6 @@ None of this is visible to the player yet — no star in the sky, no planet sele
 
 The workshop is functional. You can gather, carry, heat, combine, and record. Your body responds to what you carry. The ground beneath you belongs to a planet in a solar system. The journal knows what you know, typed and timestamped.
 
-**Ring 1 (Make Things)** is in progress — Epics 4 and 5 are complete, Epic 10 (Journal Architecture) has its data model landed, and Epics 11, 12, and 13 are next. **Ring 2 (Go Places)** — navigation, multi-planet travel, the wider universe — comes after.
+**Ring 1 (Make Things)** is in progress — Epics 4 and 5 are complete, Epic 10 (Journal Architecture) is now fully landed with confidence evolution (Story 10.4), and Epics 11, 12, and 13 are next. **Ring 2 (Go Places)** — navigation, multi-planet travel, the wider universe — comes after.
 
 But for now — ten materials, one burner, one fabricator, a carry container that slows you down, a journal that remembers everything, and a planet with biomes full of minerals. The rest is up to you.
