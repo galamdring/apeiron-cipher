@@ -73,11 +73,11 @@ impl Plugin for CarryPlugin {
 
 /// Emitted when the player wants to move the held item into carry.
 #[derive(Message)]
-struct StashIntent;
+pub struct StashIntent;
 
 /// Emitted when the player wants to cycle the next carried item to hand.
 #[derive(Message)]
-struct CycleCarryIntent;
+pub struct CycleCarryIntent;
 
 // TODO: Incomplete refactor — DropCarryIntent and its handler were partially
 // decoupled from interaction.rs but never wired up. Commented out to fix
