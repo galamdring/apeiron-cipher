@@ -289,7 +289,7 @@ fn tick_processing(
         name: output_mat.name.clone(),
         observation: Observation {
             category: ObservationCategory::FabricationResult,
-            confidence: crate::observation::ConfidenceLevel::Confident,
+            confidence: crate::observation::Confidence(0.8), // High confidence for fabrication results
             description,
             recorded_at: 0,
         },

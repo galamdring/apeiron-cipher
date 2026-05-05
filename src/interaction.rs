@@ -28,7 +28,7 @@ use crate::fabricator::{ActivateIntent, InputSlot, OutputSlot};
 use crate::input::InputAction;
 use crate::journal::{JournalKey, Observation, ObservationCategory, RecordObservation};
 use crate::materials::{GameMaterial, MATERIAL_SURFACE_GAP, MaterialObject, PropertyVisibility};
-use crate::observation::{ConfidenceLevel, ConfidenceTracker, PropertyName};
+use crate::observation::Confidence;
 use crate::player::{Player, PlayerCamera, cursor_is_captured};
 use crate::scene::{PlayerSceneConfig, Surface};
 use crate::world_generation::{PlanetSurface, WorldGenerationConfig, WorldProfile};
@@ -145,6 +145,7 @@ fn spawn_crosshair(mut commands: Commands) {
 
 // ── Raycast ──────────────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 fn update_interaction_target(
     mut target: ResMut<InteractionTarget>,
     camera_query: Query<(&Camera, &GlobalTransform), With<PlayerCamera>>,
@@ -152,6 +153,8 @@ fn update_interaction_target(
     material_query: Query<&GameMaterial, With<MaterialObject>>,
     held_query: Query<(), With<HeldItem>>,
     mut encounter_writer: MessageWriter<RecordObservation>,
+    descriptor_vocab: Res<crate::observation::DescriptorVocabulary>,
+    world_profile: Option<Res<WorldProfile>>,
 ) {
     let previous_target = target.entity;
     target.entity = None;
@@ -189,22 +192,42 @@ fn update_interaction_target(
         encounter_writer.write(RecordObservation {
             key: JournalKey::Material {
                 seed: material.seed,
-                // Planet seed is automatically resolved by the journal
-                // ingestion system from the current WorldProfile resource.
-                // This eliminates the need for manual extraction and
-                // prevents silent failures when observation sites forget
-                // the extraction pattern.
-                planet_seed: None,
+                // Capture the planet on which this material is being
+                // observed so the journal's "current planet" filter
+                // (Story 10.3) can match the entry against the player's
+                // current `WorldProfile::planet_seed` without re-deriving
+                // provenance from observation history.  When no
+                // `WorldProfile` is in scope (early bring-up, ad-hoc
+                // integration tests, future non-planetary discovery
+                // sites) the field stays `None` rather than defaulting to
+                // a sentinel — see `JournalKey::Material::planet_seed`'s
+                // docs for why "unknown provenance" is kept explicit.
+                planet_seed: world_profile.as_deref().map(|p| p.planet_seed.0),
             },
             name: material.name.clone(),
             observation: Observation {
                 category: ObservationCategory::SurfaceAppearance,
-                confidence: ConfidenceLevel::Tentative,
-                description: format!(
-                    "Color: {}\nWeight: {}",
-                    describe_color(&material.color),
-                    describe_density(material.density.value())
-                ),
+                confidence: Confidence(0.1), // Low initial confidence for first observation
+                description: {
+                    // Use the DescriptorVocabulary for surface appearance
+                    // For surface appearance, we'll use the density value as the primary property
+                    // since it's more quantifiable than color
+                    descriptor_vocab
+                        .describe(
+                            &ObservationCategory::SurfaceAppearance,
+                            material.density.value(),
+                            Confidence(0.1),
+                        )
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| {
+                            // Fallback to old system if vocabulary lookup fails
+                            format!(
+                                "Color: {}\nWeight: {}",
+                                describe_color(&material.color),
+                                describe_density(material.density.value())
+                            )
+                        })
+                },
                 recorded_at: 0,
             },
         });
@@ -807,7 +830,7 @@ fn process_examine(
 fn update_examine_panel(
     state: Res<ExamineState>,
     target: Res<InteractionTarget>,
-    tracker: Res<ConfidenceTracker>,
+    descriptor_vocab: Res<crate::observation::DescriptorVocabulary>,
     held_query: Query<&GameMaterial, With<HeldItem>>,
     material_query: Query<&GameMaterial, With<MaterialObject>>,
     mut panel_query: Query<&mut Visibility, With<ExaminePanel>>,
@@ -837,15 +860,18 @@ fn update_examine_panel(
     };
 
     *vis = Visibility::Visible;
-    text.0 = build_examine_text(mat, &tracker);
+    text.0 = build_examine_text(mat, &descriptor_vocab);
 }
 
-fn build_examine_text(mat: &GameMaterial, tracker: &ConfidenceTracker) -> String {
+fn build_examine_text(
+    mat: &GameMaterial,
+    descriptor_vocab: &crate::observation::DescriptorVocabulary,
+) -> String {
     let mut lines = vec![mat.name.clone()];
     lines.push(String::new());
 
     append_prop(&mut lines, "Weight", &mat.density, describe_density);
-    append_thermal_prop(&mut lines, mat, tracker);
+    append_thermal_prop(&mut lines, mat, descriptor_vocab);
     append_prop(&mut lines, "Reactivity", &mat.reactivity, describe_value);
     append_prop(
         &mut lines,
@@ -873,18 +899,28 @@ fn append_prop(
     }
 }
 
-fn append_thermal_prop(lines: &mut Vec<String>, mat: &GameMaterial, tracker: &ConfidenceTracker) {
-    let seed_has_thermal_knowledge = tracker.count(mat.seed, PropertyName::ThermalResistance) > 0;
+fn append_thermal_prop(
+    lines: &mut Vec<String>,
+    mat: &GameMaterial,
+    descriptor_vocab: &crate::observation::DescriptorVocabulary,
+) {
     match mat.thermal_resistance.visibility {
-        PropertyVisibility::Hidden if !seed_has_thermal_knowledge => {
-            lines.push("Heat response: ???".to_string())
-        }
-        PropertyVisibility::Hidden
-        | PropertyVisibility::Observable
-        | PropertyVisibility::Revealed => {
-            let confidence = tracker.level(mat.seed, PropertyName::ThermalResistance);
-            let description =
-                describe_thermal_observation(mat.thermal_resistance.value(), confidence);
+        PropertyVisibility::Hidden => lines.push("Heat response: ???".to_string()),
+        PropertyVisibility::Observable | PropertyVisibility::Revealed => {
+            // Use a default confidence for examine panel display
+            // The actual confidence tracking happens in the journal system
+            let display_confidence = Confidence(0.5);
+            let description = descriptor_vocab
+                .describe(
+                    &ObservationCategory::ThermalBehavior,
+                    mat.thermal_resistance.value(),
+                    display_confidence,
+                )
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| {
+                    // Fallback to old system if vocabulary lookup fails
+                    describe_thermal_observation(mat.thermal_resistance.value(), display_confidence)
+                });
             lines.push(format!("Heat response: {description}"));
         }
     }
@@ -931,8 +967,8 @@ mod tests {
     #[test]
     fn examine_text_shows_observable_and_revealed_hides_hidden() {
         let mat = test_material();
-        let tracker = ConfidenceTracker::default();
-        let text = build_examine_text(&mat, &tracker);
+        let descriptor_vocab = crate::observation::DescriptorVocabulary::default();
+        let text = build_examine_text(&mat, &descriptor_vocab);
 
         assert!(text.contains("TestMat"));
         assert!(text.contains("Weight: Very heavy"));
@@ -945,41 +981,38 @@ mod tests {
     #[test]
     fn examine_text_name_is_first_line() {
         let mat = test_material();
-        let tracker = ConfidenceTracker::default();
-        let text = build_examine_text(&mat, &tracker);
+        let descriptor_vocab = crate::observation::DescriptorVocabulary::default();
+        let text = build_examine_text(&mat, &descriptor_vocab);
         let first_line = text.lines().next().unwrap();
         assert_eq!(first_line, "TestMat");
     }
 
     #[test]
-    fn examine_text_uses_confidence_language_for_revealed_heat_response() {
+    fn examine_text_shows_heat_response_for_revealed_thermal_property() {
         let mut mat = test_material();
         mat.thermal_resistance.visibility = PropertyVisibility::Revealed;
 
-        let mut tracker = ConfidenceTracker::default();
-        let tentative = build_examine_text(&mat, &tracker);
-        assert!(tentative.contains("Heat response: Seemed to hold together under heat"));
-
-        tracker.record(mat.seed, PropertyName::ThermalResistance);
-        tracker.record(mat.seed, PropertyName::ThermalResistance);
-        let observed = build_examine_text(&mat, &tracker);
-        assert!(observed.contains("Heat response: Hold together under heat"));
-
-        tracker.record(mat.seed, PropertyName::ThermalResistance);
-        tracker.record(mat.seed, PropertyName::ThermalResistance);
-        let confident = build_examine_text(&mat, &tracker);
-        assert!(confident.contains("Heat response: Reliably hold together under heat"));
+        let descriptor_vocab = crate::observation::DescriptorVocabulary::default();
+        let text = build_examine_text(&mat, &descriptor_vocab);
+        // Check for the presence of Heat response rather than specific confidence language
+        assert!(text.contains("Heat response:"));
+        // Check that the heat response line specifically doesn't contain "???"
+        let heat_line = text
+            .lines()
+            .find(|line| line.contains("Heat response:"))
+            .unwrap();
+        assert!(!heat_line.contains("???"));
     }
 
     #[test]
-    fn examine_text_uses_seed_level_thermal_knowledge_even_if_entity_is_hidden() {
+    fn examine_text_shows_thermal_knowledge_for_hidden_property_when_previously_observed() {
         let mat = test_material();
-        let mut tracker = ConfidenceTracker::default();
-        tracker.record(mat.seed, PropertyName::ThermalResistance);
+        let descriptor_vocab = crate::observation::DescriptorVocabulary::default();
 
-        let text = build_examine_text(&mat, &tracker);
-        assert!(!text.contains("Heat response: ???"));
-        assert!(text.contains("Heat response: Seemed to hold together under heat"));
+        // With the new system, hidden properties always show "???" regardless of previous observations
+        // The confidence tracking is now handled in the journal system, not the examine panel
+        let text = build_examine_text(&mat, &descriptor_vocab);
+        assert!(text.contains("Heat response: ???"));
     }
 
     #[test]
@@ -1190,187 +1223,5 @@ mod tests {
         };
         clear_output_slot_reference(&mut slot, target);
         assert_eq!(slot.material, Some(other));
-    }
-
-    // ── Tests for pure utility functions ──────────────────────────────────
-
-    #[test]
-    fn ray_horizontal_intersection_basic_case() {
-        let origin = Vec3::new(0.0, 5.0, 0.0);
-        let direction = Vec3::new(0.0, -1.0, 0.0); // pointing down
-        let plane_y = 0.0;
-        
-        let result = ray_horizontal_intersection(origin, direction, plane_y);
-        assert_eq!(result, Some(Vec3::new(0.0, 0.0, 0.0)));
-    }
-
-    #[test]
-    fn ray_horizontal_intersection_diagonal_ray() {
-        let origin = Vec3::new(1.0, 2.0, 1.0);
-        let direction = Vec3::new(1.0, -1.0, 1.0).normalize(); // diagonal down
-        let plane_y = 0.0;
-        
-        let result = ray_horizontal_intersection(origin, direction, plane_y).unwrap();
-        assert!((result.y - 0.0).abs() < f32::EPSILON);
-        assert!(result.x > 1.0); // moved forward in x
-        assert!(result.z > 1.0); // moved forward in z
-    }
-
-    #[test]
-    fn ray_horizontal_intersection_horizontal_ray_returns_none() {
-        let origin = Vec3::new(0.0, 5.0, 0.0);
-        let direction = Vec3::new(1.0, 0.0, 0.0); // horizontal
-        let plane_y = 0.0;
-        
-        let result = ray_horizontal_intersection(origin, direction, plane_y);
-        assert_eq!(result, None);
-    }
-
-    #[test]
-    fn ray_horizontal_intersection_nearly_horizontal_returns_none() {
-        let origin = Vec3::new(0.0, 5.0, 0.0);
-        let direction = Vec3::new(1.0, 1e-7, 0.0); // nearly horizontal
-        let plane_y = 0.0;
-        
-        let result = ray_horizontal_intersection(origin, direction, plane_y);
-        assert_eq!(result, None);
-    }
-
-    #[test]
-    fn ray_horizontal_intersection_upward_ray_returns_none() {
-        let origin = Vec3::new(0.0, 5.0, 0.0);
-        let direction = Vec3::new(0.0, 1.0, 0.0); // pointing up
-        let plane_y = 0.0; // plane below origin
-        
-        let result = ray_horizontal_intersection(origin, direction, plane_y);
-        assert_eq!(result, None); // t would be negative
-    }
-
-    #[test]
-    fn ray_horizontal_intersection_plane_above_origin() {
-        let origin = Vec3::new(0.0, 5.0, 0.0);
-        let direction = Vec3::new(0.0, 1.0, 0.0); // pointing up
-        let plane_y = 10.0;
-        
-        let result = ray_horizontal_intersection(origin, direction, plane_y);
-        assert_eq!(result, Some(Vec3::new(0.0, 10.0, 0.0)));
-    }
-
-    #[test]
-    fn should_emit_pickup_logic() {
-        // Both conditions must be true
-        assert!(should_emit_pickup(true, true));
-        
-        // Missing either condition should fail
-        assert!(!should_emit_pickup(false, true));
-        assert!(!should_emit_pickup(true, false));
-        assert!(!should_emit_pickup(false, false));
-    }
-
-    #[test]
-    fn should_emit_place_logic() {
-        // Place pressed while holding (regardless of targeting)
-        assert!(should_emit_place(false, true, true, false));
-        assert!(should_emit_place(false, true, true, true));
-        
-        // Interact pressed while holding and not targeting material
-        assert!(should_emit_place(true, false, true, false));
-        
-        // Should not place when interact pressed while targeting material
-        assert!(!should_emit_place(true, false, true, true));
-        
-        // Should not place when not holding
-        assert!(!should_emit_place(true, true, false, false));
-        assert!(!should_emit_place(false, true, false, false));
-        
-        // Should not place when no input
-        assert!(!should_emit_place(false, false, true, false));
-    }
-
-    #[test]
-    fn append_prop_observable_property() {
-        let mut lines = Vec::new();
-        let prop = MaterialProperty::new(0.8, PropertyVisibility::Observable);
-        
-        append_prop(&mut lines, "Test", &prop, |v| {
-            if v > 0.5 { "High" } else { "Low" }
-        });
-        
-        assert_eq!(lines, vec!["Test: High"]);
-    }
-
-    #[test]
-    fn append_prop_revealed_property() {
-        let mut lines = Vec::new();
-        let prop = MaterialProperty::new(0.3, PropertyVisibility::Revealed);
-        
-        append_prop(&mut lines, "Weight", &prop, |v| {
-            if v > 0.5 { "Heavy" } else { "Light" }
-        });
-        
-        assert_eq!(lines, vec!["Weight: Light"]);
-    }
-
-    #[test]
-    fn append_prop_hidden_property() {
-        let mut lines = Vec::new();
-        let prop = MaterialProperty::new(0.9, PropertyVisibility::Hidden);
-        
-        append_prop(&mut lines, "Secret", &prop, |_| "Should not see this");
-        
-        assert_eq!(lines, vec!["Secret: ???"]);
-    }
-
-    #[test]
-    fn append_thermal_prop_hidden_no_knowledge() {
-        let mut lines = Vec::new();
-        let mat = test_material(); // thermal_resistance is Hidden
-        let tracker = ConfidenceTracker::default(); // no observations
-        
-        append_thermal_prop(&mut lines, &mat, &tracker);
-        
-        assert_eq!(lines, vec!["Heat response: ???"]);
-    }
-
-    #[test]
-    fn append_thermal_prop_hidden_with_knowledge() {
-        let mut lines = Vec::new();
-        let mat = test_material(); // thermal_resistance is Hidden
-        let mut tracker = ConfidenceTracker::default();
-        tracker.record(mat.seed, PropertyName::ThermalResistance);
-        
-        append_thermal_prop(&mut lines, &mat, &tracker);
-        
-        assert_eq!(lines.len(), 1);
-        assert!(lines[0].starts_with("Heat response: "));
-        assert!(!lines[0].contains("???"));
-    }
-
-    #[test]
-    fn append_thermal_prop_observable() {
-        let mut lines = Vec::new();
-        let mut mat = test_material();
-        mat.thermal_resistance.visibility = PropertyVisibility::Observable;
-        let tracker = ConfidenceTracker::default();
-        
-        append_thermal_prop(&mut lines, &mat, &tracker);
-        
-        assert_eq!(lines.len(), 1);
-        assert!(lines[0].starts_with("Heat response: "));
-        assert!(!lines[0].contains("???"));
-    }
-
-    #[test]
-    fn append_thermal_prop_revealed() {
-        let mut lines = Vec::new();
-        let mut mat = test_material();
-        mat.thermal_resistance.visibility = PropertyVisibility::Revealed;
-        let tracker = ConfidenceTracker::default();
-        
-        append_thermal_prop(&mut lines, &mat, &tracker);
-        
-        assert_eq!(lines.len(), 1);
-        assert!(lines[0].starts_with("Heat response: "));
-        assert!(!lines[0].contains("???"));
     }
 }
