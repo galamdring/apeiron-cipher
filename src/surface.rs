@@ -69,7 +69,7 @@ impl SurfaceOverrideRegistry {
     }
 
     /// Register a new surface override. Returns the index for debugging.
-    /// 
+    ///
     /// Deprecated: Use `add_override` instead. Kept for backward compatibility.
     pub fn register(&mut self, surface: SurfaceOverride) -> usize {
         self.add_override(surface)
@@ -258,16 +258,16 @@ mod tests {
     #[test]
     fn query_returns_matching_overrides() {
         let reg = sample_registry();
-        
+
         // Query inside table bounds (0.0, 0.0) - should return both room and table
         let matches: Vec<_> = reg.query(0.0, 0.0).collect();
         assert_eq!(matches.len(), 2);
-        
+
         // Query inside room but outside table (3.0, 3.0) - should return only room
         let matches: Vec<_> = reg.query(3.0, 3.0).collect();
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].surface_y, 2.0); // room floor
-        
+
         // Query outside everything (10.0, 10.0) - should return nothing
         let matches: Vec<_> = reg.query(10.0, 10.0).collect();
         assert_eq!(matches.len(), 0);
@@ -284,7 +284,7 @@ mod tests {
             max_z: 1.0,
             surface_y: 1.0,
         };
-        
+
         let idx = reg.register(surface);
         assert_eq!(idx, 0);
         assert_eq!(reg.iter().count(), 1);

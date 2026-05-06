@@ -513,7 +513,6 @@ pub struct RecordObservation {
     pub observation: Observation,
 }
 
-
 // ── Player-owned journal data ───────────────────────────────────────────
 
 /// A journal entry that accumulates observations about a single subject over time.
