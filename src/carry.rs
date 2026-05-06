@@ -19,7 +19,6 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
-
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -1406,7 +1405,6 @@ pub fn record_weight_observation(
             )
         });
 
-
     journal_writer.write(RecordObservation {
         key: JournalKey::Material {
             seed: material.seed,
@@ -1696,7 +1694,8 @@ mod tests {
     use crate::materials::{GameMaterial, MaterialProperty, PropertyVisibility};
 
     fn material_with_density(value: f32) -> GameMaterial {
-        let property = |density: f32| MaterialProperty::new(density, PropertyVisibility::Observable);
+        let property =
+            |density: f32| MaterialProperty::new(density, PropertyVisibility::Observable);
 
         GameMaterial {
             name: "Testite".into(),
