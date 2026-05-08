@@ -895,6 +895,50 @@ mod tests {
     }
 
     #[test]
+    fn neighborhood_depth_one_returns_only_direct_neighbors() {
+        let mut graph = make_graph();
+        // A — B — C — D (linear chain)
+        let a = graph.ensure_concept(
+            ConceptId::new(material_key(1)),
+            ConceptCategory::Material,
+            1,
+        );
+        let b = graph.ensure_concept(
+            ConceptId::new(material_key(2)),
+            ConceptCategory::Material,
+            2,
+        );
+        let c = graph.ensure_concept(
+            ConceptId::new(material_key(3)),
+            ConceptCategory::Material,
+            3,
+        );
+        let d = graph.ensure_concept(
+            ConceptId::new(material_key(4)),
+            ConceptCategory::Material,
+            4,
+        );
+
+        let edge = || ConceptEdge::new(RelationshipType::SimilarTo, Confidence(0.5), 1);
+        graph.relate(a, b, edge());
+        graph.relate(b, c, edge());
+        graph.relate(c, d, edge());
+
+        // depth=1: only direct neighbors of A (i.e., B). C and D are too far.
+        let neighbors = graph.neighborhood(a, 1, None);
+        let nodes: Vec<NodeIndex> = neighbors.iter().map(|(n, _)| *n).collect();
+        assert_eq!(nodes.len(), 1, "depth=1 must return exactly one direct neighbor");
+        assert!(nodes.contains(&b), "B must be in depth=1 neighborhood of A");
+        assert!(!nodes.contains(&c), "C must not be in depth=1 neighborhood of A");
+        assert!(!nodes.contains(&d), "D must not be in depth=1 neighborhood of A");
+        assert!(!nodes.contains(&a), "center node must not appear in its own neighborhood");
+
+        // Verify hop distance is reported as 1.
+        let hop = neighbors.iter().find(|(n, _)| *n == b).map(|(_, h)| *h);
+        assert_eq!(hop, Some(1), "B must be reported at hop distance 1");
+    }
+
+    #[test]
     fn neighborhood_category_filter_excludes_non_matching() {
         let mut graph = make_graph();
         let mat = graph.ensure_concept(
