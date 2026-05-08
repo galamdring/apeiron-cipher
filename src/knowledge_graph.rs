@@ -984,6 +984,56 @@ mod tests {
     }
 
     #[test]
+    fn neighborhood_handles_cycles_without_infinite_loop() {
+        // Build a cycle: A — B — C — A (triangle).
+        // BFS must visit each node at most once and terminate cleanly.
+        let mut graph = make_graph();
+        let a = graph.ensure_concept(
+            ConceptId::new(material_key(1)),
+            ConceptCategory::Material,
+            1,
+        );
+        let b = graph.ensure_concept(
+            ConceptId::new(material_key(2)),
+            ConceptCategory::Material,
+            2,
+        );
+        let c = graph.ensure_concept(
+            ConceptId::new(material_key(3)),
+            ConceptCategory::Material,
+            3,
+        );
+
+        let edge = || ConceptEdge::new(RelationshipType::SimilarTo, Confidence(0.5), 1);
+        // A → B → C → A forms a directed cycle; relate() also adds the reverse edge,
+        // so the undirected traversal sees a fully-connected triangle.
+        graph.relate(a, b, edge());
+        graph.relate(b, c, edge());
+        graph.relate(c, a, edge());
+
+        // With depth=10 (well beyond the 3-node cycle), BFS must still return exactly
+        // the two other nodes (B and C) and must not loop or panic.
+        let neighbors = graph.neighborhood(a, 10, None);
+        let nodes: Vec<NodeIndex> = neighbors.iter().map(|(n, _)| *n).collect();
+
+        assert_eq!(
+            nodes.len(),
+            2,
+            "cycle graph must yield exactly 2 unique neighbors for A (B and C), got {nodes:?}"
+        );
+        assert!(nodes.contains(&b), "B must be reachable from A");
+        assert!(nodes.contains(&c), "C must be reachable from A");
+        assert!(!nodes.contains(&a), "center node A must not appear in its own neighborhood");
+
+        // Hop distances: B is 1 hop away, C is 1 hop away (direct edge via relate's reverse).
+        // Both must be ≤ depth and must be the shortest path distance.
+        let hop_b = neighbors.iter().find(|(n, _)| *n == b).map(|(_, h)| *h);
+        let hop_c = neighbors.iter().find(|(n, _)| *n == c).map(|(_, h)| *h);
+        assert_eq!(hop_b, Some(1), "B must be at hop distance 1 from A");
+        assert_eq!(hop_c, Some(1), "C must be at hop distance 1 from A");
+    }
+
+    #[test]
     fn node_accessor_returns_concept_data() {
         let mut graph = make_graph();
         let id = ConceptId::new(material_key(42));
