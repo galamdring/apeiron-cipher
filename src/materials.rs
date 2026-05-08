@@ -864,7 +864,10 @@ visibility = "Hidden"
         let mat = sample_material();
         let vec = mat.property_vector();
         assert_eq!(vec.len(), 5);
-        assert!((vec[0] - mat.density.value()).abs() < f32::EPSILON, "index 0 must be density");
+        assert!(
+            (vec[0] - mat.density.value()).abs() < f32::EPSILON,
+            "index 0 must be density"
+        );
         assert!(
             (vec[1] - mat.thermal_resistance.value()).abs() < f32::EPSILON,
             "index 1 must be thermal_resistance"
@@ -877,7 +880,10 @@ visibility = "Hidden"
             (vec[3] - mat.conductivity.value()).abs() < f32::EPSILON,
             "index 3 must be conductivity"
         );
-        assert!((vec[4] - mat.toxicity.value()).abs() < f32::EPSILON, "index 4 must be toxicity");
+        assert!(
+            (vec[4] - mat.toxicity.value()).abs() < f32::EPSILON,
+            "index 4 must be toxicity"
+        );
     }
 
     #[test]

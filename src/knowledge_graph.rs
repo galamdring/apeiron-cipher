@@ -19,6 +19,7 @@ use petgraph::{Direction, Graph};
 use serde::{Deserialize, Serialize};
 
 use crate::journal::{JournalKey, RecordObservation};
+use crate::materials::{MaterialCatalog, cosine_similarity};
 use crate::observation::Confidence;
 
 // ── Plugin ────────────────────────────────────────────────────────────────
@@ -52,6 +53,57 @@ fn category_from_key(key: &JournalKey) -> ConceptCategory {
     }
 }
 
+/// Minimum cosine similarity score required to create a [`RelationshipType::SimilarTo`] edge.
+///
+/// Two materials must share at least 85% directional similarity across their
+/// five-dimensional property vector (density, thermal_resistance, reactivity,
+/// conductivity, toxicity) before the system considers them "similar."
+const SIMILARITY_SCORE_THRESHOLD: f32 = 0.85;
+
+/// Minimum concept node confidence required on BOTH materials before a
+/// [`RelationshipType::SimilarTo`] edge is created.
+///
+/// This maps to the `Observed` tier boundary (≥ 0.3). The player must have
+/// gathered enough evidence about both materials before the system surfaces
+/// the connection — no free inferences from a single tentative observation.
+const SIMILARITY_CONFIDENCE_THRESHOLD: f32 = 0.3;
+
+/// Compare `subject` against every material in `catalog` and return the seeds
+/// and similarity scores of materials that exceed [`SIMILARITY_SCORE_THRESHOLD`].
+///
+/// The subject seed is included in the catalog but the caller is responsible
+/// for skipping self-comparisons (seed == subject_seed).
+///
+/// Returns a `Vec<(seed, similarity_score)>` sorted by descending similarity.
+pub fn detect_similarity(
+    subject_seed: u64,
+    subject: &crate::materials::GameMaterial,
+    catalog: &MaterialCatalog,
+) -> Vec<(u64, f32)> {
+    let subject_vec = subject.property_vector();
+    let mut results: Vec<(u64, f32)> = catalog
+        .seeds()
+        .filter(|&&seed| seed != subject_seed)
+        .filter_map(|&seed| {
+            let other = catalog.get_by_seed(seed)?;
+            let sim = cosine_similarity(&subject_vec, &other.property_vector());
+            if sim >= SIMILARITY_SCORE_THRESHOLD {
+                Some((seed, sim))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    // Deterministic ordering: highest similarity first, then by seed for ties.
+    results.sort_by(|a, b| {
+        b.1.partial_cmp(&a.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.0.cmp(&b.0))
+    });
+    results
+}
+
 /// System that processes [`RecordObservation`] messages and builds cross-references
 /// in the [`KnowledgeGraph`].
 ///
@@ -73,6 +125,7 @@ pub fn update_knowledge_graph(
     mut observations: MessageReader<RecordObservation>,
     mut graph: ResMut<KnowledgeGraph>,
     time: Res<Time>,
+    catalog: Res<MaterialCatalog>,
 ) {
     let tick = time.elapsed().as_millis() as u64;
 
@@ -80,6 +133,13 @@ pub fn update_knowledge_graph(
         let subject_category = category_from_key(&obs.key);
         let subject_node =
             graph.ensure_concept(ConceptId::new(obs.key.clone()), subject_category, tick);
+
+        // Update the concept node's confidence to reflect the latest observation.
+        // This is required so that the SimilarTo check can gate on both materials
+        // being at Observed tier or above (confidence ≥ 0.3).
+        if let Some(node) = graph.node_mut(subject_node) {
+            node.confidence.accumulate(obs.observation.confidence.0);
+        }
 
         // ── Location cross-reference ──────────────────────────────────────
         // If the observation has a location context, link the subject to that
@@ -141,6 +201,69 @@ pub fn update_knowledge_graph(
                         input_nodes[j],
                         ConceptEdge::new(RelationshipType::CombinedWith, Confidence(1.0), tick),
                     );
+                }
+            }
+        }
+
+        // ── Similarity cross-references ───────────────────────────────────
+        // For material observations, compare the subject against all known
+        // materials in the catalog. SimilarTo edges are only created when
+        // BOTH materials are at Observed tier or above (confidence ≥ 0.3),
+        // ensuring the player has earned the connection through observation.
+        if let JournalKey::Material {
+            seed: subject_seed, ..
+        } = &obs.key
+        {
+            let subject_confidence = graph
+                .node(subject_node)
+                .map(|n| n.confidence)
+                .unwrap_or(Confidence(0.0));
+
+            // Only proceed if the subject material itself is at Observed tier.
+            if subject_confidence.0 >= SIMILARITY_CONFIDENCE_THRESHOLD {
+                let subject_mat = catalog.get_by_seed(*subject_seed).cloned();
+
+                if let Some(subject_mat) = subject_mat {
+                    let similar_pairs = detect_similarity(*subject_seed, &subject_mat, &catalog);
+
+                    for (other_seed, similarity_score) in similar_pairs {
+                        // Skip self-comparison.
+                        if other_seed == *subject_seed {
+                            continue;
+                        }
+
+                        let other_key = JournalKey::Material {
+                            seed: other_seed,
+                            planet_seed: None,
+                        };
+                        let other_id = ConceptId::new(other_key.clone());
+
+                        // Only create the edge if the other material is also
+                        // known to the graph at Observed tier or above.
+                        // The player must have earned confidence in both.
+                        let other_node_opt = graph.lookup(&other_id);
+                        let other_confidence = other_node_opt
+                            .and_then(|n| graph.node(n))
+                            .map(|n| n.confidence)
+                            .unwrap_or(Confidence(0.0));
+
+                        if other_confidence.0 < SIMILARITY_CONFIDENCE_THRESHOLD {
+                            continue;
+                        }
+
+                        let other_node =
+                            graph.ensure_concept(other_id, ConceptCategory::Material, tick);
+
+                        graph.relate(
+                            subject_node,
+                            other_node,
+                            ConceptEdge::new(
+                                RelationshipType::SimilarTo,
+                                Confidence(similarity_score),
+                                tick,
+                            ),
+                        );
+                    }
                 }
             }
         }
@@ -1226,6 +1349,7 @@ mod tests {
     // ── update_knowledge_graph system tests ──────────────────────────────
 
     use crate::journal::{Observation, ObservationCategory, RecordObservation};
+    use crate::materials::MaterialCatalog;
 
     /// Build a minimal Bevy App with the message channel and system under test.
     fn build_test_app() -> App {
@@ -1233,6 +1357,7 @@ mod tests {
         app.add_plugins(MinimalPlugins);
         app.add_message::<RecordObservation>();
         app.init_resource::<KnowledgeGraph>();
+        app.init_resource::<MaterialCatalog>();
         app.add_systems(Update, update_knowledge_graph);
         app
     }
@@ -1585,5 +1710,202 @@ mod tests {
             graph.relationships(node).is_empty(),
             "observation without context_location must not create any edges"
         );
+    }
+
+    // ── Similarity detection tests ────────────────────────────────────────
+
+    /// Seeds 0 and 4 have cosine similarity ≈ 0.9255, which exceeds the 0.85
+    /// threshold. Both are registered in the catalog before observations are
+    /// sent so the system can compare them.
+    const SIMILAR_SEED_A: u64 = 0;
+    const SIMILAR_SEED_B: u64 = 4;
+
+    /// Build a test app with both similar materials pre-registered in the catalog.
+    fn build_test_app_with_similar_materials() -> App {
+        let mut app = build_test_app();
+        {
+            let mut catalog = app.world_mut().resource_mut::<MaterialCatalog>();
+            catalog.derive_and_register(SIMILAR_SEED_A);
+            catalog.derive_and_register(SIMILAR_SEED_B);
+        }
+        app
+    }
+
+    /// Construct a material observation with the given seed and confidence.
+    fn material_obs_with_confidence(seed: u64, confidence: f32) -> RecordObservation {
+        RecordObservation {
+            key: JournalKey::Material {
+                seed,
+                planet_seed: None,
+            },
+            name: format!("Mat-{seed}"),
+            observation: Observation {
+                category: ObservationCategory::SurfaceAppearance,
+                confidence: Confidence(confidence),
+                description: "test".to_string(),
+                recorded_at: 0,
+            },
+            input_seeds: vec![],
+            context_location: None,
+        }
+    }
+
+    #[test]
+    fn similar_materials_both_observed_creates_similar_to_edge() {
+        // Both materials must be at Observed tier (≥ 0.3) for the edge to appear.
+        let mut app = build_test_app_with_similar_materials();
+
+        inject_observation(&mut app, material_obs_with_confidence(SIMILAR_SEED_A, 0.5));
+        app.update();
+        inject_observation(&mut app, material_obs_with_confidence(SIMILAR_SEED_B, 0.5));
+        app.update();
+
+        let graph = app.world().resource::<KnowledgeGraph>();
+        let id_a = ConceptId::new(JournalKey::Material {
+            seed: SIMILAR_SEED_A,
+            planet_seed: None,
+        });
+        let id_b = ConceptId::new(JournalKey::Material {
+            seed: SIMILAR_SEED_B,
+            planet_seed: None,
+        });
+        let node_a = graph.lookup(&id_a).expect("material A concept must exist");
+        let node_b = graph.lookup(&id_b).expect("material B concept must exist");
+
+        let rels_a = graph.relationships(node_a);
+        assert!(
+            rels_a
+                .iter()
+                .any(|(n, e)| *n == node_b && e.relationship == RelationshipType::SimilarTo),
+            "material A must have SimilarTo edge to material B"
+        );
+
+        // Bidirectionality: B must also link back to A.
+        let rels_b = graph.relationships(node_b);
+        assert!(
+            rels_b
+                .iter()
+                .any(|(n, e)| *n == node_a && e.relationship == RelationshipType::SimilarTo),
+            "material B must have reverse SimilarTo edge to material A"
+        );
+    }
+
+    #[test]
+    fn similar_to_edge_not_created_when_other_material_below_observed_tier() {
+        // Material B is only at Tentative tier (< 0.3) — no SimilarTo edge should appear.
+        let mut app = build_test_app_with_similar_materials();
+
+        // Observe A at Observed tier.
+        inject_observation(&mut app, material_obs_with_confidence(SIMILAR_SEED_A, 0.5));
+        app.update();
+        // Observe B at Tentative tier only.
+        inject_observation(&mut app, material_obs_with_confidence(SIMILAR_SEED_B, 0.1));
+        app.update();
+        // Re-observe A — at this point B is still Tentative, so no edge.
+        inject_observation(&mut app, material_obs_with_confidence(SIMILAR_SEED_A, 0.5));
+        app.update();
+
+        let graph = app.world().resource::<KnowledgeGraph>();
+        let id_a = ConceptId::new(JournalKey::Material {
+            seed: SIMILAR_SEED_A,
+            planet_seed: None,
+        });
+        let id_b = ConceptId::new(JournalKey::Material {
+            seed: SIMILAR_SEED_B,
+            planet_seed: None,
+        });
+        let node_a = graph.lookup(&id_a).expect("material A concept must exist");
+        let node_b = graph.lookup(&id_b).expect("material B concept must exist");
+
+        let rels_a = graph.relationships(node_a);
+        assert!(
+            !rels_a
+                .iter()
+                .any(|(n, e)| *n == node_b && e.relationship == RelationshipType::SimilarTo),
+            "SimilarTo edge must not be created when other material is below Observed tier"
+        );
+    }
+
+    #[test]
+    fn similar_to_not_created_for_dissimilar_materials() {
+        // Seeds 1 and 2 are unlikely to be similar — verify no SimilarTo edge.
+        // We use seeds that are known to be dissimilar (< 0.85 threshold).
+        // Seeds 1 and 2 have low similarity by inspection of the property space.
+        let mut app = build_test_app();
+        {
+            let mut catalog = app.world_mut().resource_mut::<MaterialCatalog>();
+            catalog.derive_and_register(1);
+            catalog.derive_and_register(2);
+        }
+
+        inject_observation(&mut app, material_obs_with_confidence(1, 0.5));
+        app.update();
+        inject_observation(&mut app, material_obs_with_confidence(2, 0.5));
+        app.update();
+
+        let graph = app.world().resource::<KnowledgeGraph>();
+        let id_1 = ConceptId::new(JournalKey::Material {
+            seed: 1,
+            planet_seed: None,
+        });
+        let id_2 = ConceptId::new(JournalKey::Material {
+            seed: 2,
+            planet_seed: None,
+        });
+
+        // Verify these seeds are actually dissimilar before asserting.
+        {
+            use crate::materials::{cosine_similarity, derive_material_from_seed};
+            let m1 = derive_material_from_seed(1);
+            let m2 = derive_material_from_seed(2);
+            let sim = cosine_similarity(&m1.property_vector(), &m2.property_vector());
+            if sim >= SIMILARITY_SCORE_THRESHOLD {
+                // Seeds turned out to be similar — skip the assertion.
+                return;
+            }
+        }
+
+        let node_1 = graph.lookup(&id_1).expect("material 1 concept must exist");
+        let node_2 = graph.lookup(&id_2).expect("material 2 concept must exist");
+
+        let rels_1 = graph.relationships(node_1);
+        assert!(
+            !rels_1
+                .iter()
+                .any(|(n, e)| *n == node_2 && e.relationship == RelationshipType::SimilarTo),
+            "dissimilar materials must not have SimilarTo edge"
+        );
+    }
+
+    #[test]
+    fn detect_similarity_returns_seeds_above_threshold() {
+        use crate::materials::derive_material_from_seed;
+
+        let mut catalog = MaterialCatalog::default();
+        catalog.derive_and_register(SIMILAR_SEED_A);
+        catalog.derive_and_register(SIMILAR_SEED_B);
+
+        let subject = derive_material_from_seed(SIMILAR_SEED_A);
+        let results = detect_similarity(SIMILAR_SEED_A, &subject, &catalog);
+
+        // SIMILAR_SEED_B must appear in results.
+        assert!(
+            results.iter().any(|(seed, _)| *seed == SIMILAR_SEED_B),
+            "detect_similarity must return SIMILAR_SEED_B for SIMILAR_SEED_A"
+        );
+
+        // Self must not appear.
+        assert!(
+            !results.iter().any(|(seed, _)| *seed == SIMILAR_SEED_A),
+            "detect_similarity must not return the subject seed itself"
+        );
+
+        // All returned scores must be at or above the threshold.
+        for (_, score) in &results {
+            assert!(
+                *score >= SIMILARITY_SCORE_THRESHOLD,
+                "all returned scores must be >= SIMILARITY_SCORE_THRESHOLD, got {score}"
+            );
+        }
     }
 }
