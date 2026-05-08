@@ -511,6 +511,15 @@ pub struct RecordObservation {
     /// The observation payload including category, confidence, description,
     /// and game-time tick.
     pub observation: Observation,
+    /// For fabrication observations: the seeds of the input materials that
+    /// were combined to produce this output. Used by the knowledge graph to
+    /// create `DerivedFrom` edges. Empty for non-fabrication observations.
+    pub input_seeds: Vec<u64>,
+    /// The location where this observation occurred, if applicable. Used by
+    /// the knowledge graph to create `FoundOn` / `ObservedAt` edges. `None`
+    /// when the observation has no spatial context (e.g., fabrication results,
+    /// abstract property comparisons).
+    pub context_location: Option<JournalKey>,
 }
 
 // ── Player-owned journal data ───────────────────────────────────────────

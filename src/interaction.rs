@@ -230,6 +230,8 @@ fn update_interaction_target(
                 },
                 recorded_at: 0,
             },
+            input_seeds: Vec::new(),
+            context_location: None,
         });
     }
 }
