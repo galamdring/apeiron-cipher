@@ -1443,6 +1443,96 @@ mod tests {
         assert_eq!(restored.timeline().len(), 2);
     }
 
+    /// Round-trip serialize→deserialize preserves all three in-memory indexes:
+    /// `concept_index` (O(1) lookup by ConceptId), `category_index` (lookup by
+    /// ConceptCategory), and `timeline` (ordered discovery log).
+    ///
+    /// This test uses two materials and one location so that `by_category` must
+    /// return the correct count for each category, and the timeline must reflect
+    /// the original insertion order.
+    #[test]
+    fn serialization_round_trip_preserves_all_indexes() {
+        let mut graph = make_graph();
+
+        // Insert two materials and one location at distinct ticks so the
+        // timeline order is deterministic.
+        let mat1_id = ConceptId::new(material_key(10));
+        let mat2_id = ConceptId::new(material_key(20));
+        let loc_id = ConceptId::new(location_key(30));
+
+        let mat1_idx = graph.ensure_concept(mat1_id.clone(), ConceptCategory::Material, 1);
+        let mat2_idx = graph.ensure_concept(mat2_id.clone(), ConceptCategory::Material, 2);
+        let loc_idx = graph.ensure_concept(loc_id.clone(), ConceptCategory::Location, 3);
+
+        // Add a relationship so the edge survives the round-trip too.
+        graph.relate(
+            mat1_idx,
+            loc_idx,
+            ConceptEdge::new(RelationshipType::FoundOn, Confidence(0.7), 4),
+        );
+
+        // ── Round-trip ──────────────────────────────────────────────────────
+        let serializable = graph.to_serializable();
+        let json = serde_json::to_string(&serializable).expect("serialization must succeed");
+        let restored_serializable: SerializableKnowledgeGraph =
+            serde_json::from_str(&json).expect("deserialization must succeed");
+        let restored = KnowledgeGraph::from_serializable(restored_serializable);
+
+        // ── concept_index: O(1) lookup by ConceptId ─────────────────────────
+        let r_mat1 = restored.lookup(&mat1_id).expect("mat1 must be found via concept_index");
+        let r_mat2 = restored.lookup(&mat2_id).expect("mat2 must be found via concept_index");
+        let r_loc = restored.lookup(&loc_id).expect("loc must be found via concept_index");
+
+        // Verify the node data is intact (not just that an index exists).
+        let mat1_node = restored.node(r_mat1).expect("mat1 node must exist");
+        assert_eq!(mat1_node.id, mat1_id, "concept_index must map to the correct node");
+        assert_eq!(mat1_node.category, ConceptCategory::Material);
+
+        // ── category_index: lookup by ConceptCategory ───────────────────────
+        let materials = restored.by_category(&ConceptCategory::Material);
+        assert_eq!(
+            materials.len(),
+            2,
+            "category_index must contain exactly 2 Material nodes after round-trip"
+        );
+        assert!(
+            materials.contains(&r_mat1),
+            "category_index must include mat1"
+        );
+        assert!(
+            materials.contains(&r_mat2),
+            "category_index must include mat2"
+        );
+
+        let locations = restored.by_category(&ConceptCategory::Location);
+        assert_eq!(
+            locations.len(),
+            1,
+            "category_index must contain exactly 1 Location node after round-trip"
+        );
+        assert!(
+            locations.contains(&r_loc),
+            "category_index must include loc"
+        );
+
+        // ── timeline: ordered discovery log ─────────────────────────────────
+        let tl = restored.timeline();
+        assert_eq!(tl.len(), 3, "timeline must contain all 3 discovered concepts");
+
+        // Timeline must be ordered by discovery tick (ascending).
+        let ticks: Vec<u64> = tl.iter().map(|(t, _)| *t).collect();
+        assert_eq!(
+            ticks,
+            vec![1, 2, 3],
+            "timeline must be ordered by discovery tick after round-trip"
+        );
+
+        // Each timeline entry must point to the correct node.
+        assert_eq!(tl[0].1, r_mat1, "timeline[0] must reference mat1");
+        assert_eq!(tl[1].1, r_mat2, "timeline[1] must reference mat2");
+        assert_eq!(tl[2].1, r_loc, "timeline[2] must reference loc");
+    }
+
     // ── update_knowledge_graph system tests ──────────────────────────────
 
     use crate::journal::{Observation, ObservationCategory, RecordObservation};
