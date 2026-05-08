@@ -254,6 +254,35 @@ fn unit_interval_01(value: u64) -> f32 {
     (value as f64 / u64::MAX as f64) as f32
 }
 
+/// Compute the cosine similarity between two fixed-length property vectors.
+///
+/// Returns a value in `[0.0, 1.0]` where `1.0` means identical direction
+/// (maximally similar) and `0.0` means orthogonal (no shared profile).
+/// Negative cosine similarity cannot occur here because all property values
+/// are non-negative (normalised to `[0.0, 1.0]`).
+///
+/// If either vector is the zero vector (all properties are exactly 0.0),
+/// the function returns `0.0` — a zero-vector material has no meaningful
+/// similarity to anything.
+///
+/// Used by the cross-reference system (Story 10.5) to detect `SimilarTo`
+/// relationships between materials whose property profiles are close.
+pub fn cosine_similarity(a: &[f32; 5], b: &[f32; 5]) -> f32 {
+    let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
+    let mag_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+    let mag_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+
+    let denom = mag_a * mag_b;
+    if denom == 0.0 {
+        // At least one vector is the zero vector — no meaningful similarity.
+        return 0.0;
+    }
+
+    // Clamp to [0.0, 1.0] to guard against floating-point rounding that could
+    // push an identical-vector comparison slightly above 1.0.
+    (dot / denom).clamp(0.0, 1.0)
+}
+
 /// Derive a complete [`GameMaterial`] deterministically from a seed.
 ///
 /// Every property is produced by mixing the seed with a fixed channel constant
@@ -884,6 +913,80 @@ visibility = "Hidden"
         assert!((unit_interval_01(u64::MAX) - 1.0).abs() < f32::EPSILON);
         let mid = unit_interval_01(u64::MAX / 2);
         assert!((0.0..=1.0).contains(&mid));
+    }
+
+    #[test]
+    fn cosine_similarity_identical_vectors_returns_one() {
+        let v = [0.5_f32, 0.3, 0.8, 0.1, 0.6];
+        let result = cosine_similarity(&v, &v);
+        assert!(
+            (result - 1.0).abs() < 1e-6,
+            "identical vectors must have similarity 1.0, got {result}"
+        );
+    }
+
+    #[test]
+    fn cosine_similarity_orthogonal_vectors_returns_zero() {
+        // Two vectors with no overlapping non-zero components are orthogonal.
+        let a = [1.0_f32, 0.0, 0.0, 0.0, 0.0];
+        let b = [0.0_f32, 1.0, 0.0, 0.0, 0.0];
+        let result = cosine_similarity(&a, &b);
+        assert!(
+            result.abs() < 1e-6,
+            "orthogonal vectors must have similarity 0.0, got {result}"
+        );
+    }
+
+    #[test]
+    fn cosine_similarity_zero_vector_returns_zero() {
+        let zero = [0.0_f32; 5];
+        let v = [0.5_f32, 0.3, 0.8, 0.1, 0.6];
+        assert_eq!(
+            cosine_similarity(&zero, &v),
+            0.0,
+            "zero vector vs any vector must return 0.0"
+        );
+        assert_eq!(
+            cosine_similarity(&v, &zero),
+            0.0,
+            "any vector vs zero vector must return 0.0"
+        );
+        assert_eq!(
+            cosine_similarity(&zero, &zero),
+            0.0,
+            "zero vector vs zero vector must return 0.0"
+        );
+    }
+
+    #[test]
+    fn cosine_similarity_result_in_unit_range() {
+        // Spot-check a handful of seed-derived materials to confirm the result
+        // is always in [0.0, 1.0].
+        let seeds: &[u64] = &[0x1, 0xDEAD_BEEF, 0xCAFE_BABE, 0xFFFF_FFFF_FFFF_FFFF];
+        for &s1 in seeds {
+            for &s2 in seeds {
+                let m1 = derive_material_from_seed(s1);
+                let m2 = derive_material_from_seed(s2);
+                let sim = cosine_similarity(&m1.property_vector(), &m2.property_vector());
+                assert!(
+                    (0.0..=1.0).contains(&sim),
+                    "cosine_similarity({s1:#X}, {s2:#X}) = {sim} out of [0,1]"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cosine_similarity_partial_overlap_between_zero_and_one() {
+        // Vectors that share some but not all components should yield a value
+        // strictly between 0 and 1.
+        let a = [1.0_f32, 1.0, 0.0, 0.0, 0.0];
+        let b = [1.0_f32, 0.0, 1.0, 0.0, 0.0];
+        let result = cosine_similarity(&a, &b);
+        assert!(
+            result > 0.0 && result < 1.0,
+            "partial overlap must yield similarity in (0, 1), got {result}"
+        );
     }
 
     // ── Collision-avoidance tests ────────────────────────────────────────
