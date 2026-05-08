@@ -6544,3 +6544,150 @@ fn help_text_shows_back_hint_when_history_exists() {
         "help should show back hint when history exists, got: {help_with_back}"
     );
 }
+
+/// Cross-reference links appear in the detail panel render cache when the
+/// selected journal entry has relationships in the `KnowledgeGraph`.
+///
+/// Setup:
+///   - Two journal entries: "Ignium" (Material seed=1) and "Volcanic Plains"
+///     (Location planet_seed=42).
+///   - A `FoundOn` edge from Ignium → Volcanic Plains in the KnowledgeGraph.
+///   - Journal is visible with Ignium selected (index 0, alphabetically first).
+///
+/// Expected: after running `compute_journal_panels` then
+/// `append_cross_reference_spans`, the render cache contains at least one
+/// `CrossReferenceLink` span whose text includes "Found on" and "Volcanic
+/// Plains".
+#[test]
+fn cross_reference_links_appear_for_entries_with_relationships() {
+    use crate::knowledge_graph::{
+        ConceptCategory, ConceptEdge, ConceptId, KnowledgeGraph, RelationshipType,
+    };
+
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins);
+    app.init_resource::<JournalRenderCache>();
+    app.init_resource::<JournalSelectionTracker>();
+    app.init_resource::<KnowledgeGraph>();
+    app.insert_resource(JournalUiState {
+        visible: true,
+        selected_index: 0,
+        scroll_offset: 0,
+        entries_per_page: 15,
+        filter: JournalFilter::default(),
+        selected_link_index: None,
+        navigation_stack: JournalNavigationStack::new(),
+    });
+    app.add_systems(
+        Update,
+        (
+            compute_journal_panels,
+            append_cross_reference_spans.after(compute_journal_panels),
+        ),
+    );
+
+    // Spawn a player with a journal containing two entries.
+    let material_key = JournalKey::Material {
+        seed: 1,
+        planet_seed: None,
+    };
+    // JournalKey has no Location variant yet; represent a location concept
+    // using a Material key with a planet_seed (same convention as knowledge_graph tests).
+    let location_key = JournalKey::Material {
+        seed: 42,
+        planet_seed: Some(42),
+    };
+
+    app.world_mut().spawn((
+        Player,
+        {
+            let mut journal = Journal::default();
+            journal.record(
+                material_key.clone(),
+                "Ignium",
+                Observation {
+                    category: ObservationCategory::SurfaceAppearance,
+                    confidence: Confidence(0.6),
+                    description: "Reliably withstands heat".to_string(),
+                    recorded_at: 1,
+                },
+            );
+            journal.record(
+                location_key.clone(),
+                "Volcanic Plains",
+                Observation {
+                    category: ObservationCategory::SurfaceAppearance,
+                    confidence: Confidence(0.6),
+                    description: "Scorched terrain".to_string(),
+                    recorded_at: 2,
+                },
+            );
+            journal
+        },
+        Transform::default(),
+    ));
+
+    // Build the cross-reference relationship in the KnowledgeGraph.
+    {
+        let mut graph = app.world_mut().resource_mut::<KnowledgeGraph>();
+        let material_node =
+            graph.ensure_concept(ConceptId::new(material_key), ConceptCategory::Material, 1);
+        let location_node =
+            graph.ensure_concept(ConceptId::new(location_key), ConceptCategory::Location, 2);
+        graph.relate(
+            material_node,
+            location_node,
+            ConceptEdge {
+                relationship: RelationshipType::FoundOn,
+                confidence: crate::observation::Confidence(0.8),
+                discovered_at: 1,
+            },
+        );
+    }
+
+    // Run one frame so both systems execute.
+    app.update();
+
+    // Verify the render cache contains a CrossReferenceLink span for the
+    // FoundOn relationship pointing at "Volcanic Plains".
+    let cache = app.world().resource::<JournalRenderCache>();
+
+    let link_spans: Vec<&DetailSpan> = cache
+        .detail_spans
+        .iter()
+        .filter(|s| {
+            matches!(
+                s.kind,
+                DetailSpanKind::CrossReferenceLink | DetailSpanKind::CrossReferenceLinkSelected
+            )
+        })
+        .collect();
+
+    assert!(
+        !link_spans.is_empty(),
+        "expected at least one CrossReferenceLink span in the detail panel, got none. \
+         Full spans: {:?}",
+        cache.detail_spans
+    );
+
+    let combined_text: String = link_spans.iter().map(|s| s.text.as_str()).collect();
+    assert!(
+        combined_text.contains("Found on"),
+        "expected 'Found on' in cross-reference link text, got: {combined_text:?}"
+    );
+    assert!(
+        combined_text.contains("Volcanic Plains"),
+        "expected 'Volcanic Plains' in cross-reference link text, got: {combined_text:?}"
+    );
+
+    // Also verify the "Related" section header is present.
+    let has_related_header = cache
+        .detail_spans
+        .iter()
+        .any(|s| s.kind == DetailSpanKind::CrossReferenceHeader && s.text.contains("Related"));
+    assert!(
+        has_related_header,
+        "expected a CrossReferenceHeader span containing 'Related', got: {:?}",
+        cache.detail_spans
+    );
+}
