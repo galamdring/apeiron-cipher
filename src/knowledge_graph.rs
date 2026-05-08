@@ -969,6 +969,21 @@ mod tests {
     }
 
     #[test]
+    fn neighborhood_disconnected_node_returns_empty() {
+        // A node with no edges should have an empty neighborhood at any depth.
+        let mut graph = make_graph();
+        let isolated = graph.ensure_concept(
+            ConceptId::new(material_key(99)),
+            ConceptCategory::Material,
+            1,
+        );
+        assert!(
+            graph.neighborhood(isolated, 3, None).is_empty(),
+            "disconnected node must have no neighbors"
+        );
+    }
+
+    #[test]
     fn node_accessor_returns_concept_data() {
         let mut graph = make_graph();
         let id = ConceptId::new(material_key(42));
