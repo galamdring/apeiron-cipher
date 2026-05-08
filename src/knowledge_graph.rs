@@ -1054,11 +1054,24 @@ mod tests {
         // depth=1: only direct neighbors of A (i.e., B). C and D are too far.
         let neighbors = graph.neighborhood(a, 1, None);
         let nodes: Vec<NodeIndex> = neighbors.iter().map(|(n, _)| *n).collect();
-        assert_eq!(nodes.len(), 1, "depth=1 must return exactly one direct neighbor");
+        assert_eq!(
+            nodes.len(),
+            1,
+            "depth=1 must return exactly one direct neighbor"
+        );
         assert!(nodes.contains(&b), "B must be in depth=1 neighborhood of A");
-        assert!(!nodes.contains(&c), "C must not be in depth=1 neighborhood of A");
-        assert!(!nodes.contains(&d), "D must not be in depth=1 neighborhood of A");
-        assert!(!nodes.contains(&a), "center node must not appear in its own neighborhood");
+        assert!(
+            !nodes.contains(&c),
+            "C must not be in depth=1 neighborhood of A"
+        );
+        assert!(
+            !nodes.contains(&d),
+            "D must not be in depth=1 neighborhood of A"
+        );
+        assert!(
+            !nodes.contains(&a),
+            "center node must not appear in its own neighborhood"
+        );
 
         // Verify hop distance is reported as 1.
         let hop = neighbors.iter().find(|(n, _)| *n == b).map(|(_, h)| *h);
@@ -1150,7 +1163,10 @@ mod tests {
         );
         assert!(nodes.contains(&b), "B must be reachable from A");
         assert!(nodes.contains(&c), "C must be reachable from A");
-        assert!(!nodes.contains(&a), "center node A must not appear in its own neighborhood");
+        assert!(
+            !nodes.contains(&a),
+            "center node A must not appear in its own neighborhood"
+        );
 
         // Hop distances: B is 1 hop away, C is 1 hop away (direct edge via relate's reverse).
         // Both must be ≤ depth and must be the shortest path distance.
@@ -1328,6 +1344,63 @@ mod tests {
     }
 
     #[test]
+    fn non_material_with_context_location_creates_observed_at_edge() {
+        // A Fabrication observation with a context_location must produce an
+        // ObservedAt edge (not FoundOn) between the fabrication concept and the
+        // location concept, and the reverse edge must also exist.
+        let mut app = build_test_app();
+
+        let location_key = JournalKey::Material {
+            seed: 77,
+            planet_seed: None,
+        };
+
+        let obs = RecordObservation {
+            key: JournalKey::Fabrication { output_seed: 55 },
+            name: "Output-55".to_string(),
+            observation: Observation {
+                category: ObservationCategory::FabricationResult,
+                confidence: Confidence(0.9),
+                description: "fabricated at location".to_string(),
+                recorded_at: 0,
+            },
+            input_seeds: vec![],
+            context_location: Some(location_key.clone()),
+        };
+
+        inject_observation(&mut app, obs);
+        app.update();
+
+        let graph = app.world().resource::<KnowledgeGraph>();
+
+        let fab_id = ConceptId::new(JournalKey::Fabrication { output_seed: 55 });
+        let loc_id = ConceptId::new(location_key);
+
+        let fab_node = graph
+            .lookup(&fab_id)
+            .expect("fabrication concept must exist");
+        let loc_node = graph.lookup(&loc_id).expect("location concept must exist");
+
+        // Forward edge: fabrication → ObservedAt → location
+        let fab_rels = graph.relationships(fab_node);
+        assert!(
+            fab_rels
+                .iter()
+                .any(|(n, e)| *n == loc_node && e.relationship == RelationshipType::ObservedAt),
+            "fabrication must have ObservedAt edge to location"
+        );
+
+        // Reverse edge: location → ObservedAt → fabrication (bidirectional)
+        let loc_rels = graph.relationships(loc_node);
+        assert!(
+            loc_rels
+                .iter()
+                .any(|(n, e)| *n == fab_node && e.relationship == RelationshipType::ObservedAt),
+            "location must have reverse ObservedAt edge back to fabrication"
+        );
+    }
+
+    #[test]
     fn fabrication_observation_creates_derived_from_edges() {
         let mut app = build_test_app();
 
@@ -1359,8 +1432,12 @@ mod tests {
         });
 
         let output_node = graph.lookup(&output_id).expect("output concept must exist");
-        let input_a_node = graph.lookup(&input_a_id).expect("input A concept must exist");
-        let input_b_node = graph.lookup(&input_b_id).expect("input B concept must exist");
+        let input_a_node = graph
+            .lookup(&input_a_id)
+            .expect("input A concept must exist");
+        let input_b_node = graph
+            .lookup(&input_b_id)
+            .expect("input B concept must exist");
 
         // Output → DerivedFrom → each input
         let rels = graph.relationships(output_node);
@@ -1406,8 +1483,12 @@ mod tests {
             planet_seed: None,
         });
 
-        let input_a_node = graph.lookup(&input_a_id).expect("input A concept must exist");
-        let input_b_node = graph.lookup(&input_b_id).expect("input B concept must exist");
+        let input_a_node = graph
+            .lookup(&input_a_id)
+            .expect("input A concept must exist");
+        let input_b_node = graph
+            .lookup(&input_b_id)
+            .expect("input B concept must exist");
 
         // Input A → CombinedWith → Input B (and reverse via bidirectionality)
         let rels_a = graph.relationships(input_a_node);
