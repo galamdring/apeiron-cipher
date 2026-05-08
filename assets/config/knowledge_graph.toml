@@ -1,0 +1,31 @@
+# Knowledge Graph Configuration
+#
+# Controls how the cross-reference system builds and surfaces connections
+# between journal entries. All values are tunable without recompilation.
+
+# Similarity Detection Settings
+# ------------------------------
+
+# Minimum cosine similarity score (0.0–1.0) required to create a SimilarTo
+# edge between two materials.
+#
+# Two materials must share at least this much directional similarity across
+# their five-dimensional property vector (density, thermal_resistance,
+# reactivity, conductivity, toxicity) before the journal surfaces the
+# connection.
+#
+# Higher values require materials to be more alike before the connection is
+# shown. Lower values surface more (potentially spurious) similarities.
+# Typical range: 0.7–0.95
+similarity_score_threshold = 0.85
+
+# Minimum confidence value (0.0–1.0) required on BOTH material concept nodes
+# before a SimilarTo edge is created.
+#
+# Prevents the system from surfacing connections the player hasn't earned
+# through observation. Maps to the Observed tier boundary (≥ 0.3). Both
+# materials must be at least at this confidence level before the journal
+# will link them as similar.
+#
+# Typical range: 0.2–0.5
+similarity_confidence_threshold = 0.3

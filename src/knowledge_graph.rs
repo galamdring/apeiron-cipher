@@ -11,6 +11,8 @@
 //! wires the [`update_knowledge_graph`] system into the Bevy app.
 
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
+use std::fs;
 
 use bevy::prelude::*;
 use petgraph::graph::NodeIndex;
@@ -31,9 +33,13 @@ use crate::observation::Confidence;
 /// [`RecordObservation`] messages that the journal plugin registers.
 pub struct KnowledgeGraphPlugin;
 
+/// Path to the knowledge-graph tuning configuration file.
+const KNOWLEDGE_GRAPH_CONFIG_PATH: &str = "assets/config/knowledge_graph.toml";
+
 impl Plugin for KnowledgeGraphPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<KnowledgeGraph>()
+            .add_systems(PreStartup, load_knowledge_graph_config)
             .add_systems(Update, update_knowledge_graph);
     }
 }
@@ -53,23 +59,113 @@ fn category_from_key(key: &JournalKey) -> ConceptCategory {
     }
 }
 
-/// Minimum cosine similarity score required to create a [`RelationshipType::SimilarTo`] edge.
+/// Default minimum cosine similarity score required to create a
+/// [`RelationshipType::SimilarTo`] edge.
 ///
 /// Two materials must share at least 85% directional similarity across their
 /// five-dimensional property vector (density, thermal_resistance, reactivity,
 /// conductivity, toxicity) before the system considers them "similar."
-const SIMILARITY_SCORE_THRESHOLD: f32 = 0.85;
+///
+/// This value is the fallback used when `assets/config/knowledge_graph.toml`
+/// is absent or malformed. The live value is stored in [`KnowledgeGraphConfig`].
+const DEFAULT_SIMILARITY_SCORE_THRESHOLD: f32 = 0.85;
 
-/// Minimum concept node confidence required on BOTH materials before a
+/// Default minimum concept node confidence required on BOTH materials before a
 /// [`RelationshipType::SimilarTo`] edge is created.
 ///
 /// This maps to the `Observed` tier boundary (≥ 0.3). The player must have
 /// gathered enough evidence about both materials before the system surfaces
 /// the connection — no free inferences from a single tentative observation.
-const SIMILARITY_CONFIDENCE_THRESHOLD: f32 = 0.3;
+///
+/// This value is the fallback used when `assets/config/knowledge_graph.toml`
+/// is absent or malformed. The live value is stored in [`KnowledgeGraphConfig`].
+const DEFAULT_SIMILARITY_CONFIDENCE_THRESHOLD: f32 = 0.3;
+
+// ── Config resource ───────────────────────────────────────────────────────
+
+fn default_similarity_score_threshold() -> f32 {
+    DEFAULT_SIMILARITY_SCORE_THRESHOLD
+}
+
+fn default_similarity_confidence_threshold() -> f32 {
+    DEFAULT_SIMILARITY_CONFIDENCE_THRESHOLD
+}
+
+/// Runtime tuning configuration for the knowledge-graph system.
+///
+/// Loaded from `assets/config/knowledge_graph.toml` during `PreStartup`.
+/// Falls back to compiled-in defaults if the file is absent or malformed so
+/// that the game always starts cleanly.
+///
+/// All thresholds are data-driven to allow tuning without recompilation.
+#[derive(Resource, Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct KnowledgeGraphConfig {
+    /// Minimum cosine similarity score (0.0–1.0) required to create a
+    /// [`RelationshipType::SimilarTo`] edge between two materials.
+    ///
+    /// Higher values require materials to be more alike before the journal
+    /// surfaces the connection. Typical range: 0.7–0.95.
+    #[serde(default = "default_similarity_score_threshold")]
+    pub similarity_score_threshold: f32,
+
+    /// Minimum [`Confidence`] value required on BOTH material concept nodes
+    /// before a [`RelationshipType::SimilarTo`] edge is created.
+    ///
+    /// Prevents the system from surfacing connections the player hasn't earned
+    /// through observation. Maps to the `Observed` tier boundary. Typical
+    /// range: 0.2–0.5.
+    #[serde(default = "default_similarity_confidence_threshold")]
+    pub similarity_confidence_threshold: f32,
+}
+
+impl Default for KnowledgeGraphConfig {
+    fn default() -> Self {
+        Self {
+            similarity_score_threshold: DEFAULT_SIMILARITY_SCORE_THRESHOLD,
+            similarity_confidence_threshold: DEFAULT_SIMILARITY_CONFIDENCE_THRESHOLD,
+        }
+    }
+}
+
+/// Load [`KnowledgeGraphConfig`] from `assets/config/knowledge_graph.toml`.
+///
+/// Follows the standard pattern used throughout the codebase: attempt to load
+/// from the config file, fall back to defaults if the file is missing or
+/// malformed. Logs appropriate warnings for debugging.
+fn load_knowledge_graph_config(mut commands: Commands) {
+    let config = if Path::new(KNOWLEDGE_GRAPH_CONFIG_PATH).exists() {
+        match fs::read_to_string(KNOWLEDGE_GRAPH_CONFIG_PATH) {
+            Ok(contents) => match toml::from_str::<KnowledgeGraphConfig>(&contents) {
+                Ok(cfg) => {
+                    info!("Loaded knowledge graph config from {KNOWLEDGE_GRAPH_CONFIG_PATH}");
+                    cfg
+                }
+                Err(error) => {
+                    warn!(
+                        "Malformed {KNOWLEDGE_GRAPH_CONFIG_PATH}, using defaults: {error}"
+                    );
+                    KnowledgeGraphConfig::default()
+                }
+            },
+            Err(error) => {
+                warn!(
+                    "Could not read {KNOWLEDGE_GRAPH_CONFIG_PATH}, using defaults: {error}"
+                );
+                KnowledgeGraphConfig::default()
+            }
+        }
+    } else {
+        info!(
+            "{KNOWLEDGE_GRAPH_CONFIG_PATH} not found, using defaults"
+        );
+        KnowledgeGraphConfig::default()
+    };
+
+    commands.insert_resource(config);
+}
 
 /// Compare `subject` against every material in `catalog` and return the seeds
-/// and similarity scores of materials that exceed [`SIMILARITY_SCORE_THRESHOLD`].
+/// and similarity scores of materials that exceed `threshold`.
 ///
 /// The subject seed is included in the catalog but the caller is responsible
 /// for skipping self-comparisons (seed == subject_seed).
@@ -79,6 +175,7 @@ pub fn detect_similarity(
     subject_seed: u64,
     subject: &crate::materials::GameMaterial,
     catalog: &MaterialCatalog,
+    threshold: f32,
 ) -> Vec<(u64, f32)> {
     let subject_vec = subject.property_vector();
     let mut results: Vec<(u64, f32)> = catalog
@@ -87,7 +184,7 @@ pub fn detect_similarity(
         .filter_map(|&seed| {
             let other = catalog.get_by_seed(seed)?;
             let sim = cosine_similarity(&subject_vec, &other.property_vector());
-            if sim >= SIMILARITY_SCORE_THRESHOLD {
+            if sim >= threshold {
                 Some((seed, sim))
             } else {
                 None
@@ -126,6 +223,7 @@ pub fn update_knowledge_graph(
     mut graph: ResMut<KnowledgeGraph>,
     time: Res<Time>,
     catalog: Res<MaterialCatalog>,
+    kg_config: Res<KnowledgeGraphConfig>,
 ) {
     let tick = time.elapsed().as_millis() as u64;
 
@@ -220,11 +318,16 @@ pub fn update_knowledge_graph(
                 .unwrap_or(Confidence(0.0));
 
             // Only proceed if the subject material itself is at Observed tier.
-            if subject_confidence.0 >= SIMILARITY_CONFIDENCE_THRESHOLD {
+            if subject_confidence.0 >= kg_config.similarity_confidence_threshold {
                 let subject_mat = catalog.get_by_seed(*subject_seed).cloned();
 
                 if let Some(subject_mat) = subject_mat {
-                    let similar_pairs = detect_similarity(*subject_seed, &subject_mat, &catalog);
+                    let similar_pairs = detect_similarity(
+                        *subject_seed,
+                        &subject_mat,
+                        &catalog,
+                        kg_config.similarity_score_threshold,
+                    );
 
                     for (other_seed, similarity_score) in similar_pairs {
                         // Skip self-comparison.
@@ -247,7 +350,7 @@ pub fn update_knowledge_graph(
                             .map(|n| n.confidence)
                             .unwrap_or(Confidence(0.0));
 
-                        if other_confidence.0 < SIMILARITY_CONFIDENCE_THRESHOLD {
+                        if other_confidence.0 < kg_config.similarity_confidence_threshold {
                             continue;
                         }
 
@@ -1358,6 +1461,7 @@ mod tests {
         app.add_message::<RecordObservation>();
         app.init_resource::<KnowledgeGraph>();
         app.init_resource::<MaterialCatalog>();
+        app.init_resource::<KnowledgeGraphConfig>();
         app.add_systems(Update, update_knowledge_graph);
         app
     }
@@ -1859,7 +1963,7 @@ mod tests {
             let m1 = derive_material_from_seed(1);
             let m2 = derive_material_from_seed(2);
             let sim = cosine_similarity(&m1.property_vector(), &m2.property_vector());
-            if sim >= SIMILARITY_SCORE_THRESHOLD {
+            if sim >= DEFAULT_SIMILARITY_SCORE_THRESHOLD {
                 // Seeds turned out to be similar — skip the assertion.
                 return;
             }
@@ -1886,7 +1990,12 @@ mod tests {
         catalog.derive_and_register(SIMILAR_SEED_B);
 
         let subject = derive_material_from_seed(SIMILAR_SEED_A);
-        let results = detect_similarity(SIMILAR_SEED_A, &subject, &catalog);
+        let results = detect_similarity(
+            SIMILAR_SEED_A,
+            &subject,
+            &catalog,
+            DEFAULT_SIMILARITY_SCORE_THRESHOLD,
+        );
 
         // SIMILAR_SEED_B must appear in results.
         assert!(
@@ -1903,8 +2012,8 @@ mod tests {
         // All returned scores must be at or above the threshold.
         for (_, score) in &results {
             assert!(
-                *score >= SIMILARITY_SCORE_THRESHOLD,
-                "all returned scores must be >= SIMILARITY_SCORE_THRESHOLD, got {score}"
+                *score >= DEFAULT_SIMILARITY_SCORE_THRESHOLD,
+                "all returned scores must be >= DEFAULT_SIMILARITY_SCORE_THRESHOLD, got {score}"
             );
         }
     }
