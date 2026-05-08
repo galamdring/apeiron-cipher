@@ -1,15 +1,20 @@
-//! Knowledge graph types — concept nodes and categories for the cross-reference system.
+//! Knowledge graph types — concept nodes, edges, and the graph resource for
+//! the cross-reference system.
 //!
 //! The knowledge graph is the player's associative web of discovered concepts.
 //! Each concept corresponds to a journal entry (identified by [`JournalKey`]) and
 //! carries metadata about when it was discovered and how confident the player is
 //! in their understanding of it.
 //!
-//! This module defines the node-level types and edge types. The graph resource
-//! itself (`KnowledgeGraph`) is defined in a subsequent story.
+//! This module defines the node-level types, edge types, and the [`KnowledgeGraph`]
+//! resource backed by `petgraph::Graph`.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
+use bevy::prelude::Resource;
+use petgraph::graph::NodeIndex;
+use petgraph::visit::EdgeRef;
+use petgraph::{Direction, Graph};
 use serde::{Deserialize, Serialize};
 
 use crate::journal::JournalKey;
@@ -241,6 +246,324 @@ impl ConceptEdge {
     }
 }
 
+// ── KnowledgeGraph resource ───────────────────────────────────────────────
+
+/// The player's knowledge graph — backed by `petgraph::Graph`.
+///
+/// Every concept the player has discovered is a node; every observed
+/// relationship between two concepts is a directed edge. The graph is
+/// undirected in spirit (cross-references are bidirectional) but implemented
+/// as a directed graph so that each edge carries its own [`RelationshipType`]
+/// and the direction encodes the semantic role (e.g., "Material → FoundOn →
+/// Location" vs. "Location → FoundOn → Material" would be two separate edges).
+///
+/// Bidirectionality is enforced by [`KnowledgeGraph::relate`], which always
+/// inserts both the forward and reverse edge when a relationship is recorded.
+///
+/// # Indexes
+///
+/// Three auxiliary indexes are maintained alongside the graph for O(1) or
+/// O(k) lookups that would otherwise require a full graph scan:
+///
+/// - `concept_index`: maps [`ConceptId`] → [`NodeIndex`] for O(1) node lookup.
+/// - `category_index`: maps [`ConceptCategory`] → `Vec<NodeIndex>` for
+///   encyclopedia-style listing of all concepts in a category.
+/// - `timeline`: ordered list of `(tick, NodeIndex)` pairs recording the
+///   discovery order of concepts.
+///
+/// # Serialization
+///
+/// The `petgraph::Graph` type serializes its node and edge weights directly
+/// when the `serde-1` feature is enabled. The auxiliary indexes are derived
+/// from the graph and are therefore re-derived on deserialization rather than
+/// stored, keeping the save file compact and avoiding index/graph drift.
+#[derive(Resource)]
+pub struct KnowledgeGraph {
+    /// The underlying directed graph. Nodes are [`ConceptNode`]s; edges are
+    /// [`ConceptEdge`]s. Directed so that edge semantics are preserved.
+    graph: Graph<ConceptNode, ConceptEdge>,
+    /// O(1) lookup: [`ConceptId`] → [`NodeIndex`].
+    ///
+    /// Not serialized — rebuilt from the graph on load.
+    #[allow(clippy::zero_sized_map_values)]
+    concept_index: HashMap<ConceptId, NodeIndex>,
+    /// Category index for encyclopedia view: category → list of node indexes.
+    ///
+    /// Not serialized — rebuilt from the graph on load.
+    category_index: HashMap<ConceptCategory, Vec<NodeIndex>>,
+    /// Timeline of concept discoveries in insertion order: `(tick, NodeIndex)`.
+    ///
+    /// Not serialized — rebuilt from the graph on load.
+    timeline: Vec<(u64, NodeIndex)>,
+}
+
+impl Default for KnowledgeGraph {
+    fn default() -> Self {
+        Self {
+            graph: Graph::new(),
+            concept_index: HashMap::new(),
+            category_index: HashMap::new(),
+            timeline: Vec::new(),
+        }
+    }
+}
+
+impl KnowledgeGraph {
+    /// Create an empty knowledge graph.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Get or create a concept node for the given [`ConceptId`].
+    ///
+    /// If the concept already exists, its [`NodeIndex`] is returned unchanged
+    /// and no new node is inserted. If it does not exist, a new node is created
+    /// with the given `category`, an initial confidence of `0.0`, and the
+    /// provided `tick` as its discovery time.
+    ///
+    /// The concept is also registered in the category index and timeline on
+    /// first insertion.
+    pub fn ensure_concept(
+        &mut self,
+        id: ConceptId,
+        category: ConceptCategory,
+        tick: u64,
+    ) -> NodeIndex {
+        if let Some(&idx) = self.concept_index.get(&id) {
+            return idx;
+        }
+
+        let node = ConceptNode::new(id.clone(), category.clone(), Confidence(0.0), tick);
+        let idx = self.graph.add_node(node);
+
+        self.concept_index.insert(id, idx);
+        self.category_index.entry(category).or_default().push(idx);
+        self.timeline.push((tick, idx));
+
+        idx
+    }
+
+    /// Add or strengthen a typed relationship between two concept nodes.
+    ///
+    /// Cross-references are **bidirectional**: calling `relate(from, to, edge)`
+    /// inserts both a forward edge (`from → to`) and a reverse edge
+    /// (`to → from`) with the same relationship type and confidence. This
+    /// satisfies the acceptance criterion that "if Material X links to Planet Y,
+    /// Planet Y links back to Material X."
+    ///
+    /// If an edge with the same [`RelationshipType`] already exists between the
+    /// two nodes in a given direction, it is **strengthened** (confidence
+    /// accumulates) rather than duplicated. This satisfies the criterion that
+    /// "cross-references accumulate — the same relationship strengthens with
+    /// repeated evidence."
+    ///
+    /// # Panics
+    ///
+    /// Panics if `from` or `to` are not valid node indexes in this graph.
+    pub fn relate(&mut self, from: NodeIndex, to: NodeIndex, edge: ConceptEdge) {
+        // Forward edge: from → to
+        Self::upsert_edge(&mut self.graph, from, to, edge.clone());
+        // Reverse edge: to → from (same relationship type, same confidence)
+        Self::upsert_edge(&mut self.graph, to, from, edge);
+    }
+
+    /// Insert a new edge or strengthen an existing one with the same
+    /// relationship type between the same pair of nodes.
+    fn upsert_edge(
+        graph: &mut Graph<ConceptNode, ConceptEdge>,
+        from: NodeIndex,
+        to: NodeIndex,
+        new_edge: ConceptEdge,
+    ) {
+        // Search for an existing edge with the same relationship type.
+        let existing = graph
+            .edges_directed(from, Direction::Outgoing)
+            .find(|e| e.target() == to && e.weight().relationship == new_edge.relationship)
+            .map(|e| e.id());
+
+        if let Some(edge_id) = existing {
+            graph[edge_id].strengthen(new_edge.confidence);
+        } else {
+            graph.add_edge(from, to, new_edge);
+        }
+    }
+
+    /// Get all relationships for a concept node — returns `(neighbor NodeIndex,
+    /// &ConceptEdge)` pairs for every outgoing edge from this node.
+    ///
+    /// Because [`KnowledgeGraph::relate`] always inserts both a forward and a
+    /// reverse edge, iterating outgoing edges is sufficient to enumerate all
+    /// connections: every relationship the node participates in appears as an
+    /// outgoing edge in at least one direction. Callers that need to display
+    /// "all connections" for a concept should call this method; the result
+    /// already includes the reverse direction because `relate` inserted it.
+    pub fn relationships(&self, node: NodeIndex) -> Vec<(NodeIndex, &ConceptEdge)> {
+        self.graph
+            .edges_directed(node, Direction::Outgoing)
+            .map(|e| (e.target(), e.weight()))
+            .collect()
+    }
+
+    /// Bounded BFS from a concept node, returning all reachable nodes within
+    /// `depth` hops along with their hop distance from the center.
+    ///
+    /// The center node itself is **not** included in the result. If
+    /// `category_filter` is `Some`, only nodes whose category matches are
+    /// included in the result (but the BFS still traverses through nodes of
+    /// other categories to find matching ones within the depth limit).
+    ///
+    /// This method is the data-model foundation for the future associative web
+    /// view. It does not perform any rendering or UI work.
+    pub fn neighborhood(
+        &self,
+        center: NodeIndex,
+        depth: usize,
+        category_filter: Option<&ConceptCategory>,
+    ) -> Vec<(NodeIndex, usize)> {
+        if depth == 0 {
+            return Vec::new();
+        }
+
+        // BFS state: visited set and queue of (node, current_depth).
+        let mut visited: HashSet<NodeIndex> = HashSet::new();
+        let mut queue: std::collections::VecDeque<(NodeIndex, usize)> =
+            std::collections::VecDeque::new();
+        let mut result: Vec<(NodeIndex, usize)> = Vec::new();
+
+        visited.insert(center);
+        queue.push_back((center, 0));
+
+        while let Some((current, current_depth)) = queue.pop_front() {
+            if current_depth >= depth {
+                continue;
+            }
+
+            // Traverse all neighbors (both directions) from the current node.
+            let neighbors: Vec<NodeIndex> = self
+                .graph
+                .edges_directed(current, Direction::Outgoing)
+                .map(|e| e.target())
+                .chain(
+                    self.graph
+                        .edges_directed(current, Direction::Incoming)
+                        .map(|e| e.source()),
+                )
+                .collect();
+
+            for neighbor in neighbors {
+                if visited.contains(&neighbor) {
+                    continue;
+                }
+                visited.insert(neighbor);
+                let hop = current_depth + 1;
+
+                // Apply category filter to the result set, but always enqueue
+                // the neighbor so BFS can traverse through it.
+                let node_data = &self.graph[neighbor];
+                let passes_filter = category_filter
+                    .map(|cat| &node_data.category == cat)
+                    .unwrap_or(true);
+
+                if passes_filter {
+                    result.push((neighbor, hop));
+                }
+
+                queue.push_back((neighbor, hop));
+            }
+        }
+
+        result
+    }
+
+    /// All concept nodes in a given category, in insertion order.
+    ///
+    /// Returns an empty slice if no concepts of that category have been
+    /// discovered yet.
+    pub fn by_category(&self, category: &ConceptCategory) -> &[NodeIndex] {
+        self.category_index
+            .get(category)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
+    /// Timeline of concept discoveries: `(tick, NodeIndex)` pairs in
+    /// insertion order (earliest discovery first).
+    pub fn timeline(&self) -> &[(u64, NodeIndex)] {
+        &self.timeline
+    }
+
+    /// Look up a concept node by its [`ConceptId`].
+    ///
+    /// Returns `None` if the concept has not been added to the graph yet.
+    pub fn lookup(&self, id: &ConceptId) -> Option<NodeIndex> {
+        self.concept_index.get(id).copied()
+    }
+
+    /// Borrow the [`ConceptNode`] data for a given [`NodeIndex`].
+    ///
+    /// Returns `None` if the index is not valid (e.g., after a node was
+    /// removed, though the current implementation never removes nodes).
+    pub fn node(&self, idx: NodeIndex) -> Option<&ConceptNode> {
+        self.graph.node_weight(idx)
+    }
+
+    /// Mutably borrow the [`ConceptNode`] data for a given [`NodeIndex`].
+    pub fn node_mut(&mut self, idx: NodeIndex) -> Option<&mut ConceptNode> {
+        self.graph.node_weight_mut(idx)
+    }
+
+    /// Serialize the knowledge graph to a JSON string for save/load.
+    ///
+    /// The auxiliary indexes (`concept_index`, `category_index`, `timeline`)
+    /// are **not** serialized — they are rebuilt from the graph on
+    /// deserialization via [`KnowledgeGraph::from_serializable`].
+    pub fn to_serializable(&self) -> SerializableKnowledgeGraph {
+        SerializableKnowledgeGraph {
+            graph: self.graph.clone(),
+        }
+    }
+
+    /// Reconstruct a `KnowledgeGraph` from its serialized form, rebuilding
+    /// all auxiliary indexes from the graph data.
+    pub fn from_serializable(serializable: SerializableKnowledgeGraph) -> Self {
+        let graph = serializable.graph;
+
+        let mut concept_index: HashMap<ConceptId, NodeIndex> = HashMap::new();
+        let mut category_index: HashMap<ConceptCategory, Vec<NodeIndex>> = HashMap::new();
+        let mut timeline: Vec<(u64, NodeIndex)> = Vec::new();
+
+        for idx in graph.node_indices() {
+            let node = &graph[idx];
+            concept_index.insert(node.id.clone(), idx);
+            category_index
+                .entry(node.category.clone())
+                .or_default()
+                .push(idx);
+            timeline.push((node.discovered_at, idx));
+        }
+
+        // Sort timeline by tick to restore discovery order after round-trip.
+        timeline.sort_by_key(|(tick, _)| *tick);
+
+        Self {
+            graph,
+            concept_index,
+            category_index,
+            timeline,
+        }
+    }
+}
+
+/// Serializable form of [`KnowledgeGraph`] for save/load.
+///
+/// The auxiliary indexes are omitted and rebuilt on deserialization via
+/// [`KnowledgeGraph::from_serializable`].
+#[derive(Serialize, Deserialize)]
+pub struct SerializableKnowledgeGraph {
+    /// The underlying petgraph graph with all concept nodes and edges.
+    pub graph: Graph<ConceptNode, ConceptEdge>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -270,12 +593,7 @@ mod tests {
     #[test]
     fn concept_node_starts_with_no_revealed_properties() {
         let id = ConceptId::new(material_key(1));
-        let node = ConceptNode::new(
-            id,
-            ConceptCategory::Material,
-            Confidence(0.2),
-            100,
-        );
+        let node = ConceptNode::new(id, ConceptCategory::Material, Confidence(0.2), 100);
         assert!(node.revealed_properties.is_empty());
         assert!(!node.has_property("density"));
     }
@@ -283,12 +601,7 @@ mod tests {
     #[test]
     fn concept_node_reveal_property_is_idempotent() {
         let id = ConceptId::new(material_key(2));
-        let mut node = ConceptNode::new(
-            id,
-            ConceptCategory::Material,
-            Confidence(0.5),
-            200,
-        );
+        let mut node = ConceptNode::new(id, ConceptCategory::Material, Confidence(0.5), 200);
         node.reveal_property("density");
         node.reveal_property("density"); // second call is a no-op
         assert!(node.has_property("density"));
@@ -298,12 +611,7 @@ mod tests {
     #[test]
     fn concept_node_multiple_properties() {
         let id = ConceptId::new(material_key(3));
-        let mut node = ConceptNode::new(
-            id,
-            ConceptCategory::Material,
-            Confidence(0.8),
-            300,
-        );
+        let mut node = ConceptNode::new(id, ConceptCategory::Material, Confidence(0.8), 300);
         node.reveal_property("density");
         node.reveal_property("thermal_resistance");
         assert!(node.has_property("density"));
@@ -321,12 +629,7 @@ mod tests {
     #[test]
     fn concept_node_stores_metadata() {
         let id = ConceptId::new(material_key(99));
-        let node = ConceptNode::new(
-            id.clone(),
-            ConceptCategory::Location,
-            Confidence(0.6),
-            999,
-        );
+        let node = ConceptNode::new(id.clone(), ConceptCategory::Location, Confidence(0.6), 999);
         assert_eq!(node.id, id);
         assert_eq!(node.category, ConceptCategory::Location);
         assert_eq!(node.confidence.0, 0.6);
@@ -370,7 +673,10 @@ mod tests {
     fn relationship_type_equality() {
         assert_eq!(RelationshipType::FoundOn, RelationshipType::FoundOn);
         assert_ne!(RelationshipType::FoundOn, RelationshipType::ObservedAt);
-        assert_ne!(RelationshipType::CombinedWith, RelationshipType::DerivedFrom);
+        assert_ne!(
+            RelationshipType::CombinedWith,
+            RelationshipType::DerivedFrom
+        );
         assert_ne!(RelationshipType::SimilarTo, RelationshipType::FoundOn);
     }
 
@@ -394,5 +700,274 @@ mod tests {
                 }
             }
         }
+    }
+
+    // ── KnowledgeGraph tests ──────────────────────────────────────────────
+
+    fn location_key(seed: u64) -> JournalKey {
+        // JournalKey has no Location variant yet; use a Material with a
+        // planet_seed to represent a location concept in tests.
+        JournalKey::Material {
+            seed,
+            planet_seed: Some(seed),
+        }
+    }
+
+    fn make_graph() -> KnowledgeGraph {
+        KnowledgeGraph::new()
+    }
+
+    #[test]
+    fn ensure_concept_creates_new_node() {
+        let mut graph = make_graph();
+        let id = ConceptId::new(material_key(1));
+        let idx = graph.ensure_concept(id.clone(), ConceptCategory::Material, 10);
+        assert_eq!(graph.lookup(&id), Some(idx));
+    }
+
+    #[test]
+    fn ensure_concept_is_idempotent() {
+        let mut graph = make_graph();
+        let id = ConceptId::new(material_key(2));
+        let idx1 = graph.ensure_concept(id.clone(), ConceptCategory::Material, 10);
+        let idx2 = graph.ensure_concept(id.clone(), ConceptCategory::Material, 20);
+        // Same node returned both times.
+        assert_eq!(idx1, idx2);
+        // Timeline should only have one entry.
+        assert_eq!(graph.timeline().len(), 1);
+    }
+
+    #[test]
+    fn lookup_returns_none_for_unknown_concept() {
+        let graph = make_graph();
+        let id = ConceptId::new(material_key(99));
+        assert_eq!(graph.lookup(&id), None);
+    }
+
+    #[test]
+    fn by_category_returns_inserted_nodes() {
+        let mut graph = make_graph();
+        let mat_id = ConceptId::new(material_key(1));
+        let loc_id = ConceptId::new(location_key(2));
+        let mat_idx = graph.ensure_concept(mat_id, ConceptCategory::Material, 1);
+        let loc_idx = graph.ensure_concept(loc_id, ConceptCategory::Location, 2);
+
+        let materials = graph.by_category(&ConceptCategory::Material);
+        assert_eq!(materials, &[mat_idx]);
+
+        let locations = graph.by_category(&ConceptCategory::Location);
+        assert_eq!(locations, &[loc_idx]);
+    }
+
+    #[test]
+    fn by_category_returns_empty_for_unknown_category() {
+        let graph = make_graph();
+        assert!(graph.by_category(&ConceptCategory::Fabrication).is_empty());
+    }
+
+    #[test]
+    fn timeline_records_discovery_order() {
+        let mut graph = make_graph();
+        let id1 = ConceptId::new(material_key(1));
+        let id2 = ConceptId::new(material_key(2));
+        let idx1 = graph.ensure_concept(id1, ConceptCategory::Material, 5);
+        let idx2 = graph.ensure_concept(id2, ConceptCategory::Material, 10);
+
+        let tl = graph.timeline();
+        assert_eq!(tl.len(), 2);
+        assert_eq!(tl[0], (5, idx1));
+        assert_eq!(tl[1], (10, idx2));
+    }
+
+    #[test]
+    fn relate_creates_bidirectional_edges() {
+        let mut graph = make_graph();
+        let mat_id = ConceptId::new(material_key(1));
+        let loc_id = ConceptId::new(location_key(2));
+        let mat_idx = graph.ensure_concept(mat_id, ConceptCategory::Material, 1);
+        let loc_idx = graph.ensure_concept(loc_id, ConceptCategory::Location, 2);
+
+        let edge = ConceptEdge::new(RelationshipType::FoundOn, Confidence(0.5), 3);
+        graph.relate(mat_idx, loc_idx, edge);
+
+        // Forward: material → location
+        let mat_rels = graph.relationships(mat_idx);
+        assert!(
+            mat_rels
+                .iter()
+                .any(|(n, e)| { *n == loc_idx && e.relationship == RelationshipType::FoundOn })
+        );
+
+        // Reverse: location → material
+        let loc_rels = graph.relationships(loc_idx);
+        assert!(
+            loc_rels
+                .iter()
+                .any(|(n, e)| { *n == mat_idx && e.relationship == RelationshipType::FoundOn })
+        );
+    }
+
+    #[test]
+    fn relate_strengthens_existing_edge_on_repeat() {
+        let mut graph = make_graph();
+        let id1 = ConceptId::new(material_key(1));
+        let id2 = ConceptId::new(material_key(2));
+        let idx1 = graph.ensure_concept(id1, ConceptCategory::Material, 1);
+        let idx2 = graph.ensure_concept(id2, ConceptCategory::Material, 2);
+
+        let edge1 = ConceptEdge::new(RelationshipType::SimilarTo, Confidence(0.3), 5);
+        let edge2 = ConceptEdge::new(RelationshipType::SimilarTo, Confidence(0.4), 10);
+        graph.relate(idx1, idx2, edge1);
+        graph.relate(idx1, idx2, edge2);
+
+        // relationships() returns both outgoing and incoming edges.
+        // Filter to only edges pointing toward idx2 (the forward direction).
+        let rels = graph.relationships(idx1);
+        let forward: Vec<_> = rels
+            .iter()
+            .filter(|(n, e)| *n == idx2 && e.relationship == RelationshipType::SimilarTo)
+            .collect();
+        // Exactly one forward edge (strengthened, not duplicated).
+        assert_eq!(forward.len(), 1);
+        // 0.3 + 0.4 = 0.7
+        assert!((forward[0].1.confidence.0 - 0.7).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn neighborhood_returns_nodes_within_depth() {
+        let mut graph = make_graph();
+        // A — B — C — D (linear chain)
+        let a = graph.ensure_concept(
+            ConceptId::new(material_key(1)),
+            ConceptCategory::Material,
+            1,
+        );
+        let b = graph.ensure_concept(
+            ConceptId::new(material_key(2)),
+            ConceptCategory::Material,
+            2,
+        );
+        let c = graph.ensure_concept(
+            ConceptId::new(material_key(3)),
+            ConceptCategory::Material,
+            3,
+        );
+        let d = graph.ensure_concept(
+            ConceptId::new(material_key(4)),
+            ConceptCategory::Material,
+            4,
+        );
+
+        let edge = || ConceptEdge::new(RelationshipType::SimilarTo, Confidence(0.5), 1);
+        graph.relate(a, b, edge());
+        graph.relate(b, c, edge());
+        graph.relate(c, d, edge());
+
+        // From A with depth=2: should reach B (hop 1) and C (hop 2), not D.
+        let neighbors = graph.neighborhood(a, 2, None);
+        let nodes: Vec<NodeIndex> = neighbors.iter().map(|(n, _)| *n).collect();
+        assert!(nodes.contains(&b));
+        assert!(nodes.contains(&c));
+        assert!(!nodes.contains(&d));
+        assert!(!nodes.contains(&a)); // center excluded
+    }
+
+    #[test]
+    fn neighborhood_depth_zero_returns_empty() {
+        let mut graph = make_graph();
+        let a = graph.ensure_concept(
+            ConceptId::new(material_key(1)),
+            ConceptCategory::Material,
+            1,
+        );
+        let b = graph.ensure_concept(
+            ConceptId::new(material_key(2)),
+            ConceptCategory::Material,
+            2,
+        );
+        graph.relate(
+            a,
+            b,
+            ConceptEdge::new(RelationshipType::SimilarTo, Confidence(0.5), 1),
+        );
+
+        assert!(graph.neighborhood(a, 0, None).is_empty());
+    }
+
+    #[test]
+    fn neighborhood_category_filter_excludes_non_matching() {
+        let mut graph = make_graph();
+        let mat = graph.ensure_concept(
+            ConceptId::new(material_key(1)),
+            ConceptCategory::Material,
+            1,
+        );
+        let loc = graph.ensure_concept(
+            ConceptId::new(location_key(2)),
+            ConceptCategory::Location,
+            2,
+        );
+        let mat2 = graph.ensure_concept(
+            ConceptId::new(material_key(3)),
+            ConceptCategory::Material,
+            3,
+        );
+
+        let edge = || ConceptEdge::new(RelationshipType::FoundOn, Confidence(0.5), 1);
+        graph.relate(mat, loc, edge());
+        graph.relate(loc, mat2, edge());
+
+        // From mat with depth=2, filter to Material only: should see mat2 (hop 2) but not loc.
+        let neighbors = graph.neighborhood(mat, 2, Some(&ConceptCategory::Material));
+        let nodes: Vec<NodeIndex> = neighbors.iter().map(|(n, _)| *n).collect();
+        assert!(!nodes.contains(&loc));
+        assert!(nodes.contains(&mat2));
+    }
+
+    #[test]
+    fn node_accessor_returns_concept_data() {
+        let mut graph = make_graph();
+        let id = ConceptId::new(material_key(42));
+        let idx = graph.ensure_concept(id.clone(), ConceptCategory::Material, 7);
+        let node = graph.node(idx).expect("node must exist");
+        assert_eq!(node.id, id);
+        assert_eq!(node.category, ConceptCategory::Material);
+        assert_eq!(node.discovered_at, 7);
+    }
+
+    #[test]
+    fn serialization_round_trip_preserves_graph() {
+        let mut graph = make_graph();
+        let mat_id = ConceptId::new(material_key(1));
+        let loc_id = ConceptId::new(location_key(2));
+        let mat_idx = graph.ensure_concept(mat_id.clone(), ConceptCategory::Material, 10);
+        let loc_idx = graph.ensure_concept(loc_id.clone(), ConceptCategory::Location, 20);
+        graph.relate(
+            mat_idx,
+            loc_idx,
+            ConceptEdge::new(RelationshipType::FoundOn, Confidence(0.6), 15),
+        );
+
+        // Serialize to JSON bytes and deserialize back to exercise serde.
+        let serializable = graph.to_serializable();
+        let json = serde_json::to_string(&serializable).expect("serialization must succeed");
+        let restored_serializable: SerializableKnowledgeGraph =
+            serde_json::from_str(&json).expect("deserialization must succeed");
+        let restored = KnowledgeGraph::from_serializable(restored_serializable);
+
+        // Indexes are rebuilt.
+        let restored_mat = restored.lookup(&mat_id).expect("material must be found");
+        let restored_loc = restored.lookup(&loc_id).expect("location must be found");
+
+        // Relationships are preserved.
+        let rels = restored.relationships(restored_mat);
+        assert!(
+            rels.iter().any(|(n, e)| {
+                *n == restored_loc && e.relationship == RelationshipType::FoundOn
+            })
+        );
+
+        // Timeline is rebuilt.
+        assert_eq!(restored.timeline().len(), 2);
     }
 }
