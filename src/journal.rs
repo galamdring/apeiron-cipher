@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use strum::IntoEnumIterator;
 
 use crate::input::InputAction;
+use crate::knowledge_graph::{ConceptId, KnowledgeGraph, RelationshipType};
 use crate::observation::Confidence;
 use crate::player::{Player, cursor_is_captured, spawn_player};
 use crate::world_generation::{BiomeType, WorldProfile};
@@ -478,6 +479,9 @@ impl Plugin for JournalPlugin {
                         .after(journal_navigation),
                     apply_observations.in_set(JournalSet::Navigate),
                     compute_journal_panels.in_set(JournalSet::Compute),
+                    append_cross_reference_spans
+                        .in_set(JournalSet::Compute)
+                        .after(compute_journal_panels),
                     sync_journal_ui.in_set(JournalSet::Sync),
                 ),
             );
@@ -1499,6 +1503,10 @@ enum DetailSpanKind {
     /// Qualitative confidence label (e.g. "Uncertain", "Noted", "Confirmed")
     /// rendered after each observation description in a subdued style.
     ConfidenceLabel,
+    /// Section header for the "Related" cross-reference block (e.g. "\n\nRelated").
+    CrossReferenceHeader,
+    /// A single cross-reference link line (e.g. "\n  → Found on: Volcanic Plains").
+    CrossReferenceLink,
     /// Placeholder text when the journal is empty.
     Placeholder,
 }
@@ -1732,6 +1740,10 @@ fn sync_journal_ui(
     let body_color = TextColor(Color::srgba(0.92, 0.92, 0.88, 1.0));
     let confidence_color = TextColor(Color::srgba(0.6, 0.65, 0.7, 1.0));
     let placeholder_color = TextColor(Color::srgba(0.55, 0.55, 0.50, 1.0));
+    // Cross-reference section header uses the same amber accent as category headers.
+    let cross_ref_header_color = TextColor(Color::srgba(0.75, 0.68, 0.45, 1.0));
+    // Cross-reference links use a cyan-tinted color to signal navigability.
+    let cross_ref_link_color = TextColor(Color::srgba(0.45, 0.80, 0.85, 1.0));
 
     if let Ok((detail_entity, detail_children)) = detail_query.single() {
         if let Some(children) = detail_children {
@@ -1751,6 +1763,8 @@ fn sync_journal_ui(
                     DetailSpanKind::CategoryGroupHeader => category_group_color,
                     DetailSpanKind::Body => body_color,
                     DetailSpanKind::ConfidenceLabel => confidence_color,
+                    DetailSpanKind::CrossReferenceHeader => cross_ref_header_color,
+                    DetailSpanKind::CrossReferenceLink => cross_ref_link_color,
                     DetailSpanKind::Placeholder => placeholder_color,
                 };
                 parent.spawn((TextSpan::new(span.text.clone()), span_font.clone(), color));
@@ -1905,6 +1919,116 @@ fn build_detail_spans(
     }
 
     spans
+}
+
+/// Appends cross-reference spans to the detail panel render cache.
+///
+/// Runs in [`JournalSet::Compute`] after [`compute_journal_panels`].  Reads
+/// the [`KnowledgeGraph`] to find all relationships for the currently selected
+/// journal entry and appends a "Related" section to the cached detail spans.
+///
+/// The section is omitted entirely when the selected entry has no cross-
+/// references in the graph, keeping the panel clean for newly discovered
+/// concepts.
+///
+/// Each cross-reference line shows the relationship type label and the display
+/// name of the related concept (looked up from the player's journal).  When
+/// the related concept has no journal entry yet (e.g., a location concept that
+/// predates the journal entry system), the raw key debug representation is
+/// used as a fallback.
+fn append_cross_reference_spans(
+    state: Res<JournalUiState>,
+    player_query: Query<&Journal, With<Player>>,
+    mut cache: ResMut<JournalRenderCache>,
+    graph: Option<Res<KnowledgeGraph>>,
+) {
+    // Only append when the journal is visible and has a selected entry.
+    if !state.visible {
+        return;
+    }
+
+    // KnowledgeGraph may not be present in test apps that don't add
+    // KnowledgeGraphPlugin — skip gracefully rather than panicking.
+    let Some(graph) = graph else {
+        return;
+    };
+
+    let Ok(journal) = player_query.single() else {
+        return;
+    };
+
+    // Sort entries alphabetically — same order as compute_journal_panels.
+    let mut sorted_entries: Vec<&JournalEntry> = journal.entries.values().collect();
+    sorted_entries.sort_by(|a, b| a.name.cmp(&b.name));
+
+    let filtered_entries: Vec<&JournalEntry> = sorted_entries
+        .into_iter()
+        .filter(|entry| matches_filter(entry, state.filter()))
+        .collect();
+
+    let Some(entry) = filtered_entries.get(state.selected_index.min(filtered_entries.len().saturating_sub(1))) else {
+        return;
+    };
+
+    // Look up the concept node for the selected entry.
+    let concept_id = ConceptId::new(entry.key.clone());
+    let Some(node_idx) = graph.lookup(&concept_id) else {
+        // No concept node yet — no cross-references to show.
+        return;
+    };
+
+    let relationships = graph.relationships(node_idx);
+    if relationships.is_empty() {
+        return;
+    }
+
+    // Append the "Related" section header.
+    cache.detail_spans.push(DetailSpan {
+        text: "\n\nRelated".to_string(),
+        kind: DetailSpanKind::CrossReferenceHeader,
+    });
+
+    // Append one line per cross-reference, sorted by relationship type label
+    // then by target name for stable display order.
+    let mut ref_lines: Vec<(String, String)> = relationships
+        .iter()
+        .filter_map(|(neighbor_idx, edge)| {
+            let neighbor_node = graph.node(*neighbor_idx)?;
+            let target_key = neighbor_node.id.key();
+            // Prefer the journal entry name; fall back to a key-derived label.
+            let target_name = journal
+                .entries
+                .get(target_key)
+                .map(|e| e.name.clone())
+                .unwrap_or_else(|| format!("{target_key:?}"));
+            let rel_label = relationship_display_label(&edge.relationship).to_string();
+            Some((rel_label, target_name))
+        })
+        .collect();
+
+    ref_lines.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+
+    for (rel_label, target_name) in ref_lines {
+        cache.detail_spans.push(DetailSpan {
+            text: format!("\n  \u{2192} {rel_label}: {target_name}"),
+            kind: DetailSpanKind::CrossReferenceLink,
+        });
+    }
+}
+
+/// Returns the player-facing label for a [`RelationshipType`].
+///
+/// These labels appear in the "Related" section of the journal detail panel.
+/// They are intentionally terse — the arrow prefix (`→`) already signals
+/// directionality, so the label only needs to name the relationship.
+fn relationship_display_label(rel: &RelationshipType) -> &'static str {
+    match rel {
+        RelationshipType::FoundOn => "Found on",
+        RelationshipType::CombinedWith => "Combined with",
+        RelationshipType::DerivedFrom => "Derived from",
+        RelationshipType::SimilarTo => "Similar to",
+        RelationshipType::ObservedAt => "Observed at",
+    }
 }
 
 /// Builds the bottom help bar showing navigation hints and a page indicator.
