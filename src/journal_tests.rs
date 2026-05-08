@@ -6685,9 +6685,136 @@ fn cross_reference_links_appear_for_entries_with_relationships() {
         .detail_spans
         .iter()
         .any(|s| s.kind == DetailSpanKind::CrossReferenceHeader && s.text.contains("Related"));
-    assert!(
-        has_related_header,
-        "expected a CrossReferenceHeader span containing 'Related', got: {:?}",
-        cache.detail_spans
-    );
-}
+     assert!(
+         has_related_header,
+         "expected a CrossReferenceHeader span containing 'Related', got: {:?}",
+         cache.detail_spans
+     );
+ }
+
+ /// Pressing Enter while a cross-reference link is focused jumps the journal
+ /// selection to the related entry.
+ ///
+ /// Setup:
+ ///   - Two journal entries: "Ignium" (Material seed=1) and "Volcanic Plains"
+ ///     (Material seed=42, planet_seed=Some(42)).
+ ///   - A `FoundOn` edge from Ignium → Volcanic Plains in the KnowledgeGraph.
+ ///   - Journal is visible with Ignium selected (index 0, alphabetically first
+ ///     since "I" < "V").
+ ///   - `selected_link_index` is `Some(0)` — the FoundOn link is focused.
+ ///
+ /// Expected: after pressing Enter and running `journal_navigation`, the
+ /// `selected_index` advances to the position of "Volcanic Plains" in the
+ /// sorted, filtered entry list, and `selected_link_index` is cleared.
+ #[test]
+ fn navigation_enter_on_link_jumps_to_related_entry() {
+     use crate::knowledge_graph::{
+         ConceptCategory, ConceptEdge, ConceptId, KnowledgeGraph, RelationshipType,
+     };
+
+     let material_key = JournalKey::Material {
+         seed: 1,
+         planet_seed: None,
+     };
+     // Represent the location using a Material key with planet_seed (same
+     // convention used throughout the knowledge_graph tests).
+     let location_key = JournalKey::Material {
+         seed: 42,
+         planet_seed: Some(42),
+     };
+
+     let mut app = App::new();
+     app.add_plugins(MinimalPlugins);
+     app.init_resource::<ButtonInput<KeyCode>>();
+     app.init_resource::<KnowledgeGraph>();
+     app.insert_resource(JournalUiState {
+         visible: true,
+         // "Ignium" sorts before "Volcanic Plains", so it is at index 0.
+         selected_index: 0,
+         scroll_offset: 0,
+         entries_per_page: 15,
+         filter: JournalFilter::default(),
+         // Link 0 (the FoundOn → Volcanic Plains link) is focused.
+         selected_link_index: Some(0),
+         navigation_stack: JournalNavigationStack::new(),
+     });
+     app.add_systems(Update, journal_navigation);
+
+     // Build the KnowledgeGraph relationship before spawning the player.
+     {
+         let mut graph = app.world_mut().resource_mut::<KnowledgeGraph>();
+         let material_node = graph.ensure_concept(
+             ConceptId::new(material_key.clone()),
+             ConceptCategory::Material,
+             1,
+         );
+         let location_node = graph.ensure_concept(
+             ConceptId::new(location_key.clone()),
+             ConceptCategory::Location,
+             2,
+         );
+         graph.relate(
+             material_node,
+             location_node,
+             ConceptEdge {
+                 relationship: RelationshipType::FoundOn,
+                 confidence: crate::observation::Confidence(0.8),
+                 discovered_at: 1,
+             },
+         );
+     }
+
+     // Spawn a player with both journal entries.
+     let mut journal = Journal::default();
+     journal.record(
+         material_key.clone(),
+         "Ignium",
+         Observation {
+             category: ObservationCategory::SurfaceAppearance,
+             confidence: Confidence(0.6),
+             description: "Reliably withstands heat".to_string(),
+             recorded_at: 1,
+         },
+     );
+     journal.record(
+         location_key.clone(),
+         "Volcanic Plains",
+         Observation {
+             category: ObservationCategory::SurfaceAppearance,
+             confidence: Confidence(0.6),
+             description: "Scorched terrain".to_string(),
+             recorded_at: 2,
+         },
+     );
+     app.world_mut().spawn((Player, journal, Transform::default()));
+
+     // Press Enter to follow the focused link.
+     app.world_mut()
+         .resource_mut::<ButtonInput<KeyCode>>()
+         .press(KeyCode::Enter);
+
+     app.update();
+
+     let state = app.world().resource::<JournalUiState>();
+
+     // "Volcanic Plains" sorts after "Ignium", so its index in the
+     // alphabetically-sorted two-entry list is 1.
+     assert_eq!(
+         state.selected_index, 1,
+         "Enter on FoundOn link should jump selection to 'Volcanic Plains' at index 1, \
+          got index {}",
+         state.selected_index
+     );
+
+     // The link cursor should be cleared after following the link.
+     assert_eq!(
+         state.selected_link_index, None,
+         "selected_link_index should be cleared after following a cross-reference link"
+     );
+
+     // The previous entry (Ignium) should have been pushed onto the navigation stack.
+     assert!(
+         state.navigation_stack.can_go_back(),
+         "navigation stack should contain the previous entry after following a link"
+     );
+ }
