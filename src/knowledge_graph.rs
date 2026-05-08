@@ -1931,6 +1931,51 @@ mod tests {
     }
 
     #[test]
+    fn similar_to_edge_not_created_when_subject_material_is_tentative() {
+        // Material A is only at Tentative tier (< 0.3) — no SimilarTo edge should appear
+        // even when the other material (B) is at Observed tier.
+        // This covers the symmetric case: the *triggering* material being Tentative.
+        let mut app = build_test_app_with_similar_materials();
+
+        // Observe B at Observed tier first.
+        inject_observation(&mut app, material_obs_with_confidence(SIMILAR_SEED_B, 0.5));
+        app.update();
+        // Observe A at Tentative tier only — similarity check runs but A is below threshold.
+        inject_observation(&mut app, material_obs_with_confidence(SIMILAR_SEED_A, 0.1));
+        app.update();
+
+        let graph = app.world().resource::<KnowledgeGraph>();
+        let id_a = ConceptId::new(JournalKey::Material {
+            seed: SIMILAR_SEED_A,
+            planet_seed: None,
+        });
+        let id_b = ConceptId::new(JournalKey::Material {
+            seed: SIMILAR_SEED_B,
+            planet_seed: None,
+        });
+        let node_a = graph.lookup(&id_a).expect("material A concept must exist");
+        let node_b = graph.lookup(&id_b).expect("material B concept must exist");
+
+        // A is Tentative — no SimilarTo edge from A to B.
+        let rels_a = graph.relationships(node_a);
+        assert!(
+            !rels_a
+                .iter()
+                .any(|(n, e)| *n == node_b && e.relationship == RelationshipType::SimilarTo),
+            "SimilarTo edge must not be created when subject material is below Observed tier"
+        );
+
+        // B is Observed but A is Tentative — no reverse edge from B to A either.
+        let rels_b = graph.relationships(node_b);
+        assert!(
+            !rels_b
+                .iter()
+                .any(|(n, e)| *n == node_a && e.relationship == RelationshipType::SimilarTo),
+            "SimilarTo reverse edge must not be created when subject material is below Observed tier"
+        );
+    }
+
+    #[test]
     fn similar_to_not_created_for_dissimilar_materials() {
         // Seeds 1 and 2 are unlikely to be similar — verify no SimilarTo edge.
         // We use seeds that are known to be dissimilar (< 0.85 threshold).
