@@ -5,9 +5,8 @@
 //! carries metadata about when it was discovered and how confident the player is
 //! in their understanding of it.
 //!
-//! This module defines the node-level types. The graph resource itself
-//! (`KnowledgeGraph`) and edge types (`ConceptEdge`, `RelationshipType`) are
-//! defined in subsequent stories.
+//! This module defines the node-level types and edge types. The graph resource
+//! itself (`KnowledgeGraph`) is defined in a subsequent story.
 
 use std::collections::HashSet;
 
@@ -144,6 +143,104 @@ impl ConceptNode {
     }
 }
 
+// ── Relationship type ─────────────────────────────────────────────────────
+
+/// The typed relationship between two concept nodes in the knowledge graph.
+///
+/// Each variant describes *how* one concept relates to another. Relationships
+/// are directional: the edge goes from a source concept to a target concept,
+/// and the variant names are written from the source's perspective
+/// (e.g., `FoundOn` means "source was found on target").
+///
+/// **Extensibility:** new relationship types (SpokenBy, TradedAt, UsedIn, …)
+/// are added as variants here when their underlying game systems are
+/// implemented. The `ConceptEdge` struct is unchanged by new variants.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum RelationshipType {
+    /// Source material was found on the target location.
+    ///
+    /// Created automatically when a material observation is recorded with a
+    /// planet/location context.
+    FoundOn,
+    /// Source material was combined with the target material in the fabricator.
+    ///
+    /// Created when a fabrication event records both input materials.
+    CombinedWith,
+    /// Source material was derived from the target input material.
+    ///
+    /// Created for fabrication outputs: the output concept links back to each
+    /// input material via `DerivedFrom`.
+    DerivedFrom,
+    /// Source material has similar properties to the target material.
+    ///
+    /// Created automatically when cosine similarity between property vectors
+    /// meets or exceeds the configured threshold, but only when both concepts
+    /// are at `Observed` confidence tier or above. The system never surfaces
+    /// this connection before the player has earned it.
+    SimilarTo,
+    /// Source observation was made at the target location.
+    ///
+    /// More general than `FoundOn` — used when the observation subject is not
+    /// a material (e.g., a fabrication event observed at a specific outpost).
+    ObservedAt,
+    // Future: SpokenBy, TradedAt, UsedIn, etc.
+}
+
+// ── Concept edge ──────────────────────────────────────────────────────────
+
+/// A typed, weighted edge in the knowledge graph between two concept nodes.
+///
+/// Edges are directional (from source to target) and carry a [`RelationshipType`]
+/// that describes the nature of the connection. The `confidence` field
+/// accumulates as the player gathers repeated evidence for the same
+/// relationship — the same edge strengthens rather than duplicating.
+///
+/// `discovered_at` records the game-time tick of the *first* observation that
+/// established this relationship. Subsequent observations that strengthen the
+/// edge do not update this field, preserving the discovery timeline.
+///
+/// Edges are serializable so the full knowledge graph can be saved and
+/// restored across play sessions.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ConceptEdge {
+    /// The nature of the relationship from source concept to target concept.
+    pub relationship: RelationshipType,
+    /// Accumulated confidence in this relationship.
+    ///
+    /// Starts at the confidence of the first observation that created the edge
+    /// and increases as the player makes additional observations that confirm
+    /// the same connection. Capped at `1.0`.
+    pub confidence: Confidence,
+    /// Game-time tick when this relationship was first observed.
+    pub discovered_at: u64,
+}
+
+impl ConceptEdge {
+    /// Create a new edge with the given relationship type, confidence, and
+    /// discovery tick.
+    pub fn new(relationship: RelationshipType, confidence: Confidence, discovered_at: u64) -> Self {
+        Self {
+            relationship,
+            confidence,
+            discovered_at,
+        }
+    }
+
+    /// Strengthen this edge by incorporating additional evidence.
+    ///
+    /// The new confidence is the maximum of the current value and the incoming
+    /// value, capped at `1.0`. This ensures that repeated observations of the
+    /// same relationship monotonically increase (or maintain) confidence and
+    /// never decrease it due to a weaker subsequent observation.
+    ///
+    /// `discovered_at` is intentionally *not* updated — the edge retains the
+    /// tick of its first observation.
+    pub fn strengthen(&mut self, additional_confidence: Confidence) {
+        let combined = (self.confidence.0 + additional_confidence.0).min(1.0);
+        self.confidence = Confidence(combined);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -234,5 +331,68 @@ mod tests {
         assert_eq!(node.category, ConceptCategory::Location);
         assert_eq!(node.confidence.0, 0.6);
         assert_eq!(node.discovered_at, 999);
+    }
+
+    // ── ConceptEdge / RelationshipType tests ─────────────────────────────
+
+    #[test]
+    fn concept_edge_new_stores_fields() {
+        let edge = ConceptEdge::new(RelationshipType::FoundOn, Confidence(0.4), 50);
+        assert_eq!(edge.relationship, RelationshipType::FoundOn);
+        assert_eq!(edge.confidence.0, 0.4);
+        assert_eq!(edge.discovered_at, 50);
+    }
+
+    #[test]
+    fn concept_edge_strengthen_accumulates_confidence() {
+        let mut edge = ConceptEdge::new(RelationshipType::SimilarTo, Confidence(0.3), 10);
+        edge.strengthen(Confidence(0.4));
+        // 0.3 + 0.4 = 0.7
+        assert!((edge.confidence.0 - 0.7).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn concept_edge_strengthen_caps_at_one() {
+        let mut edge = ConceptEdge::new(RelationshipType::DerivedFrom, Confidence(0.8), 20);
+        edge.strengthen(Confidence(0.5));
+        // 0.8 + 0.5 = 1.3, capped at 1.0
+        assert_eq!(edge.confidence.0, 1.0);
+    }
+
+    #[test]
+    fn concept_edge_strengthen_does_not_update_discovered_at() {
+        let mut edge = ConceptEdge::new(RelationshipType::ObservedAt, Confidence(0.2), 100);
+        edge.strengthen(Confidence(0.3));
+        assert_eq!(edge.discovered_at, 100);
+    }
+
+    #[test]
+    fn relationship_type_equality() {
+        assert_eq!(RelationshipType::FoundOn, RelationshipType::FoundOn);
+        assert_ne!(RelationshipType::FoundOn, RelationshipType::ObservedAt);
+        assert_ne!(RelationshipType::CombinedWith, RelationshipType::DerivedFrom);
+        assert_ne!(RelationshipType::SimilarTo, RelationshipType::FoundOn);
+    }
+
+    #[test]
+    fn relationship_type_all_variants_constructible() {
+        // Ensure all five required variants exist and are distinct.
+        let variants = [
+            RelationshipType::FoundOn,
+            RelationshipType::CombinedWith,
+            RelationshipType::DerivedFrom,
+            RelationshipType::SimilarTo,
+            RelationshipType::ObservedAt,
+        ];
+        // All five must be pairwise distinct.
+        for i in 0..variants.len() {
+            for j in 0..variants.len() {
+                if i == j {
+                    assert_eq!(variants[i], variants[j]);
+                } else {
+                    assert_ne!(variants[i], variants[j]);
+                }
+            }
+        }
     }
 }
