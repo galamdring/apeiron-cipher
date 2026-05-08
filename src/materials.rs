@@ -215,6 +215,25 @@ impl GameMaterial {
         surface_y + self.support_height() + MATERIAL_SURFACE_GAP
     }
 
+    /// Returns a normalised property vector for similarity comparison.
+    ///
+    /// The vector encodes the five core material properties in a fixed order:
+    /// `[density, thermal_resistance, reactivity, conductivity, toxicity]`.
+    /// All values are already normalised to \[0.0, 1.0\] by [`MaterialProperty`],
+    /// so cosine similarity can be applied directly without further scaling.
+    ///
+    /// Used by the cross-reference system (Story 10.5) to detect `SimilarTo`
+    /// relationships between materials whose property profiles are close.
+    pub fn property_vector(&self) -> [f32; 5] {
+        [
+            self.density.value(),
+            self.thermal_resistance.value(),
+            self.reactivity.value(),
+            self.conductivity.value(),
+            self.toxicity.value(),
+        ]
+    }
+
     /// Returns the horizontal collision radius of the mesh for this material's density.
     pub fn footprint_radius(&self) -> f32 {
         let density = self.density.value();
@@ -806,6 +825,40 @@ visibility = "Hidden"
                     !all_same,
                     "seeds {} and {} produced identical materials",
                     a.seed, b.seed
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn property_vector_contains_all_five_properties() {
+        let mat = sample_material();
+        let vec = mat.property_vector();
+        assert_eq!(vec.len(), 5);
+        assert!((vec[0] - mat.density.value()).abs() < f32::EPSILON, "index 0 must be density");
+        assert!(
+            (vec[1] - mat.thermal_resistance.value()).abs() < f32::EPSILON,
+            "index 1 must be thermal_resistance"
+        );
+        assert!(
+            (vec[2] - mat.reactivity.value()).abs() < f32::EPSILON,
+            "index 2 must be reactivity"
+        );
+        assert!(
+            (vec[3] - mat.conductivity.value()).abs() < f32::EPSILON,
+            "index 3 must be conductivity"
+        );
+        assert!((vec[4] - mat.toxicity.value()).abs() < f32::EPSILON, "index 4 must be toxicity");
+    }
+
+    #[test]
+    fn property_vector_values_in_unit_range() {
+        for seed in [0u64, 1, 42, u64::MAX, 0xDEAD_BEEF] {
+            let mat = derive_material_from_seed(seed);
+            for (i, &v) in mat.property_vector().iter().enumerate() {
+                assert!(
+                    (0.0..=1.0).contains(&v),
+                    "seed {seed:#X}: property_vector[{i}] = {v} out of [0,1]"
                 );
             }
         }
