@@ -6,19 +6,146 @@
 //! carries metadata about when it was discovered and how confident the player is
 //! in their understanding of it.
 //!
-//! This module defines the node-level types, edge types, and the [`KnowledgeGraph`]
-//! resource backed by `petgraph::Graph`.
+//! This module defines the node-level types, edge types, the [`KnowledgeGraph`]
+//! resource backed by `petgraph::Graph`, and the [`KnowledgeGraphPlugin`] that
+//! wires the [`update_knowledge_graph`] system into the Bevy app.
 
 use std::collections::{HashMap, HashSet};
 
-use bevy::prelude::Resource;
+use bevy::prelude::*;
 use petgraph::graph::NodeIndex;
 use petgraph::visit::EdgeRef;
 use petgraph::{Direction, Graph};
 use serde::{Deserialize, Serialize};
 
-use crate::journal::JournalKey;
+use crate::journal::{JournalKey, RecordObservation};
 use crate::observation::Confidence;
+
+// ── Plugin ────────────────────────────────────────────────────────────────
+
+/// Plugin that initialises the [`KnowledgeGraph`] resource and registers the
+/// [`update_knowledge_graph`] system.
+///
+/// Must be added after [`crate::journal::JournalPlugin`] because it reads
+/// [`RecordObservation`] messages that the journal plugin registers.
+pub struct KnowledgeGraphPlugin;
+
+impl Plugin for KnowledgeGraphPlugin {
+    fn build(&self, app: &mut App) {
+        app.init_resource::<KnowledgeGraph>()
+            .add_systems(Update, update_knowledge_graph);
+    }
+}
+
+// ── System ────────────────────────────────────────────────────────────────
+
+/// Map a [`JournalKey`] to its [`ConceptCategory`].
+///
+/// Materials map to [`ConceptCategory::Material`], fabrication outputs map to
+/// [`ConceptCategory::Fabrication`]. Location keys (when they exist) will map
+/// to [`ConceptCategory::Location`]; for now any key passed as a
+/// `context_location` is treated as a location concept.
+fn category_from_key(key: &JournalKey) -> ConceptCategory {
+    match key {
+        JournalKey::Material { .. } => ConceptCategory::Material,
+        JournalKey::Fabrication { .. } => ConceptCategory::Fabrication,
+    }
+}
+
+/// System that processes [`RecordObservation`] messages and builds cross-references
+/// in the [`KnowledgeGraph`].
+///
+/// For each observation the system:
+///
+/// 1. Ensures a concept node exists for the observation subject.
+/// 2. If the observation carries a `context_location`, creates a `FoundOn` edge
+///    (for materials) or `ObservedAt` edge (for other subjects) between the
+///    subject and the location concept.
+/// 3. If the observation is for a [`JournalKey::Fabrication`] output and
+///    `input_seeds` are provided, creates `DerivedFrom` edges from the output
+///    concept to each input material concept, and `CombinedWith` edges between
+///    each pair of input materials.
+///
+/// All edges are bidirectional (enforced by [`KnowledgeGraph::relate`]).
+/// No cross-reference is created without an observation event — the system
+/// never infers connections the player hasn't made.
+pub fn update_knowledge_graph(
+    mut observations: MessageReader<RecordObservation>,
+    mut graph: ResMut<KnowledgeGraph>,
+    time: Res<Time>,
+) {
+    let tick = time.elapsed().as_millis() as u64;
+
+    for obs in observations.read() {
+        let subject_category = category_from_key(&obs.key);
+        let subject_node =
+            graph.ensure_concept(ConceptId::new(obs.key.clone()), subject_category, tick);
+
+        // ── Location cross-reference ──────────────────────────────────────
+        // If the observation has a location context, link the subject to that
+        // location. Materials use FoundOn; other subjects use ObservedAt.
+        if let Some(location_key) = &obs.context_location {
+            let location_node = graph.ensure_concept(
+                ConceptId::new(location_key.clone()),
+                ConceptCategory::Location,
+                tick,
+            );
+
+            let relationship = match &obs.key {
+                JournalKey::Material { .. } => RelationshipType::FoundOn,
+                JournalKey::Fabrication { .. } => RelationshipType::ObservedAt,
+            };
+
+            graph.relate(
+                subject_node,
+                location_node,
+                ConceptEdge::new(relationship, obs.observation.confidence, tick),
+            );
+        }
+
+        // ── Fabrication cross-references ──────────────────────────────────
+        // For fabrication outputs, create DerivedFrom edges to each input
+        // material and CombinedWith edges between each pair of inputs.
+        if let JournalKey::Fabrication { .. } = &obs.key {
+            // Collect NodeIndexes for all input materials first so we can
+            // create CombinedWith edges between them without borrowing issues.
+            let mut input_nodes: Vec<NodeIndex> = Vec::with_capacity(obs.input_seeds.len());
+
+            for &input_seed in &obs.input_seeds {
+                let input_key = JournalKey::Material {
+                    seed: input_seed,
+                    planet_seed: None,
+                };
+                let input_node = graph.ensure_concept(
+                    ConceptId::new(input_key),
+                    ConceptCategory::Material,
+                    tick,
+                );
+                input_nodes.push(input_node);
+
+                // Fabrication is directly observed — confidence is 1.0.
+                graph.relate(
+                    subject_node,
+                    input_node,
+                    ConceptEdge::new(RelationshipType::DerivedFrom, Confidence(1.0), tick),
+                );
+            }
+
+            // CombinedWith edges between every pair of input materials.
+            // For two inputs A and B: A CombinedWith B (and B CombinedWith A
+            // via relate's bidirectionality).
+            for i in 0..input_nodes.len() {
+                for j in (i + 1)..input_nodes.len() {
+                    graph.relate(
+                        input_nodes[i],
+                        input_nodes[j],
+                        ConceptEdge::new(RelationshipType::CombinedWith, Confidence(1.0), tick),
+                    );
+                }
+            }
+        }
+    }
+}
 
 // ── Concept identity ─────────────────────────────────────────────────────
 
@@ -1078,5 +1205,304 @@ mod tests {
 
         // Timeline is rebuilt.
         assert_eq!(restored.timeline().len(), 2);
+    }
+
+    // ── update_knowledge_graph system tests ──────────────────────────────
+
+    use crate::journal::{Observation, ObservationCategory, RecordObservation};
+
+    /// Build a minimal Bevy App with the message channel and system under test.
+    fn build_test_app() -> App {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.add_message::<RecordObservation>();
+        app.init_resource::<KnowledgeGraph>();
+        app.add_systems(Update, update_knowledge_graph);
+        app
+    }
+
+    /// Inject a single [`RecordObservation`] message via a one-shot system.
+    fn inject_observation(app: &mut App, obs: RecordObservation) {
+        fn write_obs(
+            input: bevy::ecs::system::In<RecordObservation>,
+            mut writer: MessageWriter<RecordObservation>,
+        ) {
+            writer.write(input.0.clone());
+        }
+        app.world_mut()
+            .run_system_cached_with(write_obs, obs)
+            .expect("one-shot system must run");
+    }
+
+    /// Construct a minimal [`RecordObservation`] for a material with no
+    /// cross-reference metadata.
+    fn material_obs(seed: u64) -> RecordObservation {
+        RecordObservation {
+            key: JournalKey::Material {
+                seed,
+                planet_seed: None,
+            },
+            name: format!("Mat-{seed}"),
+            observation: Observation {
+                category: ObservationCategory::SurfaceAppearance,
+                confidence: Confidence(0.5),
+                description: "test".to_string(),
+                recorded_at: 0,
+            },
+            input_seeds: vec![],
+            context_location: None,
+        }
+    }
+
+    #[test]
+    fn material_observation_creates_concept_node() {
+        let mut app = build_test_app();
+        inject_observation(&mut app, material_obs(42));
+        app.update();
+
+        let graph = app.world().resource::<KnowledgeGraph>();
+        let id = ConceptId::new(JournalKey::Material {
+            seed: 42,
+            planet_seed: None,
+        });
+        assert!(
+            graph.lookup(&id).is_some(),
+            "concept node must be created for observed material"
+        );
+    }
+
+    #[test]
+    fn material_with_context_location_creates_found_on_edge() {
+        let mut app = build_test_app();
+
+        let location_key = JournalKey::Material {
+            seed: 999,
+            planet_seed: Some(999),
+        };
+
+        let obs = RecordObservation {
+            key: JournalKey::Material {
+                seed: 1,
+                planet_seed: None,
+            },
+            name: "Mat-1".to_string(),
+            observation: Observation {
+                category: ObservationCategory::SurfaceAppearance,
+                confidence: Confidence(0.5),
+                description: "test".to_string(),
+                recorded_at: 0,
+            },
+            input_seeds: vec![],
+            context_location: Some(location_key.clone()),
+        };
+
+        inject_observation(&mut app, obs);
+        app.update();
+
+        let graph = app.world().resource::<KnowledgeGraph>();
+        let mat_id = ConceptId::new(JournalKey::Material {
+            seed: 1,
+            planet_seed: None,
+        });
+        let loc_id = ConceptId::new(location_key);
+
+        let mat_node = graph.lookup(&mat_id).expect("material concept must exist");
+        let loc_node = graph.lookup(&loc_id).expect("location concept must exist");
+
+        // Forward edge: material → FoundOn → location
+        let rels = graph.relationships(mat_node);
+        assert!(
+            rels.iter()
+                .any(|(n, e)| *n == loc_node && e.relationship == RelationshipType::FoundOn),
+            "material must have FoundOn edge to location"
+        );
+
+        // Reverse edge: location → FoundOn → material (bidirectional)
+        let loc_rels = graph.relationships(loc_node);
+        assert!(
+            loc_rels
+                .iter()
+                .any(|(n, e)| *n == mat_node && e.relationship == RelationshipType::FoundOn),
+            "location must have reverse FoundOn edge back to material"
+        );
+    }
+
+    #[test]
+    fn fabrication_observation_creates_derived_from_edges() {
+        let mut app = build_test_app();
+
+        let obs = RecordObservation {
+            key: JournalKey::Fabrication { output_seed: 100 },
+            name: "Output-100".to_string(),
+            observation: Observation {
+                category: ObservationCategory::FabricationResult,
+                confidence: Confidence(1.0),
+                description: "fabricated".to_string(),
+                recorded_at: 0,
+            },
+            input_seeds: vec![10, 20],
+            context_location: None,
+        };
+
+        inject_observation(&mut app, obs);
+        app.update();
+
+        let graph = app.world().resource::<KnowledgeGraph>();
+        let output_id = ConceptId::new(JournalKey::Fabrication { output_seed: 100 });
+        let input_a_id = ConceptId::new(JournalKey::Material {
+            seed: 10,
+            planet_seed: None,
+        });
+        let input_b_id = ConceptId::new(JournalKey::Material {
+            seed: 20,
+            planet_seed: None,
+        });
+
+        let output_node = graph.lookup(&output_id).expect("output concept must exist");
+        let input_a_node = graph.lookup(&input_a_id).expect("input A concept must exist");
+        let input_b_node = graph.lookup(&input_b_id).expect("input B concept must exist");
+
+        // Output → DerivedFrom → each input
+        let rels = graph.relationships(output_node);
+        assert!(
+            rels.iter()
+                .any(|(n, e)| *n == input_a_node && e.relationship == RelationshipType::DerivedFrom),
+            "output must have DerivedFrom edge to input A"
+        );
+        assert!(
+            rels.iter()
+                .any(|(n, e)| *n == input_b_node && e.relationship == RelationshipType::DerivedFrom),
+            "output must have DerivedFrom edge to input B"
+        );
+    }
+
+    #[test]
+    fn fabrication_observation_creates_combined_with_edges_between_inputs() {
+        let mut app = build_test_app();
+
+        let obs = RecordObservation {
+            key: JournalKey::Fabrication { output_seed: 200 },
+            name: "Output-200".to_string(),
+            observation: Observation {
+                category: ObservationCategory::FabricationResult,
+                confidence: Confidence(1.0),
+                description: "fabricated".to_string(),
+                recorded_at: 0,
+            },
+            input_seeds: vec![30, 40],
+            context_location: None,
+        };
+
+        inject_observation(&mut app, obs);
+        app.update();
+
+        let graph = app.world().resource::<KnowledgeGraph>();
+        let input_a_id = ConceptId::new(JournalKey::Material {
+            seed: 30,
+            planet_seed: None,
+        });
+        let input_b_id = ConceptId::new(JournalKey::Material {
+            seed: 40,
+            planet_seed: None,
+        });
+
+        let input_a_node = graph.lookup(&input_a_id).expect("input A concept must exist");
+        let input_b_node = graph.lookup(&input_b_id).expect("input B concept must exist");
+
+        // Input A → CombinedWith → Input B (and reverse via bidirectionality)
+        let rels_a = graph.relationships(input_a_node);
+        assert!(
+            rels_a.iter().any(|(n, e)| {
+                *n == input_b_node && e.relationship == RelationshipType::CombinedWith
+            }),
+            "input A must have CombinedWith edge to input B"
+        );
+
+        let rels_b = graph.relationships(input_b_node);
+        assert!(
+            rels_b.iter().any(|(n, e)| {
+                *n == input_a_node && e.relationship == RelationshipType::CombinedWith
+            }),
+            "input B must have reverse CombinedWith edge to input A"
+        );
+    }
+
+    #[test]
+    fn repeated_observation_strengthens_edge_not_duplicates() {
+        let mut app = build_test_app();
+
+        let location_key = JournalKey::Material {
+            seed: 777,
+            planet_seed: Some(777),
+        };
+
+        // Send the same material+location observation twice.
+        for _ in 0..2 {
+            let obs = RecordObservation {
+                key: JournalKey::Material {
+                    seed: 5,
+                    planet_seed: None,
+                },
+                name: "Mat-5".to_string(),
+                observation: Observation {
+                    category: ObservationCategory::SurfaceAppearance,
+                    confidence: Confidence(0.3),
+                    description: "test".to_string(),
+                    recorded_at: 0,
+                },
+                input_seeds: vec![],
+                context_location: Some(location_key.clone()),
+            };
+            inject_observation(&mut app, obs);
+            app.update();
+        }
+
+        let graph = app.world().resource::<KnowledgeGraph>();
+        let mat_id = ConceptId::new(JournalKey::Material {
+            seed: 5,
+            planet_seed: None,
+        });
+        let loc_id = ConceptId::new(location_key);
+
+        let mat_node = graph.lookup(&mat_id).expect("material concept must exist");
+        let loc_node = graph.lookup(&loc_id).expect("location concept must exist");
+
+        // There must be exactly one FoundOn edge from material to location
+        // (strengthened, not duplicated).
+        let rels = graph.relationships(mat_node);
+        let found_on_edges: Vec<_> = rels
+            .iter()
+            .filter(|(n, e)| *n == loc_node && e.relationship == RelationshipType::FoundOn)
+            .collect();
+        assert_eq!(
+            found_on_edges.len(),
+            1,
+            "repeated observation must strengthen the edge, not create a duplicate"
+        );
+        // Confidence must be higher than a single observation (0.3 + 0.3 = 0.6).
+        assert!(
+            found_on_edges[0].1.confidence.0 > 0.3,
+            "confidence must accumulate across repeated observations"
+        );
+    }
+
+    #[test]
+    fn observation_without_context_creates_no_location_edge() {
+        let mut app = build_test_app();
+        inject_observation(&mut app, material_obs(99));
+        app.update();
+
+        let graph = app.world().resource::<KnowledgeGraph>();
+        let id = ConceptId::new(JournalKey::Material {
+            seed: 99,
+            planet_seed: None,
+        });
+        let node = graph.lookup(&id).expect("concept must exist");
+
+        // No edges should exist — no context_location was provided.
+        assert!(
+            graph.relationships(node).is_empty(),
+            "observation without context_location must not create any edges"
+        );
     }
 }
