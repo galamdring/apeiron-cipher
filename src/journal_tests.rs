@@ -6812,9 +6812,100 @@ fn cross_reference_links_appear_for_entries_with_relationships() {
          "selected_link_index should be cleared after following a cross-reference link"
      );
 
-     // The previous entry (Ignium) should have been pushed onto the navigation stack.
-     assert!(
-         state.navigation_stack.can_go_back(),
-         "navigation stack should contain the previous entry after following a link"
-     );
- }
+      // The previous entry (Ignium) should have been pushed onto the navigation stack.
+      assert!(
+          state.navigation_stack.can_go_back(),
+          "navigation stack should contain the previous entry after following a link"
+      );
+  }
+
+  /// Pressing Backspace while the navigation stack has history returns the
+  /// journal selection to the previously-visited entry.
+  ///
+  /// Setup:
+  ///   - Two journal entries: "Ignium" (Material seed=1, index 0) and
+  ///     "Volcanic Plains" (Material seed=42, planet_seed=Some(42), index 1).
+  ///   - The navigation stack already contains the Ignium key (simulating that
+  ///     the player followed a link from Ignium to Volcanic Plains).
+  ///   - Journal is visible with "Volcanic Plains" selected (index 1).
+  ///   - No link is focused (`selected_link_index` is `None`).
+  ///
+  /// Expected: after pressing Backspace and running `journal_navigation`, the
+  /// `selected_index` returns to 0 ("Ignium") and the navigation stack is
+  /// empty.
+  #[test]
+  fn back_navigation_returns_to_previous_entry() {
+      let material_key = JournalKey::Material {
+          seed: 1,
+          planet_seed: None,
+      };
+      let location_key = JournalKey::Material {
+          seed: 42,
+          planet_seed: Some(42),
+      };
+
+      let mut app = App::new();
+      app.add_plugins(MinimalPlugins);
+      app.init_resource::<ButtonInput<KeyCode>>();
+      app.init_resource::<KnowledgeGraph>();
+
+      // Start with "Volcanic Plains" selected (index 1) and Ignium on the stack.
+      let mut nav_stack = JournalNavigationStack::new();
+      nav_stack.push(material_key.clone());
+      app.insert_resource(JournalUiState {
+          visible: true,
+          selected_index: 1,
+          scroll_offset: 0,
+          entries_per_page: 15,
+          filter: JournalFilter::default(),
+          selected_link_index: None,
+          navigation_stack: nav_stack,
+      });
+      app.add_systems(Update, journal_navigation);
+
+      // Spawn a player with both journal entries.
+      let mut journal = Journal::default();
+      journal.record(
+          material_key.clone(),
+          "Ignium",
+          Observation {
+              category: ObservationCategory::SurfaceAppearance,
+              confidence: Confidence(0.6),
+              description: "Reliably withstands heat".to_string(),
+              recorded_at: 1,
+          },
+      );
+      journal.record(
+          location_key.clone(),
+          "Volcanic Plains",
+          Observation {
+              category: ObservationCategory::SurfaceAppearance,
+              confidence: Confidence(0.6),
+              description: "Scorched terrain".to_string(),
+              recorded_at: 2,
+          },
+      );
+      app.world_mut().spawn((Player, journal, Transform::default()));
+
+      // Press Backspace to go back.
+      app.world_mut()
+          .resource_mut::<ButtonInput<KeyCode>>()
+          .press(KeyCode::Backspace);
+
+      app.update();
+
+      let state = app.world().resource::<JournalUiState>();
+
+      // Selection should have returned to "Ignium" at index 0.
+      assert_eq!(
+          state.selected_index, 0,
+          "Backspace should return selection to 'Ignium' at index 0, got index {}",
+          state.selected_index
+      );
+
+      // The navigation stack should now be empty.
+      assert!(
+          !state.navigation_stack.can_go_back(),
+          "navigation stack should be empty after back-navigation"
+      );
+  }
