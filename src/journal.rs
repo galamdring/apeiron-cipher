@@ -798,6 +798,55 @@ impl Journal {
 
 // ── UI state ────────────────────────────────────────────────────────────
 
+/// Tracks navigation history for back-navigation through cross-references.
+///
+/// When the player follows a cross-reference link, the source entry's key is
+/// pushed onto this stack.  Pressing Backspace while the journal is open pops
+/// the stack and returns to the previous entry.  The stack is bounded by
+/// `max_depth` to prevent unbounded growth during deep exploration sessions.
+#[derive(Clone, Debug)]
+pub struct JournalNavigationStack {
+    /// Previously visited entry keys, oldest first.
+    pub history: Vec<JournalKey>,
+    /// Maximum number of entries retained in the history.  When the stack
+    /// reaches this limit, the oldest entry is dropped before pushing a new
+    /// one.
+    pub max_depth: usize,
+}
+
+impl JournalNavigationStack {
+    /// Default maximum history depth — deep enough for any reasonable
+    /// exploration session without unbounded memory growth.
+    const DEFAULT_MAX_DEPTH: usize = 32;
+
+    fn new() -> Self {
+        Self {
+            history: Vec::new(),
+            max_depth: Self::DEFAULT_MAX_DEPTH,
+        }
+    }
+
+    /// Push a key onto the history stack, evicting the oldest entry when the
+    /// stack is at capacity.
+    fn push(&mut self, key: JournalKey) {
+        if self.history.len() >= self.max_depth {
+            self.history.remove(0);
+        }
+        self.history.push(key);
+    }
+
+    /// Pop the most recently visited key, returning it if the stack is
+    /// non-empty.
+    fn pop(&mut self) -> Option<JournalKey> {
+        self.history.pop()
+    }
+
+    /// Whether the stack has any history to go back to.
+    fn can_go_back(&self) -> bool {
+        !self.history.is_empty()
+    }
+}
+
 /// Tracks the journal panel's visibility and navigation state.
 ///
 /// Fields are deliberately **private**.  External systems must go through
@@ -842,6 +891,19 @@ pub struct JournalUiState {
     /// accessor and setter on this type, keeping the [`JournalSet`]
     /// ordering contract enforceable.
     filter: JournalFilter,
+    /// Index of the currently highlighted cross-reference link in the detail
+    /// panel, or `None` when no link is focused.
+    ///
+    /// When `Some(i)`, the i-th cross-reference link in the "Related" section
+    /// is highlighted and can be followed with Enter.  Arrow keys within the
+    /// detail panel cycle through links; Escape or ArrowLeft returns to the
+    /// entry list without following a link.
+    selected_link_index: Option<usize>,
+    /// Navigation history for back-navigation through cross-reference links.
+    ///
+    /// When the player follows a link, the source entry's key is pushed here.
+    /// Backspace pops the stack and returns to the previous entry.
+    navigation_stack: JournalNavigationStack,
 }
 
 impl JournalUiState {
@@ -911,6 +973,19 @@ impl JournalUiState {
         self.filter = filter;
     }
 
+    /// Index of the currently highlighted cross-reference link, or `None`
+    /// when no link is focused.
+    #[allow(dead_code)]
+    pub fn selected_link_index(&self) -> Option<usize> {
+        self.selected_link_index
+    }
+
+    /// Whether the navigation stack has any history to go back to.
+    #[allow(dead_code)]
+    pub fn can_go_back(&self) -> bool {
+        self.navigation_stack.can_go_back()
+    }
+
     /// Clamp `selected_index` and `scroll_offset` so they stay within valid
     /// bounds for the given total entry count.  Called after any navigation
     /// input and before rendering so the UI never references out-of-range
@@ -941,6 +1016,8 @@ impl Default for JournalUiState {
             scroll_offset: 0,
             entries_per_page: Self::DEFAULT_ENTRIES_PER_PAGE,
             filter: JournalFilter::default(),
+            selected_link_index: None,
+            navigation_stack: JournalNavigationStack::new(),
         }
     }
 }
@@ -1221,11 +1298,19 @@ fn toggle_journal_visibility(
 /// - Home/End: jump to first/last entry.
 /// - Scroll offset auto-adjusts via `clamp_to_entry_count` so the
 ///   selected entry is always within the visible window.
+/// - When a cross-reference link is focused (selected_link_index is Some):
+///   - Up/Down moves the link cursor within the "Related" section.
+///   - Enter follows the focused link, pushing the current entry onto the
+///     navigation stack and jumping to the related entry.
+///   - Backspace or Escape clears the link cursor without navigating.
+/// - Backspace when no link is focused pops the navigation stack and
+///   returns to the previously visited entry.
 fn journal_navigation(
     mut state: ResMut<JournalUiState>,
     keys: Res<ButtonInput<KeyCode>>,
     q: Query<&Journal, With<Player>>,
     world_profile: Option<Res<crate::world_generation::WorldProfile>>,
+    graph: Option<Res<KnowledgeGraph>>,
 ) {
     if !state.visible {
         return;
@@ -1326,23 +1411,174 @@ fn journal_navigation(
         state.scroll_offset = 0;
     }
 
+    // ── Cross-reference link navigation ───────────────────────────────
+    //
+    // When a link is focused (selected_link_index is Some), arrow keys move
+    // the cursor within the "Related" section.  Enter follows the focused
+    // link.  Escape or Backspace clears the cursor.
+    //
+    // When no link is focused, Backspace pops the navigation stack to return
+    // to the previously visited entry.  Tab/Shift+Tab and arrow keys operate
+    // on the entry list as usual.
+    //
+    // The link count is derived from the KnowledgeGraph for the currently
+    // selected entry.  When the graph is absent (test apps) link navigation
+    // is silently skipped.
+    let link_count = graph.as_ref().and_then(|g| {
+        let mut sorted: Vec<&JournalEntry> = journal.entries.values().collect();
+        sorted.sort_by(|a, b| a.name.cmp(&b.name));
+        let filtered: Vec<&JournalEntry> = sorted
+            .into_iter()
+            .filter(|e| matches_filter(e, state.filter()))
+            .collect();
+        let entry = filtered.get(state.selected_index)?;
+        let node_idx = g.lookup(&ConceptId::new(entry.key.clone()))?;
+        let rels = g.relationships(node_idx);
+        if rels.is_empty() {
+            None
+        } else {
+            Some(rels.len())
+        }
+    });
+
+    if let Some(link_idx) = state.selected_link_index {
+        // ── Link cursor is active ──────────────────────────────────────
+        let count = link_count.unwrap_or(0);
+
+        if keys.just_pressed(KeyCode::ArrowUp) {
+            state.selected_link_index = if link_idx == 0 {
+                // Wrap back to entry list navigation by clearing the cursor.
+                None
+            } else {
+                Some(link_idx - 1)
+            };
+            // Early return — do not also move the entry list selection.
+            state.clamp_to_entry_count(entry_count);
+            return;
+        }
+        if keys.just_pressed(KeyCode::ArrowDown) {
+            if count > 0 && link_idx + 1 < count {
+                state.selected_link_index = Some(link_idx + 1);
+            }
+            state.clamp_to_entry_count(entry_count);
+            return;
+        }
+        if keys.just_pressed(KeyCode::Escape) || keys.just_pressed(KeyCode::ArrowLeft) {
+            // Cancel link focus without navigating.
+            state.selected_link_index = None;
+            state.clamp_to_entry_count(entry_count);
+            return;
+        }
+        if keys.just_pressed(KeyCode::Backspace) {
+            // Backspace while a link is focused: cancel link focus first.
+            state.selected_link_index = None;
+            state.clamp_to_entry_count(entry_count);
+            return;
+        }
+        if keys.just_pressed(KeyCode::Enter) {
+            // Follow the focused link: look up the target entry and jump to it.
+            if let Some(g) = graph.as_ref() {
+                let mut sorted: Vec<&JournalEntry> = journal.entries.values().collect();
+                sorted.sort_by(|a, b| a.name.cmp(&b.name));
+                let filtered: Vec<&JournalEntry> = sorted
+                    .iter()
+                    .copied()
+                    .filter(|e| matches_filter(e, state.filter()))
+                    .collect();
+                if let Some(current_entry) = filtered.get(state.selected_index) {
+                    let concept_id = ConceptId::new(current_entry.key.clone());
+                    if let Some(node_idx) = g.lookup(&concept_id) {
+                        let rels = g.relationships(node_idx);
+                        // Build ref_lines in the same sort order as
+                        // append_cross_reference_spans: (rel_label, target_name).
+                        let mut ref_lines: Vec<(String, String, JournalKey)> = rels
+                            .iter()
+                            .filter_map(|(neighbor_idx, edge)| {
+                                let neighbor_node = g.node(*neighbor_idx)?;
+                                let target_key = neighbor_node.id.key().clone();
+                                let rel_label =
+                                    relationship_display_label(&edge.relationship).to_string();
+                                let target_name = journal
+                                    .entries
+                                    .get(&target_key)
+                                    .map(|e| e.name.clone())
+                                    .unwrap_or_else(|| format!("{target_key:?}"));
+                                Some((rel_label, target_name, target_key))
+                            })
+                            .collect();
+                        ref_lines.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+
+                        if let Some((_, _, target_key)) = ref_lines.get(link_idx) {
+                            // Push the current entry onto the navigation stack.
+                            state.navigation_stack.push(current_entry.key.clone());
+                            // Find the target entry's index in the filtered list.
+                            if let Some(target_pos) =
+                                filtered.iter().position(|e| &e.key == target_key)
+                            {
+                                state.selected_index = target_pos;
+                            }
+                            // Clear the link cursor after following the link.
+                            state.selected_link_index = None;
+                        }
+                    }
+                }
+            }
+            state.clamp_to_entry_count(entry_count);
+            return;
+        }
+        // Any other key while link cursor is active: fall through to normal
+        // entry-list navigation (Tab, Shift+Tab, PageUp/Down, Home/End).
+    } else {
+        // ── No link cursor — handle Backspace for back-navigation ─────
+        if keys.just_pressed(KeyCode::Backspace) && state.navigation_stack.can_go_back() {
+            if let Some(prev_key) = state.navigation_stack.pop() {
+                // Find the previous entry in the filtered list.
+                let mut sorted: Vec<&JournalEntry> = journal.entries.values().collect();
+                sorted.sort_by(|a, b| a.name.cmp(&b.name));
+                let filtered: Vec<&JournalEntry> = sorted
+                    .into_iter()
+                    .filter(|e| matches_filter(e, state.filter()))
+                    .collect();
+                if let Some(pos) = filtered.iter().position(|e| e.key == prev_key) {
+                    state.selected_index = pos;
+                }
+            }
+            state.clamp_to_entry_count(entry_count);
+            return;
+        }
+
+        // ArrowRight enters link mode when the selected entry has cross-references.
+        if keys.just_pressed(KeyCode::ArrowRight) && link_count.is_some() {
+            state.selected_link_index = Some(0);
+            state.clamp_to_entry_count(entry_count);
+            return;
+        }
+    }
+
     if keys.just_pressed(KeyCode::ArrowUp) {
         state.selected_index = state.selected_index.saturating_sub(1);
+        // Moving the entry list selection clears any stale link cursor.
+        state.selected_link_index = None;
     }
     if keys.just_pressed(KeyCode::ArrowDown) {
         state.selected_index = (state.selected_index + 1).min(entry_count - 1);
+        state.selected_link_index = None;
     }
     if keys.just_pressed(KeyCode::PageUp) {
         state.selected_index = state.selected_index.saturating_sub(state.entries_per_page);
+        state.selected_link_index = None;
     }
     if keys.just_pressed(KeyCode::PageDown) {
         state.selected_index = (state.selected_index + state.entries_per_page).min(entry_count - 1);
+        state.selected_link_index = None;
     }
     if keys.just_pressed(KeyCode::Home) {
         state.selected_index = 0;
+        state.selected_link_index = None;
     }
     if keys.just_pressed(KeyCode::End) {
         state.selected_index = entry_count - 1;
+        state.selected_link_index = None;
     }
 
     state.clamp_to_entry_count(entry_count);
@@ -1507,6 +1743,9 @@ enum DetailSpanKind {
     CrossReferenceHeader,
     /// A single cross-reference link line (e.g. "\n  → Found on: Volcanic Plains").
     CrossReferenceLink,
+    /// A cross-reference link that is currently highlighted by the link cursor.
+    /// Rendered with a brighter color to signal that Enter will follow it.
+    CrossReferenceLinkSelected,
     /// Placeholder text when the journal is empty.
     Placeholder,
 }
@@ -1744,6 +1983,9 @@ fn sync_journal_ui(
     let cross_ref_header_color = TextColor(Color::srgba(0.75, 0.68, 0.45, 1.0));
     // Cross-reference links use a cyan-tinted color to signal navigability.
     let cross_ref_link_color = TextColor(Color::srgba(0.45, 0.80, 0.85, 1.0));
+    // Selected cross-reference link uses a bright white-cyan to signal it is
+    // focused and can be followed with Enter.
+    let cross_ref_link_selected_color = TextColor(Color::srgba(1.0, 1.0, 0.35, 1.0));
 
     if let Ok((detail_entity, detail_children)) = detail_query.single() {
         if let Some(children) = detail_children {
@@ -1765,6 +2007,7 @@ fn sync_journal_ui(
                     DetailSpanKind::ConfidenceLabel => confidence_color,
                     DetailSpanKind::CrossReferenceHeader => cross_ref_header_color,
                     DetailSpanKind::CrossReferenceLink => cross_ref_link_color,
+                    DetailSpanKind::CrossReferenceLinkSelected => cross_ref_link_selected_color,
                     DetailSpanKind::Placeholder => placeholder_color,
                 };
                 parent.spawn((TextSpan::new(span.text.clone()), span_font.clone(), color));
@@ -1966,7 +2209,11 @@ fn append_cross_reference_spans(
         .filter(|entry| matches_filter(entry, state.filter()))
         .collect();
 
-    let Some(entry) = filtered_entries.get(state.selected_index.min(filtered_entries.len().saturating_sub(1))) else {
+    let Some(entry) = filtered_entries.get(
+        state
+            .selected_index
+            .min(filtered_entries.len().saturating_sub(1)),
+    ) else {
         return;
     };
 
@@ -2008,10 +2255,17 @@ fn append_cross_reference_spans(
 
     ref_lines.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
 
-    for (rel_label, target_name) in ref_lines {
+    for (link_idx, (rel_label, target_name)) in ref_lines.iter().enumerate() {
+        // Highlight the link that the cursor is currently on so the player
+        // knows which entry Enter will jump to.
+        let kind = if state.selected_link_index == Some(link_idx) {
+            DetailSpanKind::CrossReferenceLinkSelected
+        } else {
+            DetailSpanKind::CrossReferenceLink
+        };
         cache.detail_spans.push(DetailSpan {
             text: format!("\n  \u{2192} {rel_label}: {target_name}"),
-            kind: DetailSpanKind::CrossReferenceLink,
+            kind,
         });
     }
 }
@@ -2040,6 +2294,18 @@ fn build_help_text(entry_count: usize, state: &JournalUiState) -> String {
     let page_start = state.scroll_offset + 1;
     let page_end = (state.scroll_offset + state.entries_per_page).min(entry_count);
 
+    // When a cross-reference link is focused, show link-specific hints.
+    if state.selected_link_index.is_some() {
+        let back_hint = if state.navigation_stack.can_go_back() {
+            "  Backspace: Cancel"
+        } else {
+            "  Esc: Cancel"
+        };
+        return format!(
+            "\u{2191}\u{2193} Move link  Enter: Follow  {back_hint}  J: Close  [{page_start}-{page_end} of {entry_count}]"
+        );
+    }
+
     // Show active filter status if any filter is applied
     let filter_status = match (&state.filter().category, &state.filter().context) {
         (None, None) => String::new(),
@@ -2058,8 +2324,14 @@ fn build_help_text(entry_count: usize, state: &JournalUiState) -> String {
         }
     };
 
+    let back_hint = if state.navigation_stack.can_go_back() {
+        "  Backspace: Back"
+    } else {
+        ""
+    };
+
     format!(
-        "\u{2191}\u{2193} Navigate  PgUp/PgDn: Page  Home/End: Jump  Shift+Tab: Context Filter  J: Close{filter_status}  [{page_start}-{page_end} of {entry_count}]"
+        "\u{2191}\u{2193} Navigate  \u{2192}: Links  PgUp/PgDn: Page  Home/End: Jump  Shift+Tab: Context Filter  J: Close{filter_status}{back_hint}  [{page_start}-{page_end} of {entry_count}]"
     )
 }
 

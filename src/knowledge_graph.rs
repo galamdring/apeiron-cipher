@@ -11,8 +11,8 @@
 //! wires the [`update_knowledge_graph`] system into the Bevy app.
 
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
 use std::fs;
+use std::path::Path;
 
 use bevy::prelude::*;
 use petgraph::graph::NodeIndex;
@@ -141,23 +141,17 @@ fn load_knowledge_graph_config(mut commands: Commands) {
                     cfg
                 }
                 Err(error) => {
-                    warn!(
-                        "Malformed {KNOWLEDGE_GRAPH_CONFIG_PATH}, using defaults: {error}"
-                    );
+                    warn!("Malformed {KNOWLEDGE_GRAPH_CONFIG_PATH}, using defaults: {error}");
                     KnowledgeGraphConfig::default()
                 }
             },
             Err(error) => {
-                warn!(
-                    "Could not read {KNOWLEDGE_GRAPH_CONFIG_PATH}, using defaults: {error}"
-                );
+                warn!("Could not read {KNOWLEDGE_GRAPH_CONFIG_PATH}, using defaults: {error}");
                 KnowledgeGraphConfig::default()
             }
         }
     } else {
-        info!(
-            "{KNOWLEDGE_GRAPH_CONFIG_PATH} not found, using defaults"
-        );
+        info!("{KNOWLEDGE_GRAPH_CONFIG_PATH} not found, using defaults");
         KnowledgeGraphConfig::default()
     };
 
