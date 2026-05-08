@@ -19,6 +19,7 @@ pub mod heat;
 pub mod input;
 pub mod interaction;
 pub mod journal;
+pub mod knowledge_graph;
 pub mod materials;
 pub mod naming;
 pub mod observation;
