@@ -293,6 +293,10 @@ fn tick_processing(
             description,
             recorded_at: 0,
         },
+        // Pass input material seeds so the knowledge graph can wire DerivedFrom
+        // edges from the output concept to each input material (Story 10.5).
+        input_seeds: input_mats.iter().map(|m| m.seed).collect(),
+        context_location: None,
     });
 
     info!("Fabrication complete — produced '{}'", output_mat.name);

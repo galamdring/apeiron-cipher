@@ -16,6 +16,9 @@ toml = "1.0.7"
 # order from the enum definition itself, so adding a new variant cannot
 # silently hide that category from the journal UI.
 strum = { version = "0.27", features = ["derive"] }
+# Graph data structure — backs the KnowledgeGraph resource (architecture decision).
+# The `serde-1` feature enables serialization of graph nodes/edges for save/load.
+petgraph = { version = "0.7", features = ["serde-1"] }
 
 [dev-dependencies]
 # JSON serializer — used in tests to verify serde round-tripping

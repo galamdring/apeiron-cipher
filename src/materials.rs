@@ -226,6 +226,29 @@ impl GameMaterial {
             0.13
         }
     }
+
+    /// Returns the material's measured properties as a normalised 5-dimensional
+    /// vector for cosine-similarity comparison (Story 10.5 — `SimilarTo` edges).
+    ///
+    /// Component order: `[density, thermal_resistance, reactivity, conductivity, toxicity]`.
+    ///
+    /// All values are in \[0.0, 1.0\] by construction (clamped at creation time
+    /// in [`MaterialProperty::new`]), so the cosine similarity between any two
+    /// vectors is always non-negative — no centring or normalisation required.
+    ///
+    /// The vector includes ALL five properties regardless of their visibility
+    /// state. This is intentional: the knowledge graph is the simulation layer
+    /// and operates on ground-truth data; the player only sees the similarity
+    /// when they have sufficient observation confidence (checked at call site).
+    pub fn property_vector(&self) -> Vec<f32> {
+        vec![
+            self.density.value(),
+            self.thermal_resistance.value(),
+            self.reactivity.value(),
+            self.conductivity.value(),
+            self.toxicity.value(),
+        ]
+    }
 }
 
 // ── Seed-derived helpers ─────────────────────────────────────────────────

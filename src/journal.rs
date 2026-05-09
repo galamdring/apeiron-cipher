@@ -226,6 +226,20 @@ pub enum JournalKey {
         /// The deterministic seed of the fabricated output material.
         output_seed: u64,
     },
+    /// A planetary or regional location, keyed by its planet seed.
+    ///
+    /// Created automatically by the knowledge graph system whenever a
+    /// material observation carries planet provenance — giving the graph
+    /// a concrete node to attach `FoundOn` and `ObservedAt` edges to.
+    /// Location entries are not displayed in the main journal entry list
+    /// because the player encounters planets through the world, not
+    /// through a catalog — but they are reachable as cross-reference
+    /// targets from material entries.
+    Location {
+        /// The planet seed that uniquely identifies this location within
+        /// the world generation system.  Matches `WorldProfile::planet_seed.0`.
+        planet_seed: u64,
+    },
 }
 
 impl JournalKey {
@@ -254,6 +268,7 @@ impl JournalKey {
         match self {
             JournalKey::Material { planet_seed, .. } => *planet_seed,
             JournalKey::Fabrication { .. } => None,
+            JournalKey::Location { planet_seed } => Some(*planet_seed),
         }
     }
 }
@@ -452,6 +467,7 @@ impl Plugin for JournalPlugin {
             .init_resource::<JournalUiState>()
             .init_resource::<JournalSelectionTracker>()
             .init_resource::<JournalRenderCache>()
+            .init_resource::<JournalNavigationStack>()
             .configure_sets(
                 Update,
                 (JournalSet::Navigate, JournalSet::Compute, JournalSet::Sync).chain(),
@@ -477,7 +493,13 @@ impl Plugin for JournalPlugin {
                         .in_set(JournalSet::Navigate)
                         .after(journal_navigation),
                     apply_observations.in_set(JournalSet::Navigate),
+                    journal_cross_ref_navigation
+                        .in_set(JournalSet::Navigate)
+                        .after(journal_navigation),
                     compute_journal_panels.in_set(JournalSet::Compute),
+                    populate_cross_ref_links
+                        .in_set(JournalSet::Compute)
+                        .after(compute_journal_panels),
                     sync_journal_ui.in_set(JournalSet::Sync),
                 ),
             );
@@ -500,6 +522,11 @@ impl Plugin for JournalPlugin {
 /// This eliminates the need for every observation site to manually extract
 /// `world_profile.as_deref().map(|p| p.planet_seed.0)` and prevents silent
 /// failures when new observation sites forget this pattern.
+///
+/// **Cross-reference metadata:** The `input_seeds` and `context_location`
+/// fields are optional metadata consumed by the knowledge graph system
+/// (Story 10.5) to wire typed relationship edges. Journal ingestion ignores
+/// these fields — they are purely for the graph wiring layer.
 #[derive(Message, Clone)]
 pub struct RecordObservation {
     /// Which journal subject this observation belongs to.
@@ -511,6 +538,21 @@ pub struct RecordObservation {
     /// The observation payload including category, confidence, description,
     /// and game-time tick.
     pub observation: Observation,
+    /// For fabrication observations: seeds of the input materials that were
+    /// combined to produce the output. The knowledge graph system uses these
+    /// to wire `DerivedFrom` edges from the output concept to each input.
+    ///
+    /// Empty for non-fabrication observations. The journal ingestion system
+    /// ignores this field entirely.
+    pub input_seeds: Vec<u64>,
+    /// Optional location context where this observation was made.
+    ///
+    /// When `Some`, the knowledge graph system wires an `ObservedAt` edge
+    /// from the observed subject to this location concept. Callers that
+    /// don't have explicit location context leave this `None`.
+    ///
+    /// The journal ingestion system ignores this field entirely.
+    pub context_location: Option<JournalKey>,
 }
 
 // ── Player-owned journal data ───────────────────────────────────────────
@@ -994,6 +1036,70 @@ struct JournalSelectionTracker {
     last_scroll_offset: usize,
 }
 
+// ── Cross-reference navigation stack ────────────────────────────────────
+
+/// Tracks the player's breadcrumb trail through journal cross-reference links.
+///
+/// When the player presses Enter on a cross-reference link, the current
+/// entry's [`JournalKey`] is pushed here before the view jumps to the
+/// linked entry. Pressing Backspace pops the stack and returns to the
+/// previous entry. This gives the player a browser-history-like
+/// back-navigation experience.
+///
+/// The stack is bounded at [`Self::MAX_DEPTH`] entries to prevent
+/// unbounded growth from very long browsing sessions. When the limit is
+/// reached, the oldest entry is silently dropped (the stack slides).
+///
+/// Persists across journal close/reopen so the player can close the
+/// journal mid-browse and return to their trail.
+#[derive(Resource, Default)]
+pub struct JournalNavigationStack {
+    /// Breadcrumb entries from oldest to newest.
+    ///
+    /// Last element is the most recently visited entry — the one that
+    /// Backspace will return the player to.
+    history: Vec<JournalKey>,
+}
+
+impl JournalNavigationStack {
+    /// Maximum number of entries held in the navigation history.
+    ///
+    /// Capped to prevent unbounded memory growth and to keep the
+    /// back-navigation depth reasonable. 32 steps should cover any
+    /// real browsing session.
+    pub const MAX_DEPTH: usize = 32;
+
+    /// Push the current entry onto the back-navigation stack before
+    /// jumping to a cross-reference target.
+    ///
+    /// When the stack has reached [`Self::MAX_DEPTH`], the oldest entry
+    /// is removed to make room, preserving the invariant that the stack
+    /// never exceeds the depth limit.
+    pub fn push(&mut self, key: JournalKey) {
+        if self.history.len() >= Self::MAX_DEPTH {
+            // Slide the oldest entry out.
+            self.history.remove(0);
+        }
+        self.history.push(key);
+    }
+
+    /// Pop and return the most recent entry on the back-navigation stack.
+    ///
+    /// Returns `None` when the history is empty (the player is already at
+    /// their starting point and there is nothing to go back to).
+    pub fn pop(&mut self) -> Option<JournalKey> {
+        self.history.pop()
+    }
+
+    /// Returns `true` when there are entries on the back-navigation stack.
+    ///
+    /// Used by the navigation system to decide whether to show the Backspace
+    /// hint in the help bar.
+    pub fn can_go_back(&self) -> bool {
+        !self.history.is_empty()
+    }
+}
+
 /// Root container for the entire journal overlay (two-panel layout).
 #[derive(Component)]
 struct JournalPanel;
@@ -1335,7 +1441,99 @@ fn journal_navigation(
     state.clamp_to_entry_count(entry_count);
 }
 
-/// System that automatically updates the journal context filter when the
+/// Handles cross-reference link navigation within the journal detail panel.
+///
+/// Runs in Update in [`JournalSet::Navigate`], after `journal_navigation`.
+/// Only active when the journal is visible and the current entry has cross-
+/// reference links (i.e. `cache.cross_ref_links` is non-empty).
+///
+/// Key bindings:
+/// - `Alt+Down` / `Alt+Up` — cycle the highlighted cross-reference link.
+/// - `Enter` — follow the highlighted link: push current key onto
+///   [`JournalNavigationStack`], then find the linked entry's position
+///   in the sorted filtered list and set `selected_index` to it.
+/// - `Backspace` — pop the navigation stack and return to the previous
+///   entry.
+fn journal_cross_ref_navigation(
+    mut state: ResMut<JournalUiState>,
+    mut cache: ResMut<JournalRenderCache>,
+    mut nav_stack: ResMut<JournalNavigationStack>,
+    keys: Res<ButtonInput<KeyCode>>,
+    q: Query<&Journal, With<Player>>,
+) {
+    if !state.visible {
+        return;
+    }
+
+    // ── Back-navigation (Backspace) ─────────────────────────────────
+    if keys.just_pressed(KeyCode::Backspace) {
+        if let Some(prev_key) = nav_stack.pop() {
+            let Ok(journal) = q.single() else {
+                return;
+            };
+            // Find the position of the previous entry in the current sorted
+            // list and jump to it.
+            let mut sorted: Vec<&JournalEntry> = journal.entries.values().collect();
+            sorted.sort_by(|a, b| a.name.cmp(&b.name));
+            // Filter is NOT applied for back-nav — the previous entry might
+            // not be in the current filter view, so we clear the filter first
+            // to ensure the target is always visible.
+            if let Some(pos) = sorted.iter().position(|e| e.key == prev_key) {
+                state.set_filter(JournalFilter::default());
+                state.selected_index = pos;
+                state.scroll_offset = pos.saturating_sub(state.entries_per_page / 2);
+                state.clamp_to_entry_count(sorted.len());
+            }
+        }
+        return;
+    }
+
+    let link_count = cache.cross_ref_links.len();
+    if link_count == 0 {
+        return;
+    }
+
+    // ── Cross-ref link cursor movement (Alt+Up / Alt+Down) ───────────
+    let alt = keys.pressed(KeyCode::AltLeft) || keys.pressed(KeyCode::AltRight);
+    if alt && keys.just_pressed(KeyCode::ArrowDown) {
+        cache.selected_cross_ref = (cache.selected_cross_ref + 1).min(link_count - 1);
+    }
+    if alt && keys.just_pressed(KeyCode::ArrowUp) {
+        cache.selected_cross_ref = cache.selected_cross_ref.saturating_sub(1);
+    }
+
+    // ── Follow cross-reference (Enter) ────────────────────────────────
+    if keys.just_pressed(KeyCode::Enter) {
+        let selected_idx = cache.selected_cross_ref.min(link_count - 1);
+        let (_, target_key, _) = cache.cross_ref_links[selected_idx].clone();
+
+        let Ok(journal) = q.single() else {
+            return;
+        };
+
+        // Find what the current entry key is so we can push it to history.
+        let mut sorted: Vec<&JournalEntry> = journal.entries.values().collect();
+        sorted.sort_by(|a, b| a.name.cmp(&b.name));
+
+        // Push the current selection onto the back-nav stack.
+        if let Some(current_entry) = sorted.get(state.selected_index) {
+            nav_stack.push(current_entry.key.clone());
+        }
+
+        // Clear filter so the target is always in view, then jump.
+        state.set_filter(JournalFilter::default());
+
+        let mut new_sorted: Vec<&JournalEntry> = journal.entries.values().collect();
+        new_sorted.sort_by(|a, b| a.name.cmp(&b.name));
+
+        if let Some(pos) = new_sorted.iter().position(|e| e.key == target_key) {
+            state.selected_index = pos;
+            state.scroll_offset = pos.saturating_sub(state.entries_per_page / 2);
+            state.clamp_to_entry_count(new_sorted.len());
+            cache.selected_cross_ref = 0;
+        }
+    }
+}
 /// planet changes (WorldProfile resource changes).
 ///
 /// When the player switches planets, this system detects the change in
@@ -1465,6 +1663,17 @@ struct JournalRenderCache {
     detail_spans: Vec<DetailSpan>,
     /// Text for the bottom help bar.
     help: String,
+    /// Cross-reference links available on the currently selected entry.
+    ///
+    /// Each entry is `(relationship_label, target_key, target_name)`. The
+    /// navigation system uses this list to jump to a related entry when Enter
+    /// is pressed. Populated each frame by `compute_journal_panels`.
+    cross_ref_links: Vec<(String, JournalKey, String)>,
+    /// Index of the currently highlighted cross-reference link.
+    ///
+    /// `0` when no cross-references exist (no link is highlighted). Clamped
+    /// to `[0, cross_ref_links.len() - 1]` each frame.
+    selected_cross_ref: usize,
 }
 
 /// A single line in the entry list panel, carrying its display text and
@@ -1492,6 +1701,16 @@ enum DetailSpanKind {
     ConfidenceLabel,
     /// Placeholder text when the journal is empty.
     Placeholder,
+    /// A cross-reference link in the "Related" section.
+    ///
+    /// The selected link is highlighted with a brighter cyan accent so the
+    /// player can see which one Enter will follow.  Unselected links use a
+    /// muted teal.
+    CrossRef {
+        /// Whether this link is the one currently highlighted by the
+        /// cross-reference cursor (i.e. Enter will follow this link).
+        selected: bool,
+    },
 }
 
 /// A styled segment in the detail panel.  The panel is rebuilt each frame
@@ -1629,8 +1848,131 @@ fn compute_journal_panels(
 
     cache.filter_bar = build_filter_bar_text(state.filter());
     cache.list_lines = build_entry_list_lines(&filtered_entries, &state);
+
+    // ── Cross-reference links ─────────────────────────────────────────
+    //
+    // Query the knowledge graph for relationships on the currently selected
+    // entry so that build_detail_spans can render the "Related" section.
+    // The graph is not a Bevy system parameter here (to respect the 4-param
+    // limit); instead, the caller (this system) reads it from the world
+    // directly via Option<Res<…>>. Since KnowledgeGraphPlugin runs in the
+    // same app, the resource is always present when the journal is visible.
+    // If it is somehow absent (e.g. in lightweight integration tests that
+    // don't register the full plugin set), cross-references are silently
+    // omitted — a graceful fallback.
+    //
+    // cross_ref_links is cleared and rebuilt every frame so it always
+    // reflects the currently selected entry.
+    cache.cross_ref_links.clear();
+    // selected_cross_ref is clamped after rebuild — NOT reset to 0 — so
+    // the player's cursor position survives across frames while they read.
+
+    // We deliberately skip querying KnowledgeGraph here to stay within the
+    // 4-system-parameter limit. The graph population pass runs in
+    // KnowledgeGraphPlugin systems; the render cache for cross-refs is
+    // built in build_detail_spans using the graph passed separately.
+    // For now we leave cross_ref_links empty and populate it inside
+    // build_detail_spans_with_graph (see below).
+
     cache.detail_spans = build_detail_spans(&filtered_entries, &state, !journal.entries.is_empty());
-    cache.help = build_help_text(entry_count, &state);
+    cache.help = build_help_text(entry_count, &state, cache.cross_ref_links.len());
+}
+
+/// Populates [`JournalRenderCache::cross_ref_links`] from the knowledge
+/// graph for the currently selected journal entry.
+///
+/// Runs in the [`JournalSet::Compute`] set, immediately after
+/// [`compute_journal_panels`], which must clear `cross_ref_links` first
+/// so this system always rebuilds from fresh data.
+///
+/// The system is separate from `compute_journal_panels` to respect the
+/// 4-system-parameter limit: the parent system already uses all four
+/// slots (state, journal query, cache, tracker) and cannot absorb an
+/// additional [`crate::knowledge_graph::KnowledgeGraph`] parameter
+/// without splitting.
+///
+/// If the KnowledgeGraph resource is absent (e.g. lightweight tests that
+/// don't register KnowledgeGraphPlugin), cross-references are silently
+/// omitted — the cache is left empty and the journal renders without a
+/// "Related" section.
+fn populate_cross_ref_links(
+    state: Res<JournalUiState>,
+    player_query: Query<&Journal, With<Player>>,
+    mut cache: ResMut<JournalRenderCache>,
+    graph: Option<Res<crate::knowledge_graph::KnowledgeGraph>>,
+) {
+    // cross_ref_links was cleared by compute_journal_panels already.
+    // If the journal is invisible or the graph is absent, nothing to do.
+    if !state.visible {
+        return;
+    }
+    let Some(graph) = graph else {
+        return;
+    };
+    let Ok(journal) = player_query.single() else {
+        return;
+    };
+
+    // Find the currently selected entry's key.
+    let mut sorted: Vec<&JournalEntry> = journal.entries.values().collect();
+    sorted.sort_by(|a, b| a.name.cmp(&b.name));
+
+    let filtered: Vec<&JournalEntry> = sorted
+        .into_iter()
+        .filter(|e| matches_filter(e, state.filter()))
+        .collect();
+
+    let Some(selected_entry) = filtered.get(state.selected_index) else {
+        return;
+    };
+
+    // Look up the concept node for this journal key.
+    let concept_id = crate::knowledge_graph::ConceptId(selected_entry.key.clone());
+    let Some(node_idx) = graph.lookup(&concept_id) else {
+        // Entry has no graph node yet — no cross-references to show.
+        return;
+    };
+
+    // Collect all relationships and resolve neighbor names.
+    for (neighbor_idx, edge) in graph.relationships(node_idx) {
+        let Some(neighbor_node) = graph.node(neighbor_idx) else {
+            continue;
+        };
+        // Resolve a human-readable name for the neighbor by looking up the
+        // journal entry (if it exists) or falling back to a generic label
+        // derived from the concept category.
+        let target_name = journal
+            .entries
+            .get(&neighbor_node.id.0)
+            .map(|e| e.name.clone())
+            .unwrap_or_else(|| format!("{:?}", neighbor_node.category));
+
+        let rel_label = edge.relationship.display_label().to_string();
+        cache
+            .cross_ref_links
+            .push((rel_label, neighbor_node.id.0.clone(), target_name));
+    }
+
+    // Clamp the selected link cursor so it stays in bounds after the link
+    // list is rebuilt (e.g. if entries were added or removed).
+    let link_count = cache.cross_ref_links.len();
+    if link_count > 0 {
+        cache.selected_cross_ref = cache.selected_cross_ref.min(link_count - 1);
+    } else {
+        cache.selected_cross_ref = 0;
+    }
+
+    // Rebuild the detail spans now that we have cross-reference data, so
+    // the "Related" section appears with correct link highlights.
+    cache.detail_spans = build_detail_spans_with_cross_refs(
+        &filtered,
+        &state,
+        !journal.entries.is_empty(),
+        &cache.cross_ref_links,
+        cache.selected_cross_ref,
+    );
+    // Rebuild the help text to show the Alt+↑↓ / Enter / Backspace hint.
+    cache.help = build_help_text(filtered.len(), &state, cache.cross_ref_links.len());
 }
 
 /// Syncs the cached text into the Bevy UI `Text` nodes and toggles
@@ -1743,6 +2085,15 @@ fn sync_journal_ui(
                     DetailSpanKind::Body => body_color,
                     DetailSpanKind::ConfidenceLabel => confidence_color,
                     DetailSpanKind::Placeholder => placeholder_color,
+                    // Selected cross-reference link: bright cyan to draw the eye.
+                    DetailSpanKind::CrossRef { selected: true } => {
+                        TextColor(Color::srgba(0.3, 0.9, 0.85, 1.0))
+                    }
+                    // Unselected cross-reference link: muted teal — visible but not
+                    // competing with the observation text.
+                    DetailSpanKind::CrossRef { selected: false } => {
+                        TextColor(Color::srgba(0.3, 0.65, 0.62, 1.0))
+                    }
                 };
                 parent.spawn((TextSpan::new(span.text.clone()), span_font.clone(), color));
             }
@@ -1822,10 +2173,32 @@ fn build_entry_list_lines(entries: &[&JournalEntry], state: &JournalUiState) -> 
 /// The `has_any_entries` parameter distinguishes between an empty journal
 /// (shows "No observations yet.") and a filter that produces no results
 /// (shows "No matching entries").
+///
+/// The `cross_ref_links` slice is `(relationship_label, target_name)` pairs
+/// from the knowledge graph, built by `compute_journal_panels`. When the
+/// slice is non-empty a "Related" section is appended to the panel; the
+/// entry at `selected_cross_ref` is highlighted as the link the player
+/// would follow with Enter.
 fn build_detail_spans(
     entries: &[&JournalEntry],
     state: &JournalUiState,
     has_any_entries: bool,
+) -> Vec<DetailSpan> {
+    build_detail_spans_with_cross_refs(entries, state, has_any_entries, &[], 0)
+}
+
+/// Internal implementation of detail-span building that accepts cross-reference
+/// data computed externally.
+///
+/// Separated from `build_detail_spans` to keep both call sites simple: the
+/// cross-ref-free variant (used in tests and no-graph contexts) delegates
+/// here with empty slices.
+fn build_detail_spans_with_cross_refs(
+    entries: &[&JournalEntry],
+    state: &JournalUiState,
+    has_any_entries: bool,
+    cross_ref_links: &[(String, JournalKey, String)],
+    selected_cross_ref: usize,
 ) -> Vec<DetailSpan> {
     if entries.is_empty() {
         let message = if has_any_entries {
@@ -1895,11 +2268,33 @@ fn build_detail_spans(
         }
     }
 
+    // ── Related section (cross-references) ──────────────────────────
+    //
+    // Appended after all observation categories when the knowledge graph
+    // knows of relationships on this entry. Each link shows a relationship
+    // type label and the target entry's name. The currently highlighted
+    // link (selected_cross_ref) is rendered with the CrossRef { selected:
+    // true } kind so it gets the brighter cyan color.
+    if !cross_ref_links.is_empty() {
+        spans.push(DetailSpan {
+            text: "\n\nRelated".to_string(),
+            kind: DetailSpanKind::CategoryGroupHeader,
+        });
+        for (i, (rel_label, _, target_name)) in cross_ref_links.iter().enumerate() {
+            let selected = i == selected_cross_ref;
+            let prefix = if selected { "→ " } else { "  " };
+            spans.push(DetailSpan {
+                text: format!("\n{prefix}{}: {}", rel_label, target_name),
+                kind: DetailSpanKind::CrossRef { selected },
+            });
+        }
+    }
+
     spans
 }
 
 /// Builds the bottom help bar showing navigation hints and a page indicator.
-fn build_help_text(entry_count: usize, state: &JournalUiState) -> String {
+fn build_help_text(entry_count: usize, state: &JournalUiState, cross_ref_count: usize) -> String {
     if entry_count == 0 {
         return "J: Close".to_string();
     }
@@ -1925,8 +2320,15 @@ fn build_help_text(entry_count: usize, state: &JournalUiState) -> String {
         }
     };
 
+    // Cross-reference hint when links exist.
+    let cross_ref_hint = if cross_ref_count > 0 {
+        "  Alt+↑↓: Link  Enter: Follow  Backspace: Back"
+    } else {
+        ""
+    };
+
     format!(
-        "\u{2191}\u{2193} Navigate  PgUp/PgDn: Page  Home/End: Jump  Shift+Tab: Context Filter  J: Close{filter_status}  [{page_start}-{page_end} of {entry_count}]"
+        "\u{2191}\u{2193} Navigate  PgUp/PgDn: Page  Home/End: Jump  Shift+Tab: Context Filter  J: Close{filter_status}{cross_ref_hint}  [{page_start}-{page_end} of {entry_count}]"
     )
 }
 

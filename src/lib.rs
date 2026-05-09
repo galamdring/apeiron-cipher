@@ -19,6 +19,7 @@ pub mod heat;
 pub mod input;
 pub mod interaction;
 pub mod journal;
+pub mod knowledge_graph;
 pub mod materials;
 pub mod naming;
 pub mod observation;
@@ -66,6 +67,8 @@ pub fn add_game_plugins(app: &mut App) {
         .add_plugins(observation::ObservationPlugin)
         // Journal: player-owned record of observations and fabrication history.
         .add_plugins(journal::JournalPlugin)
+        // Knowledge graph: typed cross-reference edges between journal concepts (Story 10.5).
+        .add_plugins(knowledge_graph::KnowledgeGraphPlugin)
         // Solar system: deterministic star/orbital/planet derivation from system seed.
         .add_plugins(solar_system::SolarSystemPlugin)
         // World generation: deterministic planet/chunk identity foundation for exterior systems.
