@@ -6,7 +6,7 @@
 //! fabricator. Unknown properties are omitted entirely rather than shown as
 //! placeholders.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 
 use bevy::prelude::*;
 use leafwing_input_manager::prelude::*;
@@ -117,7 +117,7 @@ impl ObservationCategory {
     }
 
     /// Player-facing label used as a group header in the detail panel.
-    fn display_label(&self) -> &'static str {
+    pub fn display_label(&self) -> &'static str {
         match self {
             ObservationCategory::SurfaceAppearance => "Surface",
             ObservationCategory::ThermalBehavior => "Thermal",
@@ -1056,9 +1056,10 @@ struct JournalSelectionTracker {
 pub struct JournalNavigationStack {
     /// Breadcrumb entries from oldest to newest.
     ///
-    /// Last element is the most recently visited entry — the one that
-    /// Backspace will return the player to.
-    history: Vec<JournalKey>,
+    /// Back of the deque is the most recently visited entry — the one that
+    /// Backspace will return the player to. Front of the deque is the oldest
+    /// entry (evicted first when the depth limit is reached).
+    history: VecDeque<(JournalKey, JournalFilter)>,
 }
 
 impl JournalNavigationStack {
@@ -1069,26 +1070,23 @@ impl JournalNavigationStack {
     /// real browsing session.
     pub const MAX_DEPTH: usize = 32;
 
-    /// Push the current entry onto the back-navigation stack before
-    /// jumping to a cross-reference target.
-    ///
-    /// When the stack has reached [`Self::MAX_DEPTH`], the oldest entry
-    /// is removed to make room, preserving the invariant that the stack
-    /// never exceeds the depth limit.
-    pub fn push(&mut self, key: JournalKey) {
+    /// Push the current entry and active filter onto the back-navigation stack
+    /// before jumping to a cross-reference target. Backspace pops and restores
+    /// both.
+    pub fn push(&mut self, key: JournalKey, filter: JournalFilter) {
         if self.history.len() >= Self::MAX_DEPTH {
-            // Slide the oldest entry out.
-            self.history.remove(0);
+            // Evict the oldest entry in O(1) — VecDeque makes this free.
+            self.history.pop_front();
         }
-        self.history.push(key);
+        self.history.push_back((key, filter));
     }
 
     /// Pop and return the most recent entry on the back-navigation stack.
     ///
     /// Returns `None` when the history is empty (the player is already at
     /// their starting point and there is nothing to go back to).
-    pub fn pop(&mut self) -> Option<JournalKey> {
-        self.history.pop()
+    pub fn pop(&mut self) -> Option<(JournalKey, JournalFilter)> {
+        self.history.pop_back()
     }
 
     /// Returns `true` when there are entries on the back-navigation stack.
@@ -1467,22 +1465,25 @@ fn journal_cross_ref_navigation(
 
     // ── Back-navigation (Backspace) ─────────────────────────────────
     if keys.just_pressed(KeyCode::Backspace) {
-        if let Some(prev_key) = nav_stack.pop() {
+        if let Some((prev_key, prev_filter)) = nav_stack.pop() {
             let Ok(journal) = q.single() else {
                 return;
             };
-            // Find the position of the previous entry in the current sorted
-            // list and jump to it.
+            // Restore the saved filter first, then locate the previous entry
+            // within that filter's view — so the player lands exactly where
+            // they were before following the link.
+            state.set_filter(prev_filter);
             let mut sorted: Vec<&JournalEntry> = journal.entries.values().collect();
             sorted.sort_by(|a, b| a.name.cmp(&b.name));
-            // Filter is NOT applied for back-nav — the previous entry might
-            // not be in the current filter view, so we clear the filter first
-            // to ensure the target is always visible.
-            if let Some(pos) = sorted.iter().position(|e| e.key == prev_key) {
-                state.set_filter(JournalFilter::default());
+            let filtered: Vec<&JournalEntry> = sorted
+                .iter()
+                .copied()
+                .filter(|e| matches_filter(e, state.filter()))
+                .collect();
+            if let Some(pos) = filtered.iter().position(|e| e.key == prev_key) {
                 state.selected_index = pos;
                 state.scroll_offset = pos.saturating_sub(state.entries_per_page / 2);
-                state.clamp_to_entry_count(sorted.len());
+                state.clamp_to_entry_count(filtered.len());
             }
         }
         return;
@@ -1511,25 +1512,25 @@ fn journal_cross_ref_navigation(
             return;
         };
 
-        // Find what the current entry key is so we can push it to history.
+        // Build the sorted entry list once. Clearing the filter (below) doesn't
+        // change `journal.entries` — only the view — so this list remains valid
+        // for both push-to-stack and jump-to-target.
         let mut sorted: Vec<&JournalEntry> = journal.entries.values().collect();
         sorted.sort_by(|a, b| a.name.cmp(&b.name));
 
-        // Push the current selection onto the back-nav stack.
+        // Push the current selection AND active filter onto the back-nav stack
+        // so Backspace restores the player to exactly where they were.
         if let Some(current_entry) = sorted.get(state.selected_index) {
-            nav_stack.push(current_entry.key.clone());
+            nav_stack.push(current_entry.key.clone(), state.filter().clone());
         }
 
         // Clear filter so the target is always in view, then jump.
         state.set_filter(JournalFilter::default());
 
-        let mut new_sorted: Vec<&JournalEntry> = journal.entries.values().collect();
-        new_sorted.sort_by(|a, b| a.name.cmp(&b.name));
-
-        if let Some(pos) = new_sorted.iter().position(|e| e.key == target_key) {
+        if let Some(pos) = sorted.iter().position(|e| e.key == target_key) {
             state.selected_index = pos;
             state.scroll_offset = pos.saturating_sub(state.entries_per_page / 2);
-            state.clamp_to_entry_count(new_sorted.len());
+            state.clamp_to_entry_count(sorted.len());
             cache.selected_cross_ref = 0;
         }
     }
@@ -1599,7 +1600,7 @@ fn update_journal_context_on_planet_change(
 /// death context. If the player died recently and is now observing the
 /// death-relevant domain, confidence accumulates faster. If they're
 /// avoiding the death domain, it accumulates slower.
-fn apply_observations(
+pub(crate) fn apply_observations(
     mut reader: MessageReader<RecordObservation>,
     mut player_query: Query<&mut Journal, With<Player>>,
     time: Res<Time>,
@@ -1674,6 +1675,12 @@ struct JournalRenderCache {
     /// `0` when no cross-references exist (no link is highlighted). Clamped
     /// to `[0, cross_ref_links.len() - 1]` each frame.
     selected_cross_ref: usize,
+    /// The journal key of the entry whose cross-references are currently cached.
+    ///
+    /// When `populate_cross_ref_links` finds a different selected entry than this
+    /// key, it resets `selected_cross_ref` to 0 so the link cursor doesn't carry
+    /// over from a different entry.
+    cross_ref_entry_key: Option<JournalKey>,
 }
 
 /// A single line in the entry list panel, carrying its display text and
@@ -1867,15 +1874,18 @@ fn compute_journal_panels(
     // selected_cross_ref is clamped after rebuild — NOT reset to 0 — so
     // the player's cursor position survives across frames while they read.
 
-    // We deliberately skip querying KnowledgeGraph here to stay within the
-    // 4-system-parameter limit. The graph population pass runs in
-    // KnowledgeGraphPlugin systems; the render cache for cross-refs is
-    // built in build_detail_spans using the graph passed separately.
-    // For now we leave cross_ref_links empty and populate it inside
-    // build_detail_spans_with_graph (see below).
+    // KnowledgeGraph is queried by `populate_cross_ref_links`, which runs
+    // next in the same Compute set. That system rebuilds cross_ref_links,
+    // re-runs build_detail_spans_with_cross_refs, and writes cache.help.
+    // This system only clears the stale list so the next system always
+    // starts from a known-empty state.
 
     cache.detail_spans = build_detail_spans(&filtered_entries, &state, !journal.entries.is_empty());
-    cache.help = build_help_text(entry_count, &state, cache.cross_ref_links.len());
+    // Write a default help text (no cross-ref count yet). If `populate_cross_ref_links`
+    // runs next (when KnowledgeGraph is registered), it overwrites this with the
+    // final count. Tests that only register `compute_journal_panels` get a valid
+    // help string from this line.
+    cache.help = build_help_text(entry_count, &state, 0);
 }
 
 /// Populates [`JournalRenderCache::cross_ref_links`] from the knowledge
@@ -1926,6 +1936,13 @@ fn populate_cross_ref_links(
         return;
     };
 
+    // Reset the link cursor when the selected entry has changed since the
+    // last frame so the player always starts at link 0 on a newly-selected entry.
+    if cache.cross_ref_entry_key.as_ref() != Some(&selected_entry.key) {
+        cache.selected_cross_ref = 0;
+        cache.cross_ref_entry_key = Some(selected_entry.key.clone());
+    }
+
     // Look up the concept node for this journal key.
     let concept_id = crate::knowledge_graph::ConceptId(selected_entry.key.clone());
     let Some(node_idx) = graph.lookup(&concept_id) else {
@@ -1964,15 +1981,20 @@ fn populate_cross_ref_links(
 
     // Rebuild the detail spans now that we have cross-reference data, so
     // the "Related" section appears with correct link highlights.
+    // Clone cross_ref data out of cache before the mutable borrow for detail_spans.
+    // This avoids a simultaneous mutable + immutable borrow of cache.
+    let links_snapshot = cache.cross_ref_links.clone();
+    let selected_cross_ref = cache.selected_cross_ref;
+
     cache.detail_spans = build_detail_spans_with_cross_refs(
         &filtered,
         &state,
         !journal.entries.is_empty(),
-        &cache.cross_ref_links,
-        cache.selected_cross_ref,
+        &links_snapshot,
+        selected_cross_ref,
     );
     // Rebuild the help text to show the Alt+↑↓ / Enter / Backspace hint.
-    cache.help = build_help_text(filtered.len(), &state, cache.cross_ref_links.len());
+    cache.help = build_help_text(filtered.len(), &state, links_snapshot.len());
 }
 
 /// Syncs the cached text into the Bevy UI `Text` nodes and toggles

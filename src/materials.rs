@@ -34,6 +34,13 @@ pub struct MaterialPlugin;
 /// Small vertical gap between a material object and the surface it rests on.
 pub const MATERIAL_SURFACE_GAP: f32 = 0.01;
 
+/// Number of properties in a [`GameMaterial`] property vector.
+///
+/// Used as the compile-time array size for [`GameMaterial::property_vector`]
+/// so callers never need a magic number and adding a new property automatically
+/// updates the type.
+pub const PROPERTY_DIM: usize = 5;
+
 // ── Well-known material seeds ────────────────────────────────────────────
 //
 // Migration table: maps the 10 original hand-authored material names to their
@@ -240,8 +247,8 @@ impl GameMaterial {
     /// state. This is intentional: the knowledge graph is the simulation layer
     /// and operates on ground-truth data; the player only sees the similarity
     /// when they have sufficient observation confidence (checked at call site).
-    pub fn property_vector(&self) -> Vec<f32> {
-        vec![
+    pub fn property_vector(&self) -> [f32; PROPERTY_DIM] {
+        [
             self.density.value(),
             self.thermal_resistance.value(),
             self.reactivity.value(),

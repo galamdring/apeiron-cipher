@@ -39,7 +39,14 @@ impl Plugin for KnowledgeGraphPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<KnowledgeGraph>().add_systems(
             Update,
-            update_knowledge_graph.in_set(crate::journal::JournalSet::Navigate),
+            (
+                update_knowledge_graph
+                    .in_set(crate::journal::JournalSet::Navigate)
+                    .after(crate::journal::apply_observations),
+                detect_similar_on_observation
+                    .in_set(crate::journal::JournalSet::Navigate)
+                    .after(update_knowledge_graph),
+            ),
         );
     }
 }
@@ -89,7 +96,10 @@ pub struct ConceptNode {
     pub category: ConceptCategory,
     /// Overall confidence that this concept is real and correctly identified.
     pub confidence: Confidence,
-    /// Game-time tick (milliseconds elapsed) when this concept was first added.
+    /// Game-time tick (whole seconds elapsed) when this concept was first added.
+    ///
+    /// Matches the unit used by [`crate::journal::Observation::recorded_at`] so
+    /// the two timestamps are directly comparable.
     pub discovered_at: u64,
     /// Which named properties the player has directly observed on this concept.
     ///
@@ -157,7 +167,7 @@ pub struct ConceptEdge {
     /// How certain the player is that this relationship is real, accumulated
     /// each time a new observation confirms the same connection.
     pub confidence: Confidence,
-    /// Game-time tick (milliseconds elapsed) when this relationship was
+    /// Game-time tick (whole seconds elapsed) when this relationship was
     /// first established.
     pub discovered_at: u64,
 }
@@ -322,6 +332,43 @@ impl KnowledgeGraph {
 
     // ── Timeline ─────────────────────────────────────────────────────────
 
+    /// Look up a material concept node by seed alone, ignoring `planet_seed`.
+    ///
+    /// Returns the first [`NodeIndex`] found whose [`ConceptId`] wraps a
+    /// [`crate::journal::JournalKey::Material`] with the given `seed`, regardless
+    /// of what `planet_seed` that node was stored with.
+    ///
+    /// This exists to resolve the "identity mismatch" where a material is first
+    /// observed on a planet (key = `Material { seed: X, planet_seed: Some(Y) }`) but
+    /// is later referenced via fabrication input with `planet_seed: None`. Using
+    /// `lookup` directly would create a second, disconnected node — this method
+    /// prevents that by finding the existing node by seed.
+    ///
+    /// Returns `None` when no material with that seed exists in the graph yet.
+    pub fn lookup_material_by_seed(&self, seed: u64) -> Option<NodeIndex> {
+        self.concept_index.iter().find_map(|(id, &idx)| {
+            if matches!(&id.0, crate::journal::JournalKey::Material { seed: s, .. } if *s == seed) {
+                Some(idx)
+            } else {
+                None
+            }
+        })
+    }
+
+    /// Mark a property as revealed on the given concept node.
+    ///
+    /// Called each time the player makes an observation of a specific category
+    /// on this concept. The `property_name` should be the
+    /// [`crate::journal::ObservationCategory::display_label`] string so the
+    /// encyclopedia view can show exactly which properties the player has seen.
+    ///
+    /// No-ops when the node index is invalid (should never happen during normal
+    /// gameplay since indexes are never removed).
+    pub fn reveal_property(&mut self, node: NodeIndex, property_name: String) {
+        if let Some(n) = self.graph.node_weight_mut(node) {
+            n.revealed_properties.insert(property_name);
+        }
+    }
     /// Timeline of all discovered concepts in chronological order.
     ///
     /// Each entry is `(discovered_at_tick, node_index)`. Because
@@ -499,7 +546,7 @@ fn update_knowledge_graph(
     mut graph: ResMut<KnowledgeGraph>,
     time: Res<Time>,
 ) {
-    let tick = time.elapsed().as_millis() as u64;
+    let tick = time.elapsed().as_secs();
 
     for obs in reader.read() {
         // Determine category for the observed subject.
@@ -507,6 +554,10 @@ fn update_knowledge_graph(
 
         // Ensure the subject node exists.
         let subject_node = graph.ensure_concept(ConceptId(obs.key.clone()), subject_category, tick);
+
+        // Mark which property category the player just observed on this concept.
+        let category_name = obs.observation.category.display_label().to_string();
+        graph.reveal_property(subject_node, category_name);
 
         // ── FoundOn edge ──────────────────────────────────────────────
         // If this is a Material observation and the key carries a planet
@@ -537,12 +588,18 @@ fn update_knowledge_graph(
         // input material that the player put into the fabricator.
         if matches!(&obs.key, crate::journal::JournalKey::Fabrication { .. }) {
             for &input_seed in &obs.input_seeds {
-                let input_key = crate::journal::JournalKey::Material {
-                    seed: input_seed,
-                    planet_seed: None,
-                };
-                let input_node =
-                    graph.ensure_concept(ConceptId(input_key), ConceptCategory::Material, tick);
+                // Use the canonical node for this seed if it already exists in the
+                // graph (it may have planet_seed set from a prior observation). Falling
+                // back to planet_seed: None only for materials never yet registered.
+                let input_node = graph
+                    .lookup_material_by_seed(input_seed)
+                    .unwrap_or_else(|| {
+                        let input_key = crate::journal::JournalKey::Material {
+                            seed: input_seed,
+                            planet_seed: None,
+                        };
+                        graph.ensure_concept(ConceptId(input_key), ConceptCategory::Material, tick)
+                    });
                 graph.relate(
                     subject_node,
                     input_node,
@@ -554,6 +611,40 @@ fn update_knowledge_graph(
                     },
                 );
             }
+        }
+
+        // ── CombinedWith edges ───────────────────────────────────────
+        // For fabrication outputs with exactly 2 inputs, wire a symmetric
+        // CombinedWith edge between the two input materials so the player
+        // can see that these materials were used together, independent of
+        // what they produced.
+        if matches!(&obs.key, crate::journal::JournalKey::Fabrication { .. })
+            && obs.input_seeds.len() == 2
+        {
+            let seed_a = obs.input_seeds[0];
+            let seed_b = obs.input_seeds[1];
+
+            let node_a = graph.lookup_material_by_seed(seed_a).unwrap_or_else(|| {
+                let key = crate::journal::JournalKey::Material {
+                    seed: seed_a,
+                    planet_seed: None,
+                };
+                graph.ensure_concept(ConceptId(key), ConceptCategory::Material, tick)
+            });
+            let node_b = graph.lookup_material_by_seed(seed_b).unwrap_or_else(|| {
+                let key = crate::journal::JournalKey::Material {
+                    seed: seed_b,
+                    planet_seed: None,
+                };
+                graph.ensure_concept(ConceptId(key), ConceptCategory::Material, tick)
+            });
+
+            let edge = ConceptEdge {
+                relationship: RelationshipType::CombinedWith,
+                confidence: Confidence(1.0),
+                discovered_at: tick,
+            };
+            graph.relate(node_a, node_b, edge);
         }
 
         // ── ObservedAt edge ──────────────────────────────────────────
@@ -724,6 +815,50 @@ fn is_at_least_observed(
             .entries
             .get(key)
             .is_some_and(|entry| entry.all_observations().any(|obs| obs.confidence.0 >= 0.3)),
+    }
+}
+
+/// Detects and wires `SimilarTo` edges for newly observed materials.
+///
+/// Runs in [`crate::journal::JournalSet::Navigate`] after
+/// [`update_knowledge_graph`]. For each [`RecordObservation`] message that
+/// carries a [`crate::journal::JournalKey::Material`] key, compares the
+/// material against all others in the catalog and wires `SimilarTo` edges
+/// when both materials are at or above `Observed` confidence and their
+/// property vectors exceed the configured similarity threshold.
+///
+/// Uses an independent [`MessageReader`] cursor — both this system and
+/// [`update_knowledge_graph`] receive all messages without consuming each
+/// other's reads.
+fn detect_similar_on_observation(
+    mut reader: MessageReader<crate::journal::RecordObservation>,
+    mut graph: ResMut<KnowledgeGraph>,
+    catalog: Res<crate::materials::MaterialCatalog>,
+    player_query: Query<&crate::journal::Journal, With<crate::player::Player>>,
+    time: Res<Time>,
+    config: Res<crate::observation::ConfidenceConfig>,
+) {
+    let Ok(journal) = player_query.single() else {
+        return;
+    };
+    let tick = time.elapsed().as_secs();
+
+    for obs in reader.read() {
+        let crate::journal::JournalKey::Material { seed, .. } = obs.key else {
+            continue;
+        };
+        let Some(material) = catalog.get_by_seed(seed) else {
+            continue;
+        };
+        detect_and_wire_similar_materials(
+            seed,
+            material,
+            &catalog,
+            journal,
+            &mut graph,
+            config.similarity_threshold,
+            tick,
+        );
     }
 }
 
