@@ -2978,7 +2978,7 @@ fn help_text_shows_page_indicator() {
         entries_per_page: 15,
         filter: JournalFilter::default(),
     };
-    let help = build_help_text(42, &state);
+    let help = build_help_text(42, &state, 0);
     assert!(
         help.contains("[1-15 of 42]"),
         "help should show page indicator, got: {help}"
@@ -2988,7 +2988,7 @@ fn help_text_shows_page_indicator() {
 #[test]
 fn help_text_empty_journal() {
     let state = JournalUiState::default();
-    let help = build_help_text(0, &state);
+    let help = build_help_text(0, &state, 0);
     assert!(help.contains("J: Close"), "help should show close hint");
     assert!(
         !help.contains("Navigate"),
@@ -3018,7 +3018,7 @@ fn two_panel_rendering_100_plus_entries_does_not_panic() {
     assert!(!list.is_empty());
     let detail = build_detail_spans(&entries, &state, true);
     assert!(!detail.is_empty());
-    let help = build_help_text(entries.len(), &state);
+    let help = build_help_text(entries.len(), &state, 0);
     assert!(help.contains("of 120"));
 }
 
@@ -5218,7 +5218,7 @@ fn help_text_shows_context_filter_hint_and_status() {
         entries_per_page: 15,
         filter: JournalFilter::default(),
     };
-    let help_all = build_help_text(10, &state_all);
+    let help_all = build_help_text(10, &state_all, 0);
     assert!(
         help_all.contains("Shift+Tab: Context Filter"),
         "help should show Shift+Tab hint, got: {help_all}"
@@ -5238,7 +5238,7 @@ fn help_text_shows_context_filter_hint_and_status() {
             context: Some(JournalContext::CurrentPlanet { planet_seed: 42 }),
         },
     };
-    let help_planet = build_help_text(10, &state_planet);
+    let help_planet = build_help_text(10, &state_planet, 0);
     assert!(
         help_planet.contains("Shift+Tab: Context Filter"),
         "help should show Shift+Tab hint with filter active, got: {help_planet}"
@@ -5258,7 +5258,7 @@ fn help_text_shows_context_filter_hint_and_status() {
             context: Some(JournalContext::CurrentPlanet { planet_seed: 42 }),
         },
     };
-    let help_combined = build_help_text(10, &state_combined);
+    let help_combined = build_help_text(10, &state_combined, 0);
     assert!(
         help_combined.contains("[Filter: Category | Current Planet]"),
         "help should show combined filter status, got: {help_combined}"
@@ -6054,6 +6054,7 @@ fn language_in_journal_regresses_after_death_and_recovers_with_new_observations(
         domain_recovery_multiplier: 2.0,
         passive_recovery_multiplier: 0.8,
         base_observation_weight: 0.25, // Reasonable accumulation rate
+        similarity_threshold: 0.85,
     };
 
     // ── Phase 1: Establish confident language ──────────────────────────────

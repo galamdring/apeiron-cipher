@@ -33,3 +33,12 @@ passive_recovery_multiplier = 0.7
 # Higher values = fewer observations needed for high confidence
 # Lower values = more repeated testing required
 base_observation_weight = 0.2
+# Cross-Reference Settings (Story 10.5)
+# --------------------------------------
+
+# Cosine similarity threshold for SimilarTo edge creation.
+# Two materials are considered "similar" when their 5-dimensional property
+# vector (density, thermal_resistance, reactivity, conductivity, toxicity)
+# has cosine similarity >= this value. Values below 0.80 tend to produce
+# spurious connections; values above 0.95 surface very few pairs.
+similarity_threshold = 0.85

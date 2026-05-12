@@ -1417,6 +1417,8 @@ pub fn record_weight_observation(
             description,
             recorded_at: 0,
         },
+        input_seeds: Vec::new(),
+        context_location: None,
     });
 }
 

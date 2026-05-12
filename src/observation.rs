@@ -202,6 +202,18 @@ pub struct ConfidenceConfig {
     /// Lower values require more repeated testing. Typical range: 0.1-0.3
     #[serde(default = "default_base_observation_weight")]
     pub base_observation_weight: f32,
+
+    /// Cosine similarity threshold above which two materials are considered
+    /// "similar" for the purposes of wiring `SimilarTo` edges in the knowledge
+    /// graph (Story 10.5).
+    ///
+    /// A value of 1.0 means "identical property vectors only"; lower values
+    /// surface more pairs as similar. Values below 0.5 are not recommended —
+    /// they tend to produce spurious connections that erode trust in the journal.
+    ///
+    /// Typical range: 0.80-0.95
+    #[serde(default = "default_similarity_threshold")]
+    pub similarity_threshold: f32,
 }
 
 /// Default value for death_degradation_factor field.
@@ -229,6 +241,11 @@ fn default_base_observation_weight() -> f32 {
     0.2
 }
 
+/// Default cosine similarity threshold for `SimilarTo` edge creation.
+fn default_similarity_threshold() -> f32 {
+    0.85
+}
+
 impl Default for ConfidenceConfig {
     /// Default confidence configuration values.
     ///
@@ -242,6 +259,7 @@ impl Default for ConfidenceConfig {
             domain_recovery_multiplier: 2.0,  // 2x recovery in death domain
             passive_recovery_multiplier: 0.7, // 0.7x recovery elsewhere
             base_observation_weight: 0.2,     // Standard observation strength
+            similarity_threshold: 0.85,       // 85% cosine similarity = "similar materials"
         }
     }
 }
@@ -1567,6 +1585,7 @@ mod tests {
             domain_recovery_multiplier: 2.5,
             passive_recovery_multiplier: 0.8,
             base_observation_weight: 0.25,
+            similarity_threshold: 0.85,
         };
 
         let toml = toml::to_string(&config).expect("ConfidenceConfig should serialize to TOML");
@@ -2653,6 +2672,7 @@ mod tests {
                 domain_recovery_multiplier: 2.0,
                 passive_recovery_multiplier: 0.7,
                 base_observation_weight: 0.2,
+                similarity_threshold: 0.85,
             })
             .insert_resource(Time::<()>::default());
 
@@ -2777,6 +2797,7 @@ mod tests {
                 domain_recovery_multiplier: 2.0,
                 passive_recovery_multiplier: 0.7,
                 base_observation_weight: 0.2,
+                similarity_threshold: 0.85,
             })
             .insert_resource(Time::<()>::default());
 
@@ -2910,6 +2931,7 @@ mod tests {
             domain_recovery_multiplier: 2.0,
             passive_recovery_multiplier: 0.7,
             base_observation_weight: 0.2,
+            similarity_threshold: 0.85,
         };
 
         let context = DeathContext::new(DeathCause::HeatSystem, 1000);
@@ -2986,6 +3008,7 @@ mod tests {
             domain_recovery_multiplier: 2.0, // 2x recovery in death domain
             passive_recovery_multiplier: 0.7, // 0.7x recovery elsewhere
             base_observation_weight: 0.2,
+            similarity_threshold: 0.85,
         };
 
         // Create death context for heat system death

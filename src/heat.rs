@@ -349,6 +349,8 @@ fn reveal_thermal_property(
                     },
                     recorded_at: 0,
                 },
+                input_seeds: Vec::new(),
+                context_location: None,
             });
             info!(
                 "'{}' thermal observation recorded with initial confidence",
