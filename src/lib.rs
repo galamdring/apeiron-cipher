@@ -14,6 +14,7 @@ pub mod carry_feedback;
 pub mod combination;
 pub mod debug_overlay;
 pub mod descriptions;
+pub mod diegetic_ui;
 pub mod fabricator;
 pub mod heat;
 pub mod input;
@@ -73,6 +74,8 @@ pub fn add_game_plugins(app: &mut App) {
         .add_plugins(solar_system::SolarSystemPlugin)
         // World generation: deterministic planet/chunk identity foundation for exterior systems.
         .add_plugins(world_generation::WorldGenerationPlugin)
+        // Diegetic UI: in-world information surface framework (Story 10.6).
+        .add_plugins(diegetic_ui::DiegeticUiPlugin)
         // Debug: terrain diagnostic overlay (temporary — remove before shipping).
         .add_plugins(debug_overlay::DebugOverlayPlugin);
 }

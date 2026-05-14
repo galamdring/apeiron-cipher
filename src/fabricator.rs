@@ -295,6 +295,7 @@ fn tick_processing(
         },
         // Pass input material seeds so the knowledge graph can wire DerivedFrom
         // edges from the output concept to each input material (Story 10.5).
+        planet_seed: None,
         input_seeds: input_mats.iter().map(|m| m.seed).collect(),
         context_location: None,
     });
@@ -438,6 +439,9 @@ fn rule_combine(rules: &CombinationRules, a: &GameMaterial, b: &GameMaterial) ->
         name,
         seed: combined_seed,
         color,
+        // Fabricated materials have no planet origin — they are produced at
+        // the fabricator, not found in the world.
+        origin_planet_seed: None,
         density: {
             let base_density = apply_rule_with_perturbation(
                 &pair_rules.density,
@@ -489,6 +493,7 @@ mod tests {
             name: name.into(),
             seed,
             color: [0.5, 0.5, 0.5],
+            origin_planet_seed: None,
             density: MaterialProperty::new(density, PropertyVisibility::Observable),
             thermal_resistance: prop(0.4),
             reactivity: prop(0.6),

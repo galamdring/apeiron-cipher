@@ -802,6 +802,7 @@ fn sample_game_material(name: &str) -> GameMaterial {
         name: name.to_string(),
         seed: 42,
         color: [0.5, 0.5, 0.5],
+        origin_planet_seed: None,
         density: MaterialProperty::new(0.5, PropertyVisibility::Observable),
         thermal_resistance: MaterialProperty::new(0.5, PropertyVisibility::Observable),
         reactivity: MaterialProperty::new(0.5, PropertyVisibility::Observable),

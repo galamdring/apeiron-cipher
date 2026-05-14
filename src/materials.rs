@@ -174,6 +174,16 @@ pub struct GameMaterial {
     pub seed: u64,
     /// Display colour as \[R, G, B\] in sRGB 0.0–1.0.
     pub color: [f32; 3],
+    /// The planet seed this material instance was generated on.
+    ///
+    /// Set at spawn time from `WorldProfile::planet_seed` and immutable
+    /// thereafter — this piece came from this planet, forever. Used by
+    /// observation systems to wire `FoundOn` edges in the KnowledgeGraph
+    /// and by the `CurrentPlanet` journal filter.
+    ///
+    /// `None` in contexts where no planetary world profile exists (early
+    /// bring-up, fabricated materials, integration tests).
+    pub origin_planet_seed: Option<u64>,
     /// How heavy the material feels — affects mesh shape selection.
     pub density: MaterialProperty,
     /// Resistance to heat transfer.
@@ -289,6 +299,7 @@ pub fn derive_material_from_seed(seed: u64) -> GameMaterial {
         name,
         seed,
         color,
+        origin_planet_seed: None, // set at spawn time by world generation
         density: MaterialProperty::new(
             unit_interval_01(mix_seed(seed, MAT_DENSITY_CHANNEL)),
             PropertyVisibility::Hidden,
@@ -551,6 +562,7 @@ mod tests {
             name: "Ferrite".into(),
             seed: 1001,
             color: [0.58, 0.55, 0.52],
+            origin_planet_seed: None,
             density: prop(0.78, PropertyVisibility::Observable),
             thermal_resistance: prop(0.65, PropertyVisibility::Hidden),
             reactivity: prop(0.35, PropertyVisibility::Hidden),

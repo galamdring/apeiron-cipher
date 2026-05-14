@@ -2681,10 +2681,7 @@ mod tests {
 
         // Add observations with high confidence
         journal.record(
-            JournalKey::Material {
-                seed: 42,
-                planet_seed: None,
-            },
+            JournalKey::MaterialInstance { seed: 42 },
             "Test Material",
             Observation {
                 category: ObservationCategory::ThermalBehavior,
@@ -2695,10 +2692,7 @@ mod tests {
         );
 
         journal.record(
-            JournalKey::Material {
-                seed: 99,
-                planet_seed: None,
-            },
+            JournalKey::MaterialInstance { seed: 99 },
             "Another Material",
             Observation {
                 category: ObservationCategory::Weight,
@@ -2710,10 +2704,7 @@ mod tests {
 
         // Add observation with medium confidence
         journal.record(
-            JournalKey::Material {
-                seed: 42,
-                planet_seed: None,
-            },
+            JournalKey::MaterialInstance { seed: 42 },
             "Test Material",
             Observation {
                 category: ObservationCategory::SurfaceAppearance,
@@ -2728,21 +2719,12 @@ mod tests {
 
         // Verify initial confidence levels
         let journal = app.world().entity(player_entity).get::<Journal>().unwrap();
-        let thermal_obs = &journal.entries[&JournalKey::Material {
-            seed: 42,
-            planet_seed: None,
-        }]
-            .observations[&ObservationCategory::ThermalBehavior][0];
-        let weight_obs = &journal.entries[&JournalKey::Material {
-            seed: 99,
-            planet_seed: None,
-        }]
-            .observations[&ObservationCategory::Weight][0];
-        let surface_obs = &journal.entries[&JournalKey::Material {
-            seed: 42,
-            planet_seed: None,
-        }]
-            .observations[&ObservationCategory::SurfaceAppearance][0];
+        let thermal_obs = &journal.entries[&JournalKey::MaterialInstance { seed: 42 }].observations
+            [&ObservationCategory::ThermalBehavior][0];
+        let weight_obs = &journal.entries[&JournalKey::MaterialInstance { seed: 99 }].observations
+            [&ObservationCategory::Weight][0];
+        let surface_obs = &journal.entries[&JournalKey::MaterialInstance { seed: 42 }].observations
+            [&ObservationCategory::SurfaceAppearance][0];
 
         assert_eq!(thermal_obs.confidence.0, 0.8);
         assert_eq!(weight_obs.confidence.0, 0.9);
@@ -2760,21 +2742,12 @@ mod tests {
 
         // Verify confidence has been degraded
         let journal = app.world().entity(player_entity).get::<Journal>().unwrap();
-        let thermal_obs = &journal.entries[&JournalKey::Material {
-            seed: 42,
-            planet_seed: None,
-        }]
-            .observations[&ObservationCategory::ThermalBehavior][0];
-        let weight_obs = &journal.entries[&JournalKey::Material {
-            seed: 99,
-            planet_seed: None,
-        }]
-            .observations[&ObservationCategory::Weight][0];
-        let surface_obs = &journal.entries[&JournalKey::Material {
-            seed: 42,
-            planet_seed: None,
-        }]
-            .observations[&ObservationCategory::SurfaceAppearance][0];
+        let thermal_obs = &journal.entries[&JournalKey::MaterialInstance { seed: 42 }].observations
+            [&ObservationCategory::ThermalBehavior][0];
+        let weight_obs = &journal.entries[&JournalKey::MaterialInstance { seed: 99 }].observations
+            [&ObservationCategory::Weight][0];
+        let surface_obs = &journal.entries[&JournalKey::MaterialInstance { seed: 42 }].observations
+            [&ObservationCategory::SurfaceAppearance][0];
 
         // Expected values: original * 0.6, but not below 0.2 floor
         assert_eq!(thermal_obs.confidence.0, 0.8 * 0.6); // 0.48
@@ -2805,10 +2778,7 @@ mod tests {
         let mut journal = Journal::default();
 
         journal.record(
-            JournalKey::Material {
-                seed: 42,
-                planet_seed: None,
-            },
+            JournalKey::MaterialInstance { seed: 42 },
             "Test Material",
             Observation {
                 category: ObservationCategory::ThermalBehavior,
@@ -2822,11 +2792,8 @@ mod tests {
 
         // Verify initial confidence
         let journal = app.world().entity(player_entity).get::<Journal>().unwrap();
-        let thermal_obs = &journal.entries[&JournalKey::Material {
-            seed: 42,
-            planet_seed: None,
-        }]
-            .observations[&ObservationCategory::ThermalBehavior][0];
+        let thermal_obs = &journal.entries[&JournalKey::MaterialInstance { seed: 42 }].observations
+            [&ObservationCategory::ThermalBehavior][0];
         assert_eq!(thermal_obs.confidence.0, 0.4);
 
         // Emit death event
@@ -2842,11 +2809,8 @@ mod tests {
         // Verify confidence was clamped to floor
         // Expected: 0.4 * 0.5 = 0.2, but floor is 0.3, so should be 0.3
         let journal = app.world().entity(player_entity).get::<Journal>().unwrap();
-        let thermal_obs = &journal.entries[&JournalKey::Material {
-            seed: 42,
-            planet_seed: None,
-        }]
-            .observations[&ObservationCategory::ThermalBehavior][0];
+        let thermal_obs = &journal.entries[&JournalKey::MaterialInstance { seed: 42 }].observations
+            [&ObservationCategory::ThermalBehavior][0];
 
         assert_eq!(thermal_obs.confidence.0, 0.3); // Clamped to floor
     }

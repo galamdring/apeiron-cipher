@@ -347,12 +347,19 @@ impl KnowledgeGraph {
     /// Returns `None` when no material with that seed exists in the graph yet.
     pub fn lookup_material_by_seed(&self, seed: u64) -> Option<NodeIndex> {
         self.concept_index.iter().find_map(|(id, &idx)| {
-            if matches!(&id.0, crate::journal::JournalKey::Material { seed: s, .. } if *s == seed) {
+            if matches!(&id.0, crate::journal::JournalKey::MaterialInstance { seed: s } if *s == seed) {
                 Some(idx)
             } else {
                 None
             }
         })
+    }
+
+    /// Returns the concept node at the given index, or `None` if the index
+    /// is invalid.  Exposes read-only access to node data without making
+    /// the internal `petgraph::Graph` field public.
+    pub fn node_weight(&self, idx: NodeIndex) -> Option<&ConceptNode> {
+        self.graph.node_weight(idx)
     }
 
     /// Mark a property as revealed on the given concept node.
@@ -560,16 +567,10 @@ fn update_knowledge_graph(
         graph.reveal_property(subject_node, category_name);
 
         // ── FoundOn edge ──────────────────────────────────────────────
-        // If this is a Material observation and the key carries a planet
-        // seed, wire a FoundOn edge from the material to the location concept.
-        if let crate::journal::JournalKey::Material {
-            planet_seed: Some(planet_seed),
-            ..
-        } = &obs.key
-        {
-            let location_key = crate::journal::JournalKey::Location {
-                planet_seed: *planet_seed,
-            };
+        // If the observation carries a planet_seed, wire a FoundOn edge
+        // from the material to the location concept.
+        if let Some(planet_seed) = obs.planet_seed {
+            let location_key = crate::journal::JournalKey::Location { planet_seed };
             let location_node =
                 graph.ensure_concept(ConceptId(location_key), ConceptCategory::Location, tick);
             graph.relate(
@@ -588,16 +589,11 @@ fn update_knowledge_graph(
         // input material that the player put into the fabricator.
         if matches!(&obs.key, crate::journal::JournalKey::Fabrication { .. }) {
             for &input_seed in &obs.input_seeds {
-                // Use the canonical node for this seed if it already exists in the
-                // graph (it may have planet_seed set from a prior observation). Falling
-                // back to planet_seed: None only for materials never yet registered.
                 let input_node = graph
                     .lookup_material_by_seed(input_seed)
                     .unwrap_or_else(|| {
-                        let input_key = crate::journal::JournalKey::Material {
-                            seed: input_seed,
-                            planet_seed: None,
-                        };
+                        let input_key =
+                            crate::journal::JournalKey::MaterialInstance { seed: input_seed };
                         graph.ensure_concept(ConceptId(input_key), ConceptCategory::Material, tick)
                     });
                 graph.relate(
@@ -625,17 +621,11 @@ fn update_knowledge_graph(
             let seed_b = obs.input_seeds[1];
 
             let node_a = graph.lookup_material_by_seed(seed_a).unwrap_or_else(|| {
-                let key = crate::journal::JournalKey::Material {
-                    seed: seed_a,
-                    planet_seed: None,
-                };
+                let key = crate::journal::JournalKey::MaterialInstance { seed: seed_a };
                 graph.ensure_concept(ConceptId(key), ConceptCategory::Material, tick)
             });
             let node_b = graph.lookup_material_by_seed(seed_b).unwrap_or_else(|| {
-                let key = crate::journal::JournalKey::Material {
-                    seed: seed_b,
-                    planet_seed: None,
-                };
+                let key = crate::journal::JournalKey::MaterialInstance { seed: seed_b };
                 graph.ensure_concept(ConceptId(key), ConceptCategory::Material, tick)
             });
 
@@ -676,7 +666,7 @@ fn update_knowledge_graph(
 /// declare the correct category.
 fn category_from_key(key: &crate::journal::JournalKey) -> ConceptCategory {
     match key {
-        crate::journal::JournalKey::Material { .. } => ConceptCategory::Material,
+        crate::journal::JournalKey::MaterialInstance { .. } => ConceptCategory::Material,
         crate::journal::JournalKey::Fabrication { .. } => ConceptCategory::Fabrication,
         crate::journal::JournalKey::Location { .. } => ConceptCategory::Location,
     }
@@ -728,13 +718,9 @@ pub fn detect_and_wire_similar_materials(
 
         // Both materials must be at Observed confidence or above before
         // we surface the similarity — connections must be earned.
-        let new_key = crate::journal::JournalKey::Material {
-            seed: new_seed,
-            planet_seed: None,
-        };
-        let existing_key = crate::journal::JournalKey::Material {
+        let new_key = crate::journal::JournalKey::MaterialInstance { seed: new_seed };
+        let existing_key = crate::journal::JournalKey::MaterialInstance {
             seed: existing.seed,
-            planet_seed: None,
         };
 
         let new_confident = is_at_least_observed(journal, &new_key);
@@ -800,14 +786,10 @@ fn is_at_least_observed(
     journal: &crate::journal::Journal,
     key: &crate::journal::JournalKey,
 ) -> bool {
-    // Check if any entry with this key (or same seed, any planet) has
-    // sufficient confidence. We search by seed for Material keys since
-    // planet_seed may differ between the stored entry and the lookup key.
     match key {
-        crate::journal::JournalKey::Material { seed, .. } => {
+        crate::journal::JournalKey::MaterialInstance { seed } => {
             journal.entries.values().any(|entry| {
-                // Match on seed regardless of planet_seed.
-                matches!(&entry.key, crate::journal::JournalKey::Material { seed: s, .. } if *s == *seed)
+                matches!(&entry.key, crate::journal::JournalKey::MaterialInstance { seed: s } if *s == *seed)
                     && entry.all_observations().any(|obs| obs.confidence.0 >= 0.3)
             })
         }
@@ -844,7 +826,7 @@ fn detect_similar_on_observation(
     let tick = time.elapsed().as_secs();
 
     for obs in reader.read() {
-        let crate::journal::JournalKey::Material { seed, .. } = obs.key else {
+        let crate::journal::JournalKey::MaterialInstance { seed } = obs.key else {
             continue;
         };
         let Some(material) = catalog.get_by_seed(seed) else {
@@ -870,10 +852,7 @@ mod tests {
     use crate::journal::JournalKey;
 
     fn mat_id(seed: u64) -> ConceptId {
-        ConceptId(JournalKey::Material {
-            seed,
-            planet_seed: None,
-        })
+        ConceptId(JournalKey::MaterialInstance { seed })
     }
 
     fn loc_id(planet_seed: u64) -> ConceptId {
@@ -1063,10 +1042,7 @@ mod tests {
     fn no_edge_when_no_planet_seed() {
         // Material key without planet_seed must not create a FoundOn edge.
         let mut graph = KnowledgeGraph::default();
-        let key = JournalKey::Material {
-            seed: 42,
-            planet_seed: None,
-        };
+        let key = JournalKey::MaterialInstance { seed: 42 };
         let subject = graph.ensure_concept(ConceptId(key.clone()), ConceptCategory::Material, 0);
         // Simulate what update_knowledge_graph does: only wire FoundOn when
         // planet_seed is Some. With None, no location node is created.

@@ -1287,7 +1287,7 @@ These are assessed through playtesting observation and player feedback — not t
 | Bevy engine + ecosystem crates | Game engine, ECS, rendering, audio | Bevy is pre-1.0; breaking changes between versions |
 | Rust compiler toolchain | Build system | Low risk — stable release channel |
 | GitHub | Source control, issue tracking, releases | Low risk |
-| Graphite | Stacked PR / branch management | Low risk — workflow tooling only |
+| GitHub Actions | CI, release automation, `@automation approve` squash-merge workflow | Low risk |
 
 No backend services required for single-player. Multiplayer networking stack (Ring 5, Epic 22) is a future technical decision with no current dependency.
 

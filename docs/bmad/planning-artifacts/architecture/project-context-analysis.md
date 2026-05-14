@@ -52,7 +52,7 @@ The GDD defines a procedurally generated open universe sandbox where knowledge i
 - 3 epics complete (A Room to Stand In, Things to Touch, Try and Learn) establishing baseline patterns
 - 46 coding rules already codified in `project-context.md` for AI agent consistency
 - n8n automation for GitHub issue lifecycle (labels as state machine)
-- Graphite for stacked PR/branch management
+- `develop` branch with story tags for playtest checkpoints; `@automation approve` triggers squash PR to `main`
 
 **Hard Constraints from project-context.md:**
 - No `unsafe` code

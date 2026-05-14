@@ -36,6 +36,7 @@ Load:
 - [System Scheduling & Ordering](./decisions/system-scheduling-ordering.md) — determinism enforcement, phase pipeline
 - [Material Seed Model](./cross-cutting/material-seed-model.md)
 - [Determinism Enforcement](./cross-cutting/determinism-enforcement.md)
+- [Material Identity & Knowledge Model ADR](./decisions/material-identity-and-knowledge-model.md) — type identity is query-time classification, not generation-time assignment; KnowledgeGraph as sole store
 
 ---
 
@@ -43,10 +44,11 @@ Load:
 
 Load:
 - [Authority Boundary Pattern](./decisions/authority-boundary-pattern.md) — diegetic outcome expression, journal event log, accretion test
-- [Data Architecture](./decisions/data-architecture.md) — knowledge graph, journal visualization layers
+- [Data Architecture](./decisions/data-architecture.md) — knowledge graph as sole store, journal as stateless query layer
 - [Asset Pipeline Conventions](./decisions/asset-pipeline-conventions.md) — if loading data files for UI
 - [Knowledge-Driven Presentation](./cross-cutting/knowledge-driven-presentation.md)
 - [Diegetic Feedback Contract](./cross-cutting/diegetic-feedback.md)
+- [Material Identity & Knowledge Model ADR](./decisions/material-identity-and-knowledge-model.md) — Journal does not store entries; queries KnowledgeGraph; inspect panel reads from KG node
 
 ---
 

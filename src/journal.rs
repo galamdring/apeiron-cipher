@@ -13,10 +13,11 @@ use leafwing_input_manager::prelude::*;
 use serde::{Deserialize, Serialize};
 use strum::IntoEnumIterator;
 
+use crate::diegetic_ui::{DiegeticFocusState, DiegeticSurface, DiegeticSurfaceKind};
 use crate::input::InputAction;
 use crate::observation::Confidence;
 use crate::player::{Player, cursor_is_captured, spawn_player};
-use crate::world_generation::{BiomeType, WorldProfile};
+use crate::world_generation::BiomeType;
 
 // ── Biome key type safety ──────────────────────────────────────────────
 
@@ -179,46 +180,35 @@ pub struct Observation {
 
 /// Unique key identifying a journal subject.
 ///
-/// Each variant encodes both the *type* of subject (material, fabrication
-/// output, etc.) and the identity that distinguishes one instance from
+/// Each variant encodes both the *type* of subject (material instance,
+/// fabrication output, etc.) and the identity that distinguishes one from
 /// another. The enum is intentionally non-exhaustive so future systems
-/// (navigation, trade, language) can add variants without breaking
-/// existing match arms.
+/// (navigation, trade, language, material classification) can add variants
+/// without breaking existing match arms.
+///
+/// # Material identity
+///
+/// `MaterialInstance` identifies a specific observed material entity by its
+/// generation seed. Planet of origin is carried on [`RecordObservation`] as
+/// context for the `FoundOn` KnowledgeGraph edge — not baked into the key.
+///
+/// A future `Material { classification: String }` variant will identify a
+/// material *type* (e.g. "iron") once asset-defined classification ranges
+/// exist. See `docs/bmad/planning-artifacts/architecture/decisions/material-identity-and-knowledge-model.md`.
 ///
 /// `Ord` is derived so that `JournalKey` can serve as a `BTreeMap` key,
 /// giving the journal a stable, deterministic iteration order.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum JournalKey {
-    /// A raw or discovered material, keyed by its procedural seed.
+    /// A specific observed material instance, keyed by its generation seed.
     ///
-    /// The optional `planet_seed` records the planet on which this
-    /// material was first observed, so context-aware filters
-    /// (Story 10.3 — "entries relevant to current planet") can match
-    /// entries against the player's [`WorldProfile::planet_seed`]
-    /// without re-deriving provenance from observation history.
-    ///
-    /// `planet_seed` is `None` for entries created in contexts where
-    /// no planetary world profile is in scope (early bring-up, ad-hoc
-    /// integration tests, future non-planetary discovery sites).
-    /// Treating it as `Option<u64>` rather than baking in a sentinel
-    /// keeps the "unknown provenance" case explicit at every match
-    /// site.
-    ///
-    /// Field ordering is `seed` then `planet_seed` so the derived
-    /// `Ord` continues to sort primarily by material identity — the
-    /// existing journal iteration order is preserved when
-    /// `planet_seed` is `None` everywhere, which matches the
-    /// pre-extension behaviour bit-for-bit.
-    Material {
-        /// The deterministic seed that uniquely identifies this material
-        /// within the world generation system.
+    /// All knowledge accumulated about this material — density, reactivity,
+    /// thermal response, sightings — is stored on the KnowledgeGraph node
+    /// identified by this key.  Planet of origin is recorded as a `FoundOn`
+    /// edge on that node, not as part of this key.
+    MaterialInstance {
+        /// The generation seed that uniquely identifies this material instance.
         seed: u64,
-        /// The planet on which this material was first observed, taken
-        /// from `WorldProfile::planet_seed.0` at observation time.
-        /// `None` indicates the recording site had no planetary context
-        /// available; such entries are excluded from
-        /// [`JournalContext::CurrentPlanet`] filtering.
-        planet_seed: Option<u64>,
     },
     /// The output of a fabrication process, keyed by the resulting
     /// material's seed.
@@ -243,30 +233,15 @@ pub enum JournalKey {
 }
 
 impl JournalKey {
-    /// Planet on which the subject identified by this key was first
-    /// observed, when that information is available.
+    /// Planet on which the subject identified by this key was observed,
+    /// when that information is available.
     ///
-    /// Returns `Some(seed)` for [`JournalKey::Material`] entries that
-    /// were recorded with a planetary world profile in scope, and `None`
-    /// for materials recorded without one (early bring-up, ad-hoc
-    /// integration tests, future non-planetary discovery sites).
-    ///
-    /// [`JournalKey::Fabrication`] entries return `None` because
-    /// fabrications are produced at the player's fabricator and are
-    /// intentionally not tied to a discovery planet — the same recipe
-    /// produces the same output regardless of where it was crafted.  The
-    /// "current planet" filter therefore intentionally hides
-    /// fabrications, which matches the player-mental-model of the
-    /// filter ("show me things tied to where I am") better than
-    /// pretending fabrications belong to whichever planet the player
-    /// happened to be standing on at craft time.
-    ///
-    /// Used by [`matches_filter`] to evaluate
-    /// [`JournalContext::CurrentPlanet`] without re-deriving provenance
-    /// from observation history.
+    /// `Location` keys return their planet seed directly. All other variants
+    /// return `None` — planet provenance for material instances is stored on
+    /// the KnowledgeGraph node as a `FoundOn` edge, not on the key.
     pub fn planet_seed(&self) -> Option<u64> {
         match self {
-            JournalKey::Material { planet_seed, .. } => *planet_seed,
+            JournalKey::MaterialInstance { .. } => None,
             JournalKey::Fabrication { .. } => None,
             JournalKey::Location { planet_seed } => Some(*planet_seed),
         }
@@ -406,7 +381,7 @@ pub fn matches_filter(entry: &JournalEntry, filter: &JournalFilter) -> bool {
 
     let context_match = filter.context.as_ref().is_none_or(|ctx| match ctx {
         JournalContext::CurrentPlanet { planet_seed } => {
-            entry.key.planet_seed() == Some(*planet_seed)
+            entry.origin_planet_seed == Some(*planet_seed)
         }
         // Biome provenance is not yet captured on JournalKey; until it
         // is, the biome filter is a no-op (matches everything) rather
@@ -486,9 +461,12 @@ impl Plugin for JournalPlugin {
                     toggle_journal_visibility
                         .in_set(JournalSet::Navigate)
                         .after(emit_toggle_journal_intent),
-                    journal_navigation
+                    sync_journal_ui_state_from_focus
                         .in_set(JournalSet::Navigate)
                         .after(toggle_journal_visibility),
+                    journal_navigation
+                        .in_set(JournalSet::Navigate)
+                        .after(sync_journal_ui_state_from_focus),
                     update_journal_context_on_planet_change
                         .in_set(JournalSet::Navigate)
                         .after(journal_navigation),
@@ -518,15 +496,15 @@ impl Plugin for JournalPlugin {
 /// **Planet seed handling:** For [`JournalKey::Material`] observations,
 /// the `planet_seed` field is automatically resolved by the ingestion
 /// system from the current [`WorldProfile`] resource. Observation producers
-/// should pass `planet_seed: None` and let the system fill it in centrally.
-/// This eliminates the need for every observation site to manually extract
-/// `world_profile.as_deref().map(|p| p.planet_seed.0)` and prevents silent
-/// failures when new observation sites forget this pattern.
+/// Message sent by any game system to record a player observation.
 ///
-/// **Cross-reference metadata:** The `input_seeds` and `context_location`
-/// fields are optional metadata consumed by the knowledge graph system
-/// (Story 10.5) to wire typed relationship edges. Journal ingestion ignores
-/// these fields — they are purely for the graph wiring layer.
+/// The knowledge graph system wires `FoundOn` and `ObservedAt` edges from
+/// the `planet_seed` and `context_location` fields respectively.
+/// Journal ingestion ignores both — they are purely for graph wiring.
+///
+/// **Cross-reference metadata:** The `input_seeds` field is optional
+/// metadata consumed by the knowledge graph system to wire `DerivedFrom`
+/// edges for fabrication observations.
 #[derive(Message, Clone)]
 pub struct RecordObservation {
     /// Which journal subject this observation belongs to.
@@ -538,20 +516,24 @@ pub struct RecordObservation {
     /// The observation payload including category, confidence, description,
     /// and game-time tick.
     pub observation: Observation,
+    /// Planet on which this observation was made.
+    ///
+    /// When `Some`, the knowledge graph system wires a `FoundOn` edge from
+    /// the observed subject to the corresponding location concept.  Callers
+    /// that don't have planetary context (integration tests, fabrication)
+    /// leave this `None`.
+    pub planet_seed: Option<u64>,
     /// For fabrication observations: seeds of the input materials that were
     /// combined to produce the output. The knowledge graph system uses these
     /// to wire `DerivedFrom` edges from the output concept to each input.
     ///
-    /// Empty for non-fabrication observations. The journal ingestion system
-    /// ignores this field entirely.
+    /// Empty for non-fabrication observations.
     pub input_seeds: Vec<u64>,
     /// Optional location context where this observation was made.
     ///
     /// When `Some`, the knowledge graph system wires an `ObservedAt` edge
     /// from the observed subject to this location concept. Callers that
     /// don't have explicit location context leave this `None`.
-    ///
-    /// The journal ingestion system ignores this field entirely.
     pub context_location: Option<JournalKey>,
 }
 
@@ -570,11 +552,15 @@ pub struct JournalEntry {
     pub key: JournalKey,
     /// Player-facing display name for this subject.
     pub name: String,
-    /// Observations grouped by category, each group in chronological order.
+    /// Planet on which this material instance was first observed.
     ///
-    /// Using a `BTreeMap` gives deterministic iteration order over categories
-    /// (important for rendering stability and save/load reproducibility).
-    /// Within each category the `Vec` preserves insertion (chronological) order.
+    /// Populated from [`GameMaterial::origin_planet_seed`] on first
+    /// `RecordObservation` for this entry. Used by the `CurrentPlanet`
+    /// filter while the full KnowledgeGraph query layer is pending
+    /// (follow-on epic). `None` for fabricated materials and entries
+    /// recorded without planetary context.
+    pub origin_planet_seed: Option<u64>,
+    /// Observations grouped by category, each group in chronological order.
     pub observations: BTreeMap<ObservationCategory, Vec<Observation>>,
     /// Game-time tick when the player first recorded *any* observation about
     /// this subject.
@@ -593,6 +579,7 @@ impl JournalEntry {
         Self {
             key,
             name,
+            origin_planet_seed: None,
             observations: BTreeMap::new(),
             first_observed_at: tick,
             last_updated_at: tick,
@@ -1152,6 +1139,27 @@ fn spawn_journal_ui(mut commands: Commands) {
     commands
         .spawn((
             JournalPanel,
+            // ── Diegetic surface registration (Story 10.6) ───────────────
+            //
+            // The journal is an in-world datapad the player holds up to read,
+            // not a HUD overlay.  Attaching these three components registers it
+            // with the DiegeticUiPlugin:
+            //   • DiegeticSurface  — marks it as a diegetic information surface
+            //     so the CI compliance test can verify no rogue screen-space text exists.
+            //   • DiegeticSurfaceKind::Readable — declares interaction model.
+            //     The player "holds up" the datapad (Active state); physical distance
+            //     does not drive focus here because the journal is always on the player.
+            //     The ranges are set to 0.0 so proximity logic collapses to Focused
+            //     the moment the entity exists — actual open/close is managed by
+            //     toggle_journal_datapad_focus below.
+            //   • DiegeticFocusState::OutOfRange — journal starts closed.
+            DiegeticSurface,
+            DiegeticSurfaceKind::Readable {
+                perceivable_range: 0.0,
+                legible_range: 0.0,
+            },
+            DiegeticFocusState::OutOfRange,
+            // ─────────────────────────────────────────────────────────────
             Node {
                 position_type: PositionType::Absolute,
                 top: Val::Px(24.0),
@@ -1272,9 +1280,14 @@ fn spawn_journal_ui(mut commands: Commands) {
 
 fn emit_toggle_journal_intent(
     player_query: Query<&ActionState<InputAction>, With<Player>>,
-    cursor_options: Single<&bevy::window::CursorOptions>,
+    cursor_options: Option<Single<&bevy::window::CursorOptions>>,
     mut writer: MessageWriter<ToggleJournalIntent>,
 ) {
+    // If no window entity exists (e.g. headless integration tests), the journal
+    // cannot receive input — skip gracefully.
+    let Some(cursor_options) = cursor_options else {
+        return;
+    };
     if !cursor_is_captured(cursor_options.grab_mode) {
         return;
     }
@@ -1289,11 +1302,38 @@ fn emit_toggle_journal_intent(
 
 fn toggle_journal_visibility(
     mut reader: MessageReader<ToggleJournalIntent>,
-    mut state: ResMut<JournalUiState>,
+    mut panel_query: Query<&mut DiegeticFocusState, With<JournalPanel>>,
 ) {
     for _ in reader.read() {
-        state.visible = !state.visible;
+        let Ok(mut focus) = panel_query.single_mut() else {
+            continue;
+        };
+        // Toggle the journal datapad between Active (open) and OutOfRange (closed).
+        // DiegeticUiPlugin's VisibilitySync will flip the Visibility component;
+        // sync_journal_ui_state_from_focus keeps JournalUiState.visible in lockstep.
+        *focus = match *focus {
+            DiegeticFocusState::Active => DiegeticFocusState::OutOfRange,
+            _ => DiegeticFocusState::Active,
+        };
     }
+}
+
+/// Keeps [`JournalUiState::visible`] in lockstep with the journal panel's
+/// [`DiegeticFocusState`].
+///
+/// All existing journal systems (navigation, compute, sync) gate on
+/// `JournalUiState::visible` — this bridge system means none of them need
+/// to know about the diegetic framework.  It runs in [`JournalSet::Navigate`]
+/// before navigation so that `compute_journal_panels` always sees a
+/// consistent `visible` flag.
+fn sync_journal_ui_state_from_focus(
+    panel_query: Query<&DiegeticFocusState, With<JournalPanel>>,
+    mut state: ResMut<JournalUiState>,
+) {
+    let Ok(focus) = panel_query.single() else {
+        return;
+    };
+    state.visible = matches!(focus, DiegeticFocusState::Active);
 }
 
 // ── Navigation ──────────────────────────────────────────────────────────
@@ -1606,45 +1646,39 @@ pub(crate) fn apply_observations(
     time: Res<Time>,
     config: Res<crate::observation::ConfidenceConfig>,
     death_context: Option<Res<crate::observation::DeathContext>>,
-    world_profile: Option<Res<WorldProfile>>,
 ) {
     let Ok(mut journal) = player_query.single_mut() else {
         return;
     };
 
     let tick = time.elapsed().as_millis() as u64;
-    let current_planet_seed = world_profile.as_deref().map(|p| p.planet_seed.0);
 
     for event in reader.read() {
         let mut obs = event.observation.clone();
         obs.recorded_at = tick;
 
-        // Automatically resolve planet_seed for Material observations if not already set
-        let key = match &event.key {
-            JournalKey::Material {
-                seed,
-                planet_seed: None,
-            } => JournalKey::Material {
-                seed: *seed,
-                planet_seed: current_planet_seed,
-            },
-            key => key.clone(),
-        };
-
         // Calculate recovery multiplier based on death context
         let recovery_multiplier = if let Some(death_ctx) = &death_context {
             death_ctx.recovery_multiplier(&obs.category, tick, &config)
         } else {
-            1.0 // No death context, use base rate
+            1.0
         };
 
         journal.record_with_domain_weighted_accumulation(
-            key,
+            event.key.clone(),
             &event.name,
             obs,
             &config,
             recovery_multiplier,
         );
+
+        // Stamp origin_planet_seed on first encounter so CurrentPlanet filter works.
+        if let Some(planet_seed) = event.planet_seed
+            && let Some(entry) = journal.entries.get_mut(&event.key)
+            && entry.origin_planet_seed.is_none()
+        {
+            entry.origin_planet_seed = Some(planet_seed);
+        }
     }
 }
 
@@ -2011,7 +2045,6 @@ fn sync_journal_ui(
     state: Res<JournalUiState>,
     cache: Res<JournalRenderCache>,
     mut commands: Commands,
-    mut panel_query: Query<&mut Visibility, With<JournalPanel>>,
     list_query: Query<(Entity, Option<&Children>), With<JournalEntryListText>>,
     detail_query: Query<(Entity, Option<&Children>), With<JournalDetailText>>,
     mut texts: ParamSet<(
@@ -2021,16 +2054,12 @@ fn sync_journal_ui(
         Query<&mut Text, With<JournalHelpText>>,
     )>,
 ) {
-    let Ok(mut panel_vis) = panel_query.single_mut() else {
-        return;
-    };
-
+    // Visibility is now managed by DiegeticUiPlugin::sync_readable_surface_visibility.
+    // This system only updates text content; it skips work when the journal is not
+    // visible to avoid rebuilding TextSpan trees every frame while closed.
     if !state.visible {
-        *panel_vis = Visibility::Hidden;
         return;
     }
-
-    *panel_vis = Visibility::Visible;
 
     // ── Entry list: rebuild TextSpan children for per-line coloring ──
     //
