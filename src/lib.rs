@@ -67,7 +67,7 @@ pub fn add_game_plugins(app: &mut App) {
         .add_plugins(observation::ObservationPlugin)
         // Journal: player-owned record of observations and fabrication history.
         .add_plugins(journal::JournalPlugin)
-        // Knowledge graph: typed cross-reference edges between journal concepts (Story 10.5).
+        // Knowledge graph: cross-reference system linking journal entries.
         .add_plugins(knowledge_graph::KnowledgeGraphPlugin)
         // Solar system: deterministic star/orbital/planet derivation from system seed.
         .add_plugins(solar_system::SolarSystemPlugin)

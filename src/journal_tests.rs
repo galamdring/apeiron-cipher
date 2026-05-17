@@ -2334,6 +2334,8 @@ fn entry_list_shows_selected_entry_with_prefix() {
         scroll_offset: 0,
         entries_per_page: 15,
         filter: JournalFilter::default(),
+        selected_link_index: None,
+        navigation_stack: JournalNavigationStack::new(),
     };
 
     let list = build_entry_list_text(&entries, &state);
@@ -2417,6 +2419,8 @@ fn detail_shows_selected_entry_observations() {
         scroll_offset: 0,
         entries_per_page: 15,
         filter: JournalFilter::default(),
+        selected_link_index: None,
+        navigation_stack: JournalNavigationStack::new(),
     };
 
     let detail = detail_spans_to_string(&build_detail_spans(&entries, &state, true));
@@ -2489,6 +2493,8 @@ fn detail_spans_have_correct_kinds() {
         scroll_offset: 0,
         entries_per_page: 15,
         filter: JournalFilter::default(),
+        selected_link_index: None,
+        navigation_stack: JournalNavigationStack::new(),
     };
 
     let spans = build_detail_spans(&entries, &state, true);
@@ -2582,6 +2588,8 @@ fn detail_panel_shows_correct_observations_for_selected_entry() {
         scroll_offset: 0,
         entries_per_page: 15,
         filter: JournalFilter::default(),
+        selected_link_index: None,
+        navigation_stack: JournalNavigationStack::new(),
     };
     let detail = detail_spans_to_string(&build_detail_spans(&entries, &state, true));
     assert!(detail.contains("Ferrite"), "header should be Ferrite");
@@ -2605,6 +2613,8 @@ fn detail_panel_shows_correct_observations_for_selected_entry() {
         scroll_offset: 0,
         entries_per_page: 15,
         filter: JournalFilter::default(),
+        selected_link_index: None,
+        navigation_stack: JournalNavigationStack::new(),
     };
     let detail = detail_spans_to_string(&build_detail_spans(&entries, &state, true));
     assert!(detail.contains("Neoite"), "header should be Neoite");
@@ -2628,6 +2638,8 @@ fn detail_panel_shows_correct_observations_for_selected_entry() {
         scroll_offset: 0,
         entries_per_page: 15,
         filter: JournalFilter::default(),
+        selected_link_index: None,
+        navigation_stack: JournalNavigationStack::new(),
     };
     let detail = detail_spans_to_string(&build_detail_spans(&entries, &state, true));
     assert!(detail.contains("Silite"), "header should be Silite");
@@ -2712,6 +2724,8 @@ fn detail_panel_shows_all_observations_for_multi_category_entry() {
         scroll_offset: 0,
         entries_per_page: 15,
         filter: JournalFilter::default(),
+        selected_link_index: None,
+        navigation_stack: JournalNavigationStack::new(),
     };
     let spans = build_detail_spans(&entries, &state, true);
     let detail = detail_spans_to_string(&spans);
@@ -2751,6 +2765,8 @@ fn navigation_clamp_up_from_first_stays_at_first() {
         scroll_offset: 0,
         entries_per_page: 15,
         filter: JournalFilter::default(),
+        selected_link_index: None,
+        navigation_stack: JournalNavigationStack::new(),
     };
     // Simulate pressing up — selection would go to saturating_sub(1) = 0.
     state.selected_index = state.selected_index.saturating_sub(1);
@@ -2766,6 +2782,8 @@ fn navigation_clamp_down_from_last_stays_at_last() {
         scroll_offset: 0,
         entries_per_page: 15,
         filter: JournalFilter::default(),
+        selected_link_index: None,
+        navigation_stack: JournalNavigationStack::new(),
     };
     state.selected_index = (state.selected_index + 1).min(4);
     state.clamp_to_entry_count(5);
@@ -2780,6 +2798,8 @@ fn scroll_offset_adjusts_when_selection_moves_past_visible_range() {
         scroll_offset: 0,
         entries_per_page: 3,
         filter: JournalFilter::default(),
+        selected_link_index: None,
+        navigation_stack: JournalNavigationStack::new(),
     };
     // Move selection to index 4 (past the 3-entry window).
     state.selected_index = 4;
@@ -2800,6 +2820,8 @@ fn scroll_offset_adjusts_when_selection_moves_above_visible_range() {
         scroll_offset: 3,
         entries_per_page: 3,
         filter: JournalFilter::default(),
+        selected_link_index: None,
+        navigation_stack: JournalNavigationStack::new(),
     };
     state.clamp_to_entry_count(10);
     assert_eq!(
@@ -2816,6 +2838,8 @@ fn page_down_moves_selection_by_entries_per_page() {
         scroll_offset: 0,
         entries_per_page: 5,
         filter: JournalFilter::default(),
+        selected_link_index: None,
+        navigation_stack: JournalNavigationStack::new(),
     };
     // Simulate PageDown: advance by entries_per_page.
     state.selected_index = (state.selected_index + state.entries_per_page).min(20 - 1);
@@ -2833,6 +2857,8 @@ fn page_down_clamps_to_last_entry() {
         scroll_offset: 5,
         entries_per_page: 5,
         filter: JournalFilter::default(),
+        selected_link_index: None,
+        navigation_stack: JournalNavigationStack::new(),
     };
     let entry_count = 10;
     // PageDown from index 8 with page size 5 would overshoot — should clamp to 9.
@@ -2849,6 +2875,8 @@ fn page_up_moves_selection_by_entries_per_page() {
         scroll_offset: 10,
         entries_per_page: 5,
         filter: JournalFilter::default(),
+        selected_link_index: None,
+        navigation_stack: JournalNavigationStack::new(),
     };
     // Simulate PageUp: go back by entries_per_page.
     state.selected_index = state.selected_index.saturating_sub(state.entries_per_page);
@@ -2867,6 +2895,8 @@ fn page_up_clamps_to_first_entry() {
         scroll_offset: 0,
         entries_per_page: 5,
         filter: JournalFilter::default(),
+        selected_link_index: None,
+        navigation_stack: JournalNavigationStack::new(),
     };
     // PageUp from index 2 with page size 5 would underflow — saturating_sub clamps to 0.
     state.selected_index = state.selected_index.saturating_sub(state.entries_per_page);
@@ -2883,6 +2913,8 @@ fn home_jumps_to_first_entry() {
         scroll_offset: 30,
         entries_per_page: 15,
         filter: JournalFilter::default(),
+        selected_link_index: None,
+        navigation_stack: JournalNavigationStack::new(),
     };
     // Simulate Home key — sets selected_index to 0.
     state.selected_index = 0;
@@ -2899,6 +2931,8 @@ fn end_jumps_to_last_entry() {
         scroll_offset: 0,
         entries_per_page: 15,
         filter: JournalFilter::default(),
+        selected_link_index: None,
+        navigation_stack: JournalNavigationStack::new(),
     };
     let entry_count = 50;
     // Simulate End key — sets selected_index to last entry.
@@ -2917,6 +2951,8 @@ fn page_down_adjusts_scroll_offset_past_visible_range() {
         scroll_offset: 0,
         entries_per_page: 3,
         filter: JournalFilter::default(),
+        selected_link_index: None,
+        navigation_stack: JournalNavigationStack::new(),
     };
     // PageDown jumps selection to index 3, which is outside window [0..3).
     state.selected_index = (state.selected_index + state.entries_per_page).min(10 - 1);
@@ -2936,6 +2972,8 @@ fn clamp_to_entry_count_zero_entries() {
         scroll_offset: 3,
         entries_per_page: 15,
         filter: JournalFilter::default(),
+        selected_link_index: None,
+        navigation_stack: JournalNavigationStack::new(),
     };
     state.clamp_to_entry_count(0);
     assert_eq!(state.selected_index, 0);
@@ -2957,6 +2995,8 @@ fn entry_list_respects_scroll_offset_and_page_size() {
         scroll_offset: 3,
         entries_per_page: 5,
         filter: JournalFilter::default(),
+        selected_link_index: None,
+        navigation_stack: JournalNavigationStack::new(),
     };
 
     let list = build_entry_list_text(&entries, &state);
@@ -2977,8 +3017,10 @@ fn help_text_shows_page_indicator() {
         scroll_offset: 0,
         entries_per_page: 15,
         filter: JournalFilter::default(),
+        selected_link_index: None,
+        navigation_stack: JournalNavigationStack::new(),
     };
-    let help = build_help_text(42, &state, 0);
+    let help = build_help_text(42, &state);
     assert!(
         help.contains("[1-15 of 42]"),
         "help should show page indicator, got: {help}"
@@ -2988,7 +3030,7 @@ fn help_text_shows_page_indicator() {
 #[test]
 fn help_text_empty_journal() {
     let state = JournalUiState::default();
-    let help = build_help_text(0, &state, 0);
+    let help = build_help_text(0, &state);
     assert!(help.contains("J: Close"), "help should show close hint");
     assert!(
         !help.contains("Navigate"),
@@ -3011,6 +3053,8 @@ fn two_panel_rendering_100_plus_entries_does_not_panic() {
         scroll_offset: 0,
         entries_per_page: 15,
         filter: JournalFilter::default(),
+        selected_link_index: None,
+        navigation_stack: JournalNavigationStack::new(),
     };
     state.clamp_to_entry_count(entries.len());
 
@@ -3018,7 +3062,7 @@ fn two_panel_rendering_100_plus_entries_does_not_panic() {
     assert!(!list.is_empty());
     let detail = build_detail_spans(&entries, &state, true);
     assert!(!detail.is_empty());
-    let help = build_help_text(entries.len(), &state, 0);
+    let help = build_help_text(entries.len(), &state);
     assert!(help.contains("of 120"));
 }
 
@@ -3119,6 +3163,8 @@ fn correct_entries_shown_for_given_scroll_offset() {
         scroll_offset: 0,
         entries_per_page: 3,
         filter: JournalFilter::default(),
+        selected_link_index: None,
+        navigation_stack: JournalNavigationStack::new(),
     };
     let lines = build_entry_list_lines(&entries, &state);
     assert_eq!(lines.len(), 3);
@@ -3133,6 +3179,8 @@ fn correct_entries_shown_for_given_scroll_offset() {
         scroll_offset: 4,
         entries_per_page: 3,
         filter: JournalFilter::default(),
+        selected_link_index: None,
+        navigation_stack: JournalNavigationStack::new(),
     };
     let lines = build_entry_list_lines(&entries, &state);
     assert_eq!(lines.len(), 3);
@@ -3163,6 +3211,8 @@ fn correct_entries_shown_for_given_scroll_offset() {
         scroll_offset: 8,
         entries_per_page: 3,
         filter: JournalFilter::default(),
+        selected_link_index: None,
+        navigation_stack: JournalNavigationStack::new(),
     };
     let lines = build_entry_list_lines(&entries, &state);
     assert_eq!(
@@ -3183,6 +3233,8 @@ fn toggle_close_reopen_preserves_selection_and_scroll() {
         scroll_offset: 3,
         entries_per_page: 15,
         filter: JournalFilter::default(),
+        selected_link_index: None,
+        navigation_stack: JournalNavigationStack::new(),
     };
 
     // Toggle closed.
@@ -3210,6 +3262,8 @@ fn toggle_visibility_system_preserves_navigation_state() {
         scroll_offset: 3,
         entries_per_page: 15,
         filter: JournalFilter::default(),
+        selected_link_index: None,
+        navigation_stack: JournalNavigationStack::new(),
     });
     app.add_systems(Update, toggle_journal_visibility);
 
@@ -3267,6 +3321,8 @@ fn navigation_ignored_when_journal_is_hidden() {
         scroll_offset: 0,
         entries_per_page: 15,
         filter: JournalFilter::default(),
+        selected_link_index: None,
+        navigation_stack: JournalNavigationStack::new(),
     });
     app.add_systems(Update, journal_navigation);
 
@@ -3321,6 +3377,8 @@ fn navigation_active_when_journal_is_visible() {
         scroll_offset: 0,
         entries_per_page: 15,
         filter: JournalFilter::default(),
+        selected_link_index: None,
+        navigation_stack: JournalNavigationStack::new(),
     });
     app.add_systems(Update, journal_navigation);
 
@@ -3373,6 +3431,8 @@ fn navigation_first_to_last_entry() {
         scroll_offset: 0,
         entries_per_page: 15,
         filter: JournalFilter::default(),
+        selected_link_index: None,
+        navigation_stack: JournalNavigationStack::new(),
     });
     app.add_systems(Update, journal_navigation);
 
@@ -3493,6 +3553,8 @@ fn navigation_bounds_single_entry_journal() {
         scroll_offset: 0,
         entries_per_page: 15,
         filter: JournalFilter::default(),
+        selected_link_index: None,
+        navigation_stack: JournalNavigationStack::new(),
     });
     app.add_systems(Update, journal_navigation);
 
@@ -3558,6 +3620,8 @@ fn navigation_bounds_page_keys_at_extremes() {
         scroll_offset: 0,
         entries_per_page: 5,
         filter: JournalFilter::default(),
+        selected_link_index: None,
+        navigation_stack: JournalNavigationStack::new(),
     });
     app.add_systems(Update, journal_navigation);
 
@@ -3637,6 +3701,8 @@ fn clamp_corrects_out_of_range_selected_index() {
         scroll_offset: 20,
         entries_per_page: 5,
         filter: JournalFilter::default(),
+        selected_link_index: None,
+        navigation_stack: JournalNavigationStack::new(),
     };
     state.clamp_to_entry_count(10);
     assert_eq!(
@@ -3681,6 +3747,8 @@ fn navigation_never_exceeds_bounds_under_key_sequence() {
         scroll_offset: 0,
         entries_per_page,
         filter: JournalFilter::default(),
+        selected_link_index: None,
+        navigation_stack: JournalNavigationStack::new(),
     });
     app.add_systems(Update, journal_navigation);
 
@@ -3803,6 +3871,8 @@ fn make_panel_app(initial_entries_per_page: usize) -> App {
         scroll_offset: 0,
         entries_per_page: initial_entries_per_page,
         filter: JournalFilter::default(),
+        selected_link_index: None,
+        navigation_stack: JournalNavigationStack::new(),
     });
     app.add_systems(Update, compute_journal_panels);
     app.world_mut()
@@ -4896,6 +4966,8 @@ fn shift_tab_cycles_context_filter() {
         scroll_offset: 0,
         entries_per_page: 15,
         filter: JournalFilter::default(),
+        selected_link_index: None,
+        navigation_stack: JournalNavigationStack::new(),
     });
     app.add_systems(Update, journal_navigation);
 
@@ -5026,6 +5098,8 @@ fn tab_cycles_category_filter() {
         scroll_offset: 0,
         entries_per_page: 15,
         filter: JournalFilter::default(),
+        selected_link_index: None,
+        navigation_stack: JournalNavigationStack::new(),
     });
     app.add_systems(Update, journal_navigation);
 
@@ -5217,8 +5291,10 @@ fn help_text_shows_context_filter_hint_and_status() {
         scroll_offset: 0,
         entries_per_page: 15,
         filter: JournalFilter::default(),
+        selected_link_index: None,
+        navigation_stack: JournalNavigationStack::new(),
     };
-    let help_all = build_help_text(10, &state_all, 0);
+    let help_all = build_help_text(10, &state_all);
     assert!(
         help_all.contains("Shift+Tab: Context Filter"),
         "help should show Shift+Tab hint, got: {help_all}"
@@ -5237,8 +5313,10 @@ fn help_text_shows_context_filter_hint_and_status() {
             category: None,
             context: Some(JournalContext::CurrentPlanet { planet_seed: 42 }),
         },
+        selected_link_index: None,
+        navigation_stack: JournalNavigationStack::new(),
     };
-    let help_planet = build_help_text(10, &state_planet, 0);
+    let help_planet = build_help_text(10, &state_planet);
     assert!(
         help_planet.contains("Shift+Tab: Context Filter"),
         "help should show Shift+Tab hint with filter active, got: {help_planet}"
@@ -5257,8 +5335,10 @@ fn help_text_shows_context_filter_hint_and_status() {
             category: Some(ObservationCategory::SurfaceAppearance),
             context: Some(JournalContext::CurrentPlanet { planet_seed: 42 }),
         },
+        selected_link_index: None,
+        navigation_stack: JournalNavigationStack::new(),
     };
-    let help_combined = build_help_text(10, &state_combined, 0);
+    let help_combined = build_help_text(10, &state_combined);
     assert!(
         help_combined.contains("[Filter: Category | Current Planet]"),
         "help should show combined filter status, got: {help_combined}"
@@ -5347,6 +5427,8 @@ fn empty_journal_with_filter_shows_no_observations_yet() {
         scroll_offset: 0,
         entries_per_page: 15,
         filter: JournalFilter::default(),
+        selected_link_index: None,
+        navigation_stack: JournalNavigationStack::new(),
     });
     app.add_systems(Update, journal_navigation);
 
@@ -5995,6 +6077,8 @@ fn journal_entry_shows_confident_language_after_sufficient_observations() {
         scroll_offset: 0,
         entries_per_page: 15,
         filter: JournalFilter::default(),
+        selected_link_index: None,
+        navigation_stack: JournalNavigationStack::new(),
     };
 
     let detail_spans = build_detail_spans(&entries, &state, true);
@@ -6054,7 +6138,6 @@ fn language_in_journal_regresses_after_death_and_recovers_with_new_observations(
         domain_recovery_multiplier: 2.0,
         passive_recovery_multiplier: 0.8,
         base_observation_weight: 0.25, // Reasonable accumulation rate
-        similarity_threshold: 0.85,
     };
 
     // ── Phase 1: Establish confident language ──────────────────────────────
@@ -6325,5 +6408,506 @@ fn language_in_journal_regresses_after_death_and_recovers_with_new_observations(
         final_weight_desc.contains("among the"),
         "Weight language should have recovered to confident: '{}'",
         final_weight_desc
+    );
+}
+
+// ── Cross-reference link navigation tests ───────────────────────────────
+
+#[test]
+fn navigation_stack_push_and_pop() {
+    let mut stack = JournalNavigationStack::new();
+    assert!(!stack.can_go_back(), "empty stack has no history");
+
+    let key_a = JournalKey::Material {
+        seed: 1,
+        planet_seed: None,
+    };
+    let key_b = JournalKey::Material {
+        seed: 2,
+        planet_seed: None,
+    };
+
+    stack.push(key_a.clone());
+    assert!(stack.can_go_back());
+
+    stack.push(key_b.clone());
+    assert_eq!(stack.pop(), Some(key_b));
+    assert_eq!(stack.pop(), Some(key_a));
+    assert_eq!(stack.pop(), None);
+    assert!(!stack.can_go_back());
+}
+
+#[test]
+fn navigation_stack_respects_max_depth() {
+    let mut stack = JournalNavigationStack {
+        history: Vec::new(),
+        max_depth: 3,
+    };
+
+    for seed in 0..5u64 {
+        stack.push(JournalKey::Material {
+            seed,
+            planet_seed: None,
+        });
+    }
+
+    // Only the last 3 entries should remain.
+    assert_eq!(stack.history.len(), 3);
+    // The oldest retained entry should be seed=2.
+    assert_eq!(
+        stack.history[0],
+        JournalKey::Material {
+            seed: 2,
+            planet_seed: None
+        }
+    );
+}
+
+#[test]
+fn selected_link_index_defaults_to_none() {
+    let state = JournalUiState::default();
+    assert_eq!(state.selected_link_index(), None);
+    assert!(!state.can_go_back());
+}
+
+#[test]
+fn cross_reference_link_selected_span_kind_is_distinct() {
+    // Verify that CrossReferenceLinkSelected is a distinct variant from
+    // CrossReferenceLink so the renderer can apply a different color.
+    assert_ne!(
+        DetailSpanKind::CrossReferenceLinkSelected,
+        DetailSpanKind::CrossReferenceLink
+    );
+}
+
+#[test]
+fn help_text_shows_link_hints_when_link_focused() {
+    let mut state = JournalUiState {
+        visible: true,
+        selected_index: 0,
+        scroll_offset: 0,
+        entries_per_page: 15,
+        filter: JournalFilter::default(),
+        selected_link_index: Some(0),
+        navigation_stack: JournalNavigationStack::new(),
+    };
+
+    let help = build_help_text(5, &state);
+    assert!(
+        help.contains("Enter: Follow"),
+        "help should show Enter hint when link focused, got: {help}"
+    );
+    assert!(
+        help.contains("Move link"),
+        "help should show move-link hint when link focused, got: {help}"
+    );
+
+    // With navigation history, Backspace hint should appear.
+    state.navigation_stack.push(JournalKey::Material {
+        seed: 1,
+        planet_seed: None,
+    });
+    let help_with_back = build_help_text(5, &state);
+    assert!(
+        help_with_back.contains("Backspace"),
+        "help should show Backspace hint when history exists, got: {help_with_back}"
+    );
+}
+
+#[test]
+fn help_text_shows_back_hint_when_history_exists() {
+    let mut state = JournalUiState {
+        visible: true,
+        selected_index: 0,
+        scroll_offset: 0,
+        entries_per_page: 15,
+        filter: JournalFilter::default(),
+        selected_link_index: None,
+        navigation_stack: JournalNavigationStack::new(),
+    };
+
+    // No history — no back hint.
+    let help_no_back = build_help_text(5, &state);
+    assert!(
+        !help_no_back.contains("Backspace: Back"),
+        "help should not show back hint when no history, got: {help_no_back}"
+    );
+
+    // With history — back hint appears.
+    state.navigation_stack.push(JournalKey::Material {
+        seed: 1,
+        planet_seed: None,
+    });
+    let help_with_back = build_help_text(5, &state);
+    assert!(
+        help_with_back.contains("Backspace: Back"),
+        "help should show back hint when history exists, got: {help_with_back}"
+    );
+}
+
+/// Cross-reference links appear in the detail panel render cache when the
+/// selected journal entry has relationships in the `KnowledgeGraph`.
+///
+/// Setup:
+///   - Two journal entries: "Ignium" (Material seed=1) and "Volcanic Plains"
+///     (Location planet_seed=42).
+///   - A `FoundOn` edge from Ignium → Volcanic Plains in the KnowledgeGraph.
+///   - Journal is visible with Ignium selected (index 0, alphabetically first).
+///
+/// Expected: after running `compute_journal_panels` then
+/// `append_cross_reference_spans`, the render cache contains at least one
+/// `CrossReferenceLink` span whose text includes "Found on" and "Volcanic
+/// Plains".
+#[test]
+fn cross_reference_links_appear_for_entries_with_relationships() {
+    use crate::knowledge_graph::{
+        ConceptCategory, ConceptEdge, ConceptId, KnowledgeGraph, RelationshipType,
+    };
+
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins);
+    app.init_resource::<JournalRenderCache>();
+    app.init_resource::<JournalSelectionTracker>();
+    app.init_resource::<KnowledgeGraph>();
+    app.insert_resource(JournalUiState {
+        visible: true,
+        selected_index: 0,
+        scroll_offset: 0,
+        entries_per_page: 15,
+        filter: JournalFilter::default(),
+        selected_link_index: None,
+        navigation_stack: JournalNavigationStack::new(),
+    });
+    app.add_systems(
+        Update,
+        (
+            compute_journal_panels,
+            append_cross_reference_spans.after(compute_journal_panels),
+        ),
+    );
+
+    // Spawn a player with a journal containing two entries.
+    let material_key = JournalKey::Material {
+        seed: 1,
+        planet_seed: None,
+    };
+    // JournalKey has no Location variant yet; represent a location concept
+    // using a Material key with a planet_seed (same convention as knowledge_graph tests).
+    let location_key = JournalKey::Material {
+        seed: 42,
+        planet_seed: Some(42),
+    };
+
+    app.world_mut().spawn((
+        Player,
+        {
+            let mut journal = Journal::default();
+            journal.record(
+                material_key.clone(),
+                "Ignium",
+                Observation {
+                    category: ObservationCategory::SurfaceAppearance,
+                    confidence: Confidence(0.6),
+                    description: "Reliably withstands heat".to_string(),
+                    recorded_at: 1,
+                },
+            );
+            journal.record(
+                location_key.clone(),
+                "Volcanic Plains",
+                Observation {
+                    category: ObservationCategory::SurfaceAppearance,
+                    confidence: Confidence(0.6),
+                    description: "Scorched terrain".to_string(),
+                    recorded_at: 2,
+                },
+            );
+            journal
+        },
+        Transform::default(),
+    ));
+
+    // Build the cross-reference relationship in the KnowledgeGraph.
+    {
+        let mut graph = app.world_mut().resource_mut::<KnowledgeGraph>();
+        let material_node =
+            graph.ensure_concept(ConceptId::new(material_key), ConceptCategory::Material, 1);
+        let location_node =
+            graph.ensure_concept(ConceptId::new(location_key), ConceptCategory::Location, 2);
+        graph.relate(
+            material_node,
+            location_node,
+            ConceptEdge {
+                relationship: RelationshipType::FoundOn,
+                confidence: crate::observation::Confidence(0.8),
+                discovered_at: 1,
+            },
+        );
+    }
+
+    // Run one frame so both systems execute.
+    app.update();
+
+    // Verify the render cache contains a CrossReferenceLink span for the
+    // FoundOn relationship pointing at "Volcanic Plains".
+    let cache = app.world().resource::<JournalRenderCache>();
+
+    let link_spans: Vec<&DetailSpan> = cache
+        .detail_spans
+        .iter()
+        .filter(|s| {
+            matches!(
+                s.kind,
+                DetailSpanKind::CrossReferenceLink | DetailSpanKind::CrossReferenceLinkSelected
+            )
+        })
+        .collect();
+
+    assert!(
+        !link_spans.is_empty(),
+        "expected at least one CrossReferenceLink span in the detail panel, got none. \
+         Full spans: {:?}",
+        cache.detail_spans
+    );
+
+    let combined_text: String = link_spans.iter().map(|s| s.text.as_str()).collect();
+    assert!(
+        combined_text.contains("Found on"),
+        "expected 'Found on' in cross-reference link text, got: {combined_text:?}"
+    );
+    assert!(
+        combined_text.contains("Volcanic Plains"),
+        "expected 'Volcanic Plains' in cross-reference link text, got: {combined_text:?}"
+    );
+
+    // Also verify the "Related" section header is present.
+    let has_related_header = cache
+        .detail_spans
+        .iter()
+        .any(|s| s.kind == DetailSpanKind::CrossReferenceHeader && s.text.contains("Related"));
+    assert!(
+        has_related_header,
+        "expected a CrossReferenceHeader span containing 'Related', got: {:?}",
+        cache.detail_spans
+    );
+}
+
+/// Pressing Enter while a cross-reference link is focused jumps the journal
+/// selection to the related entry.
+///
+/// Setup:
+///   - Two journal entries: "Ignium" (Material seed=1) and "Volcanic Plains"
+///     (Material seed=42, planet_seed=Some(42)).
+///   - A `FoundOn` edge from Ignium → Volcanic Plains in the KnowledgeGraph.
+///   - Journal is visible with Ignium selected (index 0, alphabetically first
+///     since "I" < "V").
+///   - `selected_link_index` is `Some(0)` — the FoundOn link is focused.
+///
+/// Expected: after pressing Enter and running `journal_navigation`, the
+/// `selected_index` advances to the position of "Volcanic Plains" in the
+/// sorted, filtered entry list, and `selected_link_index` is cleared.
+#[test]
+fn navigation_enter_on_link_jumps_to_related_entry() {
+    use crate::knowledge_graph::{
+        ConceptCategory, ConceptEdge, ConceptId, KnowledgeGraph, RelationshipType,
+    };
+
+    let material_key = JournalKey::Material {
+        seed: 1,
+        planet_seed: None,
+    };
+    // Represent the location using a Material key with planet_seed (same
+    // convention used throughout the knowledge_graph tests).
+    let location_key = JournalKey::Material {
+        seed: 42,
+        planet_seed: Some(42),
+    };
+
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins);
+    app.init_resource::<ButtonInput<KeyCode>>();
+    app.init_resource::<KnowledgeGraph>();
+    app.insert_resource(JournalUiState {
+        visible: true,
+        // "Ignium" sorts before "Volcanic Plains", so it is at index 0.
+        selected_index: 0,
+        scroll_offset: 0,
+        entries_per_page: 15,
+        filter: JournalFilter::default(),
+        // Link 0 (the FoundOn → Volcanic Plains link) is focused.
+        selected_link_index: Some(0),
+        navigation_stack: JournalNavigationStack::new(),
+    });
+    app.add_systems(Update, journal_navigation);
+
+    // Build the KnowledgeGraph relationship before spawning the player.
+    {
+        let mut graph = app.world_mut().resource_mut::<KnowledgeGraph>();
+        let material_node = graph.ensure_concept(
+            ConceptId::new(material_key.clone()),
+            ConceptCategory::Material,
+            1,
+        );
+        let location_node = graph.ensure_concept(
+            ConceptId::new(location_key.clone()),
+            ConceptCategory::Location,
+            2,
+        );
+        graph.relate(
+            material_node,
+            location_node,
+            ConceptEdge {
+                relationship: RelationshipType::FoundOn,
+                confidence: crate::observation::Confidence(0.8),
+                discovered_at: 1,
+            },
+        );
+    }
+
+    // Spawn a player with both journal entries.
+    let mut journal = Journal::default();
+    journal.record(
+        material_key.clone(),
+        "Ignium",
+        Observation {
+            category: ObservationCategory::SurfaceAppearance,
+            confidence: Confidence(0.6),
+            description: "Reliably withstands heat".to_string(),
+            recorded_at: 1,
+        },
+    );
+    journal.record(
+        location_key.clone(),
+        "Volcanic Plains",
+        Observation {
+            category: ObservationCategory::SurfaceAppearance,
+            confidence: Confidence(0.6),
+            description: "Scorched terrain".to_string(),
+            recorded_at: 2,
+        },
+    );
+    app.world_mut()
+        .spawn((Player, journal, Transform::default()));
+
+    // Press Enter to follow the focused link.
+    app.world_mut()
+        .resource_mut::<ButtonInput<KeyCode>>()
+        .press(KeyCode::Enter);
+
+    app.update();
+
+    let state = app.world().resource::<JournalUiState>();
+
+    // "Volcanic Plains" sorts after "Ignium", so its index in the
+    // alphabetically-sorted two-entry list is 1.
+    assert_eq!(
+        state.selected_index, 1,
+        "Enter on FoundOn link should jump selection to 'Volcanic Plains' at index 1, \
+          got index {}",
+        state.selected_index
+    );
+
+    // The link cursor should be cleared after following the link.
+    assert_eq!(
+        state.selected_link_index, None,
+        "selected_link_index should be cleared after following a cross-reference link"
+    );
+
+    // The previous entry (Ignium) should have been pushed onto the navigation stack.
+    assert!(
+        state.navigation_stack.can_go_back(),
+        "navigation stack should contain the previous entry after following a link"
+    );
+}
+
+/// Pressing Backspace while the navigation stack has history returns the
+/// journal selection to the previously-visited entry.
+///
+/// Setup:
+///   - Two journal entries: "Ignium" (Material seed=1, index 0) and
+///     "Volcanic Plains" (Material seed=42, planet_seed=Some(42), index 1).
+///   - The navigation stack already contains the Ignium key (simulating that
+///     the player followed a link from Ignium to Volcanic Plains).
+///   - Journal is visible with "Volcanic Plains" selected (index 1).
+///   - No link is focused (`selected_link_index` is `None`).
+///
+/// Expected: after pressing Backspace and running `journal_navigation`, the
+/// `selected_index` returns to 0 ("Ignium") and the navigation stack is
+/// empty.
+#[test]
+fn back_navigation_returns_to_previous_entry() {
+    let material_key = JournalKey::Material {
+        seed: 1,
+        planet_seed: None,
+    };
+    let location_key = JournalKey::Material {
+        seed: 42,
+        planet_seed: Some(42),
+    };
+
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins);
+    app.init_resource::<ButtonInput<KeyCode>>();
+    app.init_resource::<KnowledgeGraph>();
+
+    // Start with "Volcanic Plains" selected (index 1) and Ignium on the stack.
+    let mut nav_stack = JournalNavigationStack::new();
+    nav_stack.push(material_key.clone());
+    app.insert_resource(JournalUiState {
+        visible: true,
+        selected_index: 1,
+        scroll_offset: 0,
+        entries_per_page: 15,
+        filter: JournalFilter::default(),
+        selected_link_index: None,
+        navigation_stack: nav_stack,
+    });
+    app.add_systems(Update, journal_navigation);
+
+    // Spawn a player with both journal entries.
+    let mut journal = Journal::default();
+    journal.record(
+        material_key.clone(),
+        "Ignium",
+        Observation {
+            category: ObservationCategory::SurfaceAppearance,
+            confidence: Confidence(0.6),
+            description: "Reliably withstands heat".to_string(),
+            recorded_at: 1,
+        },
+    );
+    journal.record(
+        location_key.clone(),
+        "Volcanic Plains",
+        Observation {
+            category: ObservationCategory::SurfaceAppearance,
+            confidence: Confidence(0.6),
+            description: "Scorched terrain".to_string(),
+            recorded_at: 2,
+        },
+    );
+    app.world_mut()
+        .spawn((Player, journal, Transform::default()));
+
+    // Press Backspace to go back.
+    app.world_mut()
+        .resource_mut::<ButtonInput<KeyCode>>()
+        .press(KeyCode::Backspace);
+
+    app.update();
+
+    let state = app.world().resource::<JournalUiState>();
+
+    // Selection should have returned to "Ignium" at index 0.
+    assert_eq!(
+        state.selected_index, 0,
+        "Backspace should return selection to 'Ignium' at index 0, got index {}",
+        state.selected_index
+    );
+
+    // The navigation stack should now be empty.
+    assert!(
+        !state.navigation_stack.can_go_back(),
+        "navigation stack should be empty after back-navigation"
     );
 }
