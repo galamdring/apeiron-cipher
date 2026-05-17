@@ -34,13 +34,6 @@ pub struct MaterialPlugin;
 /// Small vertical gap between a material object and the surface it rests on.
 pub const MATERIAL_SURFACE_GAP: f32 = 0.01;
 
-/// Number of properties in a [`GameMaterial`] property vector.
-///
-/// Used as the compile-time array size for [`GameMaterial::property_vector`]
-/// so callers never need a magic number and adding a new property automatically
-/// updates the type.
-pub const PROPERTY_DIM: usize = 5;
-
 // ── Well-known material seeds ────────────────────────────────────────────
 //
 // Migration table: maps the 10 original hand-authored material names to their
@@ -222,6 +215,25 @@ impl GameMaterial {
         surface_y + self.support_height() + MATERIAL_SURFACE_GAP
     }
 
+    /// Returns a normalised property vector for similarity comparison.
+    ///
+    /// The vector encodes the five core material properties in a fixed order:
+    /// `[density, thermal_resistance, reactivity, conductivity, toxicity]`.
+    /// All values are already normalised to \[0.0, 1.0\] by [`MaterialProperty`],
+    /// so cosine similarity can be applied directly without further scaling.
+    ///
+    /// Used by the cross-reference system (Story 10.5) to detect `SimilarTo`
+    /// relationships between materials whose property profiles are close.
+    pub fn property_vector(&self) -> [f32; 5] {
+        [
+            self.density.value(),
+            self.thermal_resistance.value(),
+            self.reactivity.value(),
+            self.conductivity.value(),
+            self.toxicity.value(),
+        ]
+    }
+
     /// Returns the horizontal collision radius of the mesh for this material's density.
     pub fn footprint_radius(&self) -> f32 {
         let density = self.density.value();
@@ -233,29 +245,6 @@ impl GameMaterial {
             0.13
         }
     }
-
-    /// Returns the material's measured properties as a normalised 5-dimensional
-    /// vector for cosine-similarity comparison (Story 10.5 — `SimilarTo` edges).
-    ///
-    /// Component order: `[density, thermal_resistance, reactivity, conductivity, toxicity]`.
-    ///
-    /// All values are in \[0.0, 1.0\] by construction (clamped at creation time
-    /// in [`MaterialProperty::new`]), so the cosine similarity between any two
-    /// vectors is always non-negative — no centring or normalisation required.
-    ///
-    /// The vector includes ALL five properties regardless of their visibility
-    /// state. This is intentional: the knowledge graph is the simulation layer
-    /// and operates on ground-truth data; the player only sees the similarity
-    /// when they have sufficient observation confidence (checked at call site).
-    pub fn property_vector(&self) -> [f32; PROPERTY_DIM] {
-        [
-            self.density.value(),
-            self.thermal_resistance.value(),
-            self.reactivity.value(),
-            self.conductivity.value(),
-            self.toxicity.value(),
-        ]
-    }
 }
 
 // ── Seed-derived helpers ─────────────────────────────────────────────────
@@ -263,6 +252,35 @@ impl GameMaterial {
 /// Map a `u64` into the closed unit interval \[0.0, 1.0\].
 fn unit_interval_01(value: u64) -> f32 {
     (value as f64 / u64::MAX as f64) as f32
+}
+
+/// Compute the cosine similarity between two fixed-length property vectors.
+///
+/// Returns a value in `[0.0, 1.0]` where `1.0` means identical direction
+/// (maximally similar) and `0.0` means orthogonal (no shared profile).
+/// Negative cosine similarity cannot occur here because all property values
+/// are non-negative (normalised to `[0.0, 1.0]`).
+///
+/// If either vector is the zero vector (all properties are exactly 0.0),
+/// the function returns `0.0` — a zero-vector material has no meaningful
+/// similarity to anything.
+///
+/// Used by the cross-reference system (Story 10.5) to detect `SimilarTo`
+/// relationships between materials whose property profiles are close.
+pub fn cosine_similarity(a: &[f32; 5], b: &[f32; 5]) -> f32 {
+    let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
+    let mag_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+    let mag_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+
+    let denom = mag_a * mag_b;
+    if denom == 0.0 {
+        // At least one vector is the zero vector — no meaningful similarity.
+        return 0.0;
+    }
+
+    // Clamp to [0.0, 1.0] to guard against floating-point rounding that could
+    // push an identical-vector comparison slightly above 1.0.
+    (dot / denom).clamp(0.0, 1.0)
 }
 
 /// Derive a complete [`GameMaterial`] deterministically from a seed.
@@ -842,6 +860,46 @@ visibility = "Hidden"
     }
 
     #[test]
+    fn property_vector_contains_all_five_properties() {
+        let mat = sample_material();
+        let vec = mat.property_vector();
+        assert_eq!(vec.len(), 5);
+        assert!(
+            (vec[0] - mat.density.value()).abs() < f32::EPSILON,
+            "index 0 must be density"
+        );
+        assert!(
+            (vec[1] - mat.thermal_resistance.value()).abs() < f32::EPSILON,
+            "index 1 must be thermal_resistance"
+        );
+        assert!(
+            (vec[2] - mat.reactivity.value()).abs() < f32::EPSILON,
+            "index 2 must be reactivity"
+        );
+        assert!(
+            (vec[3] - mat.conductivity.value()).abs() < f32::EPSILON,
+            "index 3 must be conductivity"
+        );
+        assert!(
+            (vec[4] - mat.toxicity.value()).abs() < f32::EPSILON,
+            "index 4 must be toxicity"
+        );
+    }
+
+    #[test]
+    fn property_vector_values_in_unit_range() {
+        for seed in [0u64, 1, 42, u64::MAX, 0xDEAD_BEEF] {
+            let mat = derive_material_from_seed(seed);
+            for (i, &v) in mat.property_vector().iter().enumerate() {
+                assert!(
+                    (0.0..=1.0).contains(&v),
+                    "seed {seed:#X}: property_vector[{i}] = {v} out of [0,1]"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn mix_seed_deterministic() {
         let a = mix_seed(100, 200);
         let b = mix_seed(100, 200);
@@ -861,6 +919,80 @@ visibility = "Hidden"
         assert!((unit_interval_01(u64::MAX) - 1.0).abs() < f32::EPSILON);
         let mid = unit_interval_01(u64::MAX / 2);
         assert!((0.0..=1.0).contains(&mid));
+    }
+
+    #[test]
+    fn cosine_similarity_identical_vectors_returns_one() {
+        let v = [0.5_f32, 0.3, 0.8, 0.1, 0.6];
+        let result = cosine_similarity(&v, &v);
+        assert!(
+            (result - 1.0).abs() < 1e-6,
+            "identical vectors must have similarity 1.0, got {result}"
+        );
+    }
+
+    #[test]
+    fn cosine_similarity_orthogonal_vectors_returns_zero() {
+        // Two vectors with no overlapping non-zero components are orthogonal.
+        let a = [1.0_f32, 0.0, 0.0, 0.0, 0.0];
+        let b = [0.0_f32, 1.0, 0.0, 0.0, 0.0];
+        let result = cosine_similarity(&a, &b);
+        assert!(
+            result.abs() < 1e-6,
+            "orthogonal vectors must have similarity 0.0, got {result}"
+        );
+    }
+
+    #[test]
+    fn cosine_similarity_zero_vector_returns_zero() {
+        let zero = [0.0_f32; 5];
+        let v = [0.5_f32, 0.3, 0.8, 0.1, 0.6];
+        assert_eq!(
+            cosine_similarity(&zero, &v),
+            0.0,
+            "zero vector vs any vector must return 0.0"
+        );
+        assert_eq!(
+            cosine_similarity(&v, &zero),
+            0.0,
+            "any vector vs zero vector must return 0.0"
+        );
+        assert_eq!(
+            cosine_similarity(&zero, &zero),
+            0.0,
+            "zero vector vs zero vector must return 0.0"
+        );
+    }
+
+    #[test]
+    fn cosine_similarity_result_in_unit_range() {
+        // Spot-check a handful of seed-derived materials to confirm the result
+        // is always in [0.0, 1.0].
+        let seeds: &[u64] = &[0x1, 0xDEAD_BEEF, 0xCAFE_BABE, 0xFFFF_FFFF_FFFF_FFFF];
+        for &s1 in seeds {
+            for &s2 in seeds {
+                let m1 = derive_material_from_seed(s1);
+                let m2 = derive_material_from_seed(s2);
+                let sim = cosine_similarity(&m1.property_vector(), &m2.property_vector());
+                assert!(
+                    (0.0..=1.0).contains(&sim),
+                    "cosine_similarity({s1:#X}, {s2:#X}) = {sim} out of [0,1]"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cosine_similarity_partial_overlap_between_zero_and_one() {
+        // Vectors that share some but not all components should yield a value
+        // strictly between 0 and 1.
+        let a = [1.0_f32, 1.0, 0.0, 0.0, 0.0];
+        let b = [1.0_f32, 0.0, 1.0, 0.0, 0.0];
+        let result = cosine_similarity(&a, &b);
+        assert!(
+            result > 0.0 && result < 1.0,
+            "partial overlap must yield similarity in (0, 1), got {result}"
+        );
     }
 
     // ── Collision-avoidance tests ────────────────────────────────────────
