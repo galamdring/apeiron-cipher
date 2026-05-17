@@ -202,6 +202,18 @@ pub struct ConfidenceConfig {
     /// Lower values require more repeated testing. Typical range: 0.1-0.3
     #[serde(default = "default_base_observation_weight")]
     pub base_observation_weight: f32,
+
+    /// Cosine similarity threshold above which two materials are considered
+    /// "similar" for the purposes of wiring `SimilarTo` edges in the knowledge
+    /// graph (Story 10.5).
+    ///
+    /// A value of 1.0 means "identical property vectors only"; lower values
+    /// surface more pairs as similar. Values below 0.5 are not recommended —
+    /// they tend to produce spurious connections that erode trust in the journal.
+    ///
+    /// Typical range: 0.80-0.95
+    #[serde(default = "default_similarity_threshold")]
+    pub similarity_threshold: f32,
 }
 
 /// Default value for death_degradation_factor field.
@@ -229,6 +241,11 @@ fn default_base_observation_weight() -> f32 {
     0.2
 }
 
+/// Default cosine similarity threshold for `SimilarTo` edge creation.
+fn default_similarity_threshold() -> f32 {
+    0.85
+}
+
 impl Default for ConfidenceConfig {
     /// Default confidence configuration values.
     ///
@@ -242,6 +259,7 @@ impl Default for ConfidenceConfig {
             domain_recovery_multiplier: 2.0,  // 2x recovery in death domain
             passive_recovery_multiplier: 0.7, // 0.7x recovery elsewhere
             base_observation_weight: 0.2,     // Standard observation strength
+            similarity_threshold: 0.85,       // 85% cosine similarity = "similar materials"
         }
     }
 }
@@ -1567,6 +1585,7 @@ mod tests {
             domain_recovery_multiplier: 2.5,
             passive_recovery_multiplier: 0.8,
             base_observation_weight: 0.25,
+            similarity_threshold: 0.85,
         };
 
         let toml = toml::to_string(&config).expect("ConfidenceConfig should serialize to TOML");
@@ -2653,6 +2672,7 @@ mod tests {
                 domain_recovery_multiplier: 2.0,
                 passive_recovery_multiplier: 0.7,
                 base_observation_weight: 0.2,
+                similarity_threshold: 0.85,
             })
             .insert_resource(Time::<()>::default());
 
@@ -2661,10 +2681,7 @@ mod tests {
 
         // Add observations with high confidence
         journal.record(
-            JournalKey::Material {
-                seed: 42,
-                planet_seed: None,
-            },
+            JournalKey::MaterialInstance { seed: 42 },
             "Test Material",
             Observation {
                 category: ObservationCategory::ThermalBehavior,
@@ -2675,10 +2692,7 @@ mod tests {
         );
 
         journal.record(
-            JournalKey::Material {
-                seed: 99,
-                planet_seed: None,
-            },
+            JournalKey::MaterialInstance { seed: 99 },
             "Another Material",
             Observation {
                 category: ObservationCategory::Weight,
@@ -2690,10 +2704,7 @@ mod tests {
 
         // Add observation with medium confidence
         journal.record(
-            JournalKey::Material {
-                seed: 42,
-                planet_seed: None,
-            },
+            JournalKey::MaterialInstance { seed: 42 },
             "Test Material",
             Observation {
                 category: ObservationCategory::SurfaceAppearance,
@@ -2708,21 +2719,12 @@ mod tests {
 
         // Verify initial confidence levels
         let journal = app.world().entity(player_entity).get::<Journal>().unwrap();
-        let thermal_obs = &journal.entries[&JournalKey::Material {
-            seed: 42,
-            planet_seed: None,
-        }]
-            .observations[&ObservationCategory::ThermalBehavior][0];
-        let weight_obs = &journal.entries[&JournalKey::Material {
-            seed: 99,
-            planet_seed: None,
-        }]
-            .observations[&ObservationCategory::Weight][0];
-        let surface_obs = &journal.entries[&JournalKey::Material {
-            seed: 42,
-            planet_seed: None,
-        }]
-            .observations[&ObservationCategory::SurfaceAppearance][0];
+        let thermal_obs = &journal.entries[&JournalKey::MaterialInstance { seed: 42 }].observations
+            [&ObservationCategory::ThermalBehavior][0];
+        let weight_obs = &journal.entries[&JournalKey::MaterialInstance { seed: 99 }].observations
+            [&ObservationCategory::Weight][0];
+        let surface_obs = &journal.entries[&JournalKey::MaterialInstance { seed: 42 }].observations
+            [&ObservationCategory::SurfaceAppearance][0];
 
         assert_eq!(thermal_obs.confidence.0, 0.8);
         assert_eq!(weight_obs.confidence.0, 0.9);
@@ -2740,21 +2742,12 @@ mod tests {
 
         // Verify confidence has been degraded
         let journal = app.world().entity(player_entity).get::<Journal>().unwrap();
-        let thermal_obs = &journal.entries[&JournalKey::Material {
-            seed: 42,
-            planet_seed: None,
-        }]
-            .observations[&ObservationCategory::ThermalBehavior][0];
-        let weight_obs = &journal.entries[&JournalKey::Material {
-            seed: 99,
-            planet_seed: None,
-        }]
-            .observations[&ObservationCategory::Weight][0];
-        let surface_obs = &journal.entries[&JournalKey::Material {
-            seed: 42,
-            planet_seed: None,
-        }]
-            .observations[&ObservationCategory::SurfaceAppearance][0];
+        let thermal_obs = &journal.entries[&JournalKey::MaterialInstance { seed: 42 }].observations
+            [&ObservationCategory::ThermalBehavior][0];
+        let weight_obs = &journal.entries[&JournalKey::MaterialInstance { seed: 99 }].observations
+            [&ObservationCategory::Weight][0];
+        let surface_obs = &journal.entries[&JournalKey::MaterialInstance { seed: 42 }].observations
+            [&ObservationCategory::SurfaceAppearance][0];
 
         // Expected values: original * 0.6, but not below 0.2 floor
         assert_eq!(thermal_obs.confidence.0, 0.8 * 0.6); // 0.48
@@ -2777,6 +2770,7 @@ mod tests {
                 domain_recovery_multiplier: 2.0,
                 passive_recovery_multiplier: 0.7,
                 base_observation_weight: 0.2,
+                similarity_threshold: 0.85,
             })
             .insert_resource(Time::<()>::default());
 
@@ -2784,10 +2778,7 @@ mod tests {
         let mut journal = Journal::default();
 
         journal.record(
-            JournalKey::Material {
-                seed: 42,
-                planet_seed: None,
-            },
+            JournalKey::MaterialInstance { seed: 42 },
             "Test Material",
             Observation {
                 category: ObservationCategory::ThermalBehavior,
@@ -2801,11 +2792,8 @@ mod tests {
 
         // Verify initial confidence
         let journal = app.world().entity(player_entity).get::<Journal>().unwrap();
-        let thermal_obs = &journal.entries[&JournalKey::Material {
-            seed: 42,
-            planet_seed: None,
-        }]
-            .observations[&ObservationCategory::ThermalBehavior][0];
+        let thermal_obs = &journal.entries[&JournalKey::MaterialInstance { seed: 42 }].observations
+            [&ObservationCategory::ThermalBehavior][0];
         assert_eq!(thermal_obs.confidence.0, 0.4);
 
         // Emit death event
@@ -2821,11 +2809,8 @@ mod tests {
         // Verify confidence was clamped to floor
         // Expected: 0.4 * 0.5 = 0.2, but floor is 0.3, so should be 0.3
         let journal = app.world().entity(player_entity).get::<Journal>().unwrap();
-        let thermal_obs = &journal.entries[&JournalKey::Material {
-            seed: 42,
-            planet_seed: None,
-        }]
-            .observations[&ObservationCategory::ThermalBehavior][0];
+        let thermal_obs = &journal.entries[&JournalKey::MaterialInstance { seed: 42 }].observations
+            [&ObservationCategory::ThermalBehavior][0];
 
         assert_eq!(thermal_obs.confidence.0, 0.3); // Clamped to floor
     }
@@ -2910,6 +2895,7 @@ mod tests {
             domain_recovery_multiplier: 2.0,
             passive_recovery_multiplier: 0.7,
             base_observation_weight: 0.2,
+            similarity_threshold: 0.85,
         };
 
         let context = DeathContext::new(DeathCause::HeatSystem, 1000);
@@ -2986,6 +2972,7 @@ mod tests {
             domain_recovery_multiplier: 2.0, // 2x recovery in death domain
             passive_recovery_multiplier: 0.7, // 0.7x recovery elsewhere
             base_observation_weight: 0.2,
+            similarity_threshold: 0.85,
         };
 
         // Create death context for heat system death
