@@ -18,6 +18,7 @@ pub fn test_material(name: &str, density: f32, seed: u64) -> GameMaterial {
         name: name.into(),
         seed,
         color: [0.5, 0.5, 0.5],
+        origin_planet_seed: None,
         density: prop(density),
         thermal_resistance: prop(0.5),
         reactivity: prop(0.5),

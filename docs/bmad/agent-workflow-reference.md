@@ -4,33 +4,31 @@ _Reference tables and commands for the story workflow. Load this file when runni
 
 ---
 
-## In-Review Health Check (story ↔ PR linkage)
+## In-Review Health Check (story ↔ tag linkage)
 
-Run this check periodically (or when a story appears stuck in _In review_) to verify the close-link workflow is healthy:
+Run this check periodically (or when a story appears stuck in _In review_):
 
-1. List project items and identify stories currently in _In review_:
-   - `gh project item-list 1 --owner galamdring --format json`
-2. For each story issue `#N`, find referencing PRs:
-   - `gh pr list --state all --search "Closes #N" --repo galamdring/apeiron-cipher`
-3. Validate each matching PR:
-   - `gh pr view <pr_number> --json state,baseRefName,isDraft,mergedAt,body`
-4. Triage results:
-   - No referencing PR found -> fix PR body (`Closes #N`) or open the missing PR.
-   - PR not targeting `main` -> correct base to `main`.
-   - Dependency not merged yet -> keep _In review_ and retain `Depends on #X`.
-   - PR merged but issue still open -> manually investigate issue automation and board sync.
+1. List stories currently in _In review_:
+   - `gh issue list --label "status:in-review" --label "story" --json number,title --repo galamdring/apeiron-cipher`
+2. For each story issue `#N`, verify the tag exists on develop:
+   - `git tag --list "story-N.N-complete"`
+3. Triage:
+   - Tag missing → agent did not complete Step 4. Re-run tagging.
+   - Tag exists, no `@automation approve` comment → awaiting human playtest. Leave as-is.
+   - `@automation approve` posted but no staging PR → automation workflow may have failed. Check GitHub Actions logs.
+   - Staging PR open → awaiting human merge. Leave as-is.
+   - Staging PR merged but issue still open → investigate GitHub auto-close (`Closes #N` in PR body).
 
 ---
 
 ## Task Management
 
-**All task tracking uses GitHub Issues with labels as the state machine.** Status is tracked via `status:*` labels, not a GitHub Project board.
+**All task tracking uses GitHub Issues with labels as the state machine.** Status is tracked via `status:*` labels.
 
 - Epics are GitHub Issues labeled `epic` with stories linked via `epic-N` labels
 - Stories are GitHub Issues labeled `story` with full acceptance criteria, technical notes, dependency links, and implementation order in their body
 - Status flows via labels: `status:triage` → `status:backlog` → `status:ready` → `status:in-progress` → `status:in-review` → closed
 - Scoping flows via labels: `needs_refinement` → `in_scoping` → `sow_ready` → `stories_created`
-- n8n workflows respond to label changes via GitHub webhook events and manage automated transitions
 
 ### Label Taxonomy
 
@@ -46,8 +44,8 @@ Run this check periodically (or when a story appears stuck in _In review_) to ve
 | `status:backlog` | `#d4c5f9` | Classified, not yet ready |
 | `status:ready` | `#0e8a16` | Approved for work |
 | `status:in-progress` | `#1d76db` | Agent working |
-| `status:in-review` | `#5319e7` | PR up for review |
-| `status:blocked` | `#e11d48` | Blocked |
+| `status:in-review` | `#5319e7` | Tagged, awaiting human playtest |
+| `status:blocked` | `#e11d48` | Blocked, awaiting human input |
 | **Scoping Labels** | | |
 | `needs_refinement` | `#d876e3` | Needs initial AI pass |
 | `in_scoping` | `#c5def5` | Scoping conversation active |
@@ -61,7 +59,7 @@ Run this check periodically (or when a story appears stuck in _In review_) to ve
 ## Useful Commands
 
 ```bash
-# List all ready stories (sorted by implementation order in body)
+# List all ready stories
 gh issue list --label "status:ready" --label "story" --json number,title,body --repo galamdring/apeiron-cipher
 
 # List all stories for a specific epic
@@ -79,26 +77,21 @@ gh issue edit <N> --remove-label "status:in-progress" --add-label "status:blocke
 # View a specific story's acceptance criteria
 gh issue view <number> --repo galamdring/apeiron-cipher
 
-# Graphite: view the current stack
-gt log
+# Tag a completed story
+git tag story-N.N-complete
+git push origin develop --tags
 
-# Graphite: create a new stacked branch
-gt create <branch-name>
+# List all story tags
+git tag --list "story-*"
 
-# Graphite: submit all branches in the stack as PRs
-gt submit
+# Find the commit range between two story tags
+git log story-N.M-complete..story-N.N-complete --oneline
 
-# Graphite: rebase the stack after a change to a lower branch
-gt stack restack
-
-# Graphite: sync with remote (after a PR is merged on GitHub)
-gt stack sync
-
-# Find PRs that reference a story issue
-gh pr list --state all --search "Closes #<issue_number>" --repo galamdring/apeiron-cipher
+# View staging PRs
+gh pr list --state open --search "staging/" --repo galamdring/apeiron-cipher
 
 # Verify PR state/body
 gh pr view <pr_number> --json state,baseRefName,isDraft,mergedAt,body
 ```
 
-Last Updated: 2026-04-18
+Last Updated: 2026-05-13
