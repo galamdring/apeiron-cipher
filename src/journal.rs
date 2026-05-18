@@ -15,6 +15,7 @@ use strum::IntoEnumIterator;
 
 use crate::diegetic_ui::{DiegeticFocusState, DiegeticSurface, DiegeticSurfaceKind};
 use crate::input::InputAction;
+use crate::knowledge_graph::ConceptNode;
 use crate::observation::Confidence;
 use crate::player::{Player, cursor_is_captured, spawn_player};
 use crate::world_generation::BiomeType;
@@ -373,6 +374,30 @@ pub struct JournalFilter {
 /// dropped into an iterator chain (`entries.filter(|e|
 /// matches_filter(e, &filter))`) without threading additional
 /// resources through the render pipeline.
+/// Predicate evaluating whether a knowledge-graph concept node should be shown
+/// under the active journal filter.
+///
+/// Both filter dimensions combine with AND logic — a node is kept when every
+/// `Some(_)` dimension matches. `None` on any dimension means "no restriction",
+/// so the default filter (both `None`) keeps every node.
+pub fn matches_filter_node(node: &ConceptNode, filter: &JournalFilter) -> bool {
+    let category_match = filter
+        .category
+        .as_ref()
+        .is_none_or(|cat| node.observations.keys().any(|node_cat| node_cat == cat));
+
+    let context_match = filter.context.as_ref().is_none_or(|ctx| match ctx {
+        JournalContext::CurrentPlanet { planet_seed } => {
+            node.origin_planet_seed == Some(*planet_seed)
+        }
+        JournalContext::CurrentBiome { .. } => true,
+    });
+
+    category_match && context_match
+}
+
+/// Legacy entry-based filter predicate — kept for tests that still build
+/// `JournalEntry` directly. New code should use [`matches_filter_node`].
 pub fn matches_filter(entry: &JournalEntry, filter: &JournalFilter) -> bool {
     let category_match = filter
         .category
