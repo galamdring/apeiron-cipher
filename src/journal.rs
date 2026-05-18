@@ -470,7 +470,6 @@ impl Plugin for JournalPlugin {
                     update_journal_context_on_planet_change
                         .in_set(JournalSet::Navigate)
                         .after(journal_navigation),
-                    apply_observations.in_set(JournalSet::Navigate),
                     journal_cross_ref_navigation
                         .in_set(JournalSet::Navigate)
                         .after(journal_navigation),
@@ -1640,6 +1639,7 @@ fn update_journal_context_on_planet_change(
 /// death context. If the player died recently and is now observing the
 /// death-relevant domain, confidence accumulates faster. If they're
 /// avoiding the death domain, it accumulates slower.
+#[allow(dead_code)]
 pub(crate) fn apply_observations(
     mut reader: MessageReader<RecordObservation>,
     mut player_query: Query<&mut Journal, With<Player>>,

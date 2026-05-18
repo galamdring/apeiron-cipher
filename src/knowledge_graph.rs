@@ -17,7 +17,7 @@
 //! * **Serializable:** The full graph round-trips through serde via
 //!   petgraph's `serde-1` feature plus hand-implemented index maps.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 use bevy::prelude::*;
 use petgraph::Direction;
@@ -26,7 +26,7 @@ use petgraph::visit::EdgeRef;
 use serde::{Deserialize, Serialize};
 
 use crate::journal::JournalKey;
-use crate::observation::Confidence;
+use crate::observation::{Confidence, ConfidenceConfig};
 
 // ── Plugin ────────────────────────────────────────────────────────────────
 
@@ -40,9 +40,7 @@ impl Plugin for KnowledgeGraphPlugin {
         app.init_resource::<KnowledgeGraph>().add_systems(
             Update,
             (
-                update_knowledge_graph
-                    .in_set(crate::journal::JournalSet::Navigate)
-                    .after(crate::journal::apply_observations),
+                update_knowledge_graph.in_set(crate::journal::JournalSet::Navigate),
                 detect_similar_on_observation
                     .in_set(crate::journal::JournalSet::Navigate)
                     .after(update_knowledge_graph),
@@ -86,26 +84,162 @@ pub enum ConceptCategory {
 ///
 /// Each node is created by [`KnowledgeGraph::ensure_concept`] on first
 /// encounter and is never removed (the graph accumulates monotonically).
-/// The `confidence` field tracks overall certainty in the concept's
-/// existence, which edges then narrow with typed relationship confidence.
+///
+/// As of Story 387 this node is the **sole storage location** for all
+/// player knowledge about a concept: the display name, every observation
+/// ever recorded, confidence, timestamps, and planet provenance all live
+/// here. The `Journal` component is now a pure query/UI layer — it holds
+/// no data between frames.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ConceptNode {
-    /// Stable identity linking this node to the corresponding journal entry.
+    /// Stable identity linking this node to the corresponding journal key.
     pub id: ConceptId,
     /// Coarse classification for encyclopedia grouping and BFS filtering.
     pub category: ConceptCategory,
-    /// Overall confidence that this concept is real and correctly identified.
-    pub confidence: Confidence,
-    /// Game-time tick (whole seconds elapsed) when this concept was first added.
+    /// Player-facing display name for this concept (e.g. "Ferrite").
     ///
-    /// Matches the unit used by [`crate::journal::Observation::recorded_at`] so
-    /// the two timestamps are directly comparable.
-    pub discovered_at: u64,
+    /// Set on first observation and never overwritten — first observer wins,
+    /// matching the behaviour of the old `Journal::ensure_entry`.
+    pub name: String,
+    /// Overall confidence that this concept is real and correctly identified.
+    ///
+    /// Accumulated from every observation's confidence value. Used by the
+    /// similarity system to gate `SimilarTo` edge creation (must be at
+    /// `Observed` tier or above before cross-material comparisons fire).
+    pub confidence: Confidence,
+    /// Game-time tick (whole seconds elapsed) when this concept was first
+    /// encountered. Immutable after creation.
+    pub first_observed_at: u64,
+    /// Game-time tick of the most recent observation recorded for this node.
+    /// Updated every time [`Self::add_observation`] or its accumulating
+    /// variants are called.
+    pub last_updated_at: u64,
+    /// Planet on which this concept was first observed.
+    ///
+    /// Populated from [`crate::journal::RecordObservation::planet_seed`] on
+    /// the first observation that carries a planet seed. `None` for fabricated
+    /// materials and concepts recorded without planetary context. Used by the
+    /// `CurrentPlanet` journal filter.
+    pub origin_planet_seed: Option<u64>,
     /// Which named properties the player has directly observed on this concept.
     ///
-    /// Property keys are string identifiers matching the observation category
-    /// names so new properties can be added without a code change here.
+    /// Keys match [`crate::journal::ObservationCategory::display_label`] so
+    /// the inspect panel and encyclopedia can check revealed status without
+    /// additional mapping.
     pub revealed_properties: HashSet<String>,
+    /// All observations recorded about this concept, grouped by category.
+    ///
+    /// Each category group is in chronological insertion order. Observations
+    /// within a group are deduplicated by description — a second identical
+    /// observation strengthens confidence rather than appending a duplicate.
+    ///
+    /// `BTreeMap` gives deterministic iteration order (important for
+    /// save/load reproducibility and test stability).
+    pub observations:
+        BTreeMap<crate::journal::ObservationCategory, Vec<crate::journal::Observation>>,
+}
+
+// ── ConceptNode observation methods ──────────────────────────────────────
+
+impl ConceptNode {
+    /// Record an observation on this node, deduplicating by description within
+    /// the same category.
+    ///
+    /// When an observation with the same category **and** the same description
+    /// already exists, the duplicate is not appended — instead the existing
+    /// observation's confidence is upgraded to the higher of the two values and
+    /// `last_updated_at` is advanced. This prevents the node from bloating when
+    /// systems repeatedly report the same finding (e.g. picking up the same
+    /// material multiple times).
+    ///
+    /// When the observation is genuinely new (different category or different
+    /// description), it is appended to the appropriate category group and
+    /// `last_updated_at` is advanced unconditionally.
+    pub fn add_observation(&mut self, observation: crate::journal::Observation) {
+        self.last_updated_at = observation.recorded_at;
+
+        let group = self
+            .observations
+            .entry(observation.category.clone())
+            .or_default();
+
+        if let Some(existing) = group
+            .iter_mut()
+            .find(|o| o.description == observation.description)
+        {
+            // Upgrade confidence if the new evidence is stronger.
+            if observation.confidence.0 > existing.confidence.0 {
+                existing.confidence = observation.confidence;
+            }
+            return;
+        }
+
+        group.push(observation);
+    }
+
+    /// Record an observation with confidence accumulation for existing
+    /// observations.
+    ///
+    /// When an observation with the same category and description already
+    /// exists, [`Confidence::accumulate`] is called with
+    /// `base_observation_weight * recovery_multiplier`. This gives diminishing
+    /// returns as evidence builds, matching Story 10.4's confidence model.
+    ///
+    /// `recovery_multiplier` should be:
+    /// - `> 1.0` when the player is engaging with the domain they died in
+    ///   (faster recovery)
+    /// - `< 1.0` for unrelated domains after a death
+    /// - `= 1.0` for normal play without death context
+    ///
+    /// When the observation is genuinely new it is appended as-is.
+    pub fn add_observation_with_domain_weighted_accumulation(
+        &mut self,
+        observation: crate::journal::Observation,
+        config: &crate::observation::ConfidenceConfig,
+        recovery_multiplier: f32,
+    ) {
+        self.last_updated_at = observation.recorded_at;
+
+        let group = self
+            .observations
+            .entry(observation.category.clone())
+            .or_default();
+
+        if let Some(existing) = group
+            .iter_mut()
+            .find(|o| o.description == observation.description)
+        {
+            let adjusted_weight = config.base_observation_weight * recovery_multiplier;
+            existing.confidence.accumulate(adjusted_weight);
+            return;
+        }
+
+        group.push(observation);
+    }
+
+    /// Return all observations for a given category, in insertion order.
+    ///
+    /// Returns an empty slice when no observations for that category exist yet.
+    pub fn observations_by_category(
+        &self,
+        category: &crate::journal::ObservationCategory,
+    ) -> &[crate::journal::Observation] {
+        self.observations
+            .get(category)
+            .map_or(&[], |v| v.as_slice())
+    }
+
+    /// Total observation count across all categories.
+    pub fn observation_count(&self) -> usize {
+        self.observations.values().map(|v| v.len()).sum()
+    }
+
+    /// Iterator over all observations across all categories, in deterministic
+    /// category order (driven by `BTreeMap`) then insertion order within each
+    /// category.
+    pub fn all_observations(&self) -> impl Iterator<Item = &crate::journal::Observation> {
+        self.observations.values().flat_map(|v| v.iter())
+    }
 }
 
 // ── Relationship types ────────────────────────────────────────────────────
@@ -233,9 +367,13 @@ impl KnowledgeGraph {
         let node = ConceptNode {
             id: id.clone(),
             category: category.clone(),
+            name: String::new(),
             confidence: Confidence(0.3), // Start at Tentative/Observed boundary
-            discovered_at: tick,
+            first_observed_at: tick,
+            last_updated_at: tick,
+            origin_planet_seed: None,
             revealed_properties: HashSet::new(),
+            observations: BTreeMap::new(),
         };
 
         let idx = self.graph.add_node(node);
@@ -508,7 +646,7 @@ impl<'de> Deserialize<'de> for KnowledgeGraph {
                     .entry(node.category.clone())
                     .or_default()
                     .push(idx);
-                timeline.push((node.discovered_at, idx));
+                timeline.push((node.first_observed_at, idx));
             }
         }
 
@@ -546,25 +684,73 @@ impl<'de> Deserialize<'de> for KnowledgeGraph {
 ///   [`RecordObservation::context_location`], an `ObservedAt` edge is
 ///   created from subject → location.
 ///
-/// No edges are created without an observation event; the system never
-/// infers connections the player hasn't personally made.
+/// Processes [`crate::journal::RecordObservation`] messages, populates the
+/// [`KnowledgeGraph`] with observation data, and wires typed relationship edges.
+///
+/// This system is the **sole write path** for observation storage as of Story 387.
+/// The journal's `apply_observations` system has been removed; all data lives here.
+///
+/// Runs in [`crate::journal::JournalSet::Navigate`].
+///
+/// # What it does per message
+///
+/// 1. Ensures the subject concept node exists.
+/// 2. Stamps the display `name` on first encounter (first-observer-wins).
+/// 3. Stamps `origin_planet_seed` on first planet-seeded observation.
+/// 4. Records the observation onto the node with domain-weighted confidence
+///    accumulation (mirrors the old `JournalEntry` accumulation logic).
+/// 5. Marks the property category as revealed on the node.
+/// 6. Wires graph edges: `FoundOn`, `DerivedFrom`, `CombinedWith`, `ObservedAt`.
 fn update_knowledge_graph(
     mut reader: MessageReader<crate::journal::RecordObservation>,
     mut graph: ResMut<KnowledgeGraph>,
     time: Res<Time>,
+    config: Res<ConfidenceConfig>,
 ) {
-    let tick = time.elapsed().as_secs();
+    let tick = time.elapsed().as_millis() as u64;
 
-    for obs in reader.read() {
+    // Drain messages into a vec first so we can release the reader borrow
+    // before mutably borrowing the graph.
+    let messages: Vec<_> = reader.read().cloned().collect();
+
+    for obs in messages {
         // Determine category for the observed subject.
         let subject_category = category_from_key(&obs.key);
 
         // Ensure the subject node exists.
         let subject_node = graph.ensure_concept(ConceptId(obs.key.clone()), subject_category, tick);
 
-        // Mark which property category the player just observed on this concept.
-        let category_name = obs.observation.category.display_label().to_string();
-        graph.reveal_property(subject_node, category_name);
+        // ── Stamp name on first encounter ──────────────────────────────
+        // First-observer-wins: never overwrite an existing name.
+        if let Some(node) = graph.graph.node_weight_mut(subject_node) {
+            if node.name.is_empty() {
+                node.name = obs.name.clone();
+            }
+
+            // ── Stamp origin_planet_seed on first planet observation ───
+            if node.origin_planet_seed.is_none()
+                && let Some(ps) = obs.planet_seed
+            {
+                node.origin_planet_seed = Some(ps);
+            }
+
+            // ── Record observation with domain-weighted accumulation ───
+            // Using accumulation (not simple add) so repeated identical
+            // observations strengthen confidence with diminishing returns,
+            // matching the Story 10.4 confidence model.
+            // Recovery multiplier is 1.0 here; DeathContext-adjusted writes
+            // come from the observation sites that know the death domain.
+            let mut observation = obs.observation.clone();
+            observation.recorded_at = tick;
+            node.add_observation_with_domain_weighted_accumulation(observation, &config, 1.0);
+
+            // ── Accumulate overall node confidence ────────────────────
+            node.confidence.accumulate(obs.observation.confidence.0);
+
+            // ── Mark property as revealed ─────────────────────────────
+            let category_name = obs.observation.category.display_label().to_string();
+            node.revealed_properties.insert(category_name);
+        }
 
         // ── FoundOn edge ──────────────────────────────────────────────
         // If the observation carries a planet_seed, wire a FoundOn edge
