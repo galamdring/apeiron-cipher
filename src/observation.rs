@@ -1221,38 +1221,23 @@ pub struct OnPlayerDeathEvent {
 /// before any UI systems that might display confidence-dependent language.
 fn handle_player_death(
     mut reader: MessageReader<OnPlayerDeathEvent>,
-    mut player_query: Query<&mut crate::journal::Journal, With<crate::player::Player>>,
+    graph: Option<ResMut<crate::knowledge_graph::KnowledgeGraph>>,
     mut commands: Commands,
     config: Res<ConfidenceConfig>,
     time: Res<Time>,
 ) {
-    // Process all death events (should typically be just one per frame)
     let death_events: Vec<_> = reader.read().collect();
     if death_events.is_empty() {
         return;
     }
 
-    let Ok(mut journal) = player_query.single_mut() else {
-        warn!("OnPlayerDeathEvent received but no player with journal found");
-        return;
-    };
-
-    // Use the most recent death event if multiple occurred
     let death_event = death_events.last().unwrap();
     let current_time = time.elapsed().as_millis() as u64;
 
-    // Apply death degradation to all observations in all journal entries
-    for entry in journal.entries.values_mut() {
-        for observation_group in entry.observations.values_mut() {
-            for observation in observation_group.iter_mut() {
-                observation
-                    .confidence
-                    .degrade(config.death_degradation_factor, config.death_floor);
-            }
-        }
+    if let Some(mut graph) = graph {
+        graph.degrade_all(config.death_degradation_factor, config.death_floor);
     }
 
-    // Create death context for domain-weighted recovery
     let death_context = DeathContext::new(death_event.cause, current_time);
     commands.insert_resource(death_context);
 
@@ -2659,11 +2644,10 @@ mod tests {
 
     #[test]
     fn death_event_degrades_all_journal_observations() {
-        use crate::journal::{Journal, JournalKey, Observation, ObservationCategory};
-        use crate::player::Player;
+        use crate::journal::{JournalKey, Observation, ObservationCategory};
+        use crate::knowledge_graph::{ConceptCategory, ConceptId, KnowledgeGraph};
 
         let mut app = App::new();
-        // Don't use the plugin to avoid TOML config loading
         app.add_message::<OnPlayerDeathEvent>()
             .add_systems(Update, handle_player_death)
             .insert_resource(ConfidenceConfig {
@@ -2676,59 +2660,42 @@ mod tests {
             })
             .insert_resource(Time::<()>::default());
 
-        // Create a player with a journal containing observations at different confidence levels
-        let mut journal = Journal::default();
+        // Populate the KnowledgeGraph with concept nodes carrying observations.
+        let mut graph = KnowledgeGraph::default();
 
-        // Add observations with high confidence
-        journal.record(
-            JournalKey::MaterialInstance { seed: 42 },
-            "Test Material",
-            Observation {
+        let key42 = JournalKey::MaterialInstance { seed: 42 };
+        let node42 = graph.ensure_concept(ConceptId(key42.clone()), ConceptCategory::Material, 0);
+        if let Some(n) = graph.graph_mut().node_weight_mut(node42) {
+            n.name = "Test Material".to_string();
+            n.confidence = Confidence(0.8);
+            n.add_observation(Observation {
                 category: ObservationCategory::ThermalBehavior,
-                confidence: Confidence(0.8), // High confidence
+                confidence: Confidence(0.8),
                 description: "Reliably withstands heat".to_string(),
                 recorded_at: 100,
-            },
-        );
-
-        journal.record(
-            JournalKey::MaterialInstance { seed: 99 },
-            "Another Material",
-            Observation {
-                category: ObservationCategory::Weight,
-                confidence: Confidence(0.9), // Very high confidence
-                description: "Notably heavy".to_string(),
-                recorded_at: 200,
-            },
-        );
-
-        // Add observation with medium confidence
-        journal.record(
-            JournalKey::MaterialInstance { seed: 42 },
-            "Test Material",
-            Observation {
+            });
+            n.add_observation(Observation {
                 category: ObservationCategory::SurfaceAppearance,
-                confidence: Confidence(0.5), // Medium confidence
+                confidence: Confidence(0.5),
                 description: "Smooth metallic surface".to_string(),
                 recorded_at: 150,
-            },
-        );
+            });
+        }
 
-        // Spawn player with the journal
-        let player_entity = app.world_mut().spawn((Player, journal)).id();
+        let key99 = JournalKey::MaterialInstance { seed: 99 };
+        let node99 = graph.ensure_concept(ConceptId(key99.clone()), ConceptCategory::Material, 0);
+        if let Some(n) = graph.graph_mut().node_weight_mut(node99) {
+            n.name = "Another Material".to_string();
+            n.confidence = Confidence(0.9);
+            n.add_observation(Observation {
+                category: ObservationCategory::Weight,
+                confidence: Confidence(0.9),
+                description: "Notably heavy".to_string(),
+                recorded_at: 200,
+            });
+        }
 
-        // Verify initial confidence levels
-        let journal = app.world().entity(player_entity).get::<Journal>().unwrap();
-        let thermal_obs = &journal.entries[&JournalKey::MaterialInstance { seed: 42 }].observations
-            [&ObservationCategory::ThermalBehavior][0];
-        let weight_obs = &journal.entries[&JournalKey::MaterialInstance { seed: 99 }].observations
-            [&ObservationCategory::Weight][0];
-        let surface_obs = &journal.entries[&JournalKey::MaterialInstance { seed: 42 }].observations
-            [&ObservationCategory::SurfaceAppearance][0];
-
-        assert_eq!(thermal_obs.confidence.0, 0.8);
-        assert_eq!(weight_obs.confidence.0, 0.9);
-        assert_eq!(surface_obs.confidence.0, 0.5);
+        app.insert_resource(graph);
 
         // Emit death event
         app.world_mut()
@@ -2736,37 +2703,45 @@ mod tests {
             .write(OnPlayerDeathEvent {
                 cause: DeathCause::HeatSystem,
             });
-
-        // Run the death handler system
         app.update();
 
-        // Verify confidence has been degraded
-        let journal = app.world().entity(player_entity).get::<Journal>().unwrap();
-        let thermal_obs = &journal.entries[&JournalKey::MaterialInstance { seed: 42 }].observations
-            [&ObservationCategory::ThermalBehavior][0];
-        let weight_obs = &journal.entries[&JournalKey::MaterialInstance { seed: 99 }].observations
-            [&ObservationCategory::Weight][0];
-        let surface_obs = &journal.entries[&JournalKey::MaterialInstance { seed: 42 }].observations
-            [&ObservationCategory::SurfaceAppearance][0];
+        // Verify confidence was degraded in the KnowledgeGraph.
+        let graph = app.world().resource::<KnowledgeGraph>();
+        let n42 = graph.node(node42).unwrap();
+        let thermal = &n42.observations_by_category(&ObservationCategory::ThermalBehavior)[0];
+        let surface = &n42.observations_by_category(&ObservationCategory::SurfaceAppearance)[0];
+        let n99 = graph.node(node99).unwrap();
+        let weight = &n99.observations_by_category(&ObservationCategory::Weight)[0];
 
-        // Expected values: original * 0.6, but not below 0.2 floor
-        assert_eq!(thermal_obs.confidence.0, 0.8 * 0.6); // 0.48
-        assert_eq!(weight_obs.confidence.0, 0.9 * 0.6); // 0.54
-        assert_eq!(surface_obs.confidence.0, 0.5 * 0.6); // 0.30
+        // Expected: original * 0.6, not below 0.2 floor
+        assert!(
+            (thermal.confidence.0 - 0.8 * 0.6).abs() < 1e-5,
+            "thermal: {}",
+            thermal.confidence.0
+        );
+        assert!(
+            (weight.confidence.0 - 0.9 * 0.6).abs() < 1e-5,
+            "weight: {}",
+            weight.confidence.0
+        );
+        assert!(
+            (surface.confidence.0 - 0.5 * 0.6).abs() < 1e-5,
+            "surface: {}",
+            surface.confidence.0
+        );
     }
 
     #[test]
     fn death_event_respects_confidence_floor() {
-        use crate::journal::{Journal, JournalKey, Observation, ObservationCategory};
-        use crate::player::Player;
+        use crate::journal::{JournalKey, Observation, ObservationCategory};
+        use crate::knowledge_graph::{ConceptCategory, ConceptId, KnowledgeGraph};
 
         let mut app = App::new();
-        // Don't use the plugin to avoid TOML config loading
         app.add_message::<OnPlayerDeathEvent>()
             .add_systems(Update, handle_player_death)
             .insert_resource(ConfidenceConfig {
-                death_degradation_factor: 0.5, // Aggressive degradation
-                death_floor: 0.3,              // High floor
+                death_degradation_factor: 0.5,
+                death_floor: 0.3,
                 domain_recovery_multiplier: 2.0,
                 passive_recovery_multiplier: 0.7,
                 base_observation_weight: 0.2,
@@ -2774,45 +2749,33 @@ mod tests {
             })
             .insert_resource(Time::<()>::default());
 
-        // Create a player with a journal containing low confidence observation
-        let mut journal = Journal::default();
-
-        journal.record(
-            JournalKey::MaterialInstance { seed: 42 },
-            "Test Material",
-            Observation {
+        let mut graph = KnowledgeGraph::default();
+        let key42 = JournalKey::MaterialInstance { seed: 42 };
+        let node42 = graph.ensure_concept(ConceptId(key42.clone()), ConceptCategory::Material, 0);
+        if let Some(n) = graph.graph_mut().node_weight_mut(node42) {
+            n.add_observation(Observation {
                 category: ObservationCategory::ThermalBehavior,
-                confidence: Confidence(0.4), // Low confidence that would degrade below floor
+                confidence: Confidence(0.4),
                 description: "Seemed to react to heat".to_string(),
                 recorded_at: 100,
-            },
-        );
+            });
+        }
+        app.insert_resource(graph);
 
-        let player_entity = app.world_mut().spawn((Player, journal)).id();
-
-        // Verify initial confidence
-        let journal = app.world().entity(player_entity).get::<Journal>().unwrap();
-        let thermal_obs = &journal.entries[&JournalKey::MaterialInstance { seed: 42 }].observations
-            [&ObservationCategory::ThermalBehavior][0];
-        assert_eq!(thermal_obs.confidence.0, 0.4);
-
-        // Emit death event
         app.world_mut()
             .resource_mut::<Messages<OnPlayerDeathEvent>>()
             .write(OnPlayerDeathEvent {
                 cause: DeathCause::Fabrication,
             });
-
-        // Run the death handler system
         app.update();
 
-        // Verify confidence was clamped to floor
-        // Expected: 0.4 * 0.5 = 0.2, but floor is 0.3, so should be 0.3
-        let journal = app.world().entity(player_entity).get::<Journal>().unwrap();
-        let thermal_obs = &journal.entries[&JournalKey::MaterialInstance { seed: 42 }].observations
-            [&ObservationCategory::ThermalBehavior][0];
-
-        assert_eq!(thermal_obs.confidence.0, 0.3); // Clamped to floor
+        // Expected: 0.4 * 0.5 = 0.2, clamped to floor 0.3
+        let graph = app.world().resource::<KnowledgeGraph>();
+        let thermal = &graph
+            .node(node42)
+            .unwrap()
+            .observations_by_category(&ObservationCategory::ThermalBehavior)[0];
+        assert_eq!(thermal.confidence.0, 0.3);
     }
 
     #[test]

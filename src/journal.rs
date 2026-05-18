@@ -1652,61 +1652,6 @@ fn update_journal_context_on_planet_change(
     }
 }
 
-// ── Record ingestion ────────────────────────────────────────────────────
-
-/// Unified ingestion system — reads [`RecordObservation`] messages and
-/// writes them into the player's [`Journal`] with domain-weighted recovery.
-///
-/// Callers pass `recorded_at: 0` — this system overwrites with real
-/// elapsed time so caller signatures stay lean.
-///
-/// The system applies domain-weighted confidence recovery based on recent
-/// death context. If the player died recently and is now observing the
-/// death-relevant domain, confidence accumulates faster. If they're
-/// avoiding the death domain, it accumulates slower.
-#[allow(dead_code)]
-pub(crate) fn apply_observations(
-    mut reader: MessageReader<RecordObservation>,
-    mut player_query: Query<&mut Journal, With<Player>>,
-    time: Res<Time>,
-    config: Res<crate::observation::ConfidenceConfig>,
-    death_context: Option<Res<crate::observation::DeathContext>>,
-) {
-    let Ok(mut journal) = player_query.single_mut() else {
-        return;
-    };
-
-    let tick = time.elapsed().as_millis() as u64;
-
-    for event in reader.read() {
-        let mut obs = event.observation.clone();
-        obs.recorded_at = tick;
-
-        // Calculate recovery multiplier based on death context
-        let recovery_multiplier = if let Some(death_ctx) = &death_context {
-            death_ctx.recovery_multiplier(&obs.category, tick, &config)
-        } else {
-            1.0
-        };
-
-        journal.record_with_domain_weighted_accumulation(
-            event.key.clone(),
-            &event.name,
-            obs,
-            &config,
-            recovery_multiplier,
-        );
-
-        // Stamp origin_planet_seed on first encounter so CurrentPlanet filter works.
-        if let Some(planet_seed) = event.planet_seed
-            && let Some(entry) = journal.entries.get_mut(&event.key)
-            && entry.origin_planet_seed.is_none()
-        {
-            entry.origin_planet_seed = Some(planet_seed);
-        }
-    }
-}
-
 /// Cached text output computed by `compute_journal_panels` and consumed
 /// by `sync_journal_ui` to update the Bevy `Text` nodes.  Keeping the
 /// computation and UI sync in separate systems allows each system to stay

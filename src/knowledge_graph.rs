@@ -331,7 +331,7 @@ pub struct ConceptEdge {
 /// `serde-1` feature. The three indexes are rebuilt from the graph on
 /// deserialization — they are not stored explicitly — ensuring the indexes
 /// always stay consistent with the canonical graph data.
-#[derive(Resource, Debug, Default)]
+#[derive(Resource, Clone, Debug, Default)]
 pub struct KnowledgeGraph {
     /// Core petgraph directed graph with typed nodes and edges.
     graph: Graph<ConceptNode, ConceptEdge>,
@@ -514,6 +514,17 @@ impl KnowledgeGraph {
             n.revealed_properties.insert(property_name);
         }
     }
+
+    /// Mutable access to the underlying petgraph `Graph` — exposed only for
+    /// test code that needs to directly populate node fields (e.g. seeding
+    /// confidence or observation data without going through the message
+    /// pipeline). Production code should use the typed accessors instead.
+    ///
+    /// Marked `pub` because the observation module's tests are in a sibling
+    /// module and need to seed graph state for death-degradation assertions.
+    pub fn graph_mut(&mut self) -> &mut Graph<ConceptNode, ConceptEdge> {
+        &mut self.graph
+    }
     /// Timeline of all discovered concepts in chronological order.
     ///
     /// Each entry is `(discovered_at_tick, node_index)`. Because
@@ -554,7 +565,25 @@ impl KnowledgeGraph {
         pairs.into_iter().map(|(idx, _)| idx).collect()
     }
 
-    // ── Bounded BFS ───────────────────────────────────────────────────────
+    /// Apply death confidence degradation to every observation and node
+    /// confidence in the graph.
+    ///
+    /// Called by the observation system's `handle_player_death` handler.
+    /// Iterates all nodes and degrades both the per-observation confidence
+    /// and the overall node confidence using the same factor/floor values
+    /// loaded from `assets/config/confidence.toml`.
+    pub fn degrade_all(&mut self, factor: f32, floor: f32) {
+        for idx in self.graph.node_indices().collect::<Vec<_>>() {
+            if let Some(node) = self.graph.node_weight_mut(idx) {
+                node.confidence.degrade(factor, floor);
+                for obs_group in node.observations.values_mut() {
+                    for obs in obs_group.iter_mut() {
+                        obs.confidence.degrade(factor, floor);
+                    }
+                }
+            }
+        }
+    }
 
     /// Bounded BFS from a center node, returning `(node_index, depth)`
     /// pairs for all reachable nodes within `depth` hops.
@@ -699,9 +728,7 @@ impl<'de> Deserialize<'de> for KnowledgeGraph {
 /// Processes [`crate::journal::RecordObservation`] messages and populates
 /// the [`KnowledgeGraph`] with typed relationship edges.
 ///
-/// Runs in [`crate::journal::JournalSet::Navigate`] — same set as the
-/// journal's own `apply_observations`, so both systems see the same
-/// messages in the same frame.
+/// As of Story 387 this is the **sole** observation write path.
 ///
 /// # Edges created
 ///
@@ -914,7 +941,7 @@ pub fn detect_and_wire_similar_materials(
     new_seed: u64,
     new_material: &crate::materials::GameMaterial,
     catalog: &crate::materials::MaterialCatalog,
-    journal: &crate::journal::Journal,
+    graph_read: &KnowledgeGraph,
     graph: &mut KnowledgeGraph,
     threshold: f32,
     tick: u64,
@@ -922,7 +949,6 @@ pub fn detect_and_wire_similar_materials(
     let new_vec = new_material.property_vector();
 
     for existing in catalog.values() {
-        // Never compare a material to itself.
         if existing.seed == new_seed {
             continue;
         }
@@ -932,22 +958,18 @@ pub fn detect_and_wire_similar_materials(
             continue;
         }
 
-        // Both materials must be at Observed confidence or above before
-        // we surface the similarity — connections must be earned.
         let new_key = crate::journal::JournalKey::MaterialInstance { seed: new_seed };
         let existing_key = crate::journal::JournalKey::MaterialInstance {
             seed: existing.seed,
         };
 
-        let new_confident = is_at_least_observed(journal, &new_key);
-        let existing_confident = is_at_least_observed(journal, &existing_key);
+        let new_confident = is_at_least_observed(graph_read, &new_key);
+        let existing_confident = is_at_least_observed(graph_read, &existing_key);
 
         if !new_confident || !existing_confident {
             continue;
         }
 
-        // Wire SimilarTo in both directions so the relationship shows up
-        // regardless of which material the player is viewing.
         let new_node =
             graph.ensure_concept(ConceptId(new_key.clone()), ConceptCategory::Material, tick);
         let existing_node =
@@ -990,30 +1012,22 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     (dot / (mag_a * mag_b)).clamp(-1.0, 1.0)
 }
 
-/// Returns `true` when the journal contains at least one observation for
-/// `key` with confidence at or above [`crate::observation::ConfidenceTier::Observed`]
+/// Returns `true` when the graph contains a concept node for `key` with
+/// overall confidence at or above [`crate::observation::ConfidenceTier::Observed`]
 /// (i.e. confidence ≥ 0.3).
 ///
 /// "At least Observed" is the threshold at which the player has
-/// accumulated enough evidence to treat the observation as factual
+/// accumulated enough evidence to treat an observation as factual
 /// rather than tentative. `SimilarTo` edges are only wired when both
 /// materials meet this bar, ensuring the connection is earned.
-fn is_at_least_observed(
-    journal: &crate::journal::Journal,
-    key: &crate::journal::JournalKey,
-) -> bool {
-    match key {
-        crate::journal::JournalKey::MaterialInstance { seed } => {
-            journal.entries.values().any(|entry| {
-                matches!(&entry.key, crate::journal::JournalKey::MaterialInstance { seed: s } if *s == *seed)
-                    && entry.all_observations().any(|obs| obs.confidence.0 >= 0.3)
-            })
-        }
-        _ => journal
-            .entries
-            .get(key)
-            .is_some_and(|entry| entry.all_observations().any(|obs| obs.confidence.0 >= 0.3)),
-    }
+///
+/// Reads confidence from the KnowledgeGraph node — no Journal access needed.
+fn is_at_least_observed(graph: &KnowledgeGraph, key: &crate::journal::JournalKey) -> bool {
+    let id = ConceptId(key.clone());
+    graph
+        .lookup(&id)
+        .and_then(|idx| graph.node(idx))
+        .is_some_and(|node| node.confidence.0 >= 0.3)
 }
 
 /// Detects and wires `SimilarTo` edges for newly observed materials.
@@ -1032,13 +1046,9 @@ fn detect_similar_on_observation(
     mut reader: MessageReader<crate::journal::RecordObservation>,
     mut graph: ResMut<KnowledgeGraph>,
     catalog: Res<crate::materials::MaterialCatalog>,
-    player_query: Query<&crate::journal::Journal, With<crate::player::Player>>,
     time: Res<Time>,
     config: Res<crate::observation::ConfidenceConfig>,
 ) {
-    let Ok(journal) = player_query.single() else {
-        return;
-    };
     let tick = time.elapsed().as_secs();
 
     for obs in reader.read() {
@@ -1052,7 +1062,7 @@ fn detect_similar_on_observation(
             seed,
             material,
             &catalog,
-            journal,
+            &graph.as_ref().clone(),
             &mut graph,
             config.similarity_threshold,
             tick,
