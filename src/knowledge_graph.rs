@@ -524,6 +524,36 @@ impl KnowledgeGraph {
         &self.timeline
     }
 
+    /// All concept nodes sorted by name, for stable alphabetical display in the journal.
+    ///
+    /// Returns an empty vec when the graph has no nodes yet. Nodes with empty
+    /// names (location concepts that have never had a name stamped) sort to the
+    /// front — the UI skips them via `name.is_empty()` checks.
+    pub fn nodes_sorted_by_name(&self) -> Vec<NodeIndex> {
+        let mut pairs: Vec<(NodeIndex, &str)> = self
+            .graph
+            .node_indices()
+            .filter_map(|idx| self.graph.node_weight(idx).map(|n| (idx, n.name.as_str())))
+            .collect();
+        pairs.sort_by(|(_, a), (_, b)| a.cmp(b));
+        pairs.into_iter().map(|(idx, _)| idx).collect()
+    }
+
+    /// All concept nodes in a given category, sorted by name.
+    ///
+    /// Convenience wrapper over [`by_category`](Self::by_category) +
+    /// [`node`](Self::node) that also sorts alphabetically — the same
+    /// ordering used by the journal list panel.
+    pub fn nodes_in_category_sorted_by_name(&self, category: &ConceptCategory) -> Vec<NodeIndex> {
+        let mut pairs: Vec<(NodeIndex, &str)> = self
+            .by_category(category)
+            .iter()
+            .filter_map(|&idx| self.graph.node_weight(idx).map(|n| (idx, n.name.as_str())))
+            .collect();
+        pairs.sort_by(|(_, a), (_, b)| a.cmp(b));
+        pairs.into_iter().map(|(idx, _)| idx).collect()
+    }
+
     // ── Bounded BFS ───────────────────────────────────────────────────────
 
     /// Bounded BFS from a center node, returning `(node_index, depth)`
