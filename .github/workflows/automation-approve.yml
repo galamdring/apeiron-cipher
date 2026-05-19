@@ -142,7 +142,7 @@ jobs:
         run: |
           STAGING_BRANCH="${{ steps.range.outputs.staging_branch }}"
           ISSUE_NUMBER="${{ steps.range.outputs.issue_number }}"
-          TITLE="${{ steps.msg.outputs.title }}"
+          TITLE="$PR_TITLE"
 
           PR_BODY=$(cat /tmp/commit_message.txt)
 
@@ -154,3 +154,4 @@ jobs:
             --repo "${{ github.repository }}"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_TITLE: ${{ steps.msg.outputs.title }}
