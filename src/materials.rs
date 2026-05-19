@@ -14,15 +14,15 @@
 //! Legacy TOML files under `assets/materials/` are retained as reference
 //! documentation but are no longer loaded at startup.
 //!
-//! The `spawn_material_objects` system creates 3D entities from the catalog and
-//! distributes them across [`Surface`](crate::scene::Surface) shelves.
+//! Materials are spawned in the world exclusively through exterior chunk
+//! generation — deposits place entities with `origin_planet_seed` stamped at
+//! spawn time. There is no longer a room-based starter set.
 
 use std::collections::HashMap;
 
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::scene::Shelf;
 use crate::seed_util::{
     MAT_COLOR_B_CHANNEL, MAT_COLOR_G_CHANNEL, MAT_COLOR_R_CHANNEL, MAT_CONDUCTIVITY_CHANNEL,
     MAT_DENSITY_CHANNEL, MAT_REACTIVITY_CHANNEL, MAT_THERMAL_RESISTANCE_CHANNEL,
@@ -66,8 +66,7 @@ pub const WELL_KNOWN_MATERIAL_SEEDS: &[(&str, u64)] = &[
 
 impl Plugin for MaterialPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(PreStartup, load_material_catalog)
-            .add_systems(PostStartup, spawn_material_objects);
+        app.add_systems(PreStartup, load_material_catalog);
 
         // In debug builds, run a per-frame assertion that no GameMaterial entity
         // has more than one of the three mutually-exclusive location markers:
@@ -454,73 +453,6 @@ impl MaterialCatalog {
 /// The material's data is on the same entity as a [`GameMaterial`] component.
 #[derive(Component, Debug)]
 pub struct MaterialObject;
-
-// ── Spawning ─────────────────────────────────────────────────────────────
-
-const OBJECT_SCALE: f32 = 1.0;
-
-/// Places a 3D entity for each material in the catalog onto the `Surface`
-/// entities created by the scene plugin. Materials are distributed across
-/// surfaces round-robin and offset so they don't overlap.
-fn spawn_material_objects(
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut std_materials: ResMut<Assets<StandardMaterial>>,
-    catalog: Res<MaterialCatalog>,
-    shelves: Query<&Transform, With<Shelf>>,
-) {
-    let shelf_transforms: Vec<&Transform> = shelves.iter().collect();
-    if shelf_transforms.is_empty() {
-        warn!("No Shelf entities found — materials will not be spawned in the world");
-        return;
-    }
-
-    let mut sorted_names: Vec<&String> = catalog.names().collect();
-    sorted_names.sort();
-
-    for (i, name) in sorted_names.iter().enumerate() {
-        let mat = catalog
-            .get_by_name(name)
-            .expect("name index references a valid material");
-        let surface_tf = shelf_transforms[i % shelf_transforms.len()];
-
-        let items_on_this_surface = sorted_names
-            .iter()
-            .enumerate()
-            .filter(|(j, _)| j % shelf_transforms.len() == i % shelf_transforms.len())
-            .position(|(j, _)| j == i)
-            .unwrap_or(0);
-
-        let x_offset = (items_on_this_surface as f32) * 0.3 - 0.3;
-
-        let mesh = mat.mesh_for_density(&mut meshes);
-        let render_mat = std_materials.add(StandardMaterial {
-            base_color: mat.bevy_color(),
-            perceptual_roughness: 0.5,
-            metallic: if mat.conductivity.value() > 0.6 {
-                0.6
-            } else {
-                0.1
-            },
-            ..default()
-        });
-
-        commands.spawn((
-            MaterialObject,
-            mat.clone(),
-            Mesh3d(mesh),
-            MeshMaterial3d(render_mat),
-            Transform::from_xyz(
-                surface_tf.translation.x + x_offset,
-                mat.resting_center_y(surface_tf.translation.y),
-                surface_tf.translation.z,
-            )
-            .with_scale(Vec3::splat(OBJECT_SCALE)),
-        ));
-
-        info!("Spawned material object '{}' on surface", mat.name);
-    }
-}
 
 // ── Loading ──────────────────────────────────────────────────────────────
 
