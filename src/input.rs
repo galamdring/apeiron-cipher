@@ -74,6 +74,8 @@ pub enum InputAction {
     Place,
     /// Toggle the journal overlay on or off.
     ToggleJournal,
+    /// Toggle the debug overlay panel on or off.
+    ToggleDebugOverlay,
     /// Activate the fabricator to begin processing.
     Activate,
     /// Pause the game.
@@ -136,6 +138,11 @@ struct BindingsConfig {
     pub activate: Vec<String>,
     #[serde(default = "default_pause", rename = "Pause")]
     pub pause: Vec<String>,
+    #[serde(
+        default = "default_toggle_debug_overlay",
+        rename = "ToggleDebugOverlay"
+    )]
+    pub toggle_debug_overlay: Vec<String>,
 }
 
 impl Default for BindingsConfig {
@@ -152,6 +159,7 @@ impl Default for BindingsConfig {
             toggle_journal: default_toggle_journal(),
             activate: default_activate(),
             pause: default_pause(),
+            toggle_debug_overlay: default_toggle_debug_overlay(),
         }
     }
 }
@@ -221,6 +229,9 @@ fn default_activate() -> Vec<String> {
 fn default_pause() -> Vec<String> {
     vec!["Escape".into()]
 }
+fn default_toggle_debug_overlay() -> Vec<String> {
+    vec!["F3".into()]
+}
 
 // ── Input name parsing ──────────────────────────────────────────────────
 
@@ -256,6 +267,12 @@ fn parse_key(name: &str) -> Option<KeyCode> {
         "Space" => Some(KeyCode::Space),
         "Escape" => Some(KeyCode::Escape),
         "Tab" => Some(KeyCode::Tab),
+        "F1" => Some(KeyCode::F1),
+        "F2" => Some(KeyCode::F2),
+        "F3" => Some(KeyCode::F3),
+        "F4" => Some(KeyCode::F4),
+        "F5" => Some(KeyCode::F5),
+        "F6" => Some(KeyCode::F6),
         "ShiftLeft" => Some(KeyCode::ShiftLeft),
         "ShiftRight" => Some(KeyCode::ShiftRight),
         "ControlLeft" => Some(KeyCode::ControlLeft),
@@ -375,6 +392,11 @@ fn build_input_map(config: &InputConfig) -> InputMap<InputAction> {
     );
     insert_bindings(&mut input_map, InputAction::Activate, &bindings.activate);
     insert_bindings(&mut input_map, InputAction::Pause, &bindings.pause);
+    insert_bindings(
+        &mut input_map,
+        InputAction::ToggleDebugOverlay,
+        &bindings.toggle_debug_overlay,
+    );
 
     input_map
 }
