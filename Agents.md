@@ -57,13 +57,14 @@ The **authoritative source** for when to stop and ask vs when to proceed is `doc
 
 ## 4. Development Workflow
 
-Agents manage their own PRs and issue label state using `gh` and `gt` (Graphite) CLIs. **Status is tracked via `status:*` labels on GitHub Issues, not a project board.**
+Agents manage their own issue label state using the `gh` CLI. **Status is tracked via `status:*` labels on GitHub Issues, not a project board.**
 
 The full workflow (pick story → implement → PR → review) is documented in `docs/bmad/agent-workflow.md`. Key constraints:
 
 - Only one story in progress at a time
 - Agents must **never** close an issue or transition it to Done (automation handles this)
 - If blocked: move to `status:blocked`, cascade to dependents, pick next ready story. **Collaborate, don't decide.**
+- **Before committing or opening a PR:** re-read `docs/bmad/planning-artifacts/architecture/core-principles.md` and verify your changes do not violate any of the 10 principles. This is not optional. The principles are short — read them in full, not just the ones that seem relevant. An agent that skips this step and ships a violation has failed the task.
 
 ### Branch & PR Naming
 

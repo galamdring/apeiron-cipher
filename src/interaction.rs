@@ -21,13 +21,10 @@ use bevy::picking::mesh_picking::ray_cast::{MeshRayCast, MeshRayCastSettings, Ra
 use bevy::prelude::*;
 
 use crate::carry::{CarryConfig, CarryState, ObserveWeight, StashHeldForPickup};
-use crate::descriptions::{
-    describe_color, describe_density, describe_thermal_observation, describe_value,
-};
+use crate::descriptions::describe_density;
 use crate::fabricator::{ActivateIntent, InputSlot, OutputSlot};
 use crate::input::InputAction;
-use crate::journal::{JournalKey, Observation, ObservationCategory, RecordObservation};
-use crate::materials::{GameMaterial, MATERIAL_SURFACE_GAP, MaterialObject, PropertyVisibility};
+use crate::materials::{GameMaterial, MATERIAL_SURFACE_GAP, MaterialObject};
 use crate::observation::Confidence;
 use crate::player::{Player, PlayerCamera, cursor_is_captured};
 use crate::scene::{PlayerSceneConfig, Surface};
@@ -152,11 +149,8 @@ fn update_interaction_target(
     mut ray_cast: MeshRayCast,
     material_query: Query<&GameMaterial, With<MaterialObject>>,
     held_query: Query<(), With<HeldItem>>,
-    mut encounter_writer: MessageWriter<RecordObservation>,
-    descriptor_vocab: Res<crate::observation::DescriptorVocabulary>,
-    world_profile: Option<Res<WorldProfile>>,
 ) {
-    let previous_target = target.entity;
+    let _previous_target = target.entity;
     target.entity = None;
 
     let Ok((camera, cam_gtf)) = camera_query.single() else {
@@ -183,56 +177,6 @@ fn update_interaction_target(
         && hit.distance <= INTERACTION_RANGE
     {
         target.entity = Some(entity);
-    }
-
-    if target.entity != previous_target
-        && let Some(entity) = target.entity
-        && let Ok(material) = material_query.get(entity)
-    {
-        encounter_writer.write(RecordObservation {
-            key: JournalKey::Material {
-                seed: material.seed,
-                // Capture the planet on which this material is being
-                // observed so the journal's "current planet" filter
-                // (Story 10.3) can match the entry against the player's
-                // current `WorldProfile::planet_seed` without re-deriving
-                // provenance from observation history.  When no
-                // `WorldProfile` is in scope (early bring-up, ad-hoc
-                // integration tests, future non-planetary discovery
-                // sites) the field stays `None` rather than defaulting to
-                // a sentinel — see `JournalKey::Material::planet_seed`'s
-                // docs for why "unknown provenance" is kept explicit.
-                planet_seed: world_profile.as_deref().map(|p| p.planet_seed.0),
-            },
-            name: material.name.clone(),
-            observation: Observation {
-                category: ObservationCategory::SurfaceAppearance,
-                confidence: Confidence(0.1), // Low initial confidence for first observation
-                description: {
-                    // Use the DescriptorVocabulary for surface appearance
-                    // For surface appearance, we'll use the density value as the primary property
-                    // since it's more quantifiable than color
-                    descriptor_vocab
-                        .describe(
-                            &ObservationCategory::SurfaceAppearance,
-                            material.density.value(),
-                            Confidence(0.1),
-                        )
-                        .map(|s| s.to_string())
-                        .unwrap_or_else(|| {
-                            // Fallback to old system if vocabulary lookup fails
-                            format!(
-                                "Color: {}\nWeight: {}",
-                                describe_color(&material.color),
-                                describe_density(material.density.value())
-                            )
-                        })
-                },
-                recorded_at: 0,
-            },
-            input_seeds: Vec::new(),
-            context_location: None,
-        });
     }
 }
 
@@ -412,6 +356,10 @@ fn process_pickup(
             .insert(HeldItem)
             .set_parent_in_place(camera_entity)
             .insert(Transform::from_translation(carry_config.hold_offset_vec3()));
+        // Density is revealed on pickup via the ObserveWeight message above,
+        // which fires a RecordObservation → KnowledgeGraph.reveal_property("Weight").
+        // The inspect panel reads revealed properties from the KG node — no
+        // entity component mutation needed here.
     }
 }
 
@@ -833,15 +781,13 @@ fn update_examine_panel(
     state: Res<ExamineState>,
     target: Res<InteractionTarget>,
     descriptor_vocab: Res<crate::observation::DescriptorVocabulary>,
-    held_query: Query<&GameMaterial, With<HeldItem>>,
-    material_query: Query<&GameMaterial, With<MaterialObject>>,
-    mut panel_query: Query<&mut Visibility, With<ExaminePanel>>,
-    mut text_query: Query<&mut Text, With<ExamineText>>,
+    graph: Res<crate::knowledge_graph::KnowledgeGraph>,
+    mut queries: ExaminePanelQueries,
 ) {
-    let Ok(mut vis) = panel_query.single_mut() else {
+    let Ok(mut vis) = queries.panel_query.single_mut() else {
         return;
     };
-    let Ok(mut text) = text_query.single_mut() else {
+    let Ok(mut text) = queries.text_query.single_mut() else {
         return;
     };
 
@@ -850,11 +796,11 @@ fn update_examine_panel(
         return;
     }
 
-    // Prefer held item; fall back to whatever the player is looking at.
-    let mat = held_query
-        .iter()
-        .next()
-        .or_else(|| target.entity.and_then(|e| material_query.get(e).ok()));
+    let mat = queries.held_query.iter().next().or_else(|| {
+        target
+            .entity
+            .and_then(|e| queries.material_query.get(e).ok())
+    });
 
     let Some(mat) = mat else {
         *vis = Visibility::Hidden;
@@ -862,70 +808,76 @@ fn update_examine_panel(
     };
 
     *vis = Visibility::Visible;
-    text.0 = build_examine_text(mat, &descriptor_vocab);
+    text.0 = build_examine_text(mat, &descriptor_vocab, &graph);
 }
 
+#[derive(bevy::ecs::system::SystemParam)]
+struct ExaminePanelQueries<'w, 's> {
+    held_query: Query<'w, 's, &'static GameMaterial, With<HeldItem>>,
+    material_query: Query<'w, 's, &'static GameMaterial, With<MaterialObject>>,
+    panel_query: Query<'w, 's, &'static mut Visibility, With<ExaminePanel>>,
+    text_query: Query<'w, 's, &'static mut Text, With<ExamineText>>,
+}
+
+/// Build the examine panel text for a material, reading revealed properties
+/// from the KnowledgeGraph node rather than from entity `PropertyVisibility`.
+///
+/// The KnowledgeGraph `revealed_properties` set uses
+/// `ObservationCategory::display_label()` strings as keys — the same strings
+/// written by `update_knowledge_graph` when it calls `reveal_property`.
 fn build_examine_text(
     mat: &GameMaterial,
     descriptor_vocab: &crate::observation::DescriptorVocabulary,
+    graph: &crate::knowledge_graph::KnowledgeGraph,
 ) -> String {
+    // Look up what the player has revealed about this material instance.
+    let revealed = graph
+        .lookup_material_by_seed(mat.seed)
+        .and_then(|idx| graph.node_weight(idx))
+        .map(|node| &node.revealed_properties);
+
+    let is_revealed = |label: &str| -> bool {
+        revealed.is_some_and(|r: &std::collections::HashSet<String>| r.contains(label))
+    };
+
     let mut lines = vec![mat.name.clone()];
     lines.push(String::new());
 
-    append_prop(&mut lines, "Weight", &mat.density, describe_density);
-    append_thermal_prop(&mut lines, mat, descriptor_vocab);
-    append_prop(&mut lines, "Reactivity", &mat.reactivity, describe_value);
-    append_prop(
-        &mut lines,
-        "Conductivity",
-        &mat.conductivity,
-        describe_value,
-    );
-    append_prop(&mut lines, "Toxicity", &mat.toxicity, describe_value);
-
-    lines.join("\n")
-}
-
-fn append_prop(
-    lines: &mut Vec<String>,
-    label: &str,
-    prop: &crate::materials::MaterialProperty,
-    describer: fn(f32) -> &'static str,
-) {
-    if prop.visibility == PropertyVisibility::Observable
-        || prop.visibility == PropertyVisibility::Revealed
-    {
-        lines.push(format!("{label}: {}", describer(prop.value())));
+    // Weight — revealed on pickup via Weight observation
+    if is_revealed("Weight") {
+        lines.push(format!("Weight: {}", describe_density(mat.density.value())));
     } else {
-        lines.push(format!("{label}: ???"));
+        lines.push("Weight: ???".to_string());
     }
-}
 
-fn append_thermal_prop(
-    lines: &mut Vec<String>,
-    mat: &GameMaterial,
-    descriptor_vocab: &crate::observation::DescriptorVocabulary,
-) {
-    match mat.thermal_resistance.visibility {
-        PropertyVisibility::Hidden => lines.push("Heat response: ???".to_string()),
-        PropertyVisibility::Observable | PropertyVisibility::Revealed => {
-            // Use a default confidence for examine panel display
-            // The actual confidence tracking happens in the journal system
-            let display_confidence = Confidence(0.5);
-            let description = descriptor_vocab
-                .describe(
-                    &ObservationCategory::ThermalBehavior,
+    // Heat response — revealed by heat exposure system
+    if is_revealed("Thermal") {
+        let display_confidence = Confidence(0.5);
+        let description = descriptor_vocab
+            .describe(
+                &crate::journal::ObservationCategory::ThermalBehavior,
+                mat.thermal_resistance.value(),
+                display_confidence,
+            )
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| {
+                crate::descriptions::describe_thermal_observation(
                     mat.thermal_resistance.value(),
                     display_confidence,
                 )
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| {
-                    // Fallback to old system if vocabulary lookup fails
-                    describe_thermal_observation(mat.thermal_resistance.value(), display_confidence)
-                });
-            lines.push(format!("Heat response: {description}"));
-        }
+            });
+        lines.push(format!("Heat response: {description}"));
+    } else {
+        lines.push("Heat response: ???".to_string());
     }
+
+    // Remaining properties — no reveal mechanism exists yet; always ???
+    // These will be wired when their observation systems are implemented.
+    lines.push("Reactivity: ???".to_string());
+    lines.push("Conductivity: ???".to_string());
+    lines.push("Toxicity: ???".to_string());
+
+    lines.join("\n")
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────
@@ -954,67 +906,102 @@ mod tests {
     }
 
     fn test_material() -> GameMaterial {
+        use crate::materials::PropertyVisibility;
         GameMaterial {
             name: "TestMat".into(),
             seed: 1,
             color: [0.5, 0.5, 0.5],
-            density: MaterialProperty::new(0.78, PropertyVisibility::Observable),
+            origin_planet_seed: None,
+            density: MaterialProperty::new(0.78, PropertyVisibility::Hidden),
             thermal_resistance: MaterialProperty::new(0.65, PropertyVisibility::Hidden),
             reactivity: MaterialProperty::new(0.35, PropertyVisibility::Hidden),
-            conductivity: MaterialProperty::new(0.72, PropertyVisibility::Revealed),
+            conductivity: MaterialProperty::new(0.72, PropertyVisibility::Hidden),
             toxicity: MaterialProperty::new(0.05, PropertyVisibility::Hidden),
         }
     }
 
-    #[test]
-    fn examine_text_shows_observable_and_revealed_hides_hidden() {
-        let mat = test_material();
-        let descriptor_vocab = crate::observation::DescriptorVocabulary::default();
-        let text = build_examine_text(&mat, &descriptor_vocab);
+    fn graph_with_weight_revealed(seed: u64) -> crate::knowledge_graph::KnowledgeGraph {
+        use crate::journal::{JournalKey, ObservationCategory};
+        use crate::knowledge_graph::{ConceptCategory, ConceptId, KnowledgeGraph};
+        let mut graph = KnowledgeGraph::default();
+        let key = JournalKey::MaterialInstance { seed };
+        let node = graph.ensure_concept(ConceptId(key), ConceptCategory::Material, 0);
+        graph.reveal_property(
+            node,
+            ObservationCategory::Weight.display_label().to_string(),
+        );
+        graph
+    }
 
+    fn graph_with_thermal_revealed(seed: u64) -> crate::knowledge_graph::KnowledgeGraph {
+        use crate::journal::{JournalKey, ObservationCategory};
+        use crate::knowledge_graph::{ConceptCategory, ConceptId, KnowledgeGraph};
+        let mut graph = KnowledgeGraph::default();
+        let key = JournalKey::MaterialInstance { seed };
+        let node = graph.ensure_concept(ConceptId(key), ConceptCategory::Material, 0);
+        graph.reveal_property(
+            node,
+            ObservationCategory::ThermalBehavior
+                .display_label()
+                .to_string(),
+        );
+        graph
+    }
+
+    #[test]
+    fn examine_text_shows_name_always() {
+        let mat = test_material();
+        let vocab = crate::observation::DescriptorVocabulary::default();
+        let graph = crate::knowledge_graph::KnowledgeGraph::default();
+        let text = build_examine_text(&mat, &vocab, &graph);
         assert!(text.contains("TestMat"));
-        assert!(text.contains("Weight: Very heavy"));
-        assert!(text.contains("Conductivity: Very high"));
-        assert!(text.contains("Heat response: ???"));
-        assert!(text.contains("Reactivity: ???"));
-        assert!(text.contains("Toxicity: ???"));
     }
 
     #[test]
     fn examine_text_name_is_first_line() {
         let mat = test_material();
-        let descriptor_vocab = crate::observation::DescriptorVocabulary::default();
-        let text = build_examine_text(&mat, &descriptor_vocab);
-        let first_line = text.lines().next().unwrap();
-        assert_eq!(first_line, "TestMat");
+        let vocab = crate::observation::DescriptorVocabulary::default();
+        let graph = crate::knowledge_graph::KnowledgeGraph::default();
+        let text = build_examine_text(&mat, &vocab, &graph);
+        assert_eq!(text.lines().next().unwrap(), "TestMat");
     }
 
     #[test]
-    fn examine_text_shows_heat_response_for_revealed_thermal_property() {
-        let mut mat = test_material();
-        mat.thermal_resistance.visibility = PropertyVisibility::Revealed;
-
-        let descriptor_vocab = crate::observation::DescriptorVocabulary::default();
-        let text = build_examine_text(&mat, &descriptor_vocab);
-        // Check for the presence of Heat response rather than specific confidence language
-        assert!(text.contains("Heat response:"));
-        // Check that the heat response line specifically doesn't contain "???"
-        let heat_line = text
-            .lines()
-            .find(|line| line.contains("Heat response:"))
-            .unwrap();
-        assert!(!heat_line.contains("???"));
-    }
-
-    #[test]
-    fn examine_text_shows_thermal_knowledge_for_hidden_property_when_previously_observed() {
+    fn examine_text_weight_hidden_without_observation() {
         let mat = test_material();
-        let descriptor_vocab = crate::observation::DescriptorVocabulary::default();
+        let vocab = crate::observation::DescriptorVocabulary::default();
+        let graph = crate::knowledge_graph::KnowledgeGraph::default();
+        let text = build_examine_text(&mat, &vocab, &graph);
+        assert!(text.contains("Weight: ???"));
+    }
 
-        // With the new system, hidden properties always show "???" regardless of previous observations
-        // The confidence tracking is now handled in the journal system, not the examine panel
-        let text = build_examine_text(&mat, &descriptor_vocab);
+    #[test]
+    fn examine_text_weight_shown_after_weight_observation() {
+        let mat = test_material();
+        let vocab = crate::observation::DescriptorVocabulary::default();
+        let graph = graph_with_weight_revealed(mat.seed);
+        let text = build_examine_text(&mat, &vocab, &graph);
+        assert!(!text.contains("Weight: ???"));
+        assert!(text.contains("Weight:"));
+    }
+
+    #[test]
+    fn examine_text_heat_hidden_without_observation() {
+        let mat = test_material();
+        let vocab = crate::observation::DescriptorVocabulary::default();
+        let graph = crate::knowledge_graph::KnowledgeGraph::default();
+        let text = build_examine_text(&mat, &vocab, &graph);
         assert!(text.contains("Heat response: ???"));
+    }
+
+    #[test]
+    fn examine_text_heat_shown_after_thermal_observation() {
+        let mat = test_material();
+        let vocab = crate::observation::DescriptorVocabulary::default();
+        let graph = graph_with_thermal_revealed(mat.seed);
+        let text = build_examine_text(&mat, &vocab, &graph);
+        let heat_line = text.lines().find(|l| l.contains("Heat response:")).unwrap();
+        assert!(!heat_line.contains("???"));
     }
 
     #[test]
