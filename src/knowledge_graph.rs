@@ -1078,6 +1078,7 @@ fn update_knowledge_graph(
 fn category_from_key(key: &crate::journal::JournalKey) -> ConceptCategory {
     match key {
         crate::journal::JournalKey::MaterialInstance { .. } => ConceptCategory::Material,
+        crate::journal::JournalKey::Material { .. } => ConceptCategory::Material,
         crate::journal::JournalKey::Fabrication { .. } => ConceptCategory::Fabrication,
         crate::journal::JournalKey::Location { .. } => ConceptCategory::Location,
     }

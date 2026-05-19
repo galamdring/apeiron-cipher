@@ -548,6 +548,9 @@ fn journal_key_variants_are_distinct() {
 fn journal_key_serde_round_trip() {
     let keys = vec![
         JournalKey::MaterialInstance { seed: 123 },
+        JournalKey::Material {
+            classification: "cesium".into(),
+        },
         JournalKey::Fabrication { output_seed: 456 },
     ];
     for key in &keys {
@@ -565,13 +568,25 @@ fn journal_key_btreemap_ordering_is_stable() {
     map.insert(JournalKey::Fabrication { output_seed: 1 }, "fab");
     map.insert(JournalKey::MaterialInstance { seed: 99 }, "mat99");
     map.insert(JournalKey::MaterialInstance { seed: 1 }, "mat1");
+    map.insert(
+        JournalKey::Material {
+            classification: "cesium".into(),
+        },
+        "mat-type-cesium",
+    );
 
     let keys: Vec<_> = map.keys().collect();
-    // Derived Ord: enum variants ordered by declaration (Material < Fabrication),
-    // then by field values within each variant.
+    // Derived Ord: enum variants ordered by declaration order —
+    // MaterialInstance < Material < Fabrication — then by field values.
     assert_eq!(*keys[0], JournalKey::MaterialInstance { seed: 1 });
     assert_eq!(*keys[1], JournalKey::MaterialInstance { seed: 99 });
-    assert_eq!(*keys[2], JournalKey::Fabrication { output_seed: 1 });
+    assert_eq!(
+        *keys[2],
+        JournalKey::Material {
+            classification: "cesium".into()
+        }
+    );
+    assert_eq!(*keys[3], JournalKey::Fabrication { output_seed: 1 });
 }
 
 #[test]
@@ -1262,6 +1277,12 @@ fn all_types_serde_round_trip() {
         JournalKey::MaterialInstance { seed: u64::MAX },
         JournalKey::MaterialInstance { seed: 1 },
         JournalKey::MaterialInstance { seed: 7 },
+        JournalKey::Material {
+            classification: "cesium".into(),
+        },
+        JournalKey::Material {
+            classification: "ferrite".into(),
+        },
         JournalKey::Fabrication { output_seed: 42 },
     ];
     for key in &keys {
