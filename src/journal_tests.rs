@@ -1,9 +1,14 @@
 use super::*;
+use crate::knowledge_graph::{ConceptId, ConceptNode, KnowledgeGraph};
 use crate::observation::Confidence;
 use crate::world_generation::BiomeType;
 
-fn build_entry_list_text(entries: &[&JournalEntry], state: &JournalUiState) -> String {
-    let lines = build_entry_list_lines(entries, state);
+fn build_entry_list_text(
+    nodes: &[NodeIndex],
+    graph: &KnowledgeGraph,
+    state: &JournalUiState,
+) -> String {
+    let lines = build_entry_list_lines(nodes, graph, state);
     lines
         .iter()
         .map(|l| l.text.as_str())
@@ -25,24 +30,22 @@ fn detail_spans_to_string(spans: &[DetailSpan]) -> String {
 /// UI now uses `build_entry_list_text` / `build_detail_spans` instead, but
 /// this function exercises the same rendering logic in a flat format that
 /// is convenient for unit-test assertions.
-fn build_journal_text(journal: &Journal) -> String {
-    if journal.entries.is_empty() {
+fn build_journal_text(kg: &KnowledgeGraph) -> String {
+    let nodes = kg.nodes_sorted_by_name();
+    if nodes.is_empty() {
         return "Journal\n\nNo observations yet.".to_string();
     }
 
     let mut out = vec!["Journal".to_string()];
 
-    // Collect all fabrication result descriptions across all entries, in
-    // insertion order (BTreeMap iteration is deterministic). This mirrors
-    // the legacy "Recent Fabrication" section which was a flat log.
-    let fabrication_descriptions: Vec<&str> = journal
-        .entries
-        .values()
-        .flat_map(|entry| {
-            entry
-                .observations_by_category(&ObservationCategory::FabricationResult)
+    // Collect all fabrication result descriptions, alphabetical node order.
+    let fabrication_descriptions: Vec<String> = nodes
+        .iter()
+        .filter_map(|&idx| kg.node(idx))
+        .flat_map(|n| {
+            n.observations_by_category(&ObservationCategory::FabricationResult)
                 .iter()
-                .map(|o| o.description.as_str())
+                .map(|o| o.description.clone())
         })
         .collect();
 
@@ -54,37 +57,26 @@ fn build_journal_text(journal: &Journal) -> String {
         }
     }
 
-    // Sort entries by name for stable, alphabetical display order.
-    let mut entries: Vec<&JournalEntry> = journal.entries.values().collect();
-    entries.sort_by(|a, b| a.name.cmp(&b.name));
-
-    for entry in entries {
-        // Visual separator between entries for legibility.
+    for &idx in &nodes {
+        let Some(entry) = kg.node(idx) else { continue };
         out.push(String::new());
         out.push(format!("--- {} ---", entry.name));
 
         for obs in entry.observations_by_category(&ObservationCategory::SurfaceAppearance) {
             out.push(format!("  Surface: {}", obs.description));
         }
-
-        // Show only the most recent thermal observation (matches legacy
-        // behavior where `thermal_observation` was a single `Option<String>`).
         if let Some(thermal) = entry
             .observations_by_category(&ObservationCategory::ThermalBehavior)
             .last()
         {
             out.push(format!("  Heat: {}", thermal.description));
         }
-
-        // Show only the most recent weight observation (matches legacy
-        // behavior where `weight_observation` was a single `Option<String>`).
         if let Some(weight) = entry
             .observations_by_category(&ObservationCategory::Weight)
             .last()
         {
             out.push(format!("  Carried: {}", weight.description));
         }
-
         for obs in entry.observations_by_category(&ObservationCategory::FabricationResult) {
             out.push(format!("  {}", obs.description));
         }
@@ -95,8 +87,8 @@ fn build_journal_text(journal: &Journal) -> String {
 
 #[test]
 fn journal_omits_unknown_properties() {
-    let mut journal = Journal::default();
-    journal.record(
+    let mut kg = KnowledgeGraph::default();
+    kg.record(
         JournalKey::MaterialInstance { seed: 1 },
         "Ferrite",
         Observation {
@@ -107,15 +99,15 @@ fn journal_omits_unknown_properties() {
         },
     );
 
-    let text = build_journal_text(&journal);
+    let text = build_journal_text(&kg);
     assert!(text.contains("Weight: Heavy"));
     assert!(!text.contains("Heat:"));
 }
 
 #[test]
 fn journal_includes_fabrication_history() {
-    let mut journal = Journal::default();
-    journal.record(
+    let mut kg = KnowledgeGraph::default();
+    kg.record(
         JournalKey::Fabrication { output_seed: 2 },
         "Neoite",
         Observation {
@@ -126,15 +118,15 @@ fn journal_includes_fabrication_history() {
         },
     );
 
-    let text = build_journal_text(&journal);
+    let text = build_journal_text(&kg);
     assert!(text.contains("Combined Ferrite + Silite -> Neoite"));
     assert!(text.contains("Recent Fabrication"));
 }
 
 #[test]
 fn journal_shows_thermal_observation_when_present() {
-    let mut journal = Journal::default();
-    journal.record(
+    let mut kg = KnowledgeGraph::default();
+    kg.record(
         JournalKey::MaterialInstance { seed: 3 },
         "TestMat",
         Observation {
@@ -145,7 +137,7 @@ fn journal_shows_thermal_observation_when_present() {
         },
     );
 
-    let text = build_journal_text(&journal);
+    let text = build_journal_text(&kg);
     assert!(text.contains("Heat: Reliably hold together under heat"));
 }
 
@@ -300,16 +292,16 @@ fn journal_context_biome_equality_is_string_based() {
 // Helpers for the matches_filter tests below.  Build a small entry
 // with a single observation so the category dimension can be
 // exercised independently of the context dimension.
-fn entry_with_observation(key: JournalKey, category: ObservationCategory) -> JournalEntry {
-    entry_with_observation_on_planet(key, category, Some(7))
+fn node_with_observation(key: JournalKey, category: ObservationCategory) -> ConceptNode {
+    node_with_observation_on_planet(key, category, Some(7))
 }
 
-fn entry_with_observation_on_planet(
+fn node_with_observation_on_planet(
     key: JournalKey,
     category: ObservationCategory,
     planet_seed: Option<u64>,
-) -> JournalEntry {
-    let mut entry = JournalEntry::new(key, "Subject".to_string(), 0);
+) -> ConceptNode {
+    let mut entry = ConceptNode::new(key, "Subject", 0);
     entry.origin_planet_seed = planet_seed;
     entry.add_observation(Observation {
         category,
@@ -326,18 +318,14 @@ fn matches_filter_default_accepts_every_entry() {
     // dimension; every entry — including one with no observations —
     // must pass.  This is the Story 10.3 default behaviour.
     let filter = JournalFilter::default();
-    let entry = JournalEntry::new(
-        JournalKey::MaterialInstance { seed: 1 },
-        "Empty".to_string(),
-        0,
-    );
-    assert!(matches_filter(&entry, &filter));
+    let entry = ConceptNode::new(JournalKey::MaterialInstance { seed: 1 }, "Empty", 0);
+    assert!(matches_filter_node(&entry, &filter));
 
-    let populated = entry_with_observation(
+    let populated = node_with_observation(
         JournalKey::MaterialInstance { seed: 2 },
         ObservationCategory::SurfaceAppearance,
     );
-    assert!(matches_filter(&populated, &filter));
+    assert!(matches_filter_node(&populated, &filter));
 }
 
 #[test]
@@ -349,17 +337,17 @@ fn matches_filter_category_only_keeps_matching_entries() {
         context: None,
     };
 
-    let thermal = entry_with_observation(
+    let thermal = node_with_observation(
         JournalKey::MaterialInstance { seed: 1 },
         ObservationCategory::ThermalBehavior,
     );
-    assert!(matches_filter(&thermal, &filter));
+    assert!(matches_filter_node(&thermal, &filter));
 
-    let surface = entry_with_observation(
+    let surface = node_with_observation(
         JournalKey::MaterialInstance { seed: 2 },
         ObservationCategory::SurfaceAppearance,
     );
-    assert!(!matches_filter(&surface, &filter));
+    assert!(!matches_filter_node(&surface, &filter));
 }
 
 #[test]
@@ -370,12 +358,8 @@ fn matches_filter_category_rejects_entry_with_no_observations() {
         category: Some(ObservationCategory::SurfaceAppearance),
         context: None,
     };
-    let empty = JournalEntry::new(
-        JournalKey::MaterialInstance { seed: 1 },
-        "Empty".to_string(),
-        0,
-    );
-    assert!(!matches_filter(&empty, &filter));
+    let empty = ConceptNode::new(JournalKey::MaterialInstance { seed: 1 }, "Empty", 0);
+    assert!(!matches_filter_node(&empty, &filter));
 }
 
 #[test]
@@ -387,26 +371,26 @@ fn matches_filter_current_planet_uses_entry_origin_planet_seed() {
         context: Some(JournalContext::CurrentPlanet { planet_seed: 7 }),
     };
 
-    let on_planet = entry_with_observation_on_planet(
+    let on_planet = node_with_observation_on_planet(
         JournalKey::MaterialInstance { seed: 1 },
         ObservationCategory::SurfaceAppearance,
         Some(7),
     );
-    assert!(matches_filter(&on_planet, &filter));
+    assert!(matches_filter_node(&on_planet, &filter));
 
-    let other_planet = entry_with_observation_on_planet(
+    let other_planet = node_with_observation_on_planet(
         JournalKey::MaterialInstance { seed: 2 },
         ObservationCategory::SurfaceAppearance,
         Some(99),
     );
-    assert!(!matches_filter(&other_planet, &filter));
+    assert!(!matches_filter_node(&other_planet, &filter));
 
-    let no_planet = entry_with_observation_on_planet(
+    let no_planet = node_with_observation_on_planet(
         JournalKey::MaterialInstance { seed: 3 },
         ObservationCategory::SurfaceAppearance,
         None,
     );
-    assert!(!matches_filter(&no_planet, &filter));
+    assert!(!matches_filter_node(&no_planet, &filter));
 }
 
 #[test]
@@ -417,12 +401,12 @@ fn matches_filter_current_planet_excludes_fabrications() {
         category: None,
         context: Some(JournalContext::CurrentPlanet { planet_seed: 7 }),
     };
-    let fab = entry_with_observation_on_planet(
+    let fab = node_with_observation_on_planet(
         JournalKey::Fabrication { output_seed: 42 },
         ObservationCategory::FabricationResult,
         None, // fabrications have no planet origin
     );
-    assert!(!matches_filter(&fab, &filter));
+    assert!(!matches_filter_node(&fab, &filter));
 }
 
 #[test]
@@ -430,7 +414,7 @@ fn matches_filter_combined_uses_and_logic() {
     // Both dimensions must match.  Verify the four corners of the
     // 2x2 truth table for an entry on planet 7 with a Surface
     // observation against a Surface + planet 7 filter.
-    let entry = entry_with_observation(
+    let entry = node_with_observation(
         JournalKey::MaterialInstance { seed: 1 },
         ObservationCategory::SurfaceAppearance,
     );
@@ -439,25 +423,25 @@ fn matches_filter_combined_uses_and_logic() {
         category: Some(ObservationCategory::SurfaceAppearance),
         context: Some(JournalContext::CurrentPlanet { planet_seed: 7 }),
     };
-    assert!(matches_filter(&entry, &both_match));
+    assert!(matches_filter_node(&entry, &both_match));
 
     let category_mismatch = JournalFilter {
         category: Some(ObservationCategory::ThermalBehavior),
         context: Some(JournalContext::CurrentPlanet { planet_seed: 7 }),
     };
-    assert!(!matches_filter(&entry, &category_mismatch));
+    assert!(!matches_filter_node(&entry, &category_mismatch));
 
     let context_mismatch = JournalFilter {
         category: Some(ObservationCategory::SurfaceAppearance),
         context: Some(JournalContext::CurrentPlanet { planet_seed: 8 }),
     };
-    assert!(!matches_filter(&entry, &context_mismatch));
+    assert!(!matches_filter_node(&entry, &context_mismatch));
 
     let both_mismatch = JournalFilter {
         category: Some(ObservationCategory::ThermalBehavior),
         context: Some(JournalContext::CurrentPlanet { planet_seed: 8 }),
     };
-    assert!(!matches_filter(&entry, &both_mismatch));
+    assert!(!matches_filter_node(&entry, &both_mismatch));
 }
 
 #[test]
@@ -473,11 +457,11 @@ fn matches_filter_current_biome_is_no_op_until_data_capture() {
             biome_key: BiomeKey::from(BiomeType::FrostShelf),
         }),
     };
-    let entry = entry_with_observation(
+    let entry = node_with_observation(
         JournalKey::MaterialInstance { seed: 1 },
         ObservationCategory::SurfaceAppearance,
     );
-    assert!(matches_filter(&entry, &filter));
+    assert!(matches_filter_node(&entry, &filter));
 }
 
 /// `planet_seed()` on `JournalKey` only returns a value for Location keys.
@@ -507,10 +491,10 @@ fn matches_filter_handles_500_entries_quickly() {
     // < 1ms".  The threshold here is generous (10ms) to absorb
     // noise on loaded CI hardware while still catching pathological
     // regressions that would land us in the seconds.
-    let entries: Vec<JournalEntry> = (0..500u64)
+    let entries: Vec<ConceptNode> = (0..500u64)
         .map(|i| {
             // Give entries a planet seed of i%4 so some match planet 2 and some don't
-            entry_with_observation_on_planet(
+            node_with_observation_on_planet(
                 JournalKey::MaterialInstance { seed: i },
                 if i % 2 == 0 {
                     ObservationCategory::SurfaceAppearance
@@ -530,7 +514,7 @@ fn matches_filter_handles_500_entries_quickly() {
     let start = std::time::Instant::now();
     let kept = entries
         .iter()
-        .filter(|e| matches_filter(e, &filter))
+        .filter(|e| matches_filter_node(e, &filter))
         .count();
     let elapsed = start.elapsed();
 
@@ -592,9 +576,9 @@ fn journal_key_btreemap_ordering_is_stable() {
 
 #[test]
 fn journal_shows_weight_observation_only_when_present() {
-    let mut journal = Journal::default();
+    let mut kg = KnowledgeGraph::default();
     let key = JournalKey::MaterialInstance { seed: 4 };
-    journal.record(
+    kg.record(
         key.clone(),
         "Ferrite",
         Observation {
@@ -605,10 +589,10 @@ fn journal_shows_weight_observation_only_when_present() {
         },
     );
 
-    let without_weight = build_journal_text(&journal);
+    let without_weight = build_journal_text(&kg);
     assert!(!without_weight.contains("Carried: Heavy but manageable"));
 
-    journal.record(
+    kg.record(
         key,
         "Ferrite",
         Observation {
@@ -619,7 +603,7 @@ fn journal_shows_weight_observation_only_when_present() {
         },
     );
 
-    let with_weight = build_journal_text(&journal);
+    let with_weight = build_journal_text(&kg);
     assert!(with_weight.contains("Carried: Heavy but manageable"));
 }
 
@@ -628,8 +612,8 @@ fn journal_shows_weight_observation_only_when_present() {
 #[test]
 fn journal_entry_new_sets_timestamps() {
     let key = JournalKey::MaterialInstance { seed: 1 };
-    let entry = JournalEntry::new(key.clone(), "Ferrite".into(), 100);
-    assert_eq!(entry.key, key);
+    let entry = ConceptNode::new(key.clone(), "Ferrite", 100);
+    assert_eq!(entry.id.0, key);
     assert_eq!(entry.name, "Ferrite");
     assert!(entry.observations.is_empty());
     assert_eq!(entry.first_observed_at, 100);
@@ -639,7 +623,7 @@ fn journal_entry_new_sets_timestamps() {
 #[test]
 fn journal_entry_add_observation_updates_timestamp() {
     let key = JournalKey::MaterialInstance { seed: 1 };
-    let mut entry = JournalEntry::new(key, "Ferrite".into(), 10);
+    let mut entry = ConceptNode::new(key, "Ferrite", 10);
 
     entry.add_observation(Observation {
         category: ObservationCategory::SurfaceAppearance,
@@ -656,7 +640,7 @@ fn journal_entry_add_observation_updates_timestamp() {
 #[test]
 fn journal_entry_accumulates_multiple_observations() {
     let key = JournalKey::MaterialInstance { seed: 1 };
-    let mut entry = JournalEntry::new(key, "Ferrite".into(), 10);
+    let mut entry = ConceptNode::new(key, "Ferrite", 10);
 
     entry.add_observation(Observation {
         category: ObservationCategory::SurfaceAppearance,
@@ -684,7 +668,7 @@ fn journal_entry_accumulates_multiple_observations() {
 #[test]
 fn journal_entry_observations_by_category() {
     let key = JournalKey::MaterialInstance { seed: 1 };
-    let mut entry = JournalEntry::new(key, "Ferrite".into(), 10);
+    let mut entry = ConceptNode::new(key, "Ferrite", 10);
 
     entry.add_observation(Observation {
         category: ObservationCategory::SurfaceAppearance,
@@ -719,26 +703,52 @@ fn journal_entry_observations_by_category() {
 
 #[test]
 fn new_journal_ensure_entry_creates_and_retrieves() {
-    let mut journal = Journal::default();
+    let mut kg = KnowledgeGraph::default();
     let key = JournalKey::MaterialInstance { seed: 42 };
 
-    journal.ensure_entry(key.clone(), "Ferrite", 100);
-    journal.ensure_entry(key.clone(), "Ignored Name", 200);
+    // ensure_entry is gone; record() is idempotent for name (first wins)
+    // First call — creates the node
+    kg.record(
+        key.clone(),
+        "Ferrite",
+        Observation {
+            category: ObservationCategory::SurfaceAppearance,
+            confidence: Confidence(0.2),
+            description: "obs".to_string(),
+            recorded_at: 100,
+        },
+    );
+    // Second call — same key, name ignored (first wins)
+    kg.record(
+        key.clone(),
+        "Ignored Name",
+        Observation {
+            category: ObservationCategory::SurfaceAppearance,
+            confidence: Confidence(0.2),
+            description: "obs2".to_string(),
+            recorded_at: 200,
+        },
+    );
 
-    assert_eq!(journal.entries.len(), 1);
-    let entry = journal.entries.get(&key).expect("entry should exist");
+    assert_eq!(kg.named_node_count(), 1);
+    let entry = kg
+        .node(
+            kg.lookup(&ConceptId(key.clone()))
+                .expect("entry should exist"),
+        )
+        .expect("node");
     // First name wins.
     assert_eq!(entry.name, "Ferrite");
-    // Timestamps unchanged by second ensure_entry call.
+    // first_observed_at set on creation tick
     assert_eq!(entry.first_observed_at, 100);
 }
 
 #[test]
 fn new_journal_record_accumulates_observations() {
-    let mut journal = Journal::default();
+    let mut kg = KnowledgeGraph::default();
     let key = JournalKey::MaterialInstance { seed: 42 };
 
-    journal.record(
+    kg.record(
         key.clone(),
         "Ferrite",
         Observation {
@@ -748,7 +758,7 @@ fn new_journal_record_accumulates_observations() {
             recorded_at: 10,
         },
     );
-    journal.record(
+    kg.record(
         key.clone(),
         "Ferrite",
         Observation {
@@ -759,7 +769,12 @@ fn new_journal_record_accumulates_observations() {
         },
     );
 
-    let entry = journal.entries.get(&key).expect("entry should exist");
+    let entry = kg
+        .node(
+            kg.lookup(&ConceptId(key.clone()))
+                .expect("entry should exist"),
+        )
+        .expect("node");
     assert_eq!(entry.observation_count(), 2);
     assert_eq!(entry.first_observed_at, 10);
     assert_eq!(entry.last_updated_at, 50);
@@ -767,11 +782,11 @@ fn new_journal_record_accumulates_observations() {
 
 #[test]
 fn new_journal_different_keys_coexist() {
-    let mut journal = Journal::default();
+    let mut kg = KnowledgeGraph::default();
     let mat_key = JournalKey::MaterialInstance { seed: 1 };
     let fab_key = JournalKey::Fabrication { output_seed: 2 };
 
-    journal.record(
+    kg.record(
         mat_key.clone(),
         "Ferrite",
         Observation {
@@ -781,7 +796,7 @@ fn new_journal_different_keys_coexist() {
             recorded_at: 10,
         },
     );
-    journal.record(
+    kg.record(
         fab_key.clone(),
         "Neoite",
         Observation {
@@ -792,15 +807,15 @@ fn new_journal_different_keys_coexist() {
         },
     );
 
-    assert_eq!(journal.entries.len(), 2);
-    assert!(journal.entries.contains_key(&mat_key));
-    assert!(journal.entries.contains_key(&fab_key));
+    assert_eq!(kg.named_node_count(), 2);
+    assert!(kg.lookup(&ConceptId(mat_key.clone())).is_some());
+    assert!(kg.lookup(&ConceptId(fab_key.clone())).is_some());
 }
 
 #[test]
 fn new_journal_serde_round_trip() {
-    let mut journal = Journal::default();
-    journal.record(
+    let mut kg = KnowledgeGraph::default();
+    kg.record(
         JournalKey::MaterialInstance { seed: 42 },
         "Ferrite",
         Observation {
@@ -810,7 +825,7 @@ fn new_journal_serde_round_trip() {
             recorded_at: 10,
         },
     );
-    journal.record(
+    kg.record(
         JournalKey::Fabrication { output_seed: 99 },
         "Neoite",
         Observation {
@@ -821,15 +836,18 @@ fn new_journal_serde_round_trip() {
         },
     );
 
-    let json = serde_json::to_string(&journal).expect("Journal should serialize to JSON");
-    let deserialized: Journal =
-        serde_json::from_str(&json).expect("Journal should deserialize from JSON");
+    let json = serde_json::to_string(&kg).expect("KG should serialize to JSON");
+    let deserialized: KnowledgeGraph =
+        serde_json::from_str(&json).expect("KnowledgeGraph should deserialize from JSON");
 
-    assert_eq!(deserialized.entries.len(), 2);
+    assert_eq!(deserialized.named_node_count(), 2);
     let ferrite = deserialized
-        .entries
-        .get(&JournalKey::MaterialInstance { seed: 42 })
-        .expect("Ferrite entry should exist");
+        .node(
+            deserialized
+                .lookup(&ConceptId(JournalKey::MaterialInstance { seed: 42 }))
+                .expect("Ferrite entry should exist"),
+        )
+        .expect("node");
     assert_eq!(ferrite.name, "Ferrite");
     assert_eq!(ferrite.observation_count(), 1);
     assert_eq!(ferrite.first_observed_at, 10);
@@ -837,23 +855,23 @@ fn new_journal_serde_round_trip() {
 
 #[test]
 fn new_journal_empty_default() {
-    let journal = Journal::default();
-    assert!(journal.entries.is_empty());
+    let kg = KnowledgeGraph::default();
+    assert!((kg.named_node_count() == 0));
 }
 
 #[test]
 fn empty_journal_renders_no_observations_yet() {
-    let journal = Journal::default();
-    let text = build_journal_text(&journal);
+    let kg = KnowledgeGraph::default();
+    let text = build_journal_text(&kg);
     assert_eq!(text, "Journal\n\nNo observations yet.");
 }
 
 #[test]
 fn single_observation_recorded_correctly() {
-    let mut journal = Journal::default();
+    let mut kg = KnowledgeGraph::default();
     let key = JournalKey::MaterialInstance { seed: 55 };
 
-    journal.record(
+    kg.record(
         key.clone(),
         "Quarite",
         Observation {
@@ -865,11 +883,16 @@ fn single_observation_recorded_correctly() {
     );
 
     // Exactly one entry created for the key.
-    assert_eq!(journal.entries.len(), 1);
-    let entry = journal.entries.get(&key).expect("entry should exist");
+    assert_eq!(kg.named_node_count(), 1);
+    let entry = kg
+        .node(
+            kg.lookup(&ConceptId(key.clone()))
+                .expect("entry should exist"),
+        )
+        .expect("node");
 
     // Entry metadata is correct.
-    assert_eq!(entry.key, key);
+    assert_eq!(entry.id.0, key);
     assert_eq!(entry.name, "Quarite");
     assert_eq!(entry.first_observed_at, 42);
     assert_eq!(entry.last_updated_at, 42);
@@ -886,7 +909,7 @@ fn single_observation_recorded_correctly() {
 #[test]
 fn duplicate_observation_same_category_and_description_is_skipped() {
     let key = JournalKey::MaterialInstance { seed: 1 };
-    let mut entry = JournalEntry::new(key, "Ferrite".into(), 10);
+    let mut entry = ConceptNode::new(key, "Ferrite", 10);
 
     entry.add_observation(Observation {
         category: ObservationCategory::SurfaceAppearance,
@@ -910,7 +933,7 @@ fn duplicate_observation_same_category_and_description_is_skipped() {
 #[test]
 fn duplicate_observation_upgrades_confidence() {
     let key = JournalKey::MaterialInstance { seed: 1 };
-    let mut entry = JournalEntry::new(key, "Ferrite".into(), 10);
+    let mut entry = ConceptNode::new(key, "Ferrite", 10);
 
     entry.add_observation(Observation {
         category: ObservationCategory::ThermalBehavior,
@@ -938,7 +961,7 @@ fn duplicate_observation_upgrades_confidence() {
 #[test]
 fn duplicate_does_not_downgrade_confidence() {
     let key = JournalKey::MaterialInstance { seed: 1 };
-    let mut entry = JournalEntry::new(key, "Ferrite".into(), 10);
+    let mut entry = ConceptNode::new(key, "Ferrite", 10);
 
     entry.add_observation(Observation {
         category: ObservationCategory::Weight,
@@ -968,7 +991,7 @@ fn duplicate_does_not_downgrade_confidence() {
 /// be preserved (or upgraded if the second look is stronger).
 #[test]
 fn examine_same_material_twice_does_not_duplicate() {
-    let mut journal = Journal::default();
+    let mut kg = KnowledgeGraph::default();
     let key = JournalKey::MaterialInstance { seed: 42 };
 
     let observation = Observation {
@@ -979,10 +1002,10 @@ fn examine_same_material_twice_does_not_duplicate() {
     };
 
     // First examination.
-    journal.record(key.clone(), "Ferrite", observation.clone());
+    kg.record(key.clone(), "Ferrite", observation.clone());
 
     // Second examination — identical observation at a later tick.
-    journal.record(
+    kg.record(
         key.clone(),
         "Ferrite",
         Observation {
@@ -993,8 +1016,13 @@ fn examine_same_material_twice_does_not_duplicate() {
         },
     );
 
-    assert_eq!(journal.entries.len(), 1, "only one entry for the material");
-    let entry = journal.entries.get(&key).expect("entry must exist");
+    assert_eq!(kg.named_node_count(), 1, "only one entry for the material");
+    let entry = kg
+        .node(
+            kg.lookup(&ConceptId(key.clone()))
+                .expect("entry must exist"),
+        )
+        .expect("node");
     assert_eq!(
         entry.observation_count(),
         1,
@@ -1007,10 +1035,10 @@ fn examine_same_material_twice_does_not_duplicate() {
 /// confidence upgrades the stored observation without duplicating it.
 #[test]
 fn examine_same_material_twice_upgrades_confidence() {
-    let mut journal = Journal::default();
+    let mut kg = KnowledgeGraph::default();
     let key = JournalKey::MaterialInstance { seed: 42 };
 
-    journal.record(
+    kg.record(
         key.clone(),
         "Ferrite",
         Observation {
@@ -1022,7 +1050,7 @@ fn examine_same_material_twice_upgrades_confidence() {
     );
 
     // Second examination — same description, higher confidence.
-    journal.record(
+    kg.record(
         key.clone(),
         "Ferrite",
         Observation {
@@ -1033,8 +1061,13 @@ fn examine_same_material_twice_upgrades_confidence() {
         },
     );
 
-    assert_eq!(journal.entries.len(), 1);
-    let entry = journal.entries.get(&key).expect("entry must exist");
+    assert_eq!(kg.named_node_count(), 1);
+    let entry = kg
+        .node(
+            kg.lookup(&ConceptId(key.clone()))
+                .expect("entry must exist"),
+        )
+        .expect("node");
     assert_eq!(entry.observation_count(), 1);
     assert_eq!(
         entry.observations_by_category(&ObservationCategory::SurfaceAppearance)[0].confidence,
@@ -1046,7 +1079,7 @@ fn examine_same_material_twice_upgrades_confidence() {
 #[test]
 fn same_category_different_description_is_not_duplicate() {
     let key = JournalKey::MaterialInstance { seed: 1 };
-    let mut entry = JournalEntry::new(key, "Ferrite".into(), 10);
+    let mut entry = ConceptNode::new(key, "Ferrite", 10);
 
     entry.add_observation(Observation {
         category: ObservationCategory::SurfaceAppearance,
@@ -1073,7 +1106,7 @@ fn same_category_different_description_is_not_duplicate() {
 #[test]
 fn same_description_different_category_is_not_duplicate() {
     let key = JournalKey::MaterialInstance { seed: 1 };
-    let mut entry = JournalEntry::new(key, "Ferrite".into(), 10);
+    let mut entry = ConceptNode::new(key, "Ferrite", 10);
 
     entry.add_observation(Observation {
         category: ObservationCategory::SurfaceAppearance,
@@ -1102,11 +1135,11 @@ fn same_description_different_category_is_not_duplicate() {
 /// observation preserves its own category, confidence, and description.
 #[test]
 fn multiple_observations_for_same_key_accumulate() {
-    let mut journal = Journal::default();
+    let mut kg = KnowledgeGraph::default();
     let key = JournalKey::MaterialInstance { seed: 77 };
 
     // First observation — creates the entry.
-    journal.record(
+    kg.record(
         key.clone(),
         "Volite",
         Observation {
@@ -1118,7 +1151,7 @@ fn multiple_observations_for_same_key_accumulate() {
     );
 
     // Second observation — same key, different category.
-    journal.record(
+    kg.record(
         key.clone(),
         "Volite",
         Observation {
@@ -1130,7 +1163,7 @@ fn multiple_observations_for_same_key_accumulate() {
     );
 
     // Third observation — same key, same category as first but different description.
-    journal.record(
+    kg.record(
         key.clone(),
         "Volite",
         Observation {
@@ -1142,7 +1175,7 @@ fn multiple_observations_for_same_key_accumulate() {
     );
 
     // Fourth observation — same key, yet another category.
-    journal.record(
+    kg.record(
         key.clone(),
         "Volite",
         Observation {
@@ -1154,7 +1187,7 @@ fn multiple_observations_for_same_key_accumulate() {
     );
 
     // Fifth observation — fabrication result recorded against the same material key.
-    journal.record(
+    kg.record(
         key.clone(),
         "Volite",
         Observation {
@@ -1166,8 +1199,13 @@ fn multiple_observations_for_same_key_accumulate() {
     );
 
     // Only one entry exists for the key.
-    assert_eq!(journal.entries.len(), 1, "all observations share one entry");
-    let entry = journal.entries.get(&key).expect("entry should exist");
+    assert_eq!(kg.named_node_count(), 1, "all observations share one entry");
+    let entry = kg
+        .node(
+            kg.lookup(&ConceptId(key.clone()))
+                .expect("entry should exist"),
+        )
+        .expect("node");
 
     // Name set by the first record call is retained.
     assert_eq!(entry.name, "Volite");
@@ -1270,7 +1308,7 @@ fn all_types_serde_round_trip() {
     assert_eq!(rt.recorded_at, observation.recorded_at);
 
     // ── JournalEntry struct ─────────────────────────────────────
-    let mut entry = JournalEntry::new(
+    let mut entry = ConceptNode::new(
         JournalKey::MaterialInstance { seed: 7 },
         "Ferrite".into(),
         10,
@@ -1289,8 +1327,8 @@ fn all_types_serde_round_trip() {
     });
 
     let json = serde_json::to_string(&entry).expect("JournalEntry should serialize");
-    let rt: JournalEntry = serde_json::from_str(&json).expect("JournalEntry should deserialize");
-    assert_eq!(rt.key, entry.key);
+    let rt: ConceptNode = serde_json::from_str(&json).expect("JournalEntry should deserialize");
+    assert_eq!(rt.id.0, entry.id.0);
     assert_eq!(rt.name, entry.name);
     assert_eq!(rt.observation_count(), 2);
     assert_eq!(rt.first_observed_at, entry.first_observed_at);
@@ -1307,11 +1345,11 @@ fn all_types_serde_round_trip() {
     );
 
     // ── Journal with all key types and all categories ────────
-    let mut journal = Journal::default();
+    let mut kg = KnowledgeGraph::default();
 
     // Material entry with surface, thermal, and weight observations.
     let mat_key = JournalKey::MaterialInstance { seed: 100 };
-    journal.record(
+    kg.record(
         mat_key.clone(),
         "Silite",
         Observation {
@@ -1321,7 +1359,7 @@ fn all_types_serde_round_trip() {
             recorded_at: 1,
         },
     );
-    journal.record(
+    kg.record(
         mat_key.clone(),
         "Silite",
         Observation {
@@ -1331,7 +1369,7 @@ fn all_types_serde_round_trip() {
             recorded_at: 5,
         },
     );
-    journal.record(
+    kg.record(
         mat_key.clone(),
         "Silite",
         Observation {
@@ -1344,7 +1382,7 @@ fn all_types_serde_round_trip() {
 
     // Fabrication entry with fabrication result and location note.
     let fab_key = JournalKey::Fabrication { output_seed: 200 };
-    journal.record(
+    kg.record(
         fab_key.clone(),
         "Neoite",
         Observation {
@@ -1354,7 +1392,7 @@ fn all_types_serde_round_trip() {
             recorded_at: 10,
         },
     );
-    journal.record(
+    kg.record(
         fab_key.clone(),
         "Neoite",
         Observation {
@@ -1365,16 +1403,18 @@ fn all_types_serde_round_trip() {
         },
     );
 
-    let json = serde_json::to_string(&journal).expect("Journal should serialize");
-    let rt: Journal = serde_json::from_str(&json).expect("Journal should deserialize");
+    let json = serde_json::to_string(&kg).expect("Journal should serialize");
+    let rt: KnowledgeGraph = serde_json::from_str(&json).expect("KG should deserialize");
 
     // Verify structure preserved.
-    assert_eq!(rt.entries.len(), 2);
+    assert_eq!(rt.named_node_count(), 2);
 
-    let silite = rt
-        .entries
-        .get(&mat_key)
-        .expect("Material entry should exist");
+    let silite = kg
+        .node(
+            kg.lookup(&ConceptId(mat_key.clone()))
+                .expect("Material entry should exist"),
+        )
+        .expect("node");
     assert_eq!(silite.name, "Silite");
     assert_eq!(silite.observation_count(), 3);
     assert_eq!(silite.first_observed_at, 1);
@@ -1402,10 +1442,12 @@ fn all_types_serde_round_trip() {
         1
     );
 
-    let neoite = rt
-        .entries
-        .get(&fab_key)
-        .expect("Fabrication entry should exist");
+    let neoite = kg
+        .node(
+            kg.lookup(&ConceptId(fab_key.clone()))
+                .expect("Fabrication entry should exist"),
+        )
+        .expect("node");
     assert_eq!(neoite.name, "Neoite");
     assert_eq!(neoite.observation_count(), 2);
     assert_eq!(neoite.first_observed_at, 10);
@@ -1438,7 +1480,7 @@ fn all_types_serde_round_trip() {
 /// the same observation category is used for multiple subjects.
 #[test]
 fn different_keys_stored_independently() {
-    let mut journal = Journal::default();
+    let mut kg = KnowledgeGraph::default();
 
     // Three keys: two Material keys with different seeds and one
     // Fabrication key whose output_seed numerically equals the first
@@ -1448,7 +1490,7 @@ fn different_keys_stored_independently() {
     let fab_a = JournalKey::Fabrication { output_seed: 10 };
 
     // Record a surface observation on material A.
-    journal.record(
+    kg.record(
         mat_a.clone(),
         "Ferrite",
         Observation {
@@ -1460,7 +1502,7 @@ fn different_keys_stored_independently() {
     );
 
     // Record a surface observation on material B (same category, different key).
-    journal.record(
+    kg.record(
         mat_b.clone(),
         "Silite",
         Observation {
@@ -1472,7 +1514,7 @@ fn different_keys_stored_independently() {
     );
 
     // Record a fabrication result on fab_a (same numeric id as mat_a).
-    journal.record(
+    kg.record(
         fab_a.clone(),
         "Neoite",
         Observation {
@@ -1485,7 +1527,7 @@ fn different_keys_stored_independently() {
 
     // Add a second observation to material A to verify accumulation is
     // scoped to that key alone.
-    journal.record(
+    kg.record(
         mat_a.clone(),
         "Ferrite",
         Observation {
@@ -1498,16 +1540,18 @@ fn different_keys_stored_independently() {
 
     // ── Verify entry count ──────────────────────────────────────
     assert_eq!(
-        journal.entries.len(),
+        kg.named_node_count(),
         3,
         "three distinct keys = three entries"
     );
 
     // ── Verify material A ───────────────────────────────────────
-    let entry_a = journal
-        .entries
-        .get(&mat_a)
-        .expect("mat_a entry should exist");
+    let entry_a = kg
+        .node(
+            kg.lookup(&ConceptId(mat_a.clone()))
+                .expect("mat_a entry should exist"),
+        )
+        .expect("node");
     assert_eq!(entry_a.name, "Ferrite");
     assert_eq!(entry_a.observation_count(), 2);
     assert_eq!(entry_a.first_observed_at, 1);
@@ -1524,10 +1568,12 @@ fn different_keys_stored_independently() {
     );
 
     // ── Verify material B ───────────────────────────────────────
-    let entry_b = journal
-        .entries
-        .get(&mat_b)
-        .expect("mat_b entry should exist");
+    let entry_b = kg
+        .node(
+            kg.lookup(&ConceptId(mat_b.clone()))
+                .expect("mat_b entry should exist"),
+        )
+        .expect("node");
     assert_eq!(entry_b.name, "Silite");
     assert_eq!(entry_b.observation_count(), 1);
     assert_eq!(entry_b.first_observed_at, 2);
@@ -1538,10 +1584,12 @@ fn different_keys_stored_independently() {
     );
 
     // ── Verify fabrication A (same numeric id as mat_a) ─────────
-    let entry_fab = journal
-        .entries
-        .get(&fab_a)
-        .expect("fab_a entry should exist");
+    let entry_fab = kg
+        .node(
+            kg.lookup(&ConceptId(fab_a.clone()))
+                .expect("fab_a entry should exist"),
+        )
+        .expect("node");
     assert_eq!(entry_fab.name, "Neoite");
     assert_eq!(entry_fab.observation_count(), 1);
     assert_eq!(entry_fab.first_observed_at, 3);
@@ -1592,12 +1640,12 @@ fn different_keys_stored_independently() {
 /// information appears in the output.
 #[test]
 fn rendered_text_contains_same_information_as_legacy_journal() {
-    let mut journal = Journal::default();
+    let mut kg = KnowledgeGraph::default();
 
     // ── Material entry with surface, thermal, and weight observations ──
     let mat_key = JournalKey::MaterialInstance { seed: 42 };
 
-    journal.record(
+    kg.record(
         mat_key.clone(),
         "Ferrite",
         Observation {
@@ -1607,7 +1655,7 @@ fn rendered_text_contains_same_information_as_legacy_journal() {
             recorded_at: 1,
         },
     );
-    journal.record(
+    kg.record(
         mat_key.clone(),
         "Ferrite",
         Observation {
@@ -1617,7 +1665,7 @@ fn rendered_text_contains_same_information_as_legacy_journal() {
             recorded_at: 2,
         },
     );
-    journal.record(
+    kg.record(
         mat_key.clone(),
         "Ferrite",
         Observation {
@@ -1627,7 +1675,7 @@ fn rendered_text_contains_same_information_as_legacy_journal() {
             recorded_at: 3,
         },
     );
-    journal.record(
+    kg.record(
         mat_key,
         "Ferrite",
         Observation {
@@ -1642,7 +1690,7 @@ fn rendered_text_contains_same_information_as_legacy_journal() {
     // Legacy equivalent: entry with surface_observations only (no thermal
     // or weight).
     let mat_key_b = JournalKey::MaterialInstance { seed: 99 };
-    journal.record(
+    kg.record(
         mat_key_b,
         "Silite",
         Observation {
@@ -1655,7 +1703,7 @@ fn rendered_text_contains_same_information_as_legacy_journal() {
 
     // ── Fabrication entry ───────────────────────────────────────────
     let fab_key = JournalKey::Fabrication { output_seed: 200 };
-    journal.record(
+    kg.record(
         fab_key,
         "Neoite",
         Observation {
@@ -1666,7 +1714,7 @@ fn rendered_text_contains_same_information_as_legacy_journal() {
         },
     );
 
-    let text = build_journal_text(&journal);
+    let text = build_journal_text(&kg);
 
     // ── Header ──────────────────────────────────────────────────────
     assert!(
@@ -1746,8 +1794,8 @@ fn rendered_text_contains_same_information_as_legacy_journal() {
 /// journal simply displayed a header with no entries.
 #[test]
 fn empty_journal_renders_placeholder_text() {
-    let journal = Journal::default();
-    let text = build_journal_text(&journal);
+    let kg = KnowledgeGraph::default();
+    let text = build_journal_text(&kg);
     assert!(
         text.contains("Journal"),
         "empty journal must still show header"
@@ -1773,7 +1821,7 @@ fn journal_with_100_plus_mixed_entries_does_not_panic() {
 
     let confidences = [Confidence(0.2), Confidence(0.5), Confidence(0.8)];
 
-    let mut journal = Journal::default();
+    let mut kg = KnowledgeGraph::default();
 
     // Record 120 entries: 80 Material keys and 40 Fabrication keys,
     // each with between 1 and 3 observations across different categories.
@@ -1790,7 +1838,7 @@ fn journal_with_100_plus_mixed_entries_does_not_panic() {
         // Primary observation — category and confidence rotate through variants.
         let primary_cat = &categories[i as usize % categories.len()];
         let primary_conf = confidences[i as usize % confidences.len()];
-        journal.record(
+        kg.record(
             key.clone(),
             &name,
             Observation {
@@ -1804,7 +1852,7 @@ fn journal_with_100_plus_mixed_entries_does_not_panic() {
         // Every other entry gets a second observation in a different category.
         if i % 2 == 0 {
             let secondary_cat = &categories[(i as usize + 1) % categories.len()];
-            journal.record(
+            kg.record(
                 key.clone(),
                 &name,
                 Observation {
@@ -1819,7 +1867,7 @@ fn journal_with_100_plus_mixed_entries_does_not_panic() {
         // Every third entry gets a third observation (same category as
         // primary but different description — should not deduplicate).
         if i % 3 == 0 {
-            journal.record(
+            kg.record(
                 key.clone(),
                 &name,
                 Observation {
@@ -1834,20 +1882,24 @@ fn journal_with_100_plus_mixed_entries_does_not_panic() {
 
     // Verify entry count.
     assert!(
-        journal.entries.len() >= 100,
+        kg.named_node_count() >= 100,
         "expected at least 100 entries, got {}",
-        journal.entries.len()
+        kg.named_node_count()
     );
 
     // Verify both key types are present.
-    let material_count = journal
-        .entries
-        .keys()
+    let material_count = kg
+        .nodes_sorted_by_name()
+        .into_iter()
+        .filter_map(|i| kg.node(i))
+        .map(|n| &n.id.0)
         .filter(|k| matches!(k, JournalKey::MaterialInstance { .. }))
         .count();
-    let fabrication_count = journal
-        .entries
-        .keys()
+    let fabrication_count = kg
+        .nodes_sorted_by_name()
+        .into_iter()
+        .filter_map(|i| kg.node(i))
+        .map(|n| &n.id.0)
         .filter(|k| matches!(k, JournalKey::Fabrication { .. }))
         .count();
     assert!(material_count > 0, "must contain Material entries");
@@ -1855,7 +1907,11 @@ fn journal_with_100_plus_mixed_entries_does_not_panic() {
 
     // Verify all five observation categories are represented.
     let mut seen_categories = std::collections::HashSet::new();
-    for entry in journal.entries.values() {
+    for entry in kg
+        .nodes_sorted_by_name()
+        .into_iter()
+        .filter_map(|i| kg.node(i))
+    {
         for cat in entry.observations.keys() {
             seen_categories.insert(cat.clone());
         }
@@ -1868,16 +1924,16 @@ fn journal_with_100_plus_mixed_entries_does_not_panic() {
     }
 
     // Rendering must not panic.
-    let text = build_journal_text(&journal);
+    let text = build_journal_text(&kg);
     assert!(!text.is_empty(), "rendered text must not be empty");
 
     // Serde round-trip must not panic or lose entries.
-    let serialized = serde_json::to_string(&journal).expect("journal must serialize");
-    let deserialized: Journal =
-        serde_json::from_str(&serialized).expect("journal must deserialize");
+    let serialized = serde_json::to_string(&kg).expect("kg must serialize");
+    let deserialized: KnowledgeGraph =
+        serde_json::from_str(&serialized).expect("kg must deserialize");
     assert_eq!(
-        journal.entries.len(),
-        deserialized.entries.len(),
+        kg.named_node_count(),
+        deserialized.named_node_count(),
         "round-trip must preserve entry count"
     );
 }
@@ -1888,11 +1944,11 @@ fn journal_with_100_plus_mixed_entries_does_not_panic() {
 /// own observations.
 #[test]
 fn multiple_materials_have_separate_entries_and_rendering() {
-    let mut journal = Journal::default();
+    let mut kg = KnowledgeGraph::default();
 
     // ── Material 1: Ferrite ─────────────────────────────────────
     let key_ferrite = JournalKey::MaterialInstance { seed: 10 };
-    journal.record(
+    kg.record(
         key_ferrite.clone(),
         "Ferrite",
         Observation {
@@ -1902,7 +1958,7 @@ fn multiple_materials_have_separate_entries_and_rendering() {
             recorded_at: 1,
         },
     );
-    journal.record(
+    kg.record(
         key_ferrite.clone(),
         "Ferrite",
         Observation {
@@ -1915,7 +1971,7 @@ fn multiple_materials_have_separate_entries_and_rendering() {
 
     // ── Material 2: Silite ──────────────────────────────────────
     let key_silite = JournalKey::MaterialInstance { seed: 20 };
-    journal.record(
+    kg.record(
         key_silite.clone(),
         "Silite",
         Observation {
@@ -1925,7 +1981,7 @@ fn multiple_materials_have_separate_entries_and_rendering() {
             recorded_at: 3,
         },
     );
-    journal.record(
+    kg.record(
         key_silite.clone(),
         "Silite",
         Observation {
@@ -1938,7 +1994,7 @@ fn multiple_materials_have_separate_entries_and_rendering() {
 
     // ── Material 3: Volite ──────────────────────────────────────
     let key_volite = JournalKey::MaterialInstance { seed: 30 };
-    journal.record(
+    kg.record(
         key_volite.clone(),
         "Volite",
         Observation {
@@ -1948,7 +2004,7 @@ fn multiple_materials_have_separate_entries_and_rendering() {
             recorded_at: 5,
         },
     );
-    journal.record(
+    kg.record(
         key_volite.clone(),
         "Volite",
         Observation {
@@ -1958,7 +2014,7 @@ fn multiple_materials_have_separate_entries_and_rendering() {
             recorded_at: 6,
         },
     );
-    journal.record(
+    kg.record(
         key_volite.clone(),
         "Volite",
         Observation {
@@ -1971,7 +2027,7 @@ fn multiple_materials_have_separate_entries_and_rendering() {
 
     // ── Material 4: Crystite (ensures "3+" is exceeded) ─────────
     let key_crystite = JournalKey::MaterialInstance { seed: 40 };
-    journal.record(
+    kg.record(
         key_crystite.clone(),
         "Crystite",
         Observation {
@@ -1983,26 +2039,34 @@ fn multiple_materials_have_separate_entries_and_rendering() {
     );
 
     // ── Verify entry separation ─────────────────────────────────
-    assert_eq!(journal.entries.len(), 4, "four distinct material entries");
-    assert!(journal.entries.contains_key(&key_ferrite));
-    assert!(journal.entries.contains_key(&key_silite));
-    assert!(journal.entries.contains_key(&key_volite));
-    assert!(journal.entries.contains_key(&key_crystite));
+    assert_eq!(kg.named_node_count(), 4, "four distinct material entries");
+    assert!(kg.lookup(&ConceptId(key_ferrite.clone())).is_some());
+    assert!(kg.lookup(&ConceptId(key_silite.clone())).is_some());
+    assert!(kg.lookup(&ConceptId(key_volite.clone())).is_some());
+    assert!(kg.lookup(&ConceptId(key_crystite.clone())).is_some());
 
     // ── Verify observation counts per entry ─────────────────────
-    let ferrite = journal.entries.get(&key_ferrite).unwrap();
+    let ferrite = kg
+        .node(kg.lookup(&ConceptId(key_ferrite.clone())).unwrap())
+        .unwrap();
     assert_eq!(ferrite.observation_count(), 2);
     assert_eq!(ferrite.name, "Ferrite");
 
-    let silite = journal.entries.get(&key_silite).unwrap();
+    let silite = kg
+        .node(kg.lookup(&ConceptId(key_silite.clone())).unwrap())
+        .unwrap();
     assert_eq!(silite.observation_count(), 2);
     assert_eq!(silite.name, "Silite");
 
-    let volite = journal.entries.get(&key_volite).unwrap();
+    let volite = kg
+        .node(kg.lookup(&ConceptId(key_volite.clone())).unwrap())
+        .unwrap();
     assert_eq!(volite.observation_count(), 3);
     assert_eq!(volite.name, "Volite");
 
-    let crystite = journal.entries.get(&key_crystite).unwrap();
+    let crystite = kg
+        .node(kg.lookup(&ConceptId(key_crystite.clone())).unwrap())
+        .unwrap();
     assert_eq!(crystite.observation_count(), 1);
     assert_eq!(crystite.name, "Crystite");
 
@@ -2036,7 +2100,7 @@ fn multiple_materials_have_separate_entries_and_rendering() {
     );
 
     // ── Verify rendering shows all four materials separated ─────
-    let text = build_journal_text(&journal);
+    let text = build_journal_text(&kg);
 
     // All material names appear.
     assert!(text.contains("Ferrite"));
@@ -2082,12 +2146,12 @@ fn multiple_materials_have_separate_entries_and_rendering() {
 // ── Two-panel rendering tests ───────────────────────────────────
 
 /// Helper: create a journal with N material entries named alphabetically.
-fn make_journal_with_n_entries(n: usize) -> Journal {
-    let mut journal = Journal::default();
+fn make_kg_with_n_entries(n: usize) -> KnowledgeGraph {
+    let mut kg = KnowledgeGraph::default();
     for i in 0..n {
         let key = JournalKey::MaterialInstance { seed: i as u64 };
         let name = format!("Material-{i:03}");
-        journal.record(
+        kg.record(
             key,
             &name,
             Observation {
@@ -2098,17 +2162,13 @@ fn make_journal_with_n_entries(n: usize) -> Journal {
             },
         );
     }
-    journal
+    kg
 }
 
 #[test]
 fn entry_list_shows_selected_entry_with_prefix() {
-    let journal = make_journal_with_n_entries(3);
-    let entries: Vec<&JournalEntry> = {
-        let mut v: Vec<_> = journal.entries.values().collect();
-        v.sort_by(|a, b| a.name.cmp(&b.name));
-        v
-    };
+    let kg = make_kg_with_n_entries(3);
+    let nodes: Vec<NodeIndex> = kg.nodes_sorted_by_name();
 
     let state = JournalUiState {
         visible: true,
@@ -2118,7 +2178,7 @@ fn entry_list_shows_selected_entry_with_prefix() {
         filter: JournalFilter::default(),
     };
 
-    let list = build_entry_list_text(&entries, &state);
+    let list = build_entry_list_text(&nodes, &kg, &state);
     let lines: Vec<&str> = list.lines().collect();
     assert_eq!(lines.len(), 3);
     assert!(
@@ -2134,9 +2194,9 @@ fn entry_list_shows_selected_entry_with_prefix() {
 
 #[test]
 fn entry_list_shows_observation_count() {
-    let mut journal = Journal::default();
+    let mut kg = KnowledgeGraph::default();
     let key = JournalKey::MaterialInstance { seed: 1 };
-    journal.record(
+    kg.record(
         key.clone(),
         "Ferrite",
         Observation {
@@ -2146,7 +2206,7 @@ fn entry_list_shows_observation_count() {
             recorded_at: 1,
         },
     );
-    journal.record(
+    kg.record(
         key,
         "Ferrite",
         Observation {
@@ -2157,9 +2217,9 @@ fn entry_list_shows_observation_count() {
         },
     );
 
-    let entries: Vec<&JournalEntry> = journal.entries.values().collect();
+    let nodes: Vec<NodeIndex> = kg.nodes_sorted_by_name();
     let state = JournalUiState::default();
-    let list = build_entry_list_text(&entries, &state);
+    let list = build_entry_list_text(&nodes, &kg, &state);
     assert!(
         list.contains("(2 obs)"),
         "entry list should show observation count"
@@ -2168,9 +2228,9 @@ fn entry_list_shows_observation_count() {
 
 #[test]
 fn detail_shows_selected_entry_observations() {
-    let mut journal = Journal::default();
+    let mut kg = KnowledgeGraph::default();
     let key = JournalKey::MaterialInstance { seed: 1 };
-    journal.record(
+    kg.record(
         key,
         "Ferrite",
         Observation {
@@ -2181,11 +2241,7 @@ fn detail_shows_selected_entry_observations() {
         },
     );
 
-    let entries: Vec<&JournalEntry> = {
-        let mut v: Vec<_> = journal.entries.values().collect();
-        v.sort_by(|a, b| a.name.cmp(&b.name));
-        v
-    };
+    let nodes: Vec<NodeIndex> = kg.nodes_sorted_by_name();
 
     let state = JournalUiState {
         visible: true,
@@ -2195,7 +2251,12 @@ fn detail_shows_selected_entry_observations() {
         filter: JournalFilter::default(),
     };
 
-    let detail = detail_spans_to_string(&build_detail_spans(&entries, &state, true));
+    let detail = {
+        let selected_node = nodes
+            .get(state.selected_index)
+            .and_then(|&idx| kg.node(idx));
+        detail_spans_to_string(&build_detail_spans(selected_node, true))
+    };
     assert!(detail.contains("Ferrite"), "detail should show entry name");
     assert!(
         detail.contains("Surface"),
@@ -2209,27 +2270,23 @@ fn detail_shows_selected_entry_observations() {
 
 #[test]
 fn detail_empty_journal_shows_placeholder() {
-    let state = JournalUiState::default();
-    let entries: Vec<&JournalEntry> = vec![];
-    let detail = detail_spans_to_string(&build_detail_spans(&entries, &state, false));
+    let detail = detail_spans_to_string(&build_detail_spans(None::<&ConceptNode>, false));
     assert_eq!(detail, "No observations yet.");
 }
 
 #[test]
 fn detail_filtered_empty_shows_no_matching_entries() {
-    let state = JournalUiState::default();
-    let entries: Vec<&JournalEntry> = vec![];
     // has_any_entries = true simulates the case where the journal has entries
     // but the current filter produces no results
-    let detail = detail_spans_to_string(&build_detail_spans(&entries, &state, true));
+    let detail = detail_spans_to_string(&build_detail_spans(None::<&ConceptNode>, true));
     assert_eq!(detail, "No matching entries");
 }
 
 #[test]
 fn detail_spans_have_correct_kinds() {
-    let mut journal = Journal::default();
+    let mut kg = KnowledgeGraph::default();
     let key = JournalKey::MaterialInstance { seed: 1 };
-    journal.record(
+    kg.record(
         key.clone(),
         "Ferrite",
         Observation {
@@ -2239,7 +2296,7 @@ fn detail_spans_have_correct_kinds() {
             recorded_at: 1,
         },
     );
-    journal.record(
+    kg.record(
         key,
         "Ferrite",
         Observation {
@@ -2250,11 +2307,7 @@ fn detail_spans_have_correct_kinds() {
         },
     );
 
-    let entries: Vec<&JournalEntry> = {
-        let mut v: Vec<_> = journal.entries.values().collect();
-        v.sort_by(|a, b| a.name.cmp(&b.name));
-        v
-    };
+    let nodes: Vec<NodeIndex> = kg.nodes_sorted_by_name();
 
     let state = JournalUiState {
         visible: true,
@@ -2264,7 +2317,10 @@ fn detail_spans_have_correct_kinds() {
         filter: JournalFilter::default(),
     };
 
-    let spans = build_detail_spans(&entries, &state, true);
+    let selected_node = nodes
+        .get(state.selected_index)
+        .and_then(|&idx| kg.node(idx));
+    let spans = build_detail_spans(selected_node, true);
     // First span: header with entry name.
     assert_eq!(spans[0].kind, DetailSpanKind::Header);
     assert_eq!(spans[0].text, "Ferrite");
@@ -2286,19 +2342,17 @@ fn detail_spans_have_correct_kinds() {
 
 #[test]
 fn detail_placeholder_span_kind() {
-    let state = JournalUiState::default();
-    let entries: Vec<&JournalEntry> = vec![];
-    let spans = build_detail_spans(&entries, &state, false);
+    let spans = build_detail_spans(None::<&ConceptNode>, false);
     assert_eq!(spans.len(), 1);
     assert_eq!(spans[0].kind, DetailSpanKind::Placeholder);
 }
 
 #[test]
 fn detail_panel_shows_correct_observations_for_selected_entry() {
-    let mut journal = Journal::default();
+    let mut kg = KnowledgeGraph::default();
 
     // Create three entries with distinct observations.
-    journal.record(
+    kg.record(
         JournalKey::MaterialInstance { seed: 1 },
         "Ferrite",
         Observation {
@@ -2308,7 +2362,7 @@ fn detail_panel_shows_correct_observations_for_selected_entry() {
             recorded_at: 1,
         },
     );
-    journal.record(
+    kg.record(
         JournalKey::MaterialInstance { seed: 2 },
         "Silite",
         Observation {
@@ -2318,7 +2372,7 @@ fn detail_panel_shows_correct_observations_for_selected_entry() {
             recorded_at: 2,
         },
     );
-    journal.record(
+    kg.record(
         JournalKey::MaterialInstance { seed: 3 },
         "Neoite",
         Observation {
@@ -2329,15 +2383,11 @@ fn detail_panel_shows_correct_observations_for_selected_entry() {
         },
     );
 
-    let entries: Vec<&JournalEntry> = {
-        let mut v: Vec<_> = journal.entries.values().collect();
-        v.sort_by(|a, b| a.name.cmp(&b.name));
-        v
-    };
+    let nodes: Vec<NodeIndex> = kg.nodes_sorted_by_name();
     // Sorted alphabetically: Ferrite, Neoite, Silite
-    assert_eq!(entries[0].name, "Ferrite");
-    assert_eq!(entries[1].name, "Neoite");
-    assert_eq!(entries[2].name, "Silite");
+    assert_eq!(kg.node(nodes[0]).map(|n| n.name.as_str()), Some("Ferrite"));
+    assert_eq!(kg.node(nodes[1]).map(|n| n.name.as_str()), Some("Neoite"));
+    assert_eq!(kg.node(nodes[2]).map(|n| n.name.as_str()), Some("Silite"));
 
     // Select first entry (Ferrite) — detail should show Ferrite's observations.
     let state = JournalUiState {
@@ -2347,7 +2397,12 @@ fn detail_panel_shows_correct_observations_for_selected_entry() {
         entries_per_page: 15,
         filter: JournalFilter::default(),
     };
-    let detail = detail_spans_to_string(&build_detail_spans(&entries, &state, true));
+    let detail = {
+        let selected_node = nodes
+            .get(state.selected_index)
+            .and_then(|&idx| kg.node(idx));
+        detail_spans_to_string(&build_detail_spans(selected_node, true))
+    };
     assert!(detail.contains("Ferrite"), "header should be Ferrite");
     assert!(
         detail.contains("Warm rust tone"),
@@ -2370,7 +2425,12 @@ fn detail_panel_shows_correct_observations_for_selected_entry() {
         entries_per_page: 15,
         filter: JournalFilter::default(),
     };
-    let detail = detail_spans_to_string(&build_detail_spans(&entries, &state, true));
+    let detail = {
+        let selected_node = nodes
+            .get(state.selected_index)
+            .and_then(|&idx| kg.node(idx));
+        detail_spans_to_string(&build_detail_spans(selected_node, true))
+    };
     assert!(detail.contains("Neoite"), "header should be Neoite");
     assert!(
         detail.contains("Surprisingly light"),
@@ -2393,7 +2453,12 @@ fn detail_panel_shows_correct_observations_for_selected_entry() {
         entries_per_page: 15,
         filter: JournalFilter::default(),
     };
-    let detail = detail_spans_to_string(&build_detail_spans(&entries, &state, true));
+    let detail = {
+        let selected_node = nodes
+            .get(state.selected_index)
+            .and_then(|&idx| kg.node(idx));
+        detail_spans_to_string(&build_detail_spans(selected_node, true))
+    };
     assert!(detail.contains("Silite"), "header should be Silite");
     assert!(
         detail.contains("Glassy smooth surface"),
@@ -2411,10 +2476,10 @@ fn detail_panel_shows_correct_observations_for_selected_entry() {
 
 #[test]
 fn detail_panel_shows_all_observations_for_multi_category_entry() {
-    let mut journal = Journal::default();
+    let mut kg = KnowledgeGraph::default();
     let key = JournalKey::MaterialInstance { seed: 1 };
 
-    journal.record(
+    kg.record(
         key.clone(),
         "Ferrite",
         Observation {
@@ -2424,7 +2489,7 @@ fn detail_panel_shows_all_observations_for_multi_category_entry() {
             recorded_at: 1,
         },
     );
-    journal.record(
+    kg.record(
         key.clone(),
         "Ferrite",
         Observation {
@@ -2434,7 +2499,7 @@ fn detail_panel_shows_all_observations_for_multi_category_entry() {
             recorded_at: 2,
         },
     );
-    journal.record(
+    kg.record(
         key,
         "Ferrite",
         Observation {
@@ -2446,7 +2511,7 @@ fn detail_panel_shows_all_observations_for_multi_category_entry() {
     );
 
     // Add a second entry to confirm isolation.
-    journal.record(
+    kg.record(
         JournalKey::MaterialInstance { seed: 2 },
         "Silite",
         Observation {
@@ -2457,11 +2522,7 @@ fn detail_panel_shows_all_observations_for_multi_category_entry() {
         },
     );
 
-    let entries: Vec<&JournalEntry> = {
-        let mut v: Vec<_> = journal.entries.values().collect();
-        v.sort_by(|a, b| a.name.cmp(&b.name));
-        v
-    };
+    let nodes: Vec<NodeIndex> = kg.nodes_sorted_by_name();
 
     // Select Ferrite (index 0).
     let state = JournalUiState {
@@ -2471,7 +2532,10 @@ fn detail_panel_shows_all_observations_for_multi_category_entry() {
         entries_per_page: 15,
         filter: JournalFilter::default(),
     };
-    let spans = build_detail_spans(&entries, &state, true);
+    let selected_node = nodes
+        .get(state.selected_index)
+        .and_then(|&idx| kg.node(idx));
+    let spans = build_detail_spans(selected_node, true);
     let detail = detail_spans_to_string(&spans);
 
     // Should contain the header.
@@ -2702,12 +2766,8 @@ fn clamp_to_entry_count_zero_entries() {
 
 #[test]
 fn entry_list_respects_scroll_offset_and_page_size() {
-    let journal = make_journal_with_n_entries(20);
-    let entries: Vec<&JournalEntry> = {
-        let mut v: Vec<_> = journal.entries.values().collect();
-        v.sort_by(|a, b| a.name.cmp(&b.name));
-        v
-    };
+    let kg = make_kg_with_n_entries(20);
+    let nodes: Vec<NodeIndex> = kg.nodes_sorted_by_name();
 
     let state = JournalUiState {
         visible: true,
@@ -2717,7 +2777,7 @@ fn entry_list_respects_scroll_offset_and_page_size() {
         filter: JournalFilter::default(),
     };
 
-    let list = build_entry_list_text(&entries, &state);
+    let list = build_entry_list_text(&nodes, &kg, &state);
     let lines: Vec<&str> = list.lines().collect();
     assert_eq!(lines.len(), 5, "should show exactly entries_per_page lines");
     // The selected entry (index 5) is at position 5-3=2 in the visible window.
@@ -2756,12 +2816,8 @@ fn help_text_empty_journal() {
 
 #[test]
 fn two_panel_rendering_100_plus_entries_does_not_panic() {
-    let journal = make_journal_with_n_entries(120);
-    let entries: Vec<&JournalEntry> = {
-        let mut v: Vec<_> = journal.entries.values().collect();
-        v.sort_by(|a, b| a.name.cmp(&b.name));
-        v
-    };
+    let kg = make_kg_with_n_entries(120);
+    let nodes: Vec<NodeIndex> = kg.nodes_sorted_by_name();
 
     let mut state = JournalUiState {
         visible: true,
@@ -2770,13 +2826,18 @@ fn two_panel_rendering_100_plus_entries_does_not_panic() {
         entries_per_page: 15,
         filter: JournalFilter::default(),
     };
-    state.clamp_to_entry_count(entries.len());
+    state.clamp_to_entry_count(nodes.len());
 
-    let list = build_entry_list_text(&entries, &state);
+    let list = build_entry_list_text(&nodes, &kg, &state);
     assert!(!list.is_empty());
-    let detail = build_detail_spans(&entries, &state, true);
+    let detail = build_detail_spans(
+        nodes
+            .get(state.selected_index)
+            .and_then(|&idx| kg.node(idx)),
+        true,
+    );
     assert!(!detail.is_empty());
-    let help = build_help_text(entries.len(), &state, 0);
+    let help = build_help_text(nodes.len(), &state, 0);
     assert!(help.contains("of 120"));
 }
 
@@ -2803,9 +2864,10 @@ fn panels_render_without_panic() {
         ),
     );
 
-    // Spawn a player entity with an empty journal.
+    // Spawn a player entity.
+    app.init_resource::<KnowledgeGraph>();
     app.world_mut()
-        .spawn((Player, Journal::default(), Transform::default()));
+        .spawn((Player, Journal, Transform::default()));
 
     // Frame 0: run Startup (spawns UI nodes).
     app.update();
@@ -2816,16 +2878,11 @@ fn panels_render_without_panic() {
     // Frame 1: compute + sync with empty journal — should not panic.
     app.update();
 
-    // Populate the journal with a few entries and re-render.
+    // Populate the KG with a few entries and re-render.
     {
-        let mut query = app
-            .world_mut()
-            .query_filtered::<&mut Journal, With<Player>>();
-        let mut journal = query
-            .single_mut(app.world_mut())
-            .expect("player must exist");
+        let mut kg = app.world_mut().resource_mut::<KnowledgeGraph>();
         for i in 0..5u64 {
-            journal.record(
+            kg.record(
                 JournalKey::MaterialInstance { seed: i },
                 &format!("Mat-{i}"),
                 Observation {
@@ -2859,12 +2916,8 @@ fn panels_render_without_panic() {
 
 #[test]
 fn correct_entries_shown_for_given_scroll_offset() {
-    let journal = make_journal_with_n_entries(10);
-    let entries: Vec<&JournalEntry> = {
-        let mut v: Vec<_> = journal.entries.values().collect();
-        v.sort_by(|a, b| a.name.cmp(&b.name));
-        v
-    };
+    let kg = make_kg_with_n_entries(10);
+    let nodes: Vec<NodeIndex> = kg.nodes_sorted_by_name();
     // Sorted names: Material-000 .. Material-009
 
     // Page starting at offset 0, page size 3: should show entries 0, 1, 2.
@@ -2875,7 +2928,7 @@ fn correct_entries_shown_for_given_scroll_offset() {
         entries_per_page: 3,
         filter: JournalFilter::default(),
     };
-    let lines = build_entry_list_lines(&entries, &state);
+    let lines = build_entry_list_lines(&nodes, &kg, &state);
     assert_eq!(lines.len(), 3);
     assert!(lines[0].text.contains("Material-000"));
     assert!(lines[1].text.contains("Material-001"));
@@ -2889,7 +2942,7 @@ fn correct_entries_shown_for_given_scroll_offset() {
         entries_per_page: 3,
         filter: JournalFilter::default(),
     };
-    let lines = build_entry_list_lines(&entries, &state);
+    let lines = build_entry_list_lines(&nodes, &kg, &state);
     assert_eq!(lines.len(), 3);
     assert!(
         lines[0].text.contains("Material-004"),
@@ -2919,7 +2972,7 @@ fn correct_entries_shown_for_given_scroll_offset() {
         entries_per_page: 3,
         filter: JournalFilter::default(),
     };
-    let lines = build_entry_list_lines(&entries, &state);
+    let lines = build_entry_list_lines(&nodes, &kg, &state);
     assert_eq!(
         lines.len(),
         2,
@@ -3044,9 +3097,9 @@ fn navigation_ignored_when_journal_is_hidden() {
 
     // Spawn a player with a journal containing entries so navigation
     // would normally have something to move through.
-    let mut journal = Journal::default();
+    let mut kg = KnowledgeGraph::default();
     for i in 0..10 {
-        journal.record(
+        kg.record(
             JournalKey::MaterialInstance { seed: i },
             &format!("Mat-{i:03}"),
             Observation {
@@ -3057,7 +3110,8 @@ fn navigation_ignored_when_journal_is_hidden() {
             },
         );
     }
-    app.world_mut().spawn((Player, journal));
+    app.world_mut().insert_resource(kg);
+    app.world_mut().spawn((Player, Journal));
 
     // Simulate pressing ArrowDown.
     app.world_mut()
@@ -3093,9 +3147,9 @@ fn navigation_active_when_journal_is_visible() {
     });
     app.add_systems(Update, journal_navigation);
 
-    let mut journal = Journal::default();
+    let mut kg = KnowledgeGraph::default();
     for i in 0..10 {
-        journal.record(
+        kg.record(
             JournalKey::MaterialInstance { seed: i },
             &format!("Mat-{i:03}"),
             Observation {
@@ -3106,7 +3160,8 @@ fn navigation_active_when_journal_is_visible() {
             },
         );
     }
-    app.world_mut().spawn((Player, journal));
+    app.world_mut().insert_resource(kg);
+    app.world_mut().spawn((Player, Journal));
 
     // Simulate pressing ArrowDown.
     app.world_mut()
@@ -3142,9 +3197,9 @@ fn navigation_first_to_last_entry() {
     });
     app.add_systems(Update, journal_navigation);
 
-    let mut journal = Journal::default();
+    let mut kg = KnowledgeGraph::default();
     for i in 0..entry_count {
-        journal.record(
+        kg.record(
             JournalKey::MaterialInstance {
                 seed: i.try_into().expect("entry index fits in u64"),
             },
@@ -3157,7 +3212,8 @@ fn navigation_first_to_last_entry() {
             },
         );
     }
-    app.world_mut().spawn((Player, journal));
+    app.world_mut().insert_resource(kg);
+    app.world_mut().spawn((Player, Journal));
 
     // ── End key: jump from first to last ────────────────────────────
     app.world_mut()
@@ -3261,8 +3317,8 @@ fn navigation_bounds_single_entry_journal() {
     });
     app.add_systems(Update, journal_navigation);
 
-    let mut journal = Journal::default();
-    journal.record(
+    let mut kg = KnowledgeGraph::default();
+    kg.record(
         JournalKey::MaterialInstance { seed: 0 },
         "Sole-Material",
         Observation {
@@ -3272,7 +3328,8 @@ fn navigation_bounds_single_entry_journal() {
             recorded_at: 0,
         },
     );
-    app.world_mut().spawn((Player, journal));
+    app.world_mut().insert_resource(kg);
+    app.world_mut().spawn((Player, Journal));
 
     let keys_to_test = [
         KeyCode::ArrowDown,
@@ -3323,9 +3380,9 @@ fn navigation_bounds_page_keys_at_extremes() {
     });
     app.add_systems(Update, journal_navigation);
 
-    let mut journal = Journal::default();
+    let mut kg = KnowledgeGraph::default();
     for i in 0..entry_count {
-        journal.record(
+        kg.record(
             JournalKey::MaterialInstance {
                 seed: i.try_into().expect("entry index fits in u64"),
             },
@@ -3338,7 +3395,8 @@ fn navigation_bounds_page_keys_at_extremes() {
             },
         );
     }
-    app.world_mut().spawn((Player, journal));
+    app.world_mut().insert_resource(kg);
+    app.world_mut().spawn((Player, Journal));
 
     // ── PageUp from index 0: must stay at 0 ────────────────────────
     app.world_mut()
@@ -3445,9 +3503,9 @@ fn navigation_never_exceeds_bounds_under_key_sequence() {
     });
     app.add_systems(Update, journal_navigation);
 
-    let mut journal = Journal::default();
+    let mut kg = KnowledgeGraph::default();
     for i in 0..entry_count {
-        journal.record(
+        kg.record(
             JournalKey::MaterialInstance {
                 seed: i.try_into().expect("entry index fits in u64"),
             },
@@ -3460,7 +3518,8 @@ fn navigation_never_exceeds_bounds_under_key_sequence() {
             },
         );
     }
-    app.world_mut().spawn((Player, journal));
+    app.world_mut().insert_resource(kg);
+    app.world_mut().spawn((Player, Journal));
 
     // A deterministic sequence covering every navigation key, repeated
     // and interleaved so the cumulative position lands at the extremes,
@@ -3557,6 +3616,7 @@ fn make_panel_app(initial_entries_per_page: usize) -> App {
     app.add_plugins(MinimalPlugins);
     app.init_resource::<JournalRenderCache>();
     app.init_resource::<JournalSelectionTracker>();
+    app.init_resource::<KnowledgeGraph>();
     app.insert_resource(JournalUiState {
         visible: true,
         selected_index: 0,
@@ -3566,19 +3626,13 @@ fn make_panel_app(initial_entries_per_page: usize) -> App {
     });
     app.add_systems(Update, compute_journal_panels);
     app.world_mut()
-        .spawn((Player, Journal::default(), Transform::default()));
+        .spawn((Player, Journal, Transform::default()));
     app
 }
 
-/// Helper: append an observation to the player's journal.
+/// Helper: append an observation to the KnowledgeGraph resource.
 fn record(app: &mut App, key: JournalKey, name: &str, recorded_at: u64) {
-    let mut query = app
-        .world_mut()
-        .query_filtered::<&mut Journal, With<Player>>();
-    let mut journal = query
-        .single_mut(app.world_mut())
-        .expect("player must exist");
-    journal.record(
+    app.world_mut().resource_mut::<KnowledgeGraph>().record(
         key,
         name,
         Observation {
@@ -3590,15 +3644,9 @@ fn record(app: &mut App, key: JournalKey, name: &str, recorded_at: u64) {
     );
 }
 
-/// Helper: remove an entry from the player's journal by key.
+/// Helper: remove an entry from the KnowledgeGraph resource.
 fn delete(app: &mut App, key: &JournalKey) {
-    let mut query = app
-        .world_mut()
-        .query_filtered::<&mut Journal, With<Player>>();
-    let mut journal = query
-        .single_mut(app.world_mut())
-        .expect("player must exist");
-    journal.entries.remove(key);
+    app.world_mut().resource_mut::<KnowledgeGraph>().remove(key);
 }
 
 /// Inserting an entry that sorts *before* the selected entry must
@@ -4201,13 +4249,9 @@ fn adding_entry_while_open_updates_list_and_keeps_selection_stable() {
         app.world().resource::<JournalRenderCache>().help.clone()
     }
 
-    // Helper: read the journal entry count via a query.
+    // Helper: read the entry count from KnowledgeGraph resource.
     fn entry_count(app: &mut App) -> usize {
-        let mut q = app.world_mut().query_filtered::<&Journal, With<Player>>();
-        q.single(app.world())
-            .expect("player must exist")
-            .entries
-            .len()
+        app.world().resource::<KnowledgeGraph>().named_node_count()
     }
 
     // Sanity: initial rendered state has Echo selected and all five
@@ -4308,12 +4352,10 @@ fn adding_entry_while_open_updates_list_and_keeps_selection_stable() {
 
     assert_eq!(entry_count(&mut app), 8);
     {
-        let mut q = app.world_mut().query_filtered::<&Journal, With<Player>>();
-        let journal = q.single(app.world()).expect("player must exist");
+        let kg = app.world().resource::<KnowledgeGraph>();
         assert!(
-            journal
-                .entries
-                .contains_key(&JournalKey::MaterialInstance { seed: 12 }),
+            kg.lookup(&ConceptId(JournalKey::MaterialInstance { seed: 12 }))
+                .is_some(),
             "Zulu entry must be present in the journal after recording"
         );
     }
@@ -4328,16 +4370,12 @@ fn adding_entry_while_open_updates_list_and_keeps_selection_stable() {
     );
 
     // ── Echo's own observation count must be untouched ──────────────
-    //
-    // Selection-stability also means the *contents* of the selected
-    // subject are unaffected by additions of unrelated subjects.
     {
-        let mut q = app.world_mut().query_filtered::<&Journal, With<Player>>();
-        let journal = q.single(app.world()).expect("player must exist");
-        let echo = journal
-            .entries
-            .get(&JournalKey::MaterialInstance { seed: 3 })
+        let kg = app.world().resource::<KnowledgeGraph>();
+        let echo_idx = kg
+            .lookup(&ConceptId(JournalKey::MaterialInstance { seed: 3 }))
             .expect("Echo entry must still exist");
+        let echo = kg.node(echo_idx).expect("node");
         assert_eq!(
             echo.observation_count(),
             1,
@@ -4502,10 +4540,10 @@ fn shift_tab_cycles_context_filter() {
     app.world_mut().insert_resource(profile);
 
     // Create a journal with entries from different planets
-    let mut journal = Journal::default();
+    let mut kg = KnowledgeGraph::default();
 
     // Material from planet 0
-    journal.record(
+    kg.record(
         JournalKey::MaterialInstance { seed: 1 },
         "Planet0-Material",
         Observation {
@@ -4517,7 +4555,7 @@ fn shift_tab_cycles_context_filter() {
     );
 
     // Material from planet 1
-    journal.record(
+    kg.record(
         JournalKey::MaterialInstance { seed: 2 },
         "Planet1-Material",
         Observation {
@@ -4529,7 +4567,7 @@ fn shift_tab_cycles_context_filter() {
     );
 
     // Material with no planet context
-    journal.record(
+    kg.record(
         JournalKey::MaterialInstance { seed: 3 },
         "Unknown-Material",
         Observation {
@@ -4540,7 +4578,8 @@ fn shift_tab_cycles_context_filter() {
         },
     );
 
-    app.world_mut().spawn((Player, journal));
+    app.world_mut().insert_resource(kg);
+    app.world_mut().spawn((Player, Journal));
 
     // Initial state: All filter (default)
     {
@@ -4615,10 +4654,10 @@ fn tab_cycles_category_filter() {
     app.add_systems(Update, journal_navigation);
 
     // Create a journal with entries to test filtering
-    let mut journal = Journal::default();
+    let mut kg = KnowledgeGraph::default();
 
     // Add a material entry with SurfaceAppearance observation
-    journal.record(
+    kg.record(
         JournalKey::MaterialInstance { seed: 1 },
         "Surface-Material",
         Observation {
@@ -4630,7 +4669,7 @@ fn tab_cycles_category_filter() {
     );
 
     // Add a material entry with ThermalBehavior observation
-    journal.record(
+    kg.record(
         JournalKey::MaterialInstance { seed: 2 },
         "Thermal-Material",
         Observation {
@@ -4642,7 +4681,7 @@ fn tab_cycles_category_filter() {
     );
 
     // Add a material entry with Weight observation
-    journal.record(
+    kg.record(
         JournalKey::MaterialInstance { seed: 3 },
         "Heavy-Material",
         Observation {
@@ -4654,7 +4693,7 @@ fn tab_cycles_category_filter() {
     );
 
     // Add a fabrication entry with FabricationResult observation
-    journal.record(
+    kg.record(
         JournalKey::Fabrication { output_seed: 4 },
         "Alloy-Fabrication",
         Observation {
@@ -4665,7 +4704,8 @@ fn tab_cycles_category_filter() {
         },
     );
 
-    app.world_mut().spawn((Player, journal));
+    app.world_mut().insert_resource(kg);
+    app.world_mut().spawn((Player, Journal));
 
     // Initial state: All filter (no restrictions)
     {
@@ -4917,6 +4957,7 @@ fn empty_journal_with_filter_shows_no_observations_yet() {
     let mut app = App::new();
     app.add_plugins(MinimalPlugins);
     app.init_resource::<ButtonInput<KeyCode>>();
+    app.init_resource::<KnowledgeGraph>();
     app.insert_resource(JournalUiState {
         visible: true,
         selected_index: 0,
@@ -4927,7 +4968,7 @@ fn empty_journal_with_filter_shows_no_observations_yet() {
     app.add_systems(Update, journal_navigation);
 
     // Create a Player entity with an empty Journal component
-    app.world_mut().spawn((Player, Journal::default()));
+    app.world_mut().spawn((Player, Journal));
 
     // Apply a category filter to the empty journal
     {
@@ -4942,18 +4983,20 @@ fn empty_journal_with_filter_shows_no_observations_yet() {
     app.update();
 
     // Verify that empty journal with filter shows "No observations yet."
-    let mut q = app.world_mut().query_filtered::<&Journal, With<Player>>();
-    let journal = q.single(app.world()).expect("player must exist");
     let state = app.world().resource::<JournalUiState>();
-
-    // Build the detail spans using the same logic as the UI
-    let filtered_entries: Vec<&JournalEntry> = journal
-        .entries
-        .values()
-        .filter(|entry| matches_filter(entry, state.filter()))
+    let kg = app.world().resource::<KnowledgeGraph>();
+    let filtered_nodes: Vec<NodeIndex> = kg
+        .nodes_sorted_by_name()
+        .into_iter()
+        .filter(|&idx| {
+            kg.node(idx)
+                .is_some_and(|n| matches_filter_node(n, state.filter()))
+        })
         .collect();
-
-    let detail_spans = build_detail_spans(&filtered_entries, state, !journal.entries.is_empty());
+    let detail_spans = build_detail_spans(
+        filtered_nodes.get(0).and_then(|&idx| kg.node(idx)),
+        kg.named_node_count() > 0,
+    );
     let detail_text = detail_spans_to_string(&detail_spans);
 
     assert_eq!(
@@ -4973,17 +5016,20 @@ fn empty_journal_with_filter_shows_no_observations_yet() {
     app.update();
 
     // Verify context filter on empty journal also shows "No observations yet."
-    let mut q = app.world_mut().query_filtered::<&Journal, With<Player>>();
-    let journal = q.single(app.world()).expect("player must exist");
     let state = app.world().resource::<JournalUiState>();
-
-    let filtered_entries: Vec<&JournalEntry> = journal
-        .entries
-        .values()
-        .filter(|entry| matches_filter(entry, state.filter()))
+    let kg = app.world().resource::<KnowledgeGraph>();
+    let filtered_nodes: Vec<NodeIndex> = kg
+        .nodes_sorted_by_name()
+        .into_iter()
+        .filter(|&idx| {
+            kg.node(idx)
+                .is_some_and(|n| matches_filter_node(n, state.filter()))
+        })
         .collect();
-
-    let detail_spans = build_detail_spans(&filtered_entries, state, !journal.entries.is_empty());
+    let detail_spans = build_detail_spans(
+        filtered_nodes.get(0).and_then(|&idx| kg.node(idx)),
+        kg.named_node_count() > 0,
+    );
     let detail_text = detail_spans_to_string(&detail_spans);
 
     assert_eq!(
@@ -5003,17 +5049,20 @@ fn empty_journal_with_filter_shows_no_observations_yet() {
     app.update();
 
     // Verify combined filter on empty journal also shows "No observations yet."
-    let mut q = app.world_mut().query_filtered::<&Journal, With<Player>>();
-    let journal = q.single(app.world()).expect("player must exist");
     let state = app.world().resource::<JournalUiState>();
-
-    let filtered_entries: Vec<&JournalEntry> = journal
-        .entries
-        .values()
-        .filter(|entry| matches_filter(entry, state.filter()))
+    let kg = app.world().resource::<KnowledgeGraph>();
+    let filtered_nodes: Vec<NodeIndex> = kg
+        .nodes_sorted_by_name()
+        .into_iter()
+        .filter(|&idx| {
+            kg.node(idx)
+                .is_some_and(|n| matches_filter_node(n, state.filter()))
+        })
         .collect();
-
-    let detail_spans = build_detail_spans(&filtered_entries, state, !journal.entries.is_empty());
+    let detail_spans = build_detail_spans(
+        filtered_nodes.get(0).and_then(|&idx| kg.node(idx)),
+        kg.named_node_count() > 0,
+    );
     let detail_text = detail_spans_to_string(&detail_spans);
 
     assert_eq!(
@@ -5033,7 +5082,7 @@ fn test_planet_switch_updates_context_filter() {
         .init_resource::<ButtonInput<KeyCode>>();
 
     // Create a Player entity with an empty Journal component
-    app.world_mut().spawn((Player, Journal::default()));
+    app.world_mut().spawn((Player, Journal));
 
     // Set up initial WorldProfile with planet seed 42
     let initial_config = WorldGenerationConfig {
@@ -5197,7 +5246,7 @@ fn test_confidence_accumulation_in_journal_entry() {
 
     // Create a test journal entry
     let key = JournalKey::MaterialInstance { seed: 42 };
-    let mut entry = JournalEntry::new(key, "Test Material".to_string(), 0);
+    let mut entry = ConceptNode::new(key, "Test Material", 0);
 
     // Create a confidence config
     let config = ConfidenceConfig {
@@ -5295,7 +5344,7 @@ fn test_confidence_accumulation_different_descriptions() {
 
     // Create a test journal entry
     let key = JournalKey::MaterialInstance { seed: 42 };
-    let mut entry = JournalEntry::new(key, "Test Material".to_string(), 0);
+    let mut entry = ConceptNode::new(key, "Test Material", 0);
 
     // Create a confidence config
     let config = ConfidenceConfig {
@@ -5350,7 +5399,7 @@ fn recording_same_observation_twice_increases_confidence_and_changes_language() 
     use crate::descriptions::describe_thermal_observation;
     use crate::observation::{Confidence, ConfidenceConfig};
 
-    let mut journal = Journal::default();
+    let mut kg = KnowledgeGraph::default();
     let key = JournalKey::MaterialInstance { seed: 42 };
 
     // Create a confidence config with a reasonable accumulation weight
@@ -5368,10 +5417,15 @@ fn recording_same_observation_twice_increases_confidence_and_changes_language() 
     };
 
     // Record the first observation
-    journal.record_with_accumulation(key.clone(), "Test Material", initial_observation, &config);
+    kg.record_with_accumulation(key.clone(), "Test Material", initial_observation, &config);
 
     // Verify initial state
-    let entry = journal.entries.get(&key).expect("Entry should exist");
+    let entry = kg
+        .node(
+            kg.lookup(&ConceptId(key.clone()))
+                .expect("Entry should exist"),
+        )
+        .expect("node");
     let observations = entry.observations_by_category(&ObservationCategory::ThermalBehavior);
     assert_eq!(observations.len(), 1, "Should have exactly one observation");
     assert_eq!(
@@ -5395,10 +5449,15 @@ fn recording_same_observation_twice_increases_confidence_and_changes_language() 
         recorded_at: 2000,
     };
 
-    journal.record_with_accumulation(key.clone(), "Test Material", repeat_observation, &config);
+    kg.record_with_accumulation(key.clone(), "Test Material", repeat_observation, &config);
 
     // Verify confidence has increased
-    let entry = journal.entries.get(&key).expect("Entry should exist");
+    let entry = kg
+        .node(
+            kg.lookup(&ConceptId(key.clone()))
+                .expect("Entry should exist"),
+        )
+        .expect("node");
     let observations = entry.observations_by_category(&ObservationCategory::ThermalBehavior);
     assert_eq!(
         observations.len(),
@@ -5445,10 +5504,15 @@ fn recording_same_observation_twice_increases_confidence_and_changes_language() 
         recorded_at: 3000,
     };
 
-    journal.record_with_accumulation(key.clone(), "Test Material", third_observation, &config);
+    kg.record_with_accumulation(key.clone(), "Test Material", third_observation, &config);
 
     // Verify confidence has increased further
-    let entry = journal.entries.get(&key).expect("Entry should exist");
+    let entry = kg
+        .node(
+            kg.lookup(&ConceptId(key.clone()))
+                .expect("Entry should exist"),
+        )
+        .expect("node");
     let observations = entry.observations_by_category(&ObservationCategory::ThermalBehavior);
 
     // Calculate expected confidence after second accumulation
@@ -5470,10 +5534,15 @@ fn recording_same_observation_twice_increases_confidence_and_changes_language() 
         recorded_at: 4000,
     };
 
-    journal.record_with_accumulation(key.clone(), "Test Material", fourth_observation, &config);
+    kg.record_with_accumulation(key.clone(), "Test Material", fourth_observation, &config);
 
     // Verify we've reached Confident tier
-    let entry = journal.entries.get(&key).expect("Entry should exist");
+    let entry = kg
+        .node(
+            kg.lookup(&ConceptId(key.clone()))
+                .expect("Entry should exist"),
+        )
+        .expect("node");
     let observations = entry.observations_by_category(&ObservationCategory::ThermalBehavior);
 
     // Calculate expected confidence after third accumulation
@@ -5512,7 +5581,7 @@ fn recording_same_observation_twice_increases_confidence_and_changes_language() 
 fn journal_entry_shows_confident_language_after_sufficient_observations() {
     use crate::observation::{Confidence, DescriptorVocabulary};
 
-    let mut journal = Journal::default();
+    let mut kg = KnowledgeGraph::default();
     let key = JournalKey::MaterialInstance { seed: 42 };
 
     // Create a descriptor vocabulary to generate confident language
@@ -5539,10 +5608,15 @@ fn journal_entry_shows_confident_language_after_sufficient_observations() {
         recorded_at: 1000,
     };
 
-    journal.record(key.clone(), "Test Material", observation);
+    kg.record(key.clone(), "Test Material", observation);
 
     // Verify the observation has confident tier
-    let entry = journal.entries.get(&key).expect("Entry should exist");
+    let entry = kg
+        .node(
+            kg.lookup(&ConceptId(key.clone()))
+                .expect("Entry should exist"),
+        )
+        .expect("node");
     let observations = entry.observations_by_category(&ObservationCategory::ThermalBehavior);
     assert_eq!(observations.len(), 1, "Should have exactly one observation");
     assert_eq!(
@@ -5552,7 +5626,6 @@ fn journal_entry_shows_confident_language_after_sufficient_observations() {
     );
 
     // Now test that the journal detail display shows confident language
-    let entries: Vec<&JournalEntry> = vec![entry];
     let state = JournalUiState {
         visible: true,
         selected_index: 0,
@@ -5561,7 +5634,7 @@ fn journal_entry_shows_confident_language_after_sufficient_observations() {
         filter: JournalFilter::default(),
     };
 
-    let detail_spans = build_detail_spans(&entries, &state, true);
+    let detail_spans = build_detail_spans(Some(entry), true);
     let detail_text = detail_spans_to_string(&detail_spans);
 
     // Verify the detail display contains confident language
@@ -5623,7 +5696,7 @@ fn language_in_journal_regresses_after_death_and_recovers_with_new_observations(
 
     // ── Phase 1: Establish confident language ──────────────────────────────
 
-    let mut journal = Journal::default();
+    let mut kg = KnowledgeGraph::default();
     let thermal_key = JournalKey::MaterialInstance { seed: 42 };
     let weight_key = JournalKey::MaterialInstance { seed: 99 };
 
@@ -5648,13 +5721,18 @@ fn language_in_journal_regresses_after_death_and_recovers_with_new_observations(
         recorded_at: 1100,
     };
 
-    journal.record(thermal_key.clone(), "Thermal Material", confident_thermal);
-    journal.record(weight_key.clone(), "Heavy Material", confident_weight);
+    kg.record(thermal_key.clone(), "Thermal Material", confident_thermal);
+    kg.record(weight_key.clone(), "Heavy Material", confident_weight);
 
     // Verify initial confident language
-    let thermal_obs =
-        &journal.entries[&thermal_key].observations[&ObservationCategory::ThermalBehavior][0];
-    let weight_obs = &journal.entries[&weight_key].observations[&ObservationCategory::Weight][0];
+    let thermal_obs = &kg
+        .node(kg.lookup(&ConceptId(thermal_key.clone())).unwrap())
+        .unwrap()
+        .observations_by_category(&ObservationCategory::ThermalBehavior)[0];
+    let weight_obs = &kg
+        .node(kg.lookup(&ConceptId(weight_key.clone())).unwrap())
+        .unwrap()
+        .observations_by_category(&ObservationCategory::Weight)[0];
 
     assert_eq!(thermal_obs.confidence.tier(), ConfidenceTier::Confident);
     assert_eq!(weight_obs.confidence.tier(), ConfidenceTier::Confident);
@@ -5672,7 +5750,7 @@ fn language_in_journal_regresses_after_death_and_recovers_with_new_observations(
     // ── Phase 2: Simulate death causing language regression ────────────────
 
     // Manually apply death degradation to simulate what handle_player_death does
-    for entry in journal.entries.values_mut() {
+    for entry in kg.graph_mut().node_weights_mut() {
         for observations in entry.observations.values_mut() {
             for obs in observations.iter_mut() {
                 obs.confidence
@@ -5682,9 +5760,14 @@ fn language_in_journal_regresses_after_death_and_recovers_with_new_observations(
     }
 
     // Verify confidence has degraded and language has regressed
-    let thermal_obs =
-        &journal.entries[&thermal_key].observations[&ObservationCategory::ThermalBehavior][0];
-    let weight_obs = &journal.entries[&weight_key].observations[&ObservationCategory::Weight][0];
+    let thermal_obs = &kg
+        .node(kg.lookup(&ConceptId(thermal_key.clone())).unwrap())
+        .unwrap()
+        .observations_by_category(&ObservationCategory::ThermalBehavior)[0];
+    let weight_obs = &kg
+        .node(kg.lookup(&ConceptId(weight_key.clone())).unwrap())
+        .unwrap()
+        .observations_by_category(&ObservationCategory::Weight)[0];
 
     // Expected confidence after death: original * 0.5, but not below 0.15 floor
     let expected_thermal_confidence = 0.8 * 0.5; // 0.4 (Observed tier: 0.3-0.7)
@@ -5726,7 +5809,7 @@ fn language_in_journal_regresses_after_death_and_recovers_with_new_observations(
     let current_time = 1500; // Within recovery window
 
     // Record new thermal observation (death-relevant domain - should recover faster)
-    let recovery_thermal = Observation {
+    let _recovery_thermal = Observation {
         category: ObservationCategory::ThermalBehavior,
         confidence: Confidence(0.2), // New observation confidence
         description: thermal_obs.description.clone(), // Same description to trigger accumulation
@@ -5734,7 +5817,7 @@ fn language_in_journal_regresses_after_death_and_recovers_with_new_observations(
     };
 
     // Record new weight observation (unrelated domain - should recover slower)
-    let recovery_weight = Observation {
+    let _recovery_weight = Observation {
         category: ObservationCategory::Weight,
         confidence: Confidence(0.2),
         description: weight_obs.description.clone(),
@@ -5752,7 +5835,9 @@ fn language_in_journal_regresses_after_death_and_recovers_with_new_observations(
 
     // Manually simulate record_with_accumulation with domain-weighted recovery
     // For thermal (death-relevant domain)
-    let thermal_entry = journal.entries.get_mut(&thermal_key).unwrap();
+    let thermal_entry = kg
+        .node_mut(kg.lookup(&ConceptId(thermal_key.clone())).unwrap())
+        .unwrap();
     let thermal_obs_mut = &mut thermal_entry
         .observations
         .get_mut(&ObservationCategory::ThermalBehavior)
@@ -5762,7 +5847,9 @@ fn language_in_journal_regresses_after_death_and_recovers_with_new_observations(
         .accumulate(config.base_observation_weight * thermal_multiplier);
 
     // For weight (unrelated domain)
-    let weight_entry = journal.entries.get_mut(&weight_key).unwrap();
+    let weight_entry = kg
+        .node_mut(kg.lookup(&ConceptId(weight_key.clone())).unwrap())
+        .unwrap();
     let weight_obs_mut = &mut weight_entry
         .observations
         .get_mut(&ObservationCategory::Weight)
@@ -5773,9 +5860,14 @@ fn language_in_journal_regresses_after_death_and_recovers_with_new_observations(
 
     // ── Phase 4: Verify domain-weighted recovery ───────────────────────────
 
-    let thermal_obs =
-        &journal.entries[&thermal_key].observations[&ObservationCategory::ThermalBehavior][0];
-    let weight_obs = &journal.entries[&weight_key].observations[&ObservationCategory::Weight][0];
+    let thermal_obs = &kg
+        .node(kg.lookup(&ConceptId(thermal_key.clone())).unwrap())
+        .unwrap()
+        .observations_by_category(&ObservationCategory::ThermalBehavior)[0];
+    let weight_obs = &kg
+        .node(kg.lookup(&ConceptId(weight_key.clone())).unwrap())
+        .unwrap()
+        .observations_by_category(&ObservationCategory::Weight)[0];
 
     // Thermal (death-relevant) should recover faster due to domain_recovery_multiplier = 2.0
     // Expected: 0.4 + (1.0 - 0.4) * (0.25 * 2.0) = 0.4 + 0.6 * 0.5 = 0.4 + 0.3 = 0.7
@@ -5852,9 +5944,8 @@ fn language_in_journal_regresses_after_death_and_recovers_with_new_observations(
 
     // Apply multiple accumulations to push weight back to confident
     // Weight gets passive recovery (0.8x multiplier), so needs more observations
-    let weight_obs_mut = &mut journal
-        .entries
-        .get_mut(&weight_key)
+    let weight_obs_mut = &mut kg
+        .node_mut(kg.lookup(&ConceptId(weight_key.clone())).unwrap())
         .unwrap()
         .observations
         .get_mut(&ObservationCategory::Weight)
@@ -5867,7 +5958,10 @@ fn language_in_journal_regresses_after_death_and_recovers_with_new_observations(
             .accumulate(config.base_observation_weight * weight_multiplier);
     }
 
-    let weight_obs = &journal.entries[&weight_key].observations[&ObservationCategory::Weight][0];
+    let weight_obs = &kg
+        .node(kg.lookup(&ConceptId(weight_key.clone())).unwrap())
+        .unwrap()
+        .observations_by_category(&ObservationCategory::Weight)[0];
 
     // Should now be confident again
     assert!(

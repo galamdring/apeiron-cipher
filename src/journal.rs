@@ -6,16 +6,17 @@
 //! fabricator. Unknown properties are omitted entirely rather than shown as
 //! placeholders.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::VecDeque;
 
 use bevy::prelude::*;
 use leafwing_input_manager::prelude::*;
+use petgraph::graph::NodeIndex;
 use serde::{Deserialize, Serialize};
 use strum::IntoEnumIterator;
 
 use crate::diegetic_ui::{DiegeticFocusState, DiegeticSurface, DiegeticSurfaceKind};
 use crate::input::InputAction;
-use crate::knowledge_graph::ConceptNode;
+use crate::knowledge_graph::{ConceptId, ConceptNode, KnowledgeGraph};
 use crate::observation::Confidence;
 use crate::player::{Player, cursor_is_captured, spawn_player};
 use crate::world_generation::BiomeType;
@@ -247,6 +248,17 @@ impl JournalKey {
             JournalKey::Location { planet_seed } => Some(*planet_seed),
         }
     }
+
+    /// Map this key to the coarse [`crate::knowledge_graph::ConceptCategory`]
+    /// used for graph storage.
+    pub fn concept_category(&self) -> crate::knowledge_graph::ConceptCategory {
+        use crate::knowledge_graph::ConceptCategory;
+        match self {
+            JournalKey::MaterialInstance { .. } => ConceptCategory::Material,
+            JournalKey::Fabrication { .. } => ConceptCategory::Fabrication,
+            JournalKey::Location { .. } => ConceptCategory::Location,
+        }
+    }
 }
 
 // ── Filtering ───────────────────────────────────────────────────────────
@@ -331,49 +343,6 @@ pub struct JournalFilter {
     pub context: Option<JournalContext>,
 }
 
-/// Predicate evaluating whether a journal entry should be shown under the
-/// active filter.
-///
-/// The two filter dimensions combine with **AND** logic: an entry is
-/// kept when *every* `Some(_)` dimension matches it.  `None` on a
-/// dimension means "no restriction on this dimension" — the
-/// [`JournalFilter::default`] value (both dimensions `None`) therefore
-/// returns `true` for every entry, satisfying the Story 10.3
-/// acceptance criterion that the "All" filter shows everything.
-///
-/// Dimension semantics:
-///
-/// * **Category match** — the entry contains at least one observation
-///   whose [`Observation::category`] equals the requested category.  An
-///   entry with no observations cannot match any category restriction
-///   (the `any` fold returns `false` over an empty iterator), which is
-///   the correct behaviour: an entry with zero observations carries no
-///   evidence of belonging to any category.
-/// * **Context match** — the entry's captured location metadata
-///   matches the requested context.  For
-///   [`JournalContext::CurrentPlanet`] this consults
-///   [`JournalKey::planet_seed`]: an entry matches iff its key recorded
-///   the same planet seed.  Entries whose key has no planet seed
-///   (`None`) are excluded from current-planet filtering — this is by
-///   design (see [`JournalKey::Material::planet_seed`]'s docs):
-///   "unknown provenance" should not silently be assumed to mean
-///   "current planet".
-///
-///   [`JournalContext::CurrentBiome`] is not yet evaluated and
-///   currently returns `true` (no restriction).  Biome provenance is
-///   not captured on [`JournalKey`] today; wiring it up is tracked as a
-///   follow-up so that filter UI cycling can already expose the option
-///   without false-negative behaviour.  When biome capture is added,
-///   this arm changes to compare against the entry's recorded biome
-///   key — no other call site needs to change.
-///
-/// The function is intentionally pure (no `WorldContext` parameter):
-/// the filter already carries the planet seed / biome key it is
-/// matching against, and the entry already carries the metadata being
-/// matched.  Keeping the predicate parameter-light means it can be
-/// dropped into an iterator chain (`entries.filter(|e|
-/// matches_filter(e, &filter))`) without threading additional
-/// resources through the render pipeline.
 /// Predicate evaluating whether a knowledge-graph concept node should be shown
 /// under the active journal filter.
 ///
@@ -390,34 +359,6 @@ pub fn matches_filter_node(node: &ConceptNode, filter: &JournalFilter) -> bool {
         JournalContext::CurrentPlanet { planet_seed } => {
             node.origin_planet_seed == Some(*planet_seed)
         }
-        JournalContext::CurrentBiome { .. } => true,
-    });
-
-    category_match && context_match
-}
-
-/// Legacy entry-based filter predicate — kept for tests that still build
-/// `JournalEntry` directly. New code should use [`matches_filter_node`].
-pub fn matches_filter(entry: &JournalEntry, filter: &JournalFilter) -> bool {
-    let category_match = filter
-        .category
-        .as_ref()
-        .is_none_or(|cat| entry.observations.keys().any(|entry_cat| entry_cat == cat));
-
-    let context_match = filter.context.as_ref().is_none_or(|ctx| match ctx {
-        JournalContext::CurrentPlanet { planet_seed } => {
-            entry.origin_planet_seed == Some(*planet_seed)
-        }
-        // Biome provenance is not yet captured on JournalKey; until it
-        // is, the biome filter is a no-op (matches everything) rather
-        // than excluding every entry.  Returning `true` here keeps the
-        // UI affordance usable without producing a misleading "no
-        // matching entries" panel for a filter that hasn't been
-        // wired through to the data model yet.
-        //
-        // When biome capture is added, this arm will compare the entry's
-        // recorded biome key against `biome_key.biome_type()` — no other
-        // call site needs to change.
         JournalContext::CurrentBiome { .. } => true,
     });
 
@@ -561,280 +502,16 @@ pub struct RecordObservation {
     pub context_location: Option<JournalKey>,
 }
 
-// ── Player-owned journal data ───────────────────────────────────────────
+// ── Player-owned journal component ──────────────────────────────────────
 
-/// A journal entry that accumulates observations about a single subject over time.
+/// Marker component attached to the player entity.
 ///
-/// Each entry is keyed by a [`JournalKey`] and holds a chronologically ordered
-/// vector of [`Observation`]s. The `first_observed_at` and `last_updated_at`
-/// timestamps track the game-time ticks bounding the observation window, which
-/// later systems (e.g., confidence decay, staleness indicators) can use without
-/// re-scanning all observations.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct JournalEntry {
-    /// The unique identifier for this journal subject.
-    pub key: JournalKey,
-    /// Player-facing display name for this subject.
-    pub name: String,
-    /// Planet on which this material instance was first observed.
-    ///
-    /// Populated from [`GameMaterial::origin_planet_seed`] on first
-    /// `RecordObservation` for this entry. Used by the `CurrentPlanet`
-    /// filter while the full KnowledgeGraph query layer is pending
-    /// (follow-on epic). `None` for fabricated materials and entries
-    /// recorded without planetary context.
-    pub origin_planet_seed: Option<u64>,
-    /// Observations grouped by category, each group in chronological order.
-    pub observations: BTreeMap<ObservationCategory, Vec<Observation>>,
-    /// Game-time tick when the player first recorded *any* observation about
-    /// this subject.
-    pub first_observed_at: u64,
-    /// Game-time tick of the most recent observation recorded for this subject.
-    pub last_updated_at: u64,
-}
-
-impl JournalEntry {
-    /// Create a new journal entry with no observations yet recorded.
-    ///
-    /// The `tick` parameter sets both `first_observed_at` and `last_updated_at`
-    /// to the same initial value; they diverge once additional observations
-    /// arrive.
-    pub fn new(key: JournalKey, name: String, tick: u64) -> Self {
-        Self {
-            key,
-            name,
-            origin_planet_seed: None,
-            observations: BTreeMap::new(),
-            first_observed_at: tick,
-            last_updated_at: tick,
-        }
-    }
-
-    /// Record an observation, deduplicating against existing entries in the
-    /// same category group.
-    ///
-    /// If an observation with the same category **and** the same description
-    /// already exists, the duplicate is not appended. Instead, the existing
-    /// observation's confidence is upgraded to the higher of the two values
-    /// and the `last_updated_at` timestamp is advanced. This prevents the
-    /// journal from bloating when systems repeatedly report the same finding
-    /// (e.g., picking up the same material multiple times).
-    ///
-    /// When the observation is genuinely new (different category or different
-    /// description), it is appended to the appropriate category group.
-    pub fn add_observation(&mut self, observation: Observation) {
-        self.last_updated_at = observation.recorded_at;
-
-        let group = self
-            .observations
-            .entry(observation.category.clone())
-            .or_default();
-
-        // Look for an existing observation with the same description within this category.
-        if let Some(existing) = group
-            .iter_mut()
-            .find(|o| o.description == observation.description)
-        {
-            // Upgrade confidence if the new evidence is stronger.
-            if observation.confidence.0 > existing.confidence.0 {
-                existing.confidence = observation.confidence;
-            }
-            return;
-        }
-
-        group.push(observation);
-    }
-
-    /// Record an observation with confidence accumulation for existing observations.
-    ///
-    /// This method implements the confidence evolution system described in Story 10.4.
-    /// When an observation with the same category and description already exists,
-    /// it calls `accumulate()` on the existing observation's confidence using the
-    /// base observation weight from the configuration. This provides diminishing
-    /// returns as evidence accumulates, matching the technical design.
-    ///
-    /// When the observation is genuinely new (different category or different
-    /// description), it is appended to the appropriate category group.
-    pub fn add_observation_with_accumulation(
-        &mut self,
-        observation: Observation,
-        config: &crate::observation::ConfidenceConfig,
-    ) {
-        self.add_observation_with_domain_weighted_accumulation(observation, config, 1.0);
-    }
-
-    /// Add an observation with domain-weighted confidence accumulation.
-    ///
-    /// This method extends the basic accumulation system with domain-weighted
-    /// recovery. The recovery multiplier adjusts the accumulation rate based
-    /// on recent death context and whether the player is engaging with the
-    /// death-relevant domain.
-    ///
-    /// # Arguments
-    /// * `recovery_multiplier` - Multiplier applied to base observation weight
-    ///   - > 1.0 for death-relevant domain (faster recovery)
-    ///   - < 1.0 for unrelated domains (slower recovery)
-    ///   - = 1.0 for no death context (normal rate)
-    pub fn add_observation_with_domain_weighted_accumulation(
-        &mut self,
-        observation: Observation,
-        config: &crate::observation::ConfidenceConfig,
-        recovery_multiplier: f32,
-    ) {
-        self.last_updated_at = observation.recorded_at;
-
-        let group = self
-            .observations
-            .entry(observation.category.clone())
-            .or_default();
-
-        // Look for an existing observation with the same description within this category.
-        if let Some(existing) = group
-            .iter_mut()
-            .find(|o| o.description == observation.description)
-        {
-            // Apply domain-weighted recovery to the accumulation weight
-            let adjusted_weight = config.base_observation_weight * recovery_multiplier;
-
-            // Accumulate evidence using the confidence system with diminishing returns.
-            existing.confidence.accumulate(adjusted_weight);
-            return;
-        }
-
-        group.push(observation);
-    }
-
-    /// Return all observations matching a given category, in recorded order.
-    ///
-    /// Returns an empty slice if no observations exist for the category.
-    pub fn observations_by_category(&self, category: &ObservationCategory) -> &[Observation] {
-        self.observations
-            .get(category)
-            .map_or(&[], |v| v.as_slice())
-    }
-
-    /// Total number of observations across all categories.
-    pub fn observation_count(&self) -> usize {
-        self.observations.values().map(|v| v.len()).sum()
-    }
-
-    /// Iterator over all observations across all categories, ordered by
-    /// category (deterministic via `BTreeMap`) then by insertion order
-    /// within each category.
-    pub fn all_observations(&self) -> impl Iterator<Item = &Observation> {
-        self.observations.values().flat_map(|v| v.iter())
-    }
-}
-
-/// The player's journal — accumulates all observations about every subject
-/// the player has investigated.
-///
-/// Keyed by [`JournalKey`] so lookups are O(log n) and iteration order is
-/// deterministic (important for save/load reproducibility and test stability).
+/// As of Story 387 the `Journal` no longer stores observations — that data
+/// lives in [`KnowledgeGraph`] `ConceptNode`s. The component is kept so
+/// existing system queries (`With<Player>`, `With<Journal>`) continue to
+/// compile without change while the query layer is being migrated in Phase 5.
 #[derive(Component, Default, Clone, Debug, Serialize, Deserialize)]
-pub struct Journal {
-    /// All journal entries, keyed by subject identity.
-    ///
-    /// Serialized as a list of entries (not a JSON object) because
-    /// [`JournalKey`] is an enum and cannot serve as a JSON map key.
-    #[serde(with = "journal_entries_serde")]
-    pub entries: BTreeMap<JournalKey, JournalEntry>,
-}
-
-/// Serialize/deserialize a `BTreeMap<JournalKey, JournalEntry>` as a
-/// `Vec<JournalEntry>`. Each entry already carries its key, so the vec
-/// representation is lossless and avoids the JSON "keys must be strings"
-/// limitation.
-mod journal_entries_serde {
-    use super::*;
-    use serde::de::Deserializer;
-    use serde::ser::Serializer;
-
-    pub fn serialize<S: Serializer>(
-        map: &BTreeMap<JournalKey, JournalEntry>,
-        serializer: S,
-    ) -> Result<S::Ok, S::Error> {
-        let entries: Vec<&JournalEntry> = map.values().collect();
-        entries.serialize(serializer)
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(
-        deserializer: D,
-    ) -> Result<BTreeMap<JournalKey, JournalEntry>, D::Error> {
-        let entries: Vec<JournalEntry> = Vec::deserialize(deserializer)?;
-        Ok(entries.into_iter().map(|e| (e.key.clone(), e)).collect())
-    }
-}
-
-impl Journal {
-    /// Look up or create a journal entry for the given key.
-    ///
-    /// If no entry exists yet, one is created with the provided `name` and
-    /// `tick` as the initial observation timestamp. If an entry already exists,
-    /// the existing entry is returned unchanged (name is *not* overwritten —
-    /// the first observer wins).
-    pub fn ensure_entry(&mut self, key: JournalKey, name: &str, tick: u64) -> &mut JournalEntry {
-        self.entries
-            .entry(key.clone())
-            .or_insert_with(|| JournalEntry::new(key, name.to_string(), tick))
-    }
-
-    /// Record an observation against a subject, creating the entry if needed.
-    ///
-    /// This is the primary write path that future systems (materials, heat,
-    /// fabrication, navigation, trade, language) use to push knowledge into
-    /// the journal.
-    pub fn record(&mut self, key: JournalKey, name: &str, observation: Observation) {
-        let entry = self.ensure_entry(key, name, observation.recorded_at);
-        entry.add_observation(observation);
-    }
-
-    /// Record an observation with confidence accumulation for existing observations.
-    ///
-    /// This method uses the confidence accumulation system to properly handle
-    /// repeated observations of the same property. When an observation with the
-    /// same category and description already exists, it calls `accumulate()` on
-    /// the existing observation's confidence using the base observation weight
-    /// from the configuration.
-    pub fn record_with_accumulation(
-        &mut self,
-        key: JournalKey,
-        name: &str,
-        observation: Observation,
-        config: &crate::observation::ConfidenceConfig,
-    ) {
-        let entry = self.ensure_entry(key, name, observation.recorded_at);
-        entry.add_observation_with_accumulation(observation, config);
-    }
-
-    /// Record an observation with domain-weighted confidence accumulation.
-    ///
-    /// This method extends the basic accumulation system with domain-weighted
-    /// recovery based on recent death context. The recovery multiplier adjusts
-    /// the accumulation rate based on whether the player is engaging with the
-    /// death-relevant domain or avoiding it.
-    ///
-    /// # Arguments
-    /// * `recovery_multiplier` - Multiplier applied to base observation weight
-    ///   - > 1.0 for death-relevant domain (faster recovery)
-    ///   - < 1.0 for unrelated domains (slower recovery)
-    ///   - = 1.0 for no death context (normal rate)
-    pub fn record_with_domain_weighted_accumulation(
-        &mut self,
-        key: JournalKey,
-        name: &str,
-        observation: Observation,
-        config: &crate::observation::ConfidenceConfig,
-        recovery_multiplier: f32,
-    ) {
-        let entry = self.ensure_entry(key, name, observation.recorded_at);
-        entry.add_observation_with_domain_weighted_accumulation(
-            observation,
-            config,
-            recovery_multiplier,
-        );
-    }
-}
+pub struct Journal;
 
 // ── UI state ────────────────────────────────────────────────────────────
 
@@ -1133,7 +810,7 @@ fn attach_journal_to_player(mut commands: Commands, player_query: Query<Entity, 
     let Ok(player) = player_query.single() else {
         return;
     };
-    commands.entity(player).insert(Journal::default());
+    commands.entity(player).insert(Journal);
 }
 
 /// Spawns the two-panel journal overlay: a vertical flex container holding
@@ -1379,19 +1056,10 @@ fn sync_journal_ui_state_from_focus(
 fn journal_navigation(
     mut state: ResMut<JournalUiState>,
     keys: Res<ButtonInput<KeyCode>>,
-    q: Query<&Journal, With<Player>>,
+    graph: Option<Res<KnowledgeGraph>>,
     world_profile: Option<Res<crate::world_generation::WorldProfile>>,
 ) {
     if !state.visible {
-        return;
-    }
-
-    let Ok(journal) = q.single() else {
-        return;
-    };
-
-    let entry_count = journal.entries.len();
-    if entry_count == 0 {
         return;
     }
 
@@ -1481,6 +1149,15 @@ fn journal_navigation(
         state.scroll_offset = 0;
     }
 
+    // ── Navigation keys — only when there are entries ─────────────────
+    let entry_count = graph
+        .as_ref()
+        .map(|g| g.named_node_count_filtered(state.filter()))
+        .unwrap_or(0);
+    if entry_count == 0 {
+        return;
+    }
+
     if keys.just_pressed(KeyCode::ArrowUp) {
         state.selected_index = state.selected_index.saturating_sub(1);
     }
@@ -1521,7 +1198,7 @@ fn journal_cross_ref_navigation(
     mut cache: ResMut<JournalRenderCache>,
     mut nav_stack: ResMut<JournalNavigationStack>,
     keys: Res<ButtonInput<KeyCode>>,
-    q: Query<&Journal, With<Player>>,
+    graph: Option<Res<KnowledgeGraph>>,
 ) {
     if !state.visible {
         return;
@@ -1530,24 +1207,26 @@ fn journal_cross_ref_navigation(
     // ── Back-navigation (Backspace) ─────────────────────────────────
     if keys.just_pressed(KeyCode::Backspace) {
         if let Some((prev_key, prev_filter)) = nav_stack.pop() {
-            let Ok(journal) = q.single() else {
-                return;
-            };
-            // Restore the saved filter first, then locate the previous entry
-            // within that filter's view — so the player lands exactly where
-            // they were before following the link.
             state.set_filter(prev_filter);
-            let mut sorted: Vec<&JournalEntry> = journal.entries.values().collect();
-            sorted.sort_by(|a, b| a.name.cmp(&b.name));
-            let filtered: Vec<&JournalEntry> = sorted
-                .iter()
-                .copied()
-                .filter(|e| matches_filter(e, state.filter()))
-                .collect();
-            if let Some(pos) = filtered.iter().position(|e| e.key == prev_key) {
-                state.selected_index = pos;
-                state.scroll_offset = pos.saturating_sub(state.entries_per_page / 2);
-                state.clamp_to_entry_count(filtered.len());
+            if let Some(graph) = graph.as_ref() {
+                let sorted = graph.nodes_sorted_by_name();
+                let filtered: Vec<NodeIndex> = sorted
+                    .into_iter()
+                    .filter(|&idx| {
+                        graph
+                            .node(idx)
+                            .is_some_and(|n| matches_filter_node(n, state.filter()))
+                    })
+                    .collect();
+                let target_id = ConceptId(prev_key);
+                if let Some(pos) = filtered
+                    .iter()
+                    .position(|&idx| graph.lookup(&target_id).is_some_and(|ti| ti == idx))
+                {
+                    state.selected_index = pos;
+                    state.scroll_offset = pos.saturating_sub(state.entries_per_page / 2);
+                    state.clamp_to_entry_count(filtered.len());
+                }
             }
         }
         return;
@@ -1572,29 +1251,30 @@ fn journal_cross_ref_navigation(
         let selected_idx = cache.selected_cross_ref.min(link_count - 1);
         let (_, target_key, _) = cache.cross_ref_links[selected_idx].clone();
 
-        let Ok(journal) = q.single() else {
+        let Some(graph) = graph.as_ref() else {
             return;
         };
 
-        // Build the sorted entry list once. Clearing the filter (below) doesn't
-        // change `journal.entries` — only the view — so this list remains valid
-        // for both push-to-stack and jump-to-target.
-        let mut sorted: Vec<&JournalEntry> = journal.entries.values().collect();
-        sorted.sort_by(|a, b| a.name.cmp(&b.name));
+        let sorted = graph.nodes_sorted_by_name();
 
-        // Push the current selection AND active filter onto the back-nav stack
-        // so Backspace restores the player to exactly where they were.
-        if let Some(current_entry) = sorted.get(state.selected_index) {
-            nav_stack.push(current_entry.key.clone(), state.filter().clone());
+        // Push the current selection AND active filter onto the back-nav stack.
+        if let Some(&current_idx) = sorted.get(state.selected_index)
+            && let Some(node) = graph.node(current_idx)
+        {
+            nav_stack.push(node.id.0.clone(), state.filter().clone());
         }
 
         // Clear filter so the target is always in view, then jump.
         state.set_filter(JournalFilter::default());
-
-        if let Some(pos) = sorted.iter().position(|e| e.key == target_key) {
+        let sorted_all = graph.nodes_sorted_by_name();
+        let target_id = ConceptId(target_key);
+        if let Some(pos) = sorted_all
+            .iter()
+            .position(|&idx| graph.lookup(&target_id).is_some_and(|ti| ti == idx))
+        {
             state.selected_index = pos;
             state.scroll_offset = pos.saturating_sub(state.entries_per_page / 2);
-            state.clamp_to_entry_count(sorted.len());
+            state.clamp_to_entry_count(sorted_all.len());
             cache.selected_cross_ref = 0;
         }
     }
@@ -1761,7 +1441,7 @@ struct DetailSpan {
 ///   onto whatever entry is now selected.
 fn compute_journal_panels(
     mut state: ResMut<JournalUiState>,
-    player_query: Query<&Journal, With<Player>>,
+    graph: Option<Res<KnowledgeGraph>>,
     mut cache: ResMut<JournalRenderCache>,
     mut tracker: ResMut<JournalSelectionTracker>,
 ) {
@@ -1773,7 +1453,7 @@ fn compute_journal_panels(
         return;
     }
 
-    let Ok(journal) = player_query.single() else {
+    let Some(graph) = graph else {
         cache.filter_bar.clear();
         cache.list_lines.clear();
         cache.detail_spans.clear();
@@ -1781,76 +1461,59 @@ fn compute_journal_panels(
         return;
     };
 
-    // Sort entries alphabetically for stable display order.
-    let mut sorted_entries: Vec<&JournalEntry> = journal.entries.values().collect();
-    sorted_entries.sort_by(|a, b| a.name.cmp(&b.name));
-
-    // Apply active filter to the sorted entries
-    let filtered_entries: Vec<&JournalEntry> = sorted_entries
+    // Alphabetically sorted, filtered node list.
+    let filtered_nodes: Vec<NodeIndex> = graph
+        .nodes_sorted_by_name()
         .into_iter()
-        .filter(|entry| matches_filter(entry, state.filter()))
+        .filter(|&idx| {
+            graph
+                .node(idx)
+                .is_some_and(|n| matches_filter_node(n, state.filter()))
+        })
         .collect();
 
-    let entry_count = filtered_entries.len();
+    let entry_count = filtered_nodes.len();
+    let has_any = graph.named_node_count() > 0;
 
     // ── Selection reconciliation ────────────────────────────────────
-    //
-    // Only follow the tracked key when the user did NOT navigate this
-    // frame.  We detect navigation by comparing the live `selected_index`
-    // to the index the tracker recorded at the end of the previous frame:
-    // they match iff no navigation key fired in between.
-    // When the user has not navigated this frame and the tracked entry
-    // still exists, snap `selected_index` to its (possibly shifted) sort
-    // position.  When it no longer exists, `selected_index` is left as-is
-    // so that `clamp_to_entry_count` pulls it to the nearest valid entry
-    // — the entry now occupying the deleted slot, or the new last entry
-    // if the deletion was at the end of the list.
     if let Some(tracked_key) = tracker.key.clone()
         && state.selected_index == tracker.last_index
-        && let Some(new_pos) = filtered_entries.iter().position(|e| e.key == tracked_key)
     {
-        state.selected_index = new_pos;
+        let tracked_id = ConceptId(tracked_key);
+        if let Some(pos) = filtered_nodes
+            .iter()
+            .position(|&idx| graph.lookup(&tracked_id).is_some_and(|ti| ti == idx))
+        {
+            state.selected_index = pos;
+        }
     }
 
     // ── Scroll-offset reconciliation ────────────────────────────────
-    //
-    // Same idea as selection reconciliation, but for the top of the
-    // visible window.  When the user did not page/jump this frame
-    // (`scroll_offset` matches what the tracker recorded last frame) and
-    // the entry that was at the top of the window still exists, snap
-    // `scroll_offset` to that entry's new sort position.  This keeps the
-    // visible rows pinned to the same subjects when a new entry is
-    // recorded outside the visible window — without it, an insertion
-    // before `scroll_offset` would silently scroll every visible row
-    // down by one and disrupt the player's reading.
-    //
-    // When the previous top entry has been deleted we leave
-    // `scroll_offset` alone; `clamp_to_entry_count` below ensures the
-    // (possibly already re-anchored) selection stays visible.
     if let Some(top_key) = tracker.top_key.clone()
         && state.scroll_offset == tracker.last_scroll_offset
-        && let Some(new_top_pos) = filtered_entries.iter().position(|e| e.key == top_key)
     {
-        state.scroll_offset = new_top_pos;
+        let top_id = ConceptId(top_key);
+        if let Some(new_top_pos) = filtered_nodes
+            .iter()
+            .position(|&idx| graph.lookup(&top_id).is_some_and(|ti| ti == idx))
+        {
+            state.scroll_offset = new_top_pos;
+        }
     }
 
     state.clamp_to_entry_count(entry_count);
 
     // ── Update tracker for the next frame ───────────────────────────
-    //
-    // Anchor onto whatever entry is now selected (which, after clamping,
-    // is guaranteed to exist when entry_count > 0) and onto whatever
-    // entry now occupies the top of the visible window.
-    if let Some(entry) = filtered_entries.get(state.selected_index) {
-        tracker.key = Some(entry.key.clone());
+    if let Some(&sel_idx) = filtered_nodes.get(state.selected_index) {
+        if let Some(node) = graph.node(sel_idx) {
+            tracker.key = Some(node.id.0.clone());
+        }
         tracker.last_index = state.selected_index;
-        tracker.top_key = filtered_entries
+        tracker.top_key = filtered_nodes
             .get(state.scroll_offset)
-            .map(|e| e.key.clone());
+            .and_then(|&idx| graph.node(idx).map(|n| n.id.0.clone()));
         tracker.last_scroll_offset = state.scroll_offset;
     } else {
-        // Empty journal: clear the tracker so a future first observation
-        // does not cause us to re-anchor onto a stale key.
         tracker.key = None;
         tracker.last_index = 0;
         tracker.top_key = None;
@@ -1858,37 +1521,14 @@ fn compute_journal_panels(
     }
 
     cache.filter_bar = build_filter_bar_text(state.filter());
-    cache.list_lines = build_entry_list_lines(&filtered_entries, &state);
-
-    // ── Cross-reference links ─────────────────────────────────────────
-    //
-    // Query the knowledge graph for relationships on the currently selected
-    // entry so that build_detail_spans can render the "Related" section.
-    // The graph is not a Bevy system parameter here (to respect the 4-param
-    // limit); instead, the caller (this system) reads it from the world
-    // directly via Option<Res<…>>. Since KnowledgeGraphPlugin runs in the
-    // same app, the resource is always present when the journal is visible.
-    // If it is somehow absent (e.g. in lightweight integration tests that
-    // don't register the full plugin set), cross-references are silently
-    // omitted — a graceful fallback.
-    //
-    // cross_ref_links is cleared and rebuilt every frame so it always
-    // reflects the currently selected entry.
+    cache.list_lines = build_entry_list_lines(&filtered_nodes, &graph, &state);
     cache.cross_ref_links.clear();
-    // selected_cross_ref is clamped after rebuild — NOT reset to 0 — so
-    // the player's cursor position survives across frames while they read.
 
-    // KnowledgeGraph is queried by `populate_cross_ref_links`, which runs
-    // next in the same Compute set. That system rebuilds cross_ref_links,
-    // re-runs build_detail_spans_with_cross_refs, and writes cache.help.
-    // This system only clears the stale list so the next system always
-    // starts from a known-empty state.
-
-    cache.detail_spans = build_detail_spans(&filtered_entries, &state, !journal.entries.is_empty());
-    // Write a default help text (no cross-ref count yet). If `populate_cross_ref_links`
-    // runs next (when KnowledgeGraph is registered), it overwrites this with the
-    // final count. Tests that only register `compute_journal_panels` get a valid
-    // help string from this line.
+    // Build detail spans from the selected ConceptNode.
+    let selected_node = filtered_nodes
+        .get(state.selected_index)
+        .and_then(|&idx| graph.node(idx));
+    cache.detail_spans = build_detail_spans(selected_node, has_any);
     cache.help = build_help_text(entry_count, &state, 0);
 }
 
@@ -1896,86 +1536,63 @@ fn compute_journal_panels(
 /// graph for the currently selected journal entry.
 ///
 /// Runs in the [`JournalSet::Compute`] set, immediately after
-/// [`compute_journal_panels`], which must clear `cross_ref_links` first
-/// so this system always rebuilds from fresh data.
+/// [`compute_journal_panels`], which clears `cross_ref_links` first.
 ///
-/// The system is separate from `compute_journal_panels` to respect the
-/// 4-system-parameter limit: the parent system already uses all four
-/// slots (state, journal query, cache, tracker) and cannot absorb an
-/// additional [`crate::knowledge_graph::KnowledgeGraph`] parameter
-/// without splitting.
-///
-/// If the KnowledgeGraph resource is absent (e.g. lightweight tests that
-/// don't register KnowledgeGraphPlugin), cross-references are silently
-/// omitted — the cache is left empty and the journal renders without a
-/// "Related" section.
+/// If the KnowledgeGraph resource is absent (lightweight tests), cross-
+/// references are silently omitted.
 fn populate_cross_ref_links(
     state: Res<JournalUiState>,
-    player_query: Query<&Journal, With<Player>>,
     mut cache: ResMut<JournalRenderCache>,
-    graph: Option<Res<crate::knowledge_graph::KnowledgeGraph>>,
+    graph: Option<Res<KnowledgeGraph>>,
 ) {
-    // cross_ref_links was cleared by compute_journal_panels already.
-    // If the journal is invisible or the graph is absent, nothing to do.
     if !state.visible {
         return;
     }
     let Some(graph) = graph else {
         return;
     };
-    let Ok(journal) = player_query.single() else {
-        return;
-    };
 
-    // Find the currently selected entry's key.
-    let mut sorted: Vec<&JournalEntry> = journal.entries.values().collect();
-    sorted.sort_by(|a, b| a.name.cmp(&b.name));
-
-    let filtered: Vec<&JournalEntry> = sorted
+    // Rebuild the filtered node list to find the selected node.
+    let filtered_nodes: Vec<NodeIndex> = graph
+        .nodes_sorted_by_name()
         .into_iter()
-        .filter(|e| matches_filter(e, state.filter()))
+        .filter(|&idx| {
+            graph
+                .node(idx)
+                .is_some_and(|n| matches_filter_node(n, state.filter()))
+        })
         .collect();
 
-    let Some(selected_entry) = filtered.get(state.selected_index) else {
+    let Some(&sel_idx) = filtered_nodes.get(state.selected_index) else {
+        return;
+    };
+    let Some(selected_node) = graph.node(sel_idx) else {
         return;
     };
 
-    // Reset the link cursor when the selected entry has changed since the
-    // last frame so the player always starts at link 0 on a newly-selected entry.
-    if cache.cross_ref_entry_key.as_ref() != Some(&selected_entry.key) {
+    // Reset link cursor when selected entry changes.
+    if cache.cross_ref_entry_key.as_ref() != Some(&selected_node.id.0) {
         cache.selected_cross_ref = 0;
-        cache.cross_ref_entry_key = Some(selected_entry.key.clone());
+        cache.cross_ref_entry_key = Some(selected_node.id.0.clone());
     }
 
-    // Look up the concept node for this journal key.
-    let concept_id = crate::knowledge_graph::ConceptId(selected_entry.key.clone());
-    let Some(node_idx) = graph.lookup(&concept_id) else {
-        // Entry has no graph node yet — no cross-references to show.
-        return;
-    };
-
-    // Collect all relationships and resolve neighbor names.
-    for (neighbor_idx, edge) in graph.relationships(node_idx) {
+    // Collect relationships from the graph.
+    for (neighbor_idx, edge) in graph.relationships(sel_idx) {
         let Some(neighbor_node) = graph.node(neighbor_idx) else {
             continue;
         };
-        // Resolve a human-readable name for the neighbor by looking up the
-        // journal entry (if it exists) or falling back to a generic label
-        // derived from the concept category.
-        let target_name = journal
-            .entries
-            .get(&neighbor_node.id.0)
-            .map(|e| e.name.clone())
-            .unwrap_or_else(|| format!("{:?}", neighbor_node.category));
-
+        // Use the node's own name; fall back to category label for unnamed concepts.
+        let target_name = if neighbor_node.name.is_empty() {
+            format!("{:?}", neighbor_node.category)
+        } else {
+            neighbor_node.name.clone()
+        };
         let rel_label = edge.relationship.display_label().to_string();
         cache
             .cross_ref_links
             .push((rel_label, neighbor_node.id.0.clone(), target_name));
     }
 
-    // Clamp the selected link cursor so it stays in bounds after the link
-    // list is rebuilt (e.g. if entries were added or removed).
     let link_count = cache.cross_ref_links.len();
     if link_count > 0 {
         cache.selected_cross_ref = cache.selected_cross_ref.min(link_count - 1);
@@ -1983,22 +1600,16 @@ fn populate_cross_ref_links(
         cache.selected_cross_ref = 0;
     }
 
-    // Rebuild the detail spans now that we have cross-reference data, so
-    // the "Related" section appears with correct link highlights.
-    // Clone cross_ref data out of cache before the mutable borrow for detail_spans.
-    // This avoids a simultaneous mutable + immutable borrow of cache.
     let links_snapshot = cache.cross_ref_links.clone();
     let selected_cross_ref = cache.selected_cross_ref;
 
     cache.detail_spans = build_detail_spans_with_cross_refs(
-        &filtered,
-        &state,
-        !journal.entries.is_empty(),
+        selected_node,
+        true,
         &links_snapshot,
         selected_cross_ref,
     );
-    // Rebuild the help text to show the Alt+↑↓ / Enter / Backspace hint.
-    cache.help = build_help_text(filtered.len(), &state, links_snapshot.len());
+    cache.help = build_help_text(filtered_nodes.len(), &state, links_snapshot.len());
 }
 
 /// Syncs the cached text into the Bevy UI `Text` nodes and toggles
@@ -2159,24 +1770,32 @@ fn build_filter_bar_text(filter: &JournalFilter) -> String {
 /// Each line carries its display text and a flag indicating whether it is
 /// the currently selected entry.  The selected entry is prefixed with `>`
 /// and rendered with a distinct highlight color by the UI sync system.
-fn build_entry_list_lines(entries: &[&JournalEntry], state: &JournalUiState) -> Vec<EntryListLine> {
-    if entries.is_empty() {
+/// Builds structured line data for the left-panel entry list from KG nodes.
+fn build_entry_list_lines(
+    nodes: &[NodeIndex],
+    graph: &KnowledgeGraph,
+    state: &JournalUiState,
+) -> Vec<EntryListLine> {
+    if nodes.is_empty() {
         return Vec::new();
     }
 
-    let page_end = (state.scroll_offset + state.entries_per_page).min(entries.len());
-    let visible = &entries[state.scroll_offset..page_end];
+    let page_end = (state.scroll_offset + state.entries_per_page).min(nodes.len());
+    let visible = &nodes[state.scroll_offset..page_end];
 
     visible
         .iter()
         .enumerate()
-        .map(|(i, entry)| {
+        .map(|(i, &idx)| {
             let abs_index = state.scroll_offset + i;
             let selected = abs_index == state.selected_index;
             let prefix = if selected { ">" } else { " " };
-            let obs_count = entry.observation_count();
+            let (name, obs_count) = graph
+                .node(idx)
+                .map(|n| (n.name.as_str(), n.observation_count()))
+                .unwrap_or(("<unknown>", 0));
             EntryListLine {
-                text: format!("{prefix} {} ({obs_count} obs)", entry.name),
+                text: format!("{prefix} {} ({obs_count} obs)", name),
                 selected,
             }
         })
@@ -2184,45 +1803,33 @@ fn build_entry_list_lines(entries: &[&JournalEntry], state: &JournalUiState) -> 
 }
 
 /// Builds styled spans for the right-panel detail view of the currently
-/// selected entry.
+/// selected `ConceptNode`.
 ///
-/// The header (entry name) renders in a bright highlight color.  Category
-/// labels ("Surface:", "Heat:", etc.) use an amber accent, while observation
-/// descriptions use the normal body color.  If no entries exist, a single
-/// placeholder span is returned.
-///
-/// The `has_any_entries` parameter distinguishes between an empty journal
-/// (shows "No observations yet.") and a filter that produces no results
-/// (shows "No matching entries").
-///
-/// The `cross_ref_links` slice is `(relationship_label, target_name)` pairs
-/// from the knowledge graph, built by `compute_journal_panels`. When the
-/// slice is non-empty a "Related" section is appended to the panel; the
-/// entry at `selected_cross_ref` is highlighted as the link the player
-/// would follow with Enter.
-fn build_detail_spans(
-    entries: &[&JournalEntry],
-    state: &JournalUiState,
-    has_any_entries: bool,
-) -> Vec<DetailSpan> {
-    build_detail_spans_with_cross_refs(entries, state, has_any_entries, &[], 0)
+/// `has_any` — whether the KG has any named nodes at all (distinguishes
+/// "no observations yet" from "filter produced no results").
+fn build_detail_spans(node: Option<&ConceptNode>, has_any: bool) -> Vec<DetailSpan> {
+    build_detail_spans_with_cross_refs_opt(node, has_any, &[], 0)
 }
 
 /// Internal implementation of detail-span building that accepts cross-reference
 /// data computed externally.
-///
-/// Separated from `build_detail_spans` to keep both call sites simple: the
-/// cross-ref-free variant (used in tests and no-graph contexts) delegates
-/// here with empty slices.
 fn build_detail_spans_with_cross_refs(
-    entries: &[&JournalEntry],
-    state: &JournalUiState,
-    has_any_entries: bool,
+    node: &ConceptNode,
+    has_any: bool,
     cross_ref_links: &[(String, JournalKey, String)],
     selected_cross_ref: usize,
 ) -> Vec<DetailSpan> {
-    if entries.is_empty() {
-        let message = if has_any_entries {
+    build_detail_spans_with_cross_refs_opt(Some(node), has_any, cross_ref_links, selected_cross_ref)
+}
+
+fn build_detail_spans_with_cross_refs_opt(
+    node: Option<&ConceptNode>,
+    has_any: bool,
+    cross_ref_links: &[(String, JournalKey, String)],
+    selected_cross_ref: usize,
+) -> Vec<DetailSpan> {
+    let Some(node) = node else {
+        let message = if has_any {
             "No matching entries"
         } else {
             "No observations yet."
@@ -2231,46 +1838,35 @@ fn build_detail_spans_with_cross_refs(
             text: message.to_string(),
             kind: DetailSpanKind::Placeholder,
         }];
-    }
+    };
 
-    let entry = entries[state.selected_index.min(entries.len() - 1)];
     let mut spans: Vec<DetailSpan> = Vec::new();
 
     // Entry name header.
     spans.push(DetailSpan {
-        text: entry.name.clone(),
+        text: node.name.clone(),
         kind: DetailSpanKind::Header,
     });
 
-    // Iterate categories in canonical display order, emitting a group
-    // header followed by the observations for each non-empty category.
-    // The order is driven by `ObservationCategory::display_order` (backed
-    // by `strum::EnumIter`) so a new variant added to the enum is
-    // automatically rendered here in its declared position.
+    // Iterate categories in canonical display order.
     for category in ObservationCategory::display_order() {
-        let observations = entry.observations_by_category(&category);
+        let observations = node.observations_by_category(&category);
         if observations.is_empty() {
             continue;
         }
 
-        // Category group header (e.g. "\n\nSurface").
         spans.push(DetailSpan {
             text: format!("\n\n{}", category.display_label()),
             kind: DetailSpanKind::CategoryGroupHeader,
         });
 
-        // For categories that converge on a single reading, show only
-        // the most recent observation. Otherwise show all.
         let visible: &[Observation] = if category.shows_latest_only() {
-            // Safe: we checked `!is_empty()` above.
             &observations[observations.len() - 1..]
         } else {
             observations
         };
 
         for obs in visible {
-            // Multi-line descriptions (e.g. surface observations that combine
-            // color + weight) need each line indented consistently.
             let indented = obs
                 .description
                 .lines()
@@ -2280,8 +1876,6 @@ fn build_detail_spans_with_cross_refs(
                 text: indented,
                 kind: DetailSpanKind::Body,
             });
-            // Qualitative confidence indicator — communicates certainty
-            // without exposing internal counts.
             spans.push(DetailSpan {
                 text: format!("  [{}]", obs.confidence.tier().display_label()),
                 kind: DetailSpanKind::ConfidenceLabel,
@@ -2290,12 +1884,6 @@ fn build_detail_spans_with_cross_refs(
     }
 
     // ── Related section (cross-references) ──────────────────────────
-    //
-    // Appended after all observation categories when the knowledge graph
-    // knows of relationships on this entry. Each link shows a relationship
-    // type label and the target entry's name. The currently highlighted
-    // link (selected_cross_ref) is rendered with the CrossRef { selected:
-    // true } kind so it gets the brighter cyan color.
     if !cross_ref_links.is_empty() {
         spans.push(DetailSpan {
             text: "\n\nRelated".to_string(),
