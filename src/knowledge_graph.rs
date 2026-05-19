@@ -142,6 +142,25 @@ pub struct ConceptNode {
 // ── ConceptNode observation methods ──────────────────────────────────────
 
 impl ConceptNode {
+    /// Construct a bare `ConceptNode` with no observations.
+    ///
+    /// Used by tests that need a `ConceptNode` value without going through
+    /// the full `KnowledgeGraph` machinery.
+    pub fn new(key: JournalKey, name: &str, tick: u64) -> Self {
+        let category = key.concept_category();
+        ConceptNode {
+            id: ConceptId(key),
+            category,
+            name: name.to_string(),
+            confidence: Confidence(0.3),
+            first_observed_at: tick,
+            last_updated_at: tick,
+            origin_planet_seed: None,
+            revealed_properties: HashSet::new(),
+            observations: BTreeMap::new(),
+        }
+    }
+
     /// Record an observation on this node, deduplicating by description within
     /// the same category.
     ///
@@ -191,6 +210,15 @@ impl ConceptNode {
     /// - `< 1.0` for unrelated domains after a death
     /// - `= 1.0` for normal play without death context
     ///
+    /// When the observation is genuinely new it is appended as-is.
+    pub fn add_observation_with_accumulation(
+        &mut self,
+        observation: crate::journal::Observation,
+        config: &crate::observation::ConfidenceConfig,
+    ) {
+        self.add_observation_with_domain_weighted_accumulation(observation, config, 1.0);
+    }
+
     /// When the observation is genuinely new it is appended as-is.
     pub fn add_observation_with_domain_weighted_accumulation(
         &mut self,
@@ -400,6 +428,141 @@ impl KnowledgeGraph {
         self.graph.node_weight(idx)
     }
 
+    /// Mutable access to a concept node by index.
+    ///
+    /// Used by test helpers and save-migration code that need to directly
+    /// patch a node's fields. Production write paths go through the message
+    /// pipeline and `update_knowledge_graph`.
+    pub fn node_mut(&mut self, idx: NodeIndex) -> Option<&mut ConceptNode> {
+        self.graph.node_weight_mut(idx)
+    }
+
+    /// Count of nodes that have a non-empty name.
+    ///
+    /// Location nodes and any concept created before its first `RecordObservation`
+    /// arrives have an empty `name`; the journal list panel skips those.
+    /// This count mirrors the entry count the old `journal.entries.len()` produced.
+    pub fn named_node_count(&self) -> usize {
+        self.graph
+            .node_indices()
+            .filter_map(|idx| self.graph.node_weight(idx))
+            .filter(|n| !n.name.is_empty())
+            .count()
+    }
+
+    /// Count of named nodes that pass a journal filter.
+    pub fn named_node_count_filtered(&self, filter: &crate::journal::JournalFilter) -> usize {
+        self.graph
+            .node_indices()
+            .filter_map(|idx| self.graph.node_weight(idx))
+            .filter(|n| !n.name.is_empty())
+            .filter(|n| crate::journal::matches_filter_node(n, filter))
+            .count()
+    }
+
+    /// Record a named observation on a concept node.  Test helper for any test
+    /// that used to call `journal.record(key, name, obs)`.
+    ///
+    /// Creates the concept if it doesn't exist, stamps the name on first call,
+    /// and delegates to [`ConceptNode::add_observation`].
+    pub fn record(
+        &mut self,
+        key: crate::journal::JournalKey,
+        name: &str,
+        observation: crate::journal::Observation,
+    ) {
+        let category = key.concept_category();
+        let tick = observation.recorded_at;
+        let id = ConceptId(key);
+        let idx = self.ensure_concept(id, category, tick);
+        let node = self.graph.node_weight_mut(idx).expect("just created");
+        if node.name.is_empty() {
+            node.name = name.to_string();
+        }
+        node.add_observation(observation);
+    }
+
+    /// Convenience: record with domain-weighted accumulation. Test helper.
+    pub fn record_with_accumulation(
+        &mut self,
+        key: crate::journal::JournalKey,
+        name: &str,
+        observation: crate::journal::Observation,
+        config: &crate::observation::ConfidenceConfig,
+    ) {
+        self.record_with_domain_weighted_accumulation(key, name, observation, config, 1.0);
+    }
+
+    /// Convenience: record with domain-weighted accumulation. Test helper.
+    pub fn record_with_domain_weighted_accumulation(
+        &mut self,
+        key: crate::journal::JournalKey,
+        name: &str,
+        observation: crate::journal::Observation,
+        config: &crate::observation::ConfidenceConfig,
+        recovery_multiplier: f32,
+    ) {
+        let category = key.concept_category();
+        let tick = observation.recorded_at;
+        let id = ConceptId(key);
+        let idx = self.ensure_concept(id, category, tick);
+        let node = self.graph.node_weight_mut(idx).expect("just created");
+        if node.name.is_empty() {
+            node.name = name.to_string();
+        }
+        node.add_observation_with_domain_weighted_accumulation(
+            observation,
+            config,
+            recovery_multiplier,
+        );
+    }
+
+    /// Remove a concept node by key. Returns `true` if the node existed.
+    ///
+    /// Used by test helpers that simulate deletion. The internal indexes
+    /// are updated; edges connected to the removed node are dropped by petgraph.
+    pub fn remove(&mut self, key: &crate::journal::JournalKey) {
+        let id = ConceptId(key.clone());
+        let Some(idx) = self.concept_index.remove(&id) else {
+            return;
+        };
+        // Remove from category index.
+        if let Some(cat_vec) = self
+            .category_index
+            .get_mut(&self.graph[idx].category.clone())
+        {
+            cat_vec.retain(|&i| i != idx);
+        }
+        // Remove from timeline.
+        self.timeline.retain(|(_, i)| *i != idx);
+        // Remove from graph (also removes connected edges).
+        self.graph.remove_node(idx);
+        // NOTE: removing a node invalidates the NodeIndex values stored in
+        // concept_index for nodes with higher internal indices.  Rebuild the
+        // concept_index from scratch to keep it consistent.
+        let mut new_index = std::collections::HashMap::new();
+        for (id_key, &stored_idx) in &self.concept_index {
+            new_index.insert(id_key.clone(), stored_idx);
+        }
+        // Actually petgraph's `remove_node` uses swap_remove semantics, so
+        // re-scan the graph to rebuild.
+        let mut rebuilt: std::collections::HashMap<ConceptId, NodeIndex> =
+            std::collections::HashMap::new();
+        let mut rebuilt_cat: std::collections::HashMap<ConceptCategory, Vec<NodeIndex>> =
+            std::collections::HashMap::new();
+        let mut rebuilt_tl: Vec<(u64, NodeIndex)> = Vec::new();
+        for ni in self.graph.node_indices() {
+            let n = &self.graph[ni];
+            rebuilt.insert(n.id.clone(), ni);
+            rebuilt_cat.entry(n.category.clone()).or_default().push(ni);
+            rebuilt_tl.push((n.first_observed_at, ni));
+        }
+        rebuilt_tl.sort_by_key(|(t, _)| *t);
+        self.concept_index = rebuilt;
+        self.category_index = rebuilt_cat;
+        self.timeline = rebuilt_tl;
+    }
+
     // ── Edge operations ───────────────────────────────────────────────────
 
     /// Add or strengthen a relationship between two concepts.
@@ -544,7 +707,12 @@ impl KnowledgeGraph {
         let mut pairs: Vec<(NodeIndex, &str)> = self
             .graph
             .node_indices()
-            .filter_map(|idx| self.graph.node_weight(idx).map(|n| (idx, n.name.as_str())))
+            .filter_map(|idx| self.graph.node_weight(idx))
+            .filter(|n| !n.name.is_empty())
+            .map(|n| {
+                let idx = self.concept_index[&n.id];
+                (idx, n.name.as_str())
+            })
             .collect();
         pairs.sort_by(|(_, a), (_, b)| a.cmp(b));
         pairs.into_iter().map(|(idx, _)| idx).collect()
