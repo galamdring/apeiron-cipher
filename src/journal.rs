@@ -194,10 +194,6 @@ pub struct Observation {
 /// generation seed. Planet of origin is carried on [`RecordObservation`] as
 /// context for the `FoundOn` KnowledgeGraph edge — not baked into the key.
 ///
-/// A future `Material { classification: String }` variant will identify a
-/// material *type* (e.g. "iron") once asset-defined classification ranges
-/// exist. See `docs/bmad/planning-artifacts/architecture/decisions/material-identity-and-knowledge-model.md`.
-///
 /// `Ord` is derived so that `JournalKey` can serve as a `BTreeMap` key,
 /// giving the journal a stable, deterministic iteration order.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -211,6 +207,22 @@ pub enum JournalKey {
     MaterialInstance {
         /// The generation seed that uniquely identifies this material instance.
         seed: u64,
+    },
+    /// A material *type* (classification), grouping instances that share a
+    /// property profile into a named family — e.g. "cesium", "ferrite".
+    ///
+    /// Classification names are defined by asset-side ranges (Story N.3).
+    /// Until N.3 lands this variant is introduced here so the KnowledgeGraph
+    /// and journal query layer can represent type-level nodes; no instances
+    /// will carry this key until the classification system assigns them.
+    ///
+    /// A `MaterialInstance` node with seed `cesium-386` would be linked to
+    /// its `Material { classification: "cesium" }` node via a `ClassifiedAs`
+    /// edge once N.3 wires the classification pass.
+    Material {
+        /// The human-readable classification name assigned by the asset
+        /// pipeline (e.g. "cesium", "ferrite", "volatite").
+        classification: String,
     },
     /// The output of a fabrication process, keyed by the resulting
     /// material's seed.
@@ -244,6 +256,7 @@ impl JournalKey {
     pub fn planet_seed(&self) -> Option<u64> {
         match self {
             JournalKey::MaterialInstance { .. } => None,
+            JournalKey::Material { .. } => None,
             JournalKey::Fabrication { .. } => None,
             JournalKey::Location { planet_seed } => Some(*planet_seed),
         }
@@ -255,6 +268,7 @@ impl JournalKey {
         use crate::knowledge_graph::ConceptCategory;
         match self {
             JournalKey::MaterialInstance { .. } => ConceptCategory::Material,
+            JournalKey::Material { .. } => ConceptCategory::Material,
             JournalKey::Fabrication { .. } => ConceptCategory::Fabrication,
             JournalKey::Location { .. } => ConceptCategory::Location,
         }
