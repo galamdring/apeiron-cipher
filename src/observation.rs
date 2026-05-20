@@ -34,6 +34,7 @@ impl Plugin for ObservationPlugin {
             // ConfidenceTracker removed - confidence is now tracked per-observation
             // in the journal system via Confidence(f32) and accumulate() method
             .init_resource::<DescriptorVocabulary>()
+            .add_message::<RecordObservation>()
             .add_message::<OnPlayerDeathEvent>()
             .add_systems(PreStartup, load_confidence_config)
             .add_systems(Update, handle_player_death);
@@ -1245,6 +1246,68 @@ fn handle_player_death(
         "Applied death confidence degradation (factor: {}, floor: {}) and established death context for {:?}",
         config.death_degradation_factor, config.death_floor, death_event.cause
     );
+}
+
+// ── RecordObservation message ─────────────────────────────────────────────
+
+/// Message sent by any game system to record a player observation.
+///
+/// This is the single observation ingestion point for the entire game —
+/// heat, carry, fabricator, interaction, and any future system all send
+/// this message rather than writing to the KnowledgeGraph directly.
+///
+/// The knowledge graph system (`update_knowledge_graph`) is the sole
+/// consumer: it routes by `observation.category`, wires graph edges from
+/// `planet_seed` / `context_location`, and stores revealed property values
+/// from `material_seed` via catalog lookup.
+///
+/// **Material instance observations** should set `material_seed` to the
+/// seed of the [`crate::materials::GameMaterial`] being observed.
+/// `update_knowledge_graph` resolves the full material (name, property
+/// values) from the catalog so callers never need to decompose it.
+///
+/// **Fabrication observations** leave `material_seed` as `None` and set
+/// `key` to [`crate::journal::JournalKey::Fabrication`] directly — there
+/// is no single "material instance" being observed.
+#[derive(Message, Clone)]
+pub struct RecordObservation {
+    /// Which journal subject this observation belongs to.
+    ///
+    /// For material instance observations, prefer setting `material_seed`
+    /// and leaving this as `JournalKey::MaterialInstance { seed }` — the
+    /// two must be consistent when both are provided.
+    pub key: crate::journal::JournalKey,
+    /// Player-facing display name for the subject (used to initialise the
+    /// KnowledgeGraph node on first encounter; ignored for subsequent
+    /// observations of the same key).
+    pub name: String,
+    /// The observation payload: category, confidence, description, tick.
+    pub observation: crate::journal::Observation,
+    /// Seed of the [`crate::materials::GameMaterial`] being observed, when
+    /// this observation is about a material instance.
+    ///
+    /// `update_knowledge_graph` uses this to look up the material's property
+    /// values from the [`crate::materials::MaterialCatalog`] and store them
+    /// as revealed values on the KnowledgeGraph node, enabling query-time
+    /// classification without reaching back into world entities.
+    ///
+    /// `None` for fabrication results, location notes, and any observation
+    /// that is not about a specific material instance.
+    pub material_seed: Option<u64>,
+    /// Planet on which this observation was made.
+    ///
+    /// When `Some`, the knowledge graph system wires a `FoundOn` edge from
+    /// the observed subject to the corresponding location concept.
+    pub planet_seed: Option<u64>,
+    /// For fabrication observations: seeds of the input materials combined
+    /// to produce the output. Used to wire `DerivedFrom` edges.
+    ///
+    /// Empty for non-fabrication observations.
+    pub input_seeds: Vec<u64>,
+    /// Optional location context where this observation was made.
+    ///
+    /// When `Some`, wires an `ObservedAt` edge to this location concept.
+    pub context_location: Option<crate::journal::JournalKey>,
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────

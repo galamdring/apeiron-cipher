@@ -11,6 +11,7 @@ use bevy::prelude::*;
 
 pub mod carry;
 pub mod carry_feedback;
+pub mod classification;
 pub mod combination;
 pub mod debug_overlay;
 pub mod descriptions;
@@ -54,6 +55,8 @@ pub fn add_game_plugins(app: &mut App) {
         .add_plugins(input::InputPlugin)
         // Materials: data-driven material definitions with observable/hidden properties.
         .add_plugins(materials::MaterialPlugin)
+        // Material classifications: asset-defined property ranges for query-time type grouping.
+        .add_plugins(classification::MaterialClassificationsPlugin)
         // Exterior generation: deterministic baseline surface mineral deposits per active chunk.
         .add_plugins(world_generation::exterior::ExteriorGenerationPlugin)
         // Interaction: raycast, pickup/place, crosshair UI.

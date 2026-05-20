@@ -17,9 +17,10 @@
 use bevy::prelude::*;
 
 use crate::descriptions::describe_thermal_observation;
-use crate::journal::{JournalKey, Observation, ObservationCategory, RecordObservation};
+use crate::journal::{JournalKey, Observation, ObservationCategory};
 use crate::materials::{GameMaterial, MaterialObject, PropertyVisibility};
 use crate::observation::Confidence;
+use crate::observation::RecordObservation;
 use crate::scene::{FurnitureConfig, HeatSourceConfig, Workbench};
 
 /// Plugin that manages heat sources and temperature-based material interactions.
@@ -312,6 +313,7 @@ fn reveal_thermal_property(
             journal_writer.write(RecordObservation {
                 key: JournalKey::MaterialInstance { seed: mat.seed },
                 name: mat.name.clone(),
+                material_seed: Some(mat.seed),
                 planet_seed: mat.origin_planet_seed,
                 observation: Observation {
                     category: ObservationCategory::ThermalBehavior,

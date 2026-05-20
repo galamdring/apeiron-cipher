@@ -24,9 +24,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::input::InputAction;
 use crate::interaction::HeldItem;
-use crate::journal::{JournalKey, Observation, ObservationCategory, RecordObservation};
+use crate::journal::{JournalKey, Observation, ObservationCategory};
 use crate::materials::{GameMaterial, MaterialObject};
 use crate::observation::Confidence;
+use crate::observation::RecordObservation;
 use crate::player::{Player, PlayerCamera, cursor_is_captured};
 use leafwing_input_manager::prelude::*;
 
@@ -1407,6 +1408,7 @@ pub fn record_weight_observation(
             seed: material.seed,
         },
         name: material.name.clone(),
+        material_seed: Some(material.seed),
         planet_seed: material.origin_planet_seed,
         observation: Observation {
             category: ObservationCategory::Weight,
