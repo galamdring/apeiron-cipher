@@ -8,7 +8,7 @@ fn build_entry_list_text(
     graph: &KnowledgeGraph,
     state: &JournalUiState,
 ) -> String {
-    let lines = build_entry_list_lines(nodes, graph, state);
+    let lines = build_entry_list_lines(nodes, graph, state, None);
     lines
         .iter()
         .map(|l| l.text.as_str())
@@ -2276,7 +2276,7 @@ fn detail_shows_selected_entry_observations() {
         let selected_node = nodes
             .get(state.selected_index)
             .and_then(|&idx| kg.node(idx));
-        detail_spans_to_string(&build_detail_spans(selected_node, true))
+        detail_spans_to_string(&build_detail_spans(selected_node, true, None))
     };
     assert!(detail.contains("Ferrite"), "detail should show entry name");
     assert!(
@@ -2291,7 +2291,7 @@ fn detail_shows_selected_entry_observations() {
 
 #[test]
 fn detail_empty_journal_shows_placeholder() {
-    let detail = detail_spans_to_string(&build_detail_spans(None::<&ConceptNode>, false));
+    let detail = detail_spans_to_string(&build_detail_spans(None::<&ConceptNode>, false, None));
     assert_eq!(detail, "No observations yet.");
 }
 
@@ -2299,7 +2299,7 @@ fn detail_empty_journal_shows_placeholder() {
 fn detail_filtered_empty_shows_no_matching_entries() {
     // has_any_entries = true simulates the case where the journal has entries
     // but the current filter produces no results
-    let detail = detail_spans_to_string(&build_detail_spans(None::<&ConceptNode>, true));
+    let detail = detail_spans_to_string(&build_detail_spans(None::<&ConceptNode>, true, None));
     assert_eq!(detail, "No matching entries");
 }
 
@@ -2341,7 +2341,7 @@ fn detail_spans_have_correct_kinds() {
     let selected_node = nodes
         .get(state.selected_index)
         .and_then(|&idx| kg.node(idx));
-    let spans = build_detail_spans(selected_node, true);
+    let spans = build_detail_spans(selected_node, true, None);
     // First span: header with entry name.
     assert_eq!(spans[0].kind, DetailSpanKind::Header);
     assert_eq!(spans[0].text, "Ferrite");
@@ -2363,7 +2363,7 @@ fn detail_spans_have_correct_kinds() {
 
 #[test]
 fn detail_placeholder_span_kind() {
-    let spans = build_detail_spans(None::<&ConceptNode>, false);
+    let spans = build_detail_spans(None::<&ConceptNode>, false, None);
     assert_eq!(spans.len(), 1);
     assert_eq!(spans[0].kind, DetailSpanKind::Placeholder);
 }
@@ -2422,7 +2422,7 @@ fn detail_panel_shows_correct_observations_for_selected_entry() {
         let selected_node = nodes
             .get(state.selected_index)
             .and_then(|&idx| kg.node(idx));
-        detail_spans_to_string(&build_detail_spans(selected_node, true))
+        detail_spans_to_string(&build_detail_spans(selected_node, true, None))
     };
     assert!(detail.contains("Ferrite"), "header should be Ferrite");
     assert!(
@@ -2450,7 +2450,7 @@ fn detail_panel_shows_correct_observations_for_selected_entry() {
         let selected_node = nodes
             .get(state.selected_index)
             .and_then(|&idx| kg.node(idx));
-        detail_spans_to_string(&build_detail_spans(selected_node, true))
+        detail_spans_to_string(&build_detail_spans(selected_node, true, None))
     };
     assert!(detail.contains("Neoite"), "header should be Neoite");
     assert!(
@@ -2478,7 +2478,7 @@ fn detail_panel_shows_correct_observations_for_selected_entry() {
         let selected_node = nodes
             .get(state.selected_index)
             .and_then(|&idx| kg.node(idx));
-        detail_spans_to_string(&build_detail_spans(selected_node, true))
+        detail_spans_to_string(&build_detail_spans(selected_node, true, None))
     };
     assert!(detail.contains("Silite"), "header should be Silite");
     assert!(
@@ -2556,7 +2556,7 @@ fn detail_panel_shows_all_observations_for_multi_category_entry() {
     let selected_node = nodes
         .get(state.selected_index)
         .and_then(|&idx| kg.node(idx));
-    let spans = build_detail_spans(selected_node, true);
+    let spans = build_detail_spans(selected_node, true, None);
     let detail = detail_spans_to_string(&spans);
 
     // Should contain the header.
@@ -2856,6 +2856,7 @@ fn two_panel_rendering_100_plus_entries_does_not_panic() {
             .get(state.selected_index)
             .and_then(|&idx| kg.node(idx)),
         true,
+        None,
     );
     assert!(!detail.is_empty());
     let help = build_help_text(nodes.len(), &state, 0);
@@ -2949,7 +2950,7 @@ fn correct_entries_shown_for_given_scroll_offset() {
         entries_per_page: 3,
         filter: JournalFilter::default(),
     };
-    let lines = build_entry_list_lines(&nodes, &kg, &state);
+    let lines = build_entry_list_lines(&nodes, &kg, &state, None);
     assert_eq!(lines.len(), 3);
     assert!(lines[0].text.contains("Material-000"));
     assert!(lines[1].text.contains("Material-001"));
@@ -2963,7 +2964,7 @@ fn correct_entries_shown_for_given_scroll_offset() {
         entries_per_page: 3,
         filter: JournalFilter::default(),
     };
-    let lines = build_entry_list_lines(&nodes, &kg, &state);
+    let lines = build_entry_list_lines(&nodes, &kg, &state, None);
     assert_eq!(lines.len(), 3);
     assert!(
         lines[0].text.contains("Material-004"),
@@ -2993,7 +2994,7 @@ fn correct_entries_shown_for_given_scroll_offset() {
         entries_per_page: 3,
         filter: JournalFilter::default(),
     };
-    let lines = build_entry_list_lines(&nodes, &kg, &state);
+    let lines = build_entry_list_lines(&nodes, &kg, &state, None);
     assert_eq!(
         lines.len(),
         2,
@@ -5017,6 +5018,7 @@ fn empty_journal_with_filter_shows_no_observations_yet() {
     let detail_spans = build_detail_spans(
         filtered_nodes.get(0).and_then(|&idx| kg.node(idx)),
         kg.named_node_count() > 0,
+        None,
     );
     let detail_text = detail_spans_to_string(&detail_spans);
 
@@ -5050,6 +5052,7 @@ fn empty_journal_with_filter_shows_no_observations_yet() {
     let detail_spans = build_detail_spans(
         filtered_nodes.get(0).and_then(|&idx| kg.node(idx)),
         kg.named_node_count() > 0,
+        None,
     );
     let detail_text = detail_spans_to_string(&detail_spans);
 
@@ -5083,6 +5086,7 @@ fn empty_journal_with_filter_shows_no_observations_yet() {
     let detail_spans = build_detail_spans(
         filtered_nodes.get(0).and_then(|&idx| kg.node(idx)),
         kg.named_node_count() > 0,
+        None,
     );
     let detail_text = detail_spans_to_string(&detail_spans);
 
@@ -5655,7 +5659,7 @@ fn journal_entry_shows_confident_language_after_sufficient_observations() {
         filter: JournalFilter::default(),
     };
 
-    let detail_spans = build_detail_spans(Some(entry), true);
+    let detail_spans = build_detail_spans(Some(entry), true, None);
     let detail_text = detail_spans_to_string(&detail_spans);
 
     // Verify the detail display contains confident language

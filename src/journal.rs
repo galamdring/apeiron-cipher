@@ -14,6 +14,7 @@ use petgraph::graph::NodeIndex;
 use serde::{Deserialize, Serialize};
 use strum::IntoEnumIterator;
 
+use crate::classification::MaterialClassifications;
 use crate::diegetic_ui::{DiegeticFocusState, DiegeticSurface, DiegeticSurfaceKind};
 use crate::input::InputAction;
 use crate::knowledge_graph::{ConceptId, ConceptNode, KnowledgeGraph};
@@ -417,8 +418,7 @@ pub enum JournalSet {
 
 impl Plugin for JournalPlugin {
     fn build(&self, app: &mut App) {
-        app.add_message::<RecordObservation>()
-            .add_message::<ToggleJournalIntent>()
+        app.add_message::<ToggleJournalIntent>()
             .init_resource::<JournalUiState>()
             .init_resource::<JournalSelectionTracker>()
             .init_resource::<JournalRenderCache>()
@@ -463,58 +463,11 @@ impl Plugin for JournalPlugin {
     }
 }
 
-// ── Messages ────────────────────────────────────────────────────────────
+// ── Re-export observation message ────────────────────────────────────────
 
-/// Unified message for recording any observation in the player's journal.
-///
-/// Any game system (materials, heat, carry, fabrication, navigation, trade)
-/// sends this single message type instead of a per-category variant. The
-/// journal ingestion system routes based on the [`Observation::category`]
-/// field — callers only need to fill in the key, name, and observation.
-///
-/// **Planet seed handling:** For [`JournalKey::Material`] observations,
-/// the `planet_seed` field is automatically resolved by the ingestion
-/// system from the current [`WorldProfile`] resource. Observation producers
-/// Message sent by any game system to record a player observation.
-///
-/// The knowledge graph system wires `FoundOn` and `ObservedAt` edges from
-/// the `planet_seed` and `context_location` fields respectively.
-/// Journal ingestion ignores both — they are purely for graph wiring.
-///
-/// **Cross-reference metadata:** The `input_seeds` field is optional
-/// metadata consumed by the knowledge graph system to wire `DerivedFrom`
-/// edges for fabrication observations.
-#[derive(Message, Clone)]
-pub struct RecordObservation {
-    /// Which journal subject this observation belongs to.
-    pub key: JournalKey,
-    /// Player-facing display name for the subject (used to initialise the
-    /// entry on first encounter; ignored for subsequent observations of the
-    /// same key).
-    pub name: String,
-    /// The observation payload including category, confidence, description,
-    /// and game-time tick.
-    pub observation: Observation,
-    /// Planet on which this observation was made.
-    ///
-    /// When `Some`, the knowledge graph system wires a `FoundOn` edge from
-    /// the observed subject to the corresponding location concept.  Callers
-    /// that don't have planetary context (integration tests, fabrication)
-    /// leave this `None`.
-    pub planet_seed: Option<u64>,
-    /// For fabrication observations: seeds of the input materials that were
-    /// combined to produce the output. The knowledge graph system uses these
-    /// to wire `DerivedFrom` edges from the output concept to each input.
-    ///
-    /// Empty for non-fabrication observations.
-    pub input_seeds: Vec<u64>,
-    /// Optional location context where this observation was made.
-    ///
-    /// When `Some`, the knowledge graph system wires an `ObservedAt` edge
-    /// from the observed subject to this location concept. Callers that
-    /// don't have explicit location context leave this `None`.
-    pub context_location: Option<JournalKey>,
-}
+/// Re-exported for backward compatibility — `RecordObservation` now lives in
+/// [`crate::observation`] where all game-event types belong.
+pub use crate::observation::RecordObservation;
 
 // ── Player-owned journal component ──────────────────────────────────────
 
@@ -1456,6 +1409,7 @@ struct DetailSpan {
 fn compute_journal_panels(
     mut state: ResMut<JournalUiState>,
     graph: Option<Res<KnowledgeGraph>>,
+    classifications: Option<Res<MaterialClassifications>>,
     mut cache: ResMut<JournalRenderCache>,
     mut tracker: ResMut<JournalSelectionTracker>,
 ) {
@@ -1535,14 +1489,15 @@ fn compute_journal_panels(
     }
 
     cache.filter_bar = build_filter_bar_text(state.filter());
-    cache.list_lines = build_entry_list_lines(&filtered_nodes, &graph, &state);
+    cache.list_lines =
+        build_entry_list_lines(&filtered_nodes, &graph, &state, classifications.as_deref());
     cache.cross_ref_links.clear();
 
     // Build detail spans from the selected ConceptNode.
     let selected_node = filtered_nodes
         .get(state.selected_index)
         .and_then(|&idx| graph.node(idx));
-    cache.detail_spans = build_detail_spans(selected_node, has_any);
+    cache.detail_spans = build_detail_spans(selected_node, has_any, classifications.as_deref());
     cache.help = build_help_text(entry_count, &state, 0);
 }
 
@@ -1789,6 +1744,7 @@ fn build_entry_list_lines(
     nodes: &[NodeIndex],
     graph: &KnowledgeGraph,
     state: &JournalUiState,
+    classifications: Option<&crate::classification::MaterialClassifications>,
 ) -> Vec<EntryListLine> {
     if nodes.is_empty() {
         return Vec::new();
@@ -1804,12 +1760,31 @@ fn build_entry_list_lines(
             let abs_index = state.scroll_offset + i;
             let selected = abs_index == state.selected_index;
             let prefix = if selected { ">" } else { " " };
+
             let (name, obs_count) = graph
                 .node(idx)
                 .map(|n| (n.name.as_str(), n.observation_count()))
                 .unwrap_or(("<unknown>", 0));
+
+            // Show classification in brackets if the player has observed
+            // enough properties for a match, otherwise show "Unknown [name]"
+            // so unclassified materials are still consistently identifiable.
+            let display_name = if let Some(node) = graph.node(idx)
+                && let Some(cls) = classifications
+                && let Some(entry) = cls.classify_observed(&node.revealed_properties)
+            {
+                format!("{} [{}]", name, entry.display_name)
+            } else if graph
+                .node(idx)
+                .is_some_and(|n| !n.revealed_properties.is_empty())
+            {
+                format!("Unknown [{}]", name)
+            } else {
+                name.to_string()
+            };
+
             EntryListLine {
-                text: format!("{prefix} {} ({obs_count} obs)", name),
+                text: format!("{prefix} {} ({obs_count} obs)", display_name),
                 selected,
             }
         })
@@ -1821,8 +1796,12 @@ fn build_entry_list_lines(
 ///
 /// `has_any` — whether the KG has any named nodes at all (distinguishes
 /// "no observations yet" from "filter produced no results").
-fn build_detail_spans(node: Option<&ConceptNode>, has_any: bool) -> Vec<DetailSpan> {
-    build_detail_spans_with_cross_refs_opt(node, has_any, &[], 0)
+fn build_detail_spans(
+    node: Option<&ConceptNode>,
+    has_any: bool,
+    classifications: Option<&crate::classification::MaterialClassifications>,
+) -> Vec<DetailSpan> {
+    build_detail_spans_with_cross_refs_opt(node, has_any, &[], 0, classifications)
 }
 
 /// Internal implementation of detail-span building that accepts cross-reference
@@ -1833,7 +1812,13 @@ fn build_detail_spans_with_cross_refs(
     cross_ref_links: &[(String, JournalKey, String)],
     selected_cross_ref: usize,
 ) -> Vec<DetailSpan> {
-    build_detail_spans_with_cross_refs_opt(Some(node), has_any, cross_ref_links, selected_cross_ref)
+    build_detail_spans_with_cross_refs_opt(
+        Some(node),
+        has_any,
+        cross_ref_links,
+        selected_cross_ref,
+        None,
+    )
 }
 
 fn build_detail_spans_with_cross_refs_opt(
@@ -1841,6 +1826,7 @@ fn build_detail_spans_with_cross_refs_opt(
     has_any: bool,
     cross_ref_links: &[(String, JournalKey, String)],
     selected_cross_ref: usize,
+    classifications: Option<&crate::classification::MaterialClassifications>,
 ) -> Vec<DetailSpan> {
     let Some(node) = node else {
         let message = if has_any {
@@ -1856,9 +1842,18 @@ fn build_detail_spans_with_cross_refs_opt(
 
     let mut spans: Vec<DetailSpan> = Vec::new();
 
-    // Entry name header.
+    // Entry name header — show classification in the header if known.
+    let header_text = if let Some(cls) = classifications
+        && let Some(entry) = cls.classify_observed(&node.revealed_properties)
+    {
+        format!("{} — {}", node.name, entry.display_name)
+    } else if !node.revealed_properties.is_empty() {
+        format!("{} — Unknown [{}]", node.name, node.name)
+    } else {
+        node.name.clone()
+    };
     spans.push(DetailSpan {
-        text: node.name.clone(),
+        text: header_text,
         kind: DetailSpanKind::Header,
     });
 

@@ -836,22 +836,22 @@ fn build_examine_text(
         .and_then(|idx| graph.node_weight(idx))
         .map(|node| &node.revealed_properties);
 
-    let is_revealed = |label: &str| -> bool {
-        revealed.is_some_and(|r: &std::collections::HashSet<String>| r.contains(label))
+    let is_revealed = |cat: &crate::journal::ObservationCategory| -> bool {
+        revealed.is_some_and(|r| r.contains_key(cat))
     };
 
     let mut lines = vec![mat.name.clone()];
     lines.push(String::new());
 
     // Weight — revealed on pickup via Weight observation
-    if is_revealed("Weight") {
+    if is_revealed(&crate::journal::ObservationCategory::Weight) {
         lines.push(format!("Weight: {}", describe_density(mat.density.value())));
     } else {
         lines.push("Weight: ???".to_string());
     }
 
     // Heat response — revealed by heat exposure system
-    if is_revealed("Thermal") {
+    if is_revealed(&crate::journal::ObservationCategory::ThermalBehavior) {
         let display_confidence = Confidence(0.5);
         let description = descriptor_vocab
             .describe(
@@ -926,10 +926,7 @@ mod tests {
         let mut graph = KnowledgeGraph::default();
         let key = JournalKey::MaterialInstance { seed };
         let node = graph.ensure_concept(ConceptId(key), ConceptCategory::Material, 0);
-        graph.reveal_property(
-            node,
-            ObservationCategory::Weight.display_label().to_string(),
-        );
+        graph.reveal_property(node, ObservationCategory::Weight, 0.78);
         graph
     }
 
@@ -939,12 +936,7 @@ mod tests {
         let mut graph = KnowledgeGraph::default();
         let key = JournalKey::MaterialInstance { seed };
         let node = graph.ensure_concept(ConceptId(key), ConceptCategory::Material, 0);
-        graph.reveal_property(
-            node,
-            ObservationCategory::ThermalBehavior
-                .display_label()
-                .to_string(),
-        );
+        graph.reveal_property(node, ObservationCategory::ThermalBehavior, 0.65);
         graph
     }
 
