@@ -14,11 +14,12 @@
 use bevy::prelude::*;
 
 use crate::combination::CombinationRules;
-use crate::journal::{JournalKey, Observation, ObservationCategory, RecordObservation};
+use crate::journal::{JournalKey, Observation, ObservationCategory};
 use crate::materials::{
     GameMaterial, MATERIAL_SURFACE_GAP, MaterialCatalog, MaterialObject, MaterialProperty,
     PropertyVisibility,
 };
+use crate::observation::RecordObservation;
 use crate::scene::{FabricatorSceneConfig, FurnitureConfig, Workbench};
 
 /// Registers the fabricator workbench systems for combining materials.
@@ -287,6 +288,7 @@ fn tick_processing(
             output_seed: output_mat.seed,
         },
         name: output_mat.name.clone(),
+        material_seed: None,
         observation: Observation {
             category: ObservationCategory::FabricationResult,
             confidence: crate::observation::Confidence(0.8), // High confidence for fabrication results

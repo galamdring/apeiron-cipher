@@ -32,7 +32,7 @@ use crate::observation::{Confidence, ConfidenceConfig};
 
 /// Registers the [`KnowledgeGraph`] resource and the
 /// [`update_knowledge_graph`] system that populates it from
-/// [`crate::journal::RecordObservation`] messages.
+/// [`crate::observation::RecordObservation`] messages.
 pub struct KnowledgeGraphPlugin;
 
 impl Plugin for KnowledgeGraphPlugin {
@@ -116,7 +116,7 @@ pub struct ConceptNode {
     pub last_updated_at: u64,
     /// Planet on which this concept was first observed.
     ///
-    /// Populated from [`crate::journal::RecordObservation::planet_seed`] on
+    /// Populated from [`crate::observation::RecordObservation::planet_seed`] on
     /// the first observation that carries a planet seed. `None` for fabricated
     /// materials and concepts recorded without planetary context. Used by the
     /// `CurrentPlanet` journal filter.
@@ -126,7 +126,7 @@ pub struct ConceptNode {
     /// Keys match [`crate::journal::ObservationCategory::display_label`] so
     /// the inspect panel and encyclopedia can check revealed status without
     /// additional mapping.
-    pub revealed_properties: HashSet<String>,
+    pub revealed_properties: HashMap<crate::journal::ObservationCategory, f32>,
     /// All observations recorded about this concept, grouped by category.
     ///
     /// Each category group is in chronological insertion order. Observations
@@ -156,7 +156,7 @@ impl ConceptNode {
             first_observed_at: tick,
             last_updated_at: tick,
             origin_planet_seed: None,
-            revealed_properties: HashSet::new(),
+            revealed_properties: HashMap::new(),
             observations: BTreeMap::new(),
         }
     }
@@ -400,7 +400,7 @@ impl KnowledgeGraph {
             first_observed_at: tick,
             last_updated_at: tick,
             origin_planet_seed: None,
-            revealed_properties: HashSet::new(),
+            revealed_properties: HashMap::new(),
             observations: BTreeMap::new(),
         };
 
@@ -667,14 +667,23 @@ impl KnowledgeGraph {
     ///
     /// Called each time the player makes an observation of a specific category
     /// on this concept. The `property_name` should be the
-    /// [`crate::journal::ObservationCategory::display_label`] string so the
-    /// encyclopedia view can show exactly which properties the player has seen.
+    /// Record that the player has observed a specific property on this concept
+    /// and store the raw measured value.
     ///
-    /// No-ops when the node index is invalid (should never happen during normal
-    /// gameplay since indexes are never removed).
-    pub fn reveal_property(&mut self, node: NodeIndex, property_name: String) {
+    /// `category` is the typed observation kind; `value` is the underlying
+    /// float from [`crate::materials::GameMaterial`] at the moment of
+    /// revelation — stored so the classification system can compare against
+    /// asset-defined ranges without reaching back into world entities.
+    ///
+    /// No-ops when the node index is invalid.
+    pub fn reveal_property(
+        &mut self,
+        node: NodeIndex,
+        category: crate::journal::ObservationCategory,
+        value: f32,
+    ) {
         if let Some(n) = self.graph.node_weight_mut(node) {
-            n.revealed_properties.insert(property_name);
+            n.revealed_properties.insert(category, value);
         }
     }
 
@@ -893,7 +902,7 @@ impl<'de> Deserialize<'de> for KnowledgeGraph {
 
 // ── Automatic cross-reference system ─────────────────────────────────────
 
-/// Processes [`crate::journal::RecordObservation`] messages and populates
+/// Processes [`crate::observation::RecordObservation`] messages and populates
 /// the [`KnowledgeGraph`] with typed relationship edges.
 ///
 /// As of Story 387 this is the **sole** observation write path.
@@ -909,7 +918,7 @@ impl<'de> Deserialize<'de> for KnowledgeGraph {
 ///   [`RecordObservation::context_location`], an `ObservedAt` edge is
 ///   created from subject → location.
 ///
-/// Processes [`crate::journal::RecordObservation`] messages, populates the
+/// Processes [`crate::observation::RecordObservation`] messages, populates the
 /// [`KnowledgeGraph`] with observation data, and wires typed relationship edges.
 ///
 /// This system is the **sole write path** for observation storage as of Story 387.
@@ -927,10 +936,11 @@ impl<'de> Deserialize<'de> for KnowledgeGraph {
 /// 5. Marks the property category as revealed on the node.
 /// 6. Wires graph edges: `FoundOn`, `DerivedFrom`, `CombinedWith`, `ObservedAt`.
 fn update_knowledge_graph(
-    mut reader: MessageReader<crate::journal::RecordObservation>,
+    mut reader: MessageReader<crate::observation::RecordObservation>,
     mut graph: ResMut<KnowledgeGraph>,
     time: Res<Time>,
     config: Res<ConfidenceConfig>,
+    catalog: Option<Res<crate::materials::MaterialCatalog>>,
 ) {
     let tick = time.elapsed().as_millis() as u64;
 
@@ -972,9 +982,17 @@ fn update_knowledge_graph(
             // ── Accumulate overall node confidence ────────────────────
             node.confidence.accumulate(obs.observation.confidence.0);
 
-            // ── Mark property as revealed ─────────────────────────────
-            let category_name = obs.observation.category.display_label().to_string();
-            node.revealed_properties.insert(category_name);
+            // ── Mark property as revealed, storing the raw float value ──
+            // Look up the material's property value from the catalog so the
+            // classification system can compare against asset-defined ranges
+            // without reaching back into world entities at query time.
+            let category = obs.observation.category.clone();
+            let prop_value: f32 = obs
+                .material_seed
+                .and_then(|seed| catalog.as_ref()?.get_by_seed(seed))
+                .map(|mat| property_value_for_category(mat, &category))
+                .unwrap_or(0.0);
+            node.revealed_properties.insert(category, prop_value);
         }
 
         // ── FoundOn edge ──────────────────────────────────────────────
@@ -1081,6 +1099,31 @@ fn category_from_key(key: &crate::journal::JournalKey) -> ConceptCategory {
         crate::journal::JournalKey::Material { .. } => ConceptCategory::Material,
         crate::journal::JournalKey::Fabrication { .. } => ConceptCategory::Fabrication,
         crate::journal::JournalKey::Location { .. } => ConceptCategory::Location,
+    }
+}
+
+/// Extract the raw property float for a given observation category from a
+/// [`crate::materials::GameMaterial`].
+///
+/// This is the bridge between the typed `ObservationCategory` enum and the
+/// named fields of `GameMaterial` — used by `update_knowledge_graph` to store
+/// observed property values on `ConceptNode::revealed_properties` without
+/// string keys. `SurfaceAppearance`, `FabricationResult`, and `LocationNote`
+/// have no direct float analogue, so they return `0.0`.
+fn property_value_for_category(
+    mat: &crate::materials::GameMaterial,
+    category: &crate::journal::ObservationCategory,
+) -> f32 {
+    use crate::journal::ObservationCategory;
+    match category {
+        ObservationCategory::Weight => mat.density.value(),
+        ObservationCategory::ThermalBehavior => mat.thermal_resistance.value(),
+        // Reactivity, conductivity, and toxicity observation systems are not
+        // wired yet (Story N.4+). Return 0.0 as a safe sentinel — the value
+        // will be overwritten when those systems fire a RecordObservation.
+        ObservationCategory::SurfaceAppearance => mat.reactivity.value(),
+        ObservationCategory::FabricationResult => 0.0,
+        ObservationCategory::LocationNote => 0.0,
     }
 }
 
@@ -1212,7 +1255,7 @@ fn is_at_least_observed(graph: &KnowledgeGraph, key: &crate::journal::JournalKey
 /// [`update_knowledge_graph`] receive all messages without consuming each
 /// other's reads.
 fn detect_similar_on_observation(
-    mut reader: MessageReader<crate::journal::RecordObservation>,
+    mut reader: MessageReader<crate::observation::RecordObservation>,
     mut graph: ResMut<KnowledgeGraph>,
     catalog: Res<crate::materials::MaterialCatalog>,
     time: Res<Time>,

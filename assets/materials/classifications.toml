@@ -1,0 +1,136 @@
+# Material classification ranges for the Journal query layer.
+#
+# Each entry defines a named material type and the property ranges that
+# an observed material instance must fall within to be classified as that type.
+# Ranges are inclusive: a value equal to min or max is inside the range.
+#
+# Properties used for classification: density (mapped from Weight observation)
+# and thermal_resistance (mapped from ThermalBehavior observation).
+# Reactivity, conductivity, and toxicity observation systems are not yet wired
+# (Story N.4+); their range fields are reserved for when those systems exist.
+#
+# All values are derived from derive_material_from_seed() output — NOT from
+# the legacy assets/materials/*.toml reference values (those pre-date the
+# seed-derivation pipeline).
+#
+# Classification is NEVER stored. It is computed at query time by comparing
+# the player's revealed property values against these ranges.
+# Do not add any "type" or "classification" field to entities, components,
+# or graph nodes — ever.
+#
+# Ranges were computed by:
+# 1. Running derive_material_from_seed() for each well-known seed
+# 2. Finding the density midpoint between adjacent materials in density-space
+# 3. Using thermal_resistance as the secondary discriminator where density
+#    ranges would otherwise overlap
+# 4. Verifying no two entries share an overlapping (density AND thermal) region
+
+[[classification]]
+name = "ferrite"
+display_name = "Ferrite"
+# Seed 1001: density=0.5086, thermal=0.4468
+[classification.density]
+min = 0.49
+max = 0.56
+[classification.thermal_resistance]
+min = 0.38
+max = 0.51
+
+[[classification]]
+name = "calcium"
+display_name = "Calcium"
+# Seed 1002: density=0.1400, thermal=0.7087
+[classification.density]
+min = 0.09
+max = 0.20
+[classification.thermal_resistance]
+min = 0.62
+max = 0.80
+
+[[classification]]
+name = "sulfurite"
+display_name = "Sulfurite"
+# Seed 1003: density=0.5963, thermal=0.7607
+[classification.density]
+min = 0.54
+max = 0.65
+[classification.thermal_resistance]
+min = 0.70
+max = 0.85
+
+[[classification]]
+name = "prismate"
+display_name = "Prismate"
+# Seed 1004: density=0.2062, thermal=0.4010
+[classification.density]
+min = 0.15
+max = 0.27
+[classification.thermal_resistance]
+min = 0.32
+max = 0.48
+
+[[classification]]
+name = "verdant"
+display_name = "Verdant"
+# Seed 1005: density=0.4676, thermal=0.4967
+[classification.density]
+min = 0.42
+max = 0.48
+[classification.thermal_resistance]
+min = 0.42
+max = 0.58
+
+[[classification]]
+name = "osmium"
+display_name = "Osmium"
+# Seed 1006: density=0.7249, thermal=0.5620
+[classification.density]
+min = 0.68
+max = 0.80
+[classification.thermal_resistance]
+min = 0.50
+max = 0.63
+
+[[classification]]
+name = "volatite"
+display_name = "Volatite"
+# Seed 1007: density=0.5882, thermal=0.2229
+[classification.density]
+min = 0.54
+max = 0.63
+[classification.thermal_resistance]
+min = 0.14
+max = 0.30
+
+[[classification]]
+name = "cobaltine"
+display_name = "Cobaltine"
+# Seed 1008: density=0.6320, thermal=0.4959
+[classification.density]
+min = 0.59
+max = 0.67
+[classification.thermal_resistance]
+min = 0.43
+max = 0.57
+
+[[classification]]
+name = "silite"
+display_name = "Silite"
+# Seed 1009: density=0.4503, thermal=0.1523
+[classification.density]
+min = 0.38
+max = 0.47
+[classification.thermal_resistance]
+min = 0.09
+max = 0.22
+
+[[classification]]
+name = "phosphite"
+display_name = "Phosphite"
+# Seed 1010: density=0.0542, thermal=0.8062
+[classification.density]
+min = 0.00
+max = 0.08
+[classification.thermal_resistance]
+min = 0.72
+max = 0.92
