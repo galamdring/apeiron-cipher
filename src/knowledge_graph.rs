@@ -718,6 +718,11 @@ impl KnowledgeGraph {
             .node_indices()
             .filter_map(|idx| self.graph.node_weight(idx))
             .filter(|n| !n.name.is_empty())
+            // Location nodes are not player-facing journal entries — they exist
+            // only as cross-reference targets for FoundOn/ObservedAt edges.
+            // Exclude them from the sorted list so they don't appear in the
+            // main journal entry panel.
+            .filter(|n| n.category != ConceptCategory::Location)
             .map(|n| {
                 let idx = self.concept_index[&n.id];
                 (idx, n.name.as_str())

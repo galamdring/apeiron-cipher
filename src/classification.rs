@@ -389,3 +389,53 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod integration_tests {
+    use super::*;
+    use crate::journal::{JournalKey, ObservationCategory};
+    use crate::knowledge_graph::{ConceptCategory, ConceptId, KnowledgeGraph};
+    use std::collections::HashMap;
+
+    #[test]
+    fn revealed_properties_flow_end_to_end() {
+        use crate::materials::derive_material_from_seed;
+
+        // Simulate what update_knowledge_graph does when a Weight observation fires
+        let seed = 1001u64; // Ferrite
+        let mat = derive_material_from_seed(seed);
+        let density = mat.density.value();
+        let thermal = mat.thermal_resistance.value();
+
+        let mut graph = KnowledgeGraph::default();
+        let key = JournalKey::MaterialInstance { seed };
+        let node_idx = graph.ensure_concept(ConceptId(key), ConceptCategory::Material, 0);
+
+        // Simulate reveal_property being called for Weight
+        graph.reveal_property(node_idx, ObservationCategory::Weight, density);
+        graph.reveal_property(node_idx, ObservationCategory::ThermalBehavior, thermal);
+
+        let node = graph.node(node_idx).unwrap();
+        let revealed = &node.revealed_properties;
+
+        println!("Revealed: {:?}", revealed);
+        println!("density={:.4} thermal={:.4}", density, thermal);
+
+        // Now classify
+        let contents = std::fs::read_to_string(crate::classification::CLASSIFICATIONS_PATH)
+            .expect("classifications.toml should exist");
+        let file: crate::classification::ClassificationsFile =
+            toml::from_str(&contents).expect("classifications.toml should parse");
+        let classifications = MaterialClassifications {
+            entries: file.classification,
+        };
+
+        let result = classifications.classify_observed(revealed);
+        println!("Classification: {:?}", result.map(|e| &e.name));
+        assert_eq!(
+            result.map(|e| e.name.as_str()),
+            Some("ferrite"),
+            "Ferrite seed should classify as ferrite after Weight+Thermal revealed"
+        );
+    }
+}
