@@ -1,8 +1,13 @@
-# Combination rules — maps material pairs to per-property rule sets.
+# Combination rules — maps material seed pairs to per-property rule sets.
 #
-# Each [[rules]] entry names two materials (order doesn't matter) and
-# specifies a rule for each property. Missing properties use the default
-# rule (Blend with equal weights).
+# Each [[rules]] entry identifies two materials by their generation seeds
+# and specifies a rule for each property. Order of seeds does not matter.
+# Missing properties use the default rule (Blend with equal weights).
+#
+# Seeds for well-known materials:
+#   1001 = Ferrite     1002 = Calcium    1003 = Sulfurite  1004 = Prismate
+#   1005 = Verdant     1006 = Osmium     1007 = Volatite   1008 = Cobaltine
+#   1009 = Silite      1010 = Phosphite
 #
 # Rule types:
 #   Blend { weight_a, weight_b }  — weighted average (predictable)
@@ -20,8 +25,8 @@ weight_b = 0.5
 # ── Specific pair rules ──────────────────────────────────────────────────
 
 [[rules]]
-material_a = "Ferrite"
-material_b = "Phosphite"
+material_seed_a = 1001  # Ferrite
+material_seed_b = 1010  # Phosphite
 density = { type = "Max" }
 thermal_resistance = { type = "Catalyze", multiplier = 1.4 }
 reactivity = { type = "Blend", weight_a = 0.7, weight_b = 0.3 }
@@ -29,8 +34,8 @@ conductivity = { type = "Min" }
 toxicity = { type = "Blend", weight_a = 0.5, weight_b = 0.5 }
 
 [[rules]]
-material_a = "Volatite"
-material_b = "Calcium"
+material_seed_a = 1007  # Volatite
+material_seed_b = 1002  # Calcium
 density = { type = "Blend", weight_a = 0.5, weight_b = 0.5 }
 thermal_resistance = { type = "Min" }
 reactivity = { type = "Catalyze", multiplier = 1.6 }
@@ -38,8 +43,8 @@ conductivity = { type = "Blend", weight_a = 0.4, weight_b = 0.6 }
 toxicity = { type = "Max" }
 
 [[rules]]
-material_a = "Sulfurite"
-material_b = "Osmium"
+material_seed_a = 1003  # Sulfurite
+material_seed_b = 1006  # Osmium
 density = { type = "Inert" }
 thermal_resistance = { type = "Inert" }
 reactivity = { type = "Inert" }
@@ -47,8 +52,8 @@ conductivity = { type = "Inert" }
 toxicity = { type = "Inert" }
 
 [[rules]]
-material_a = "Cobaltine"
-material_b = "Verdant"
+material_seed_a = 1008  # Cobaltine
+material_seed_b = 1005  # Verdant
 density = { type = "Blend", weight_a = 0.3, weight_b = 0.7 }
 thermal_resistance = { type = "Max" }
 reactivity = { type = "Blend", weight_a = 0.5, weight_b = 0.5 }
@@ -56,8 +61,8 @@ conductivity = { type = "Catalyze", multiplier = 1.3 }
 toxicity = { type = "Min" }
 
 [[rules]]
-material_a = "Silite"
-material_b = "Prismate"
+material_seed_a = 1009  # Silite
+material_seed_b = 1004  # Prismate
 density = { type = "Min" }
 thermal_resistance = { type = "Blend", weight_a = 0.6, weight_b = 0.4 }
 reactivity = { type = "Max" }

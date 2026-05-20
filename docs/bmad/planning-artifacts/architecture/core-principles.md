@@ -4,7 +4,7 @@ Rules that apply to every line of code, every system, every story. No exceptions
 
 1. **Knowledge is the only progression system.** There are no levels, no XP, no skill trees, no unlocks. The player progresses by understanding the world better. Every system serves this.
 2. **Accretion over reward.** Every player action must teach something new through consequence, never through confirmation.
-3. **Diegetic only.** The game never tells — it reveals through world behavior. No UI text explaining state. No popups. No progress bars.
+3. **Diegetic only.** The game never tells — it reveals through world behavior. No UI text explaining state. No popups. No progress bars. This applies to **reactive/feedback UI** — the game must never use text to explain why an action failed or what the player should do next. Physical in-world objects that display text as part of their nature (journal datapad, inscriptions, fabricator readouts) are *the diegetic mechanism*, not a violation of it.
 4. **Deterministic.** Same seed + same inputs = same outputs. Always. Seeded RNG only. Explicit system ordering. No float ambiguity.
 5. **Server-authoritative.** Intent is untrusted. Simulation decides. Even in single-player.
 6. **Data-driven.** All tuning lives in asset files. If a tuning value is hardcoded in Rust source, it's wrong. Only truly fixed values (mathematical constants, protocol versions) are `const`.

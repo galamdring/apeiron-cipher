@@ -17,11 +17,11 @@
 use bevy::prelude::*;
 
 use crate::descriptions::describe_thermal_observation;
-use crate::journal::{JournalKey, Observation, ObservationCategory, RecordObservation};
+use crate::journal::{JournalKey, Observation, ObservationCategory};
 use crate::materials::{GameMaterial, MaterialObject, PropertyVisibility};
 use crate::observation::Confidence;
+use crate::observation::RecordObservation;
 use crate::scene::{FurnitureConfig, HeatSourceConfig, Workbench};
-use crate::world_generation::WorldProfile;
 
 /// Plugin that manages heat sources and temperature-based material interactions.
 pub struct HeatPlugin;
@@ -278,11 +278,9 @@ fn reveal_thermal_property(
         ),
         With<MaterialObject>,
     >,
-    world_profile: Option<Res<WorldProfile>>,
 ) {
     let reveal_secs = hs_cfg.reveal_seconds;
     let mut revealed_seeds = Vec::new();
-    let planet_seed = world_profile.as_deref().map(|p| p.planet_seed.0);
 
     for (entity, exp, mut mat, recorded) in &mut material_query {
         if exp.elapsed < reveal_secs {
@@ -313,20 +311,10 @@ fn reveal_thermal_property(
             let initial_confidence = Confidence(0.2);
 
             journal_writer.write(RecordObservation {
-                key: JournalKey::Material {
-                    seed: mat.seed,
-                    // Capture the planet on which this thermal observation
-                    // is being recorded so the journal's "current planet"
-                    // filter (Story 10.3) can match this entry against the
-                    // player's current `WorldProfile::planet_seed`.  When
-                    // no `WorldProfile` is in scope (early bring-up or
-                    // ad-hoc integration tests) the field stays `None` —
-                    // see `JournalKey::Material::planet_seed`'s docs for
-                    // why "unknown provenance" is kept explicit instead
-                    // of defaulting to a sentinel.
-                    planet_seed,
-                },
+                key: JournalKey::MaterialInstance { seed: mat.seed },
                 name: mat.name.clone(),
+                material_seed: Some(mat.seed),
+                planet_seed: mat.origin_planet_seed,
                 observation: Observation {
                     category: ObservationCategory::ThermalBehavior,
                     confidence: initial_confidence,
@@ -382,6 +370,7 @@ mod tests {
             name: format!("TestMat-{seed}"),
             seed,
             color: [0.5, 0.5, 0.5],
+            origin_planet_seed: None,
             density: MaterialProperty::new(0.5, PropertyVisibility::Observable),
             thermal_resistance: MaterialProperty::new(0.65, PropertyVisibility::Hidden),
             reactivity: MaterialProperty::new(0.35, PropertyVisibility::Hidden),
@@ -624,7 +613,11 @@ mod tests {
 
         app.world_mut().spawn((
             MaterialObject,
-            test_material(7),
+            {
+                let mut mat = test_material(7);
+                mat.origin_planet_seed = Some(expected_seed);
+                mat
+            },
             HeatExposure {
                 elapsed: 5.0,
                 in_zone: true,
@@ -643,15 +636,15 @@ mod tests {
             "exactly one thermal observation should be recorded for one revealed entity"
         );
         match &recorded[0].key {
-            JournalKey::Material { seed, planet_seed } => {
+            JournalKey::MaterialInstance { seed } => {
                 assert_eq!(*seed, 7, "material seed should match the test material");
                 assert_eq!(
-                    *planet_seed,
+                    recorded[0].planet_seed,
                     Some(expected_seed),
                     "observation must capture the WorldProfile's planet seed so the journal's current-planet filter can match it"
                 );
             }
-            other => panic!("expected JournalKey::Material, got {other:?}"),
+            other => panic!("expected JournalKey::MaterialInstance, got {other:?}"),
         }
     }
 
@@ -690,14 +683,14 @@ mod tests {
         let recorded: Vec<RecordObservation> = messages.drain().collect();
         assert_eq!(recorded.len(), 1);
         match &recorded[0].key {
-            JournalKey::Material { seed, planet_seed } => {
+            JournalKey::MaterialInstance { seed } => {
                 assert_eq!(*seed, 11);
                 assert_eq!(
-                    *planet_seed, None,
+                    recorded[0].planet_seed, None,
                     "without a WorldProfile, planet_seed must be None — never a sentinel"
                 );
             }
-            other => panic!("expected JournalKey::Material, got {other:?}"),
+            other => panic!("expected JournalKey::MaterialInstance, got {other:?}"),
         }
     }
 }

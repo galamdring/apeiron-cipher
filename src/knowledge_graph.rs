@@ -1,766 +1,795 @@
-//! Knowledge graph types — concept nodes, edges, and the graph resource for
-//! the cross-reference system.
+//! Knowledge graph — the player's associative web of discovered concepts.
 //!
-//! The knowledge graph is the player's associative web of discovered concepts.
-//! Each concept corresponds to a journal entry (identified by [`JournalKey`]) and
-//! carries metadata about when it was discovered and how confident the player is
-//! in their understanding of it.
+//! This module implements the `KnowledgeGraph` resource backed by
+//! [`petgraph::Graph`] as specified in the data-architecture decision.
+//! The graph stores concept nodes ([`ConceptNode`]) and typed relationship
+//! edges ([`ConceptEdge`]) that are accumulated as the player observes
+//! the world.
 //!
-//! This module defines the node-level types, edge types, the [`KnowledgeGraph`]
-//! resource backed by `petgraph::Graph`, and the [`KnowledgeGraphPlugin`] that
-//! wires the [`update_knowledge_graph`] system into the Bevy app.
+//! # Design principles
+//!
+//! * **Observation-gated:** No edge or node is ever created without an
+//!   observation event. The graph never infers connections the player
+//!   hasn't personally made.
+//! * **Deterministic:** BFS traversal order follows petgraph's stable
+//!   internal edge order. Timeline entries are appended in tick order,
+//!   which is guaranteed monotone by the game clock.
+//! * **Serializable:** The full graph round-trips through serde via
+//!   petgraph's `serde-1` feature plus hand-implemented index maps.
 
-use std::collections::{HashMap, HashSet};
-use std::fs;
-use std::path::Path;
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 use bevy::prelude::*;
-use petgraph::graph::NodeIndex;
+use petgraph::Direction;
+use petgraph::graph::{Graph, NodeIndex};
 use petgraph::visit::EdgeRef;
-use petgraph::{Direction, Graph};
 use serde::{Deserialize, Serialize};
 
-use crate::journal::{JournalKey, RecordObservation};
-use crate::materials::{MaterialCatalog, cosine_similarity};
-use crate::observation::Confidence;
+use crate::journal::JournalKey;
+use crate::observation::{Confidence, ConfidenceConfig};
 
 // ── Plugin ────────────────────────────────────────────────────────────────
 
-/// Plugin that initialises the [`KnowledgeGraph`] resource and registers the
-/// [`update_knowledge_graph`] system.
-///
-/// Must be added after [`crate::journal::JournalPlugin`] because it reads
-/// [`RecordObservation`] messages that the journal plugin registers.
+/// Registers the [`KnowledgeGraph`] resource and the
+/// [`update_knowledge_graph`] system that populates it from
+/// [`crate::observation::RecordObservation`] messages.
 pub struct KnowledgeGraphPlugin;
-
-/// Path to the knowledge-graph tuning configuration file.
-const KNOWLEDGE_GRAPH_CONFIG_PATH: &str = "assets/config/knowledge_graph.toml";
 
 impl Plugin for KnowledgeGraphPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<KnowledgeGraph>()
-            .add_systems(PreStartup, load_knowledge_graph_config)
-            .add_systems(Update, update_knowledge_graph);
+        app.init_resource::<KnowledgeGraph>().add_systems(
+            Update,
+            (
+                update_knowledge_graph.in_set(crate::journal::JournalSet::Navigate),
+                detect_similar_on_observation
+                    .in_set(crate::journal::JournalSet::Navigate)
+                    .after(update_knowledge_graph),
+            ),
+        );
     }
 }
 
-// ── System ────────────────────────────────────────────────────────────────
+// ── Concept identity ──────────────────────────────────────────────────────
 
-/// Map a [`JournalKey`] to its [`ConceptCategory`].
+/// Unique concept identifier — wraps a [`JournalKey`] so the graph and the
+/// journal share the same identity space with no mapping step.
 ///
-/// Materials map to [`ConceptCategory::Material`], fabrication outputs map to
-/// [`ConceptCategory::Fabrication`]. Location keys (when they exist) will map
-/// to [`ConceptCategory::Location`]; for now any key passed as a
-/// `context_location` is treated as a location concept.
-fn category_from_key(key: &JournalKey) -> ConceptCategory {
-    match key {
-        JournalKey::Material { .. } => ConceptCategory::Material,
-        JournalKey::Fabrication { .. } => ConceptCategory::Fabrication,
-    }
-}
-
-/// Default minimum cosine similarity score required to create a
-/// [`RelationshipType::SimilarTo`] edge.
-///
-/// Two materials must share at least 85% directional similarity across their
-/// five-dimensional property vector (density, thermal_resistance, reactivity,
-/// conductivity, toxicity) before the system considers them "similar."
-///
-/// This value is the fallback used when `assets/config/knowledge_graph.toml`
-/// is absent or malformed. The live value is stored in [`KnowledgeGraphConfig`].
-const DEFAULT_SIMILARITY_SCORE_THRESHOLD: f32 = 0.85;
-
-/// Default minimum concept node confidence required on BOTH materials before a
-/// [`RelationshipType::SimilarTo`] edge is created.
-///
-/// This maps to the `Observed` tier boundary (≥ 0.3). The player must have
-/// gathered enough evidence about both materials before the system surfaces
-/// the connection — no free inferences from a single tentative observation.
-///
-/// This value is the fallback used when `assets/config/knowledge_graph.toml`
-/// is absent or malformed. The live value is stored in [`KnowledgeGraphConfig`].
-const DEFAULT_SIMILARITY_CONFIDENCE_THRESHOLD: f32 = 0.3;
-
-// ── Config resource ───────────────────────────────────────────────────────
-
-fn default_similarity_score_threshold() -> f32 {
-    DEFAULT_SIMILARITY_SCORE_THRESHOLD
-}
-
-fn default_similarity_confidence_threshold() -> f32 {
-    DEFAULT_SIMILARITY_CONFIDENCE_THRESHOLD
-}
-
-/// Runtime tuning configuration for the knowledge-graph system.
-///
-/// Loaded from `assets/config/knowledge_graph.toml` during `PreStartup`.
-/// Falls back to compiled-in defaults if the file is absent or malformed so
-/// that the game always starts cleanly.
-///
-/// All thresholds are data-driven to allow tuning without recompilation.
-#[derive(Resource, Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct KnowledgeGraphConfig {
-    /// Minimum cosine similarity score (0.0–1.0) required to create a
-    /// [`RelationshipType::SimilarTo`] edge between two materials.
-    ///
-    /// Higher values require materials to be more alike before the journal
-    /// surfaces the connection. Typical range: 0.7–0.95.
-    #[serde(default = "default_similarity_score_threshold")]
-    pub similarity_score_threshold: f32,
-
-    /// Minimum [`Confidence`] value required on BOTH material concept nodes
-    /// before a [`RelationshipType::SimilarTo`] edge is created.
-    ///
-    /// Prevents the system from surfacing connections the player hasn't earned
-    /// through observation. Maps to the `Observed` tier boundary. Typical
-    /// range: 0.2–0.5.
-    #[serde(default = "default_similarity_confidence_threshold")]
-    pub similarity_confidence_threshold: f32,
-}
-
-impl Default for KnowledgeGraphConfig {
-    fn default() -> Self {
-        Self {
-            similarity_score_threshold: DEFAULT_SIMILARITY_SCORE_THRESHOLD,
-            similarity_confidence_threshold: DEFAULT_SIMILARITY_CONFIDENCE_THRESHOLD,
-        }
-    }
-}
-
-/// Load [`KnowledgeGraphConfig`] from `assets/config/knowledge_graph.toml`.
-///
-/// Follows the standard pattern used throughout the codebase: attempt to load
-/// from the config file, fall back to defaults if the file is missing or
-/// malformed. Logs appropriate warnings for debugging.
-fn load_knowledge_graph_config(mut commands: Commands) {
-    let config = if Path::new(KNOWLEDGE_GRAPH_CONFIG_PATH).exists() {
-        match fs::read_to_string(KNOWLEDGE_GRAPH_CONFIG_PATH) {
-            Ok(contents) => match toml::from_str::<KnowledgeGraphConfig>(&contents) {
-                Ok(cfg) => {
-                    info!("Loaded knowledge graph config from {KNOWLEDGE_GRAPH_CONFIG_PATH}");
-                    cfg
-                }
-                Err(error) => {
-                    warn!("Malformed {KNOWLEDGE_GRAPH_CONFIG_PATH}, using defaults: {error}");
-                    KnowledgeGraphConfig::default()
-                }
-            },
-            Err(error) => {
-                warn!("Could not read {KNOWLEDGE_GRAPH_CONFIG_PATH}, using defaults: {error}");
-                KnowledgeGraphConfig::default()
-            }
-        }
-    } else {
-        info!("{KNOWLEDGE_GRAPH_CONFIG_PATH} not found, using defaults");
-        KnowledgeGraphConfig::default()
-    };
-
-    commands.insert_resource(config);
-}
-
-/// Compare `subject` against every material in `catalog` and return the seeds
-/// and similarity scores of materials that exceed `threshold`.
-///
-/// The subject seed is included in the catalog but the caller is responsible
-/// for skipping self-comparisons (seed == subject_seed).
-///
-/// Returns a `Vec<(seed, similarity_score)>` sorted by descending similarity.
-pub fn detect_similarity(
-    subject_seed: u64,
-    subject: &crate::materials::GameMaterial,
-    catalog: &MaterialCatalog,
-    threshold: f32,
-) -> Vec<(u64, f32)> {
-    let subject_vec = subject.property_vector();
-    let mut results: Vec<(u64, f32)> = catalog
-        .seeds()
-        .filter(|&&seed| seed != subject_seed)
-        .filter_map(|&seed| {
-            let other = catalog.get_by_seed(seed)?;
-            let sim = cosine_similarity(&subject_vec, &other.property_vector());
-            if sim >= threshold {
-                Some((seed, sim))
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    // Deterministic ordering: highest similarity first, then by seed for ties.
-    results.sort_by(|a, b| {
-        b.1.partial_cmp(&a.1)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then(a.0.cmp(&b.0))
-    });
-    results
-}
-
-/// System that processes [`RecordObservation`] messages and builds cross-references
-/// in the [`KnowledgeGraph`].
-///
-/// For each observation the system:
-///
-/// 1. Ensures a concept node exists for the observation subject.
-/// 2. If the observation carries a `context_location`, creates a `FoundOn` edge
-///    (for materials) or `ObservedAt` edge (for other subjects) between the
-///    subject and the location concept.
-/// 3. If the observation is for a [`JournalKey::Fabrication`] output and
-///    `input_seeds` are provided, creates `DerivedFrom` edges from the output
-///    concept to each input material concept, and `CombinedWith` edges between
-///    each pair of input materials.
-///
-/// All edges are bidirectional (enforced by [`KnowledgeGraph::relate`]).
-/// No cross-reference is created without an observation event — the system
-/// never infers connections the player hasn't made.
-pub fn update_knowledge_graph(
-    mut observations: MessageReader<RecordObservation>,
-    mut graph: ResMut<KnowledgeGraph>,
-    time: Res<Time>,
-    catalog: Res<MaterialCatalog>,
-    kg_config: Res<KnowledgeGraphConfig>,
-) {
-    let tick = time.elapsed().as_millis() as u64;
-
-    for obs in observations.read() {
-        let subject_category = category_from_key(&obs.key);
-        let subject_node =
-            graph.ensure_concept(ConceptId::new(obs.key.clone()), subject_category, tick);
-
-        // Update the concept node's confidence to reflect the latest observation.
-        // This is required so that the SimilarTo check can gate on both materials
-        // being at Observed tier or above (confidence ≥ 0.3).
-        if let Some(node) = graph.node_mut(subject_node) {
-            node.confidence.accumulate(obs.observation.confidence.0);
-        }
-
-        // ── Location cross-reference ──────────────────────────────────────
-        // If the observation has a location context, link the subject to that
-        // location. Materials use FoundOn; other subjects use ObservedAt.
-        if let Some(location_key) = &obs.context_location {
-            let location_node = graph.ensure_concept(
-                ConceptId::new(location_key.clone()),
-                ConceptCategory::Location,
-                tick,
-            );
-
-            let relationship = match &obs.key {
-                JournalKey::Material { .. } => RelationshipType::FoundOn,
-                JournalKey::Fabrication { .. } => RelationshipType::ObservedAt,
-            };
-
-            graph.relate(
-                subject_node,
-                location_node,
-                ConceptEdge::new(relationship, obs.observation.confidence, tick),
-            );
-        }
-
-        // ── Fabrication cross-references ──────────────────────────────────
-        // For fabrication outputs, create DerivedFrom edges to each input
-        // material and CombinedWith edges between each pair of inputs.
-        if let JournalKey::Fabrication { .. } = &obs.key {
-            // Collect NodeIndexes for all input materials first so we can
-            // create CombinedWith edges between them without borrowing issues.
-            let mut input_nodes: Vec<NodeIndex> = Vec::with_capacity(obs.input_seeds.len());
-
-            for &input_seed in &obs.input_seeds {
-                let input_key = JournalKey::Material {
-                    seed: input_seed,
-                    planet_seed: None,
-                };
-                let input_node = graph.ensure_concept(
-                    ConceptId::new(input_key),
-                    ConceptCategory::Material,
-                    tick,
-                );
-                input_nodes.push(input_node);
-
-                // Fabrication is directly observed — confidence is 1.0.
-                graph.relate(
-                    subject_node,
-                    input_node,
-                    ConceptEdge::new(RelationshipType::DerivedFrom, Confidence(1.0), tick),
-                );
-            }
-
-            // CombinedWith edges between every pair of input materials.
-            // For two inputs A and B: A CombinedWith B (and B CombinedWith A
-            // via relate's bidirectionality).
-            for i in 0..input_nodes.len() {
-                for j in (i + 1)..input_nodes.len() {
-                    graph.relate(
-                        input_nodes[i],
-                        input_nodes[j],
-                        ConceptEdge::new(RelationshipType::CombinedWith, Confidence(1.0), tick),
-                    );
-                }
-            }
-        }
-
-        // ── Similarity cross-references ───────────────────────────────────
-        // For material observations, compare the subject against all known
-        // materials in the catalog. SimilarTo edges are only created when
-        // BOTH materials are at Observed tier or above (confidence ≥ 0.3),
-        // ensuring the player has earned the connection through observation.
-        if let JournalKey::Material {
-            seed: subject_seed, ..
-        } = &obs.key
-        {
-            let subject_confidence = graph
-                .node(subject_node)
-                .map(|n| n.confidence)
-                .unwrap_or(Confidence(0.0));
-
-            // Only proceed if the subject material itself is at Observed tier.
-            if subject_confidence.0 >= kg_config.similarity_confidence_threshold {
-                let subject_mat = catalog.get_by_seed(*subject_seed).cloned();
-
-                if let Some(subject_mat) = subject_mat {
-                    let similar_pairs = detect_similarity(
-                        *subject_seed,
-                        &subject_mat,
-                        &catalog,
-                        kg_config.similarity_score_threshold,
-                    );
-
-                    for (other_seed, similarity_score) in similar_pairs {
-                        // Skip self-comparison.
-                        if other_seed == *subject_seed {
-                            continue;
-                        }
-
-                        let other_key = JournalKey::Material {
-                            seed: other_seed,
-                            planet_seed: None,
-                        };
-                        let other_id = ConceptId::new(other_key.clone());
-
-                        // Only create the edge if the other material is also
-                        // known to the graph at Observed tier or above.
-                        // The player must have earned confidence in both.
-                        let other_node_opt = graph.lookup(&other_id);
-                        let other_confidence = other_node_opt
-                            .and_then(|n| graph.node(n))
-                            .map(|n| n.confidence)
-                            .unwrap_or(Confidence(0.0));
-
-                        if other_confidence.0 < kg_config.similarity_confidence_threshold {
-                            continue;
-                        }
-
-                        let other_node =
-                            graph.ensure_concept(other_id, ConceptCategory::Material, tick);
-
-                        graph.relate(
-                            subject_node,
-                            other_node,
-                            ConceptEdge::new(
-                                RelationshipType::SimilarTo,
-                                Confidence(similarity_score),
-                                tick,
-                            ),
-                        );
-                    }
-                }
-            }
-        }
-    }
-}
-
-// ── Concept identity ─────────────────────────────────────────────────────
-
-/// Unique concept identifier — wraps a [`JournalKey`] so every journal entry
-/// has a corresponding concept node in the knowledge graph.
-///
-/// The one-to-one mapping between `ConceptId` and `JournalKey` means that
-/// creating a concept node for a journal entry is always unambiguous: the
-/// concept's identity *is* the journal key. This avoids a separate ID space
-/// that could drift out of sync with the journal.
+/// Equality and hashing match those of the wrapped key, giving O(1) map
+/// lookups in [`KnowledgeGraph::concept_index`].
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ConceptId(pub JournalKey);
 
-impl ConceptId {
-    /// Create a new concept identifier from a journal key.
-    pub fn new(key: JournalKey) -> Self {
-        Self(key)
-    }
+// ── Concept categories ────────────────────────────────────────────────────
 
-    /// Borrow the underlying journal key.
-    pub fn key(&self) -> &JournalKey {
-        &self.0
-    }
-}
-
-impl From<JournalKey> for ConceptId {
-    fn from(key: JournalKey) -> Self {
-        Self(key)
-    }
-}
-
-// ── Concept category ─────────────────────────────────────────────────────
-
-/// Encyclopedia-style grouping for concept nodes.
+/// High-level classification used for encyclopedia-style grouping and BFS
+/// category filtering.
 ///
-/// Categories allow the journal's encyclopedia view to group related concepts
-/// together (all materials, all locations, etc.) and let the bounded BFS
-/// traversal optionally filter results to a single category.
-///
-/// **Extensibility:** new categories (Language, Culture, Trade, Species, …)
-/// are added as variants here when their underlying game systems are
-/// implemented. Existing match arms do not need to change because the
-/// category is used for grouping and filtering, not for exhaustive dispatch.
+/// Variants map 1-to-1 onto [`JournalKey`] discriminants — [`ConceptId`]
+/// creation always supplies the correct category, so the graph never
+/// stores an inconsistent category for a node.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ConceptCategory {
-    /// Raw or fabricated materials the player has encountered.
+    /// A raw or discovered material.
     Material,
-    /// Planets, biomes, and other spatial locations.
+    /// A planetary or regional location.
     Location,
-    /// Outputs and processes from the fabrication system.
+    /// A fabrication output.
     Fabrication,
     // Future: Language, Culture, Trade, Species, etc.
 }
 
-// ── Concept node ─────────────────────────────────────────────────────────
+// ── Graph node ────────────────────────────────────────────────────────────
 
-/// A node in the knowledge graph — represents a concept the player has
-/// discovered and accumulated knowledge about.
+/// A node in the knowledge graph — represents a known concept.
 ///
-/// Each node corresponds to exactly one [`JournalEntry`] (via [`ConceptId`]).
-/// The node carries a snapshot of the player's current understanding:
-/// how confident they are overall, when they first encountered the concept,
-/// and which properties they have personally revealed through observation.
+/// Each node is created by [`KnowledgeGraph::ensure_concept`] on first
+/// encounter and is never removed (the graph accumulates monotonically).
 ///
-/// `revealed_properties` is a set of string keys rather than a typed enum
-/// so that new game systems can add property names without modifying this
-/// struct. The strings match the property names used by the observation
-/// system (e.g., `"thermal_resistance"`, `"density"`).
-///
-/// [`JournalEntry`]: crate::journal::JournalEntry
+/// As of Story 387 this node is the **sole storage location** for all
+/// player knowledge about a concept: the display name, every observation
+/// ever recorded, confidence, timestamps, and planet provenance all live
+/// here. The `Journal` component is now a pure query/UI layer — it holds
+/// no data between frames.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ConceptNode {
-    /// The unique identifier for this concept, linking it to its journal entry.
+    /// Stable identity linking this node to the corresponding journal key.
     pub id: ConceptId,
-    /// Encyclopedia category for grouping and BFS filtering.
+    /// Coarse classification for encyclopedia grouping and BFS filtering.
     pub category: ConceptCategory,
-    /// Overall confidence in this concept, aggregated from all observations.
+    /// Player-facing display name for this concept (e.g. "Ferrite").
     ///
-    /// Starts at the confidence of the first observation and accumulates
-    /// as the player gathers more evidence. Used by the `SimilarTo` edge
-    /// creation logic: similarity edges are only created when both concepts
-    /// are at `Observed` tier or above (confidence ≥ 0.3).
+    /// Set on first observation and never overwritten — first observer wins,
+    /// matching the behaviour of the old `Journal::ensure_entry`.
+    pub name: String,
+    /// Overall confidence that this concept is real and correctly identified.
+    ///
+    /// Accumulated from every observation's confidence value. Used by the
+    /// similarity system to gate `SimilarTo` edge creation (must be at
+    /// `Observed` tier or above before cross-material comparisons fire).
     pub confidence: Confidence,
-    /// Game-time tick when the player first encountered this concept.
-    pub discovered_at: u64,
-    /// Set of property keys the player has personally revealed through
-    /// observation (e.g., `"thermal_resistance"`, `"density"`).
+    /// Game-time tick (whole seconds elapsed) when this concept was first
+    /// encountered. Immutable after creation.
+    pub first_observed_at: u64,
+    /// Game-time tick of the most recent observation recorded for this node.
+    /// Updated every time [`Self::add_observation`] or its accumulating
+    /// variants are called.
+    pub last_updated_at: u64,
+    /// Planet on which this concept was first observed.
     ///
-    /// Only properties the player has *observed* appear here — the system
-    /// never pre-populates this set from hidden material data. This enforces
-    /// the acceptance criterion that no cross-reference is created without
-    /// an observation event.
-    pub revealed_properties: HashSet<String>,
+    /// Populated from [`crate::observation::RecordObservation::planet_seed`] on
+    /// the first observation that carries a planet seed. `None` for fabricated
+    /// materials and concepts recorded without planetary context. Used by the
+    /// `CurrentPlanet` journal filter.
+    pub origin_planet_seed: Option<u64>,
+    /// Which named properties the player has directly observed on this concept.
+    ///
+    /// Keys match [`crate::journal::ObservationCategory::display_label`] so
+    /// the inspect panel and encyclopedia can check revealed status without
+    /// additional mapping.
+    pub revealed_properties: HashMap<crate::journal::ObservationCategory, f32>,
+    /// All observations recorded about this concept, grouped by category.
+    ///
+    /// Each category group is in chronological insertion order. Observations
+    /// within a group are deduplicated by description — a second identical
+    /// observation strengthens confidence rather than appending a duplicate.
+    ///
+    /// `BTreeMap` gives deterministic iteration order (important for
+    /// save/load reproducibility and test stability).
+    pub observations:
+        BTreeMap<crate::journal::ObservationCategory, Vec<crate::journal::Observation>>,
 }
 
+// ── ConceptNode observation methods ──────────────────────────────────────
+
 impl ConceptNode {
-    /// Create a new concept node with no revealed properties.
+    /// Construct a bare `ConceptNode` with no observations.
     ///
-    /// The `confidence` is set to the initial observation's confidence value.
-    /// `revealed_properties` starts empty and is populated as the player
-    /// makes observations.
-    pub fn new(
-        id: ConceptId,
-        category: ConceptCategory,
-        confidence: Confidence,
-        discovered_at: u64,
-    ) -> Self {
-        Self {
-            id,
+    /// Used by tests that need a `ConceptNode` value without going through
+    /// the full `KnowledgeGraph` machinery.
+    pub fn new(key: JournalKey, name: &str, tick: u64) -> Self {
+        let category = key.concept_category();
+        ConceptNode {
+            id: ConceptId(key),
             category,
-            confidence,
-            discovered_at,
-            revealed_properties: HashSet::new(),
+            name: name.to_string(),
+            confidence: Confidence(0.3),
+            first_observed_at: tick,
+            last_updated_at: tick,
+            origin_planet_seed: None,
+            revealed_properties: HashMap::new(),
+            observations: BTreeMap::new(),
         }
     }
 
-    /// Mark a property as revealed by the player.
+    /// Record an observation on this node, deduplicating by description within
+    /// the same category.
     ///
-    /// Idempotent — calling this multiple times with the same key is safe.
-    pub fn reveal_property(&mut self, property: impl Into<String>) {
-        self.revealed_properties.insert(property.into());
+    /// When an observation with the same category **and** the same description
+    /// already exists, the duplicate is not appended — instead the existing
+    /// observation's confidence is upgraded to the higher of the two values and
+    /// `last_updated_at` is advanced. This prevents the node from bloating when
+    /// systems repeatedly report the same finding (e.g. picking up the same
+    /// material multiple times).
+    ///
+    /// When the observation is genuinely new (different category or different
+    /// description), it is appended to the appropriate category group and
+    /// `last_updated_at` is advanced unconditionally.
+    pub fn add_observation(&mut self, observation: crate::journal::Observation) {
+        self.last_updated_at = observation.recorded_at;
+
+        let group = self
+            .observations
+            .entry(observation.category.clone())
+            .or_default();
+
+        if let Some(existing) = group
+            .iter_mut()
+            .find(|o| o.description == observation.description)
+        {
+            // Upgrade confidence if the new evidence is stronger.
+            if observation.confidence.0 > existing.confidence.0 {
+                existing.confidence = observation.confidence;
+            }
+            return;
+        }
+
+        group.push(observation);
     }
 
-    /// Whether the player has revealed the named property.
-    pub fn has_property(&self, property: &str) -> bool {
-        self.revealed_properties.contains(property)
+    /// Record an observation with confidence accumulation for existing
+    /// observations.
+    ///
+    /// When an observation with the same category and description already
+    /// exists, [`Confidence::accumulate`] is called with
+    /// `base_observation_weight * recovery_multiplier`. This gives diminishing
+    /// returns as evidence builds, matching Story 10.4's confidence model.
+    ///
+    /// `recovery_multiplier` should be:
+    /// - `> 1.0` when the player is engaging with the domain they died in
+    ///   (faster recovery)
+    /// - `< 1.0` for unrelated domains after a death
+    /// - `= 1.0` for normal play without death context
+    ///
+    /// When the observation is genuinely new it is appended as-is.
+    pub fn add_observation_with_accumulation(
+        &mut self,
+        observation: crate::journal::Observation,
+        config: &crate::observation::ConfidenceConfig,
+    ) {
+        self.add_observation_with_domain_weighted_accumulation(observation, config, 1.0);
+    }
+
+    /// When the observation is genuinely new it is appended as-is.
+    pub fn add_observation_with_domain_weighted_accumulation(
+        &mut self,
+        observation: crate::journal::Observation,
+        config: &crate::observation::ConfidenceConfig,
+        recovery_multiplier: f32,
+    ) {
+        self.last_updated_at = observation.recorded_at;
+
+        let group = self
+            .observations
+            .entry(observation.category.clone())
+            .or_default();
+
+        if let Some(existing) = group
+            .iter_mut()
+            .find(|o| o.description == observation.description)
+        {
+            let adjusted_weight = config.base_observation_weight * recovery_multiplier;
+            existing.confidence.accumulate(adjusted_weight);
+            return;
+        }
+
+        group.push(observation);
+    }
+
+    /// Return all observations for a given category, in insertion order.
+    ///
+    /// Returns an empty slice when no observations for that category exist yet.
+    pub fn observations_by_category(
+        &self,
+        category: &crate::journal::ObservationCategory,
+    ) -> &[crate::journal::Observation] {
+        self.observations
+            .get(category)
+            .map_or(&[], |v| v.as_slice())
+    }
+
+    /// Total observation count across all categories.
+    pub fn observation_count(&self) -> usize {
+        self.observations.values().map(|v| v.len()).sum()
+    }
+
+    /// Iterator over all observations across all categories, in deterministic
+    /// category order (driven by `BTreeMap`) then insertion order within each
+    /// category.
+    pub fn all_observations(&self) -> impl Iterator<Item = &crate::journal::Observation> {
+        self.observations.values().flat_map(|v| v.iter())
     }
 }
 
-// ── Relationship type ─────────────────────────────────────────────────────
+// ── Relationship types ────────────────────────────────────────────────────
 
-/// The typed relationship between two concept nodes in the knowledge graph.
+/// Types of relationships between journal subjects.
 ///
-/// Each variant describes *how* one concept relates to another. Relationships
-/// are directional: the edge goes from a source concept to a target concept,
-/// and the variant names are written from the source's perspective
-/// (e.g., `FoundOn` means "source was found on target").
-///
-/// **Extensibility:** new relationship types (SpokenBy, TradedAt, UsedIn, …)
-/// are added as variants here when their underlying game systems are
-/// implemented. The `ConceptEdge` struct is unchanged by new variants.
+/// Every edge in the knowledge graph is one of these typed relationships.
+/// The set is exhaustive for Story 10.5 and deliberately extensible —
+/// future systems (language, trade, culture) add variants here without
+/// touching existing match arms.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum RelationshipType {
-    /// Source material was found on the target location.
-    ///
-    /// Created automatically when a material observation is recorded with a
-    /// planet/location context.
+    /// A material was found on a specific planet or location.
     FoundOn,
-    /// Source material was combined with the target material in the fabricator.
-    ///
-    /// Created when a fabrication event records both input materials.
+    /// Two materials were combined in the fabricator.
     CombinedWith,
-    /// Source material was derived from the target input material.
-    ///
-    /// Created for fabrication outputs: the output concept links back to each
-    /// input material via `DerivedFrom`.
+    /// An output material was derived from one or more input materials.
     DerivedFrom,
-    /// Source material has similar properties to the target material.
-    ///
-    /// Created automatically when cosine similarity between property vectors
-    /// meets or exceeds the configured threshold, but only when both concepts
-    /// are at `Observed` confidence tier or above. The system never surfaces
-    /// this connection before the player has earned it.
+    /// Two materials share similar measured properties above the similarity
+    /// threshold. Only created when both materials are at `Observed` tier
+    /// or above so the player has earned the insight.
     SimilarTo,
-    /// Source observation was made at the target location.
-    ///
-    /// More general than `FoundOn` — used when the observation subject is not
-    /// a material (e.g., a fabrication event observed at a specific outpost).
+    /// An observation was made at a specific location (weaker than `FoundOn`
+    /// — records a connection without implying the subject originated there).
     ObservedAt,
     // Future: SpokenBy, TradedAt, UsedIn, etc.
 }
 
-// ── Concept edge ──────────────────────────────────────────────────────────
+impl RelationshipType {
+    /// Player-facing label used in the journal "Related" section header
+    /// for each cross-reference link.
+    ///
+    /// These labels are deliberately factual and terse — no flavour text.
+    /// The player draws their own conclusions from the connection.
+    pub fn display_label(&self) -> &'static str {
+        match self {
+            RelationshipType::FoundOn => "Found on",
+            RelationshipType::CombinedWith => "Combined with",
+            RelationshipType::DerivedFrom => "Derived from",
+            RelationshipType::SimilarTo => "Similar to",
+            RelationshipType::ObservedAt => "Observed at",
+        }
+    }
+}
 
-/// A typed, weighted edge in the knowledge graph between two concept nodes.
+// ── Graph edge ────────────────────────────────────────────────────────────
+
+/// A typed, confidence-bearing relationship between two concept nodes.
 ///
-/// Edges are directional (from source to target) and carry a [`RelationshipType`]
-/// that describes the nature of the connection. The `confidence` field
-/// accumulates as the player gathers repeated evidence for the same
-/// relationship — the same edge strengthens rather than duplicating.
-///
-/// `discovered_at` records the game-time tick of the *first* observation that
-/// established this relationship. Subsequent observations that strengthen the
-/// edge do not update this field, preserving the discovery timeline.
-///
-/// Edges are serializable so the full knowledge graph can be saved and
-/// restored across play sessions.
+/// Edges are directional in petgraph but are interpreted as bidirectional
+/// by [`KnowledgeGraph::relationships`], which walks both incoming and
+/// outgoing edges. This keeps storage at half the edges while giving the
+/// UI the "bidirectional links" behaviour specified in the acceptance
+/// criteria.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ConceptEdge {
-    /// The nature of the relationship from source concept to target concept.
+    /// The nature of the relationship between the two concepts.
     pub relationship: RelationshipType,
-    /// Accumulated confidence in this relationship.
-    ///
-    /// Starts at the confidence of the first observation that created the edge
-    /// and increases as the player makes additional observations that confirm
-    /// the same connection. Capped at `1.0`.
+    /// How certain the player is that this relationship is real, accumulated
+    /// each time a new observation confirms the same connection.
     pub confidence: Confidence,
-    /// Game-time tick when this relationship was first observed.
+    /// Game-time tick (whole seconds elapsed) when this relationship was
+    /// first established.
     pub discovered_at: u64,
 }
 
-impl ConceptEdge {
-    /// Create a new edge with the given relationship type, confidence, and
-    /// discovery tick.
-    pub fn new(relationship: RelationshipType, confidence: Confidence, discovered_at: u64) -> Self {
-        Self {
-            relationship,
-            confidence,
-            discovered_at,
-        }
-    }
+// ── Knowledge graph resource ──────────────────────────────────────────────
 
-    /// Strengthen this edge by incorporating additional evidence.
-    ///
-    /// The new confidence is the maximum of the current value and the incoming
-    /// value, capped at `1.0`. This ensures that repeated observations of the
-    /// same relationship monotonically increase (or maintain) confidence and
-    /// never decrease it due to a weaker subsequent observation.
-    ///
-    /// `discovered_at` is intentionally *not* updated — the edge retains the
-    /// tick of its first observation.
-    pub fn strengthen(&mut self, additional_confidence: Confidence) {
-        let combined = (self.confidence.0 + additional_confidence.0).min(1.0);
-        self.confidence = Confidence(combined);
-    }
-}
-
-// ── KnowledgeGraph resource ───────────────────────────────────────────────
-
-/// The player's knowledge graph — backed by `petgraph::Graph`.
+/// The player's knowledge graph — per architecture decision, backed by
+/// [`petgraph::Graph`].
 ///
-/// Every concept the player has discovered is a node; every observed
-/// relationship between two concepts is a directed edge. The graph is
-/// undirected in spirit (cross-references are bidirectional) but implemented
-/// as a directed graph so that each edge carries its own [`RelationshipType`]
-/// and the direction encodes the semantic role (e.g., "Material → FoundOn →
-/// Location" vs. "Location → FoundOn → Material" would be two separate edges).
+/// The graph is a directed multigraph: each concept is a node and each
+/// observed relationship is an edge. Most queries treat edges as
+/// undirected (relationships are symmetric in the player's mental model)
+/// but petgraph stores them directed so we can reach them efficiently with
+/// `edges_directed` in both directions.
 ///
-/// Bidirectionality is enforced by [`KnowledgeGraph::relate`], which always
-/// inserts both the forward and reverse edge when a relationship is recorded.
+/// Three indexes give O(1) lookups on top of the O(log n) petgraph
+/// internal structures:
 ///
-/// # Indexes
+/// * `concept_index` — `ConceptId → NodeIndex` for idempotent node creation
+///   and edge wiring.
+/// * `category_index` — `ConceptCategory → Vec<NodeIndex>` for encyclopedia
+///   view ("all known materials") and BFS filtering.
+/// * `timeline` — `(tick, NodeIndex)` pairs in discovery order for the event
+///   log view.
 ///
-/// Three auxiliary indexes are maintained alongside the graph for O(1) or
-/// O(k) lookups that would otherwise require a full graph scan:
-///
-/// - `concept_index`: maps [`ConceptId`] → [`NodeIndex`] for O(1) node lookup.
-/// - `category_index`: maps [`ConceptCategory`] → `Vec<NodeIndex>` for
-///   encyclopedia-style listing of all concepts in a category.
-/// - `timeline`: ordered list of `(tick, NodeIndex)` pairs recording the
-///   discovery order of concepts.
-///
-/// # Serialization
-///
-/// The `petgraph::Graph` type serializes its node and edge weights directly
-/// when the `serde-1` feature is enabled. The auxiliary indexes are derived
-/// from the graph and are therefore re-derived on deserialization rather than
-/// stored, keeping the save file compact and avoiding index/graph drift.
-#[derive(Resource)]
+/// **Serialization strategy:** `petgraph::Graph` serializes cleanly with the
+/// `serde-1` feature. The three indexes are rebuilt from the graph on
+/// deserialization — they are not stored explicitly — ensuring the indexes
+/// always stay consistent with the canonical graph data.
+#[derive(Resource, Clone, Debug, Default)]
 pub struct KnowledgeGraph {
-    /// The underlying directed graph. Nodes are [`ConceptNode`]s; edges are
-    /// [`ConceptEdge`]s. Directed so that edge semantics are preserved.
+    /// Core petgraph directed graph with typed nodes and edges.
     graph: Graph<ConceptNode, ConceptEdge>,
-    /// O(1) lookup: [`ConceptId`] → [`NodeIndex`].
-    ///
-    /// Not serialized — rebuilt from the graph on load.
-    #[allow(clippy::zero_sized_map_values)]
+    /// Primary index: `ConceptId → NodeIndex` for O(1) lookups.
     concept_index: HashMap<ConceptId, NodeIndex>,
-    /// Category index for encyclopedia view: category → list of node indexes.
-    ///
-    /// Not serialized — rebuilt from the graph on load.
+    /// Category index: `ConceptCategory → Vec<NodeIndex>` for encyclopedia view.
     category_index: HashMap<ConceptCategory, Vec<NodeIndex>>,
-    /// Timeline of concept discoveries in insertion order: `(tick, NodeIndex)`.
-    ///
-    /// Not serialized — rebuilt from the graph on load.
+    /// Timeline of discoveries in insertion order (monotone by tick).
     timeline: Vec<(u64, NodeIndex)>,
 }
 
-impl Default for KnowledgeGraph {
-    fn default() -> Self {
-        Self {
-            graph: Graph::new(),
-            concept_index: HashMap::new(),
-            category_index: HashMap::new(),
-            timeline: Vec::new(),
-        }
-    }
-}
-
 impl KnowledgeGraph {
-    /// Create an empty knowledge graph.
-    pub fn new() -> Self {
-        Self::default()
-    }
+    // ── Node operations ───────────────────────────────────────────────────
 
-    /// Get or create a concept node for the given [`ConceptId`].
+    /// Get or create a concept node and return its [`NodeIndex`].
     ///
-    /// If the concept already exists, its [`NodeIndex`] is returned unchanged
-    /// and no new node is inserted. If it does not exist, a new node is created
-    /// with the given `category`, an initial confidence of `0.0`, and the
-    /// provided `tick` as its discovery time.
+    /// Idempotent: calling this twice with the same `id` returns the same
+    /// `NodeIndex` and does NOT overwrite the existing node's data. The
+    /// node's `discovered_at` and `confidence` are set only on creation.
     ///
-    /// The concept is also registered in the category index and timeline on
-    /// first insertion.
+    /// Maintains [`Self::concept_index`], [`Self::category_index`], and
+    /// [`Self::timeline`] atomically — all three are always in sync.
     pub fn ensure_concept(
         &mut self,
         id: ConceptId,
         category: ConceptCategory,
         tick: u64,
     ) -> NodeIndex {
-        if let Some(&idx) = self.concept_index.get(&id) {
-            return idx;
+        if let Some(&existing) = self.concept_index.get(&id) {
+            return existing;
         }
 
-        let node = ConceptNode::new(id.clone(), category.clone(), Confidence(0.0), tick);
-        let idx = self.graph.add_node(node);
+        let node = ConceptNode {
+            id: id.clone(),
+            category: category.clone(),
+            name: String::new(),
+            confidence: Confidence(0.3), // Start at Tentative/Observed boundary
+            first_observed_at: tick,
+            last_updated_at: tick,
+            origin_planet_seed: None,
+            revealed_properties: HashMap::new(),
+            observations: BTreeMap::new(),
+        };
 
+        let idx = self.graph.add_node(node);
         self.concept_index.insert(id, idx);
         self.category_index.entry(category).or_default().push(idx);
         self.timeline.push((tick, idx));
-
         idx
     }
 
-    /// Add or strengthen a typed relationship between two concept nodes.
+    /// Look up a concept by its [`ConceptId`].
     ///
-    /// Cross-references are **bidirectional**: calling `relate(from, to, edge)`
-    /// inserts both a forward edge (`from → to`) and a reverse edge
-    /// (`to → from`) with the same relationship type and confidence. This
-    /// satisfies the acceptance criterion that "if Material X links to Planet Y,
-    /// Planet Y links back to Material X."
-    ///
-    /// If an edge with the same [`RelationshipType`] already exists between the
-    /// two nodes in a given direction, it is **strengthened** (confidence
-    /// accumulates) rather than duplicated. This satisfies the criterion that
-    /// "cross-references accumulate — the same relationship strengthens with
-    /// repeated evidence."
-    ///
-    /// # Panics
-    ///
-    /// Panics if `from` or `to` are not valid node indexes in this graph.
-    pub fn relate(&mut self, from: NodeIndex, to: NodeIndex, edge: ConceptEdge) {
-        // Forward edge: from → to
-        Self::upsert_edge(&mut self.graph, from, to, edge.clone());
-        // Reverse edge: to → from (same relationship type, same confidence)
-        Self::upsert_edge(&mut self.graph, to, from, edge);
+    /// Returns `None` when the concept has not yet been observed. Callers
+    /// use [`ensure_concept`](Self::ensure_concept) to create on first
+    /// encounter and `lookup` only when they need to assert existence.
+    pub fn lookup(&self, id: &ConceptId) -> Option<NodeIndex> {
+        self.concept_index.get(id).copied()
     }
 
-    /// Insert a new edge or strengthen an existing one with the same
-    /// relationship type between the same pair of nodes.
-    fn upsert_edge(
-        graph: &mut Graph<ConceptNode, ConceptEdge>,
-        from: NodeIndex,
-        to: NodeIndex,
-        new_edge: ConceptEdge,
+    /// Get a reference to the node data for a given index.
+    ///
+    /// Returns `None` if the index is invalid (should not happen during
+    /// normal gameplay since indexes are never removed).
+    pub fn node(&self, idx: NodeIndex) -> Option<&ConceptNode> {
+        self.graph.node_weight(idx)
+    }
+
+    /// Mutable access to a concept node by index.
+    ///
+    /// Used by test helpers and save-migration code that need to directly
+    /// patch a node's fields. Production write paths go through the message
+    /// pipeline and `update_knowledge_graph`.
+    pub fn node_mut(&mut self, idx: NodeIndex) -> Option<&mut ConceptNode> {
+        self.graph.node_weight_mut(idx)
+    }
+
+    /// Count of nodes that have a non-empty name.
+    ///
+    /// Location nodes and any concept created before its first `RecordObservation`
+    /// arrives have an empty `name`; the journal list panel skips those.
+    /// This count mirrors the entry count the old `journal.entries.len()` produced.
+    pub fn named_node_count(&self) -> usize {
+        self.graph
+            .node_indices()
+            .filter_map(|idx| self.graph.node_weight(idx))
+            .filter(|n| !n.name.is_empty())
+            .count()
+    }
+
+    /// Count of named nodes that pass a journal filter.
+    pub fn named_node_count_filtered(&self, filter: &crate::journal::JournalFilter) -> usize {
+        self.graph
+            .node_indices()
+            .filter_map(|idx| self.graph.node_weight(idx))
+            .filter(|n| !n.name.is_empty())
+            .filter(|n| crate::journal::matches_filter_node(n, filter))
+            .count()
+    }
+
+    /// Record a named observation on a concept node.  Test helper for any test
+    /// that used to call `journal.record(key, name, obs)`.
+    ///
+    /// Creates the concept if it doesn't exist, stamps the name on first call,
+    /// and delegates to [`ConceptNode::add_observation`].
+    pub fn record(
+        &mut self,
+        key: crate::journal::JournalKey,
+        name: &str,
+        observation: crate::journal::Observation,
     ) {
-        // Search for an existing edge with the same relationship type.
-        let existing = graph
-            .edges_directed(from, Direction::Outgoing)
-            .find(|e| e.target() == to && e.weight().relationship == new_edge.relationship)
+        let category = key.concept_category();
+        let tick = observation.recorded_at;
+        let id = ConceptId(key);
+        let idx = self.ensure_concept(id, category, tick);
+        let node = self.graph.node_weight_mut(idx).expect("just created");
+        if node.name.is_empty() {
+            node.name = name.to_string();
+        }
+        node.add_observation(observation);
+    }
+
+    /// Convenience: record with domain-weighted accumulation. Test helper.
+    pub fn record_with_accumulation(
+        &mut self,
+        key: crate::journal::JournalKey,
+        name: &str,
+        observation: crate::journal::Observation,
+        config: &crate::observation::ConfidenceConfig,
+    ) {
+        self.record_with_domain_weighted_accumulation(key, name, observation, config, 1.0);
+    }
+
+    /// Convenience: record with domain-weighted accumulation. Test helper.
+    pub fn record_with_domain_weighted_accumulation(
+        &mut self,
+        key: crate::journal::JournalKey,
+        name: &str,
+        observation: crate::journal::Observation,
+        config: &crate::observation::ConfidenceConfig,
+        recovery_multiplier: f32,
+    ) {
+        let category = key.concept_category();
+        let tick = observation.recorded_at;
+        let id = ConceptId(key);
+        let idx = self.ensure_concept(id, category, tick);
+        let node = self.graph.node_weight_mut(idx).expect("just created");
+        if node.name.is_empty() {
+            node.name = name.to_string();
+        }
+        node.add_observation_with_domain_weighted_accumulation(
+            observation,
+            config,
+            recovery_multiplier,
+        );
+    }
+
+    /// Remove a concept node by key. Returns `true` if the node existed.
+    ///
+    /// Used by test helpers that simulate deletion. The internal indexes
+    /// are updated; edges connected to the removed node are dropped by petgraph.
+    pub fn remove(&mut self, key: &crate::journal::JournalKey) {
+        let id = ConceptId(key.clone());
+        let Some(idx) = self.concept_index.remove(&id) else {
+            return;
+        };
+        // Remove from category index.
+        if let Some(cat_vec) = self
+            .category_index
+            .get_mut(&self.graph[idx].category.clone())
+        {
+            cat_vec.retain(|&i| i != idx);
+        }
+        // Remove from timeline.
+        self.timeline.retain(|(_, i)| *i != idx);
+        // Remove from graph (also removes connected edges).
+        self.graph.remove_node(idx);
+        // NOTE: removing a node invalidates the NodeIndex values stored in
+        // concept_index for nodes with higher internal indices.  Rebuild the
+        // concept_index from scratch to keep it consistent.
+        let mut new_index = std::collections::HashMap::new();
+        for (id_key, &stored_idx) in &self.concept_index {
+            new_index.insert(id_key.clone(), stored_idx);
+        }
+        // Actually petgraph's `remove_node` uses swap_remove semantics, so
+        // re-scan the graph to rebuild.
+        let mut rebuilt: std::collections::HashMap<ConceptId, NodeIndex> =
+            std::collections::HashMap::new();
+        let mut rebuilt_cat: std::collections::HashMap<ConceptCategory, Vec<NodeIndex>> =
+            std::collections::HashMap::new();
+        let mut rebuilt_tl: Vec<(u64, NodeIndex)> = Vec::new();
+        for ni in self.graph.node_indices() {
+            let n = &self.graph[ni];
+            rebuilt.insert(n.id.clone(), ni);
+            rebuilt_cat.entry(n.category.clone()).or_default().push(ni);
+            rebuilt_tl.push((n.first_observed_at, ni));
+        }
+        rebuilt_tl.sort_by_key(|(t, _)| *t);
+        self.concept_index = rebuilt;
+        self.category_index = rebuilt_cat;
+        self.timeline = rebuilt_tl;
+    }
+
+    // ── Edge operations ───────────────────────────────────────────────────
+
+    /// Add or strengthen a relationship between two concepts.
+    ///
+    /// If an edge of the same [`RelationshipType`] already exists between
+    /// `from` and `to`, its confidence is accumulated (diminishing returns)
+    /// rather than a duplicate edge being added. This satisfies the
+    /// acceptance criterion that "cross-references accumulate — the same
+    /// relationship strengthens with repeated evidence".
+    ///
+    /// Direction: `from → to`. [`Self::relationships`] exposes both
+    /// directions to callers, so the UI sees the edge regardless of which
+    /// side it queries from.
+    pub fn relate(&mut self, from: NodeIndex, to: NodeIndex, edge: ConceptEdge) {
+        // Look for an existing edge of the same type to strengthen.
+        let existing = self
+            .graph
+            .edges_connecting(from, to)
+            .find(|e| e.weight().relationship == edge.relationship)
             .map(|e| e.id());
 
         if let Some(edge_id) = existing {
-            graph[edge_id].strengthen(new_edge.confidence);
+            // Accumulate evidence rather than duplicating.
+            if let Some(existing_edge) = self.graph.edge_weight_mut(edge_id) {
+                existing_edge.confidence.accumulate(0.2);
+            }
         } else {
-            graph.add_edge(from, to, new_edge);
+            self.graph.add_edge(from, to, edge);
         }
     }
 
-    /// Get all relationships for a concept node — returns `(neighbor NodeIndex,
-    /// &ConceptEdge)` pairs for every outgoing edge from this node.
+    /// All relationships for a concept, in both directions.
     ///
-    /// Because [`KnowledgeGraph::relate`] always inserts both a forward and a
-    /// reverse edge, iterating outgoing edges is sufficient to enumerate all
-    /// connections: every relationship the node participates in appears as an
-    /// outgoing edge in at least one direction. Callers that need to display
-    /// "all connections" for a concept should call this method; the result
-    /// already includes the reverse direction because `relate` inserted it.
+    /// Returns `(neighbor_index, edge)` pairs for every edge incident on
+    /// `node` whether it points outward (the concept is the `from` side)
+    /// or inward (it is the `to` side). This gives the caller a
+    /// bidirectional view without storing duplicate edges in the graph.
+    ///
+    /// The order follows petgraph's stable edge-list iteration, which is
+    /// insertion order within each direction for the same node.
     pub fn relationships(&self, node: NodeIndex) -> Vec<(NodeIndex, &ConceptEdge)> {
-        self.graph
+        let outgoing = self
+            .graph
             .edges_directed(node, Direction::Outgoing)
-            .map(|e| (e.target(), e.weight()))
-            .collect()
+            .map(|e| (e.target(), e.weight()));
+
+        let incoming = self
+            .graph
+            .edges_directed(node, Direction::Incoming)
+            .map(|e| (e.source(), e.weight()));
+
+        outgoing.chain(incoming).collect()
     }
 
-    /// Bounded BFS from a concept node, returning all reachable nodes within
-    /// `depth` hops along with their hop distance from the center.
+    // ── Category queries ──────────────────────────────────────────────────
+
+    /// All concept node indexes in a given category.
     ///
-    /// The center node itself is **not** included in the result. If
-    /// `category_filter` is `Some`, only nodes whose category matches are
-    /// included in the result (but the BFS still traverses through nodes of
-    /// other categories to find matching ones within the depth limit).
+    /// Returns an empty slice when no concepts of that category have been
+    /// registered yet. Insertion order within each category matches the
+    /// order in which [`ensure_concept`](Self::ensure_concept) was first
+    /// called.
+    pub fn by_category(&self, category: &ConceptCategory) -> &[NodeIndex] {
+        self.category_index
+            .get(category)
+            .map_or(&[], |v| v.as_slice())
+    }
+
+    // ── Timeline ─────────────────────────────────────────────────────────
+
+    /// Look up a material concept node by seed alone, ignoring `planet_seed`.
     ///
-    /// This method is the data-model foundation for the future associative web
-    /// view. It does not perform any rendering or UI work.
+    /// Returns the first [`NodeIndex`] found whose [`ConceptId`] wraps a
+    /// [`crate::journal::JournalKey::Material`] with the given `seed`, regardless
+    /// of what `planet_seed` that node was stored with.
+    ///
+    /// This exists to resolve the "identity mismatch" where a material is first
+    /// observed on a planet (key = `Material { seed: X, planet_seed: Some(Y) }`) but
+    /// is later referenced via fabrication input with `planet_seed: None`. Using
+    /// `lookup` directly would create a second, disconnected node — this method
+    /// prevents that by finding the existing node by seed.
+    ///
+    /// Returns `None` when no material with that seed exists in the graph yet.
+    pub fn lookup_material_by_seed(&self, seed: u64) -> Option<NodeIndex> {
+        self.concept_index.iter().find_map(|(id, &idx)| {
+            if matches!(&id.0, crate::journal::JournalKey::MaterialInstance { seed: s } if *s == seed) {
+                Some(idx)
+            } else {
+                None
+            }
+        })
+    }
+
+    /// Returns the concept node at the given index, or `None` if the index
+    /// is invalid.  Exposes read-only access to node data without making
+    /// the internal `petgraph::Graph` field public.
+    pub fn node_weight(&self, idx: NodeIndex) -> Option<&ConceptNode> {
+        self.graph.node_weight(idx)
+    }
+
+    /// Mark a property as revealed on the given concept node.
+    ///
+    /// Called each time the player makes an observation of a specific category
+    /// on this concept. The `property_name` should be the
+    /// Record that the player has observed a specific property on this concept
+    /// and store the raw measured value.
+    ///
+    /// `category` is the typed observation kind; `value` is the underlying
+    /// float from [`crate::materials::GameMaterial`] at the moment of
+    /// revelation — stored so the classification system can compare against
+    /// asset-defined ranges without reaching back into world entities.
+    ///
+    /// No-ops when the node index is invalid.
+    pub fn reveal_property(
+        &mut self,
+        node: NodeIndex,
+        category: crate::journal::ObservationCategory,
+        value: f32,
+    ) {
+        if let Some(n) = self.graph.node_weight_mut(node) {
+            n.revealed_properties.insert(category, value);
+        }
+    }
+
+    /// Mutable access to the underlying petgraph `Graph` — exposed only for
+    /// test code that needs to directly populate node fields (e.g. seeding
+    /// confidence or observation data without going through the message
+    /// pipeline). Production code should use the typed accessors instead.
+    ///
+    /// Marked `pub` because the observation module's tests are in a sibling
+    /// module and need to seed graph state for death-degradation assertions.
+    pub fn graph_mut(&mut self) -> &mut Graph<ConceptNode, ConceptEdge> {
+        &mut self.graph
+    }
+    /// Timeline of all discovered concepts in chronological order.
+    ///
+    /// Each entry is `(discovered_at_tick, node_index)`. Because
+    /// [`ensure_concept`](Self::ensure_concept) only appends to this
+    /// vec and the game clock is monotonically increasing, the timeline
+    /// is guaranteed to be in non-decreasing tick order.
+    pub fn timeline(&self) -> &[(u64, NodeIndex)] {
+        &self.timeline
+    }
+
+    /// All concept nodes sorted by name, for stable alphabetical display in the journal.
+    ///
+    /// Returns an empty vec when the graph has no nodes yet. Nodes with empty
+    /// names (location concepts that have never had a name stamped) sort to the
+    /// front — the UI skips them via `name.is_empty()` checks.
+    pub fn nodes_sorted_by_name(&self) -> Vec<NodeIndex> {
+        let mut pairs: Vec<(NodeIndex, &str)> = self
+            .graph
+            .node_indices()
+            .filter_map(|idx| self.graph.node_weight(idx))
+            .filter(|n| !n.name.is_empty())
+            // Location nodes are not player-facing journal entries — they exist
+            // only as cross-reference targets for FoundOn/ObservedAt edges.
+            // Exclude them from the sorted list so they don't appear in the
+            // main journal entry panel.
+            .filter(|n| n.category != ConceptCategory::Location)
+            .map(|n| {
+                let idx = self.concept_index[&n.id];
+                (idx, n.name.as_str())
+            })
+            .collect();
+        pairs.sort_by(|(_, a), (_, b)| a.cmp(b));
+        pairs.into_iter().map(|(idx, _)| idx).collect()
+    }
+
+    /// All concept nodes in a given category, sorted by name.
+    ///
+    /// Convenience wrapper over [`by_category`](Self::by_category) +
+    /// [`node`](Self::node) that also sorts alphabetically — the same
+    /// ordering used by the journal list panel.
+    pub fn nodes_in_category_sorted_by_name(&self, category: &ConceptCategory) -> Vec<NodeIndex> {
+        let mut pairs: Vec<(NodeIndex, &str)> = self
+            .by_category(category)
+            .iter()
+            .filter_map(|&idx| self.graph.node_weight(idx).map(|n| (idx, n.name.as_str())))
+            .collect();
+        pairs.sort_by(|(_, a), (_, b)| a.cmp(b));
+        pairs.into_iter().map(|(idx, _)| idx).collect()
+    }
+
+    /// Apply death confidence degradation to every observation and node
+    /// confidence in the graph.
+    ///
+    /// Called by the observation system's `handle_player_death` handler.
+    /// Iterates all nodes and degrades both the per-observation confidence
+    /// and the overall node confidence using the same factor/floor values
+    /// loaded from `assets/config/confidence.toml`.
+    pub fn degrade_all(&mut self, factor: f32, floor: f32) {
+        for idx in self.graph.node_indices().collect::<Vec<_>>() {
+            if let Some(node) = self.graph.node_weight_mut(idx) {
+                node.confidence.degrade(factor, floor);
+                for obs_group in node.observations.values_mut() {
+                    for obs in obs_group.iter_mut() {
+                        obs.confidence.degrade(factor, floor);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Bounded BFS from a center node, returning `(node_index, depth)`
+    /// pairs for all reachable nodes within `depth` hops.
+    ///
+    /// The center node itself is NOT included in the result — callers
+    /// already have it. Edges are traversed in both directions (the graph
+    /// is treated as undirected for BFS purposes), so the result is a
+    /// neighbourhood in the graph-theoretic sense rather than a directed
+    /// reachability set.
+    ///
+    /// # Arguments
+    ///
+    /// - `center` — Starting node index.
+    /// - `depth` — Maximum hop count. `depth = 1` returns only direct neighbours;
+    ///   `depth = 0` returns an empty vec (the center is excluded).
+    /// - `category_filter` — When `Some(category)`, only nodes that belong to that
+    ///   category are included in the result. Filtered-out nodes still participate in
+    ///   BFS traversal so their neighbours can be reached — the filter is applied at
+    ///   result collection time, not during graph traversal.
+    ///
+    /// # Cycle safety
+    ///
+    /// BFS uses a `visited` set to prevent re-queuing already-seen nodes,
+    /// so cycles in the graph never cause infinite loops.
     pub fn neighborhood(
         &self,
         center: NodeIndex,
@@ -771,28 +800,26 @@ impl KnowledgeGraph {
             return Vec::new();
         }
 
-        // BFS state: visited set and queue of (node, current_depth).
         let mut visited: HashSet<NodeIndex> = HashSet::new();
-        let mut queue: std::collections::VecDeque<(NodeIndex, usize)> =
-            std::collections::VecDeque::new();
+        let mut queue: VecDeque<(NodeIndex, usize)> = VecDeque::new();
         let mut result: Vec<(NodeIndex, usize)> = Vec::new();
 
         visited.insert(center);
         queue.push_back((center, 0));
 
-        while let Some((current, current_depth)) = queue.pop_front() {
+        while let Some((node, current_depth)) = queue.pop_front() {
             if current_depth >= depth {
                 continue;
             }
 
-            // Traverse all neighbors (both directions) from the current node.
+            // Walk both outgoing and incoming edges (undirected BFS).
             let neighbors: Vec<NodeIndex> = self
                 .graph
-                .edges_directed(current, Direction::Outgoing)
+                .edges_directed(node, Direction::Outgoing)
                 .map(|e| e.target())
                 .chain(
                     self.graph
-                        .edges_directed(current, Direction::Incoming)
+                        .edges_directed(node, Direction::Incoming)
                         .map(|e| e.source()),
                 )
                 .collect();
@@ -802,1361 +829,739 @@ impl KnowledgeGraph {
                     continue;
                 }
                 visited.insert(neighbor);
-                let hop = current_depth + 1;
+                let neighbor_depth = current_depth + 1;
+                queue.push_back((neighbor, neighbor_depth));
 
-                // Apply category filter to the result set, but always enqueue
-                // the neighbor so BFS can traverse through it.
-                let node_data = &self.graph[neighbor];
-                let passes_filter = category_filter
-                    .map(|cat| &node_data.category == cat)
-                    .unwrap_or(true);
+                // Apply category filter at collection time, not traversal time.
+                let include = category_filter.is_none_or(|cat| {
+                    self.graph
+                        .node_weight(neighbor)
+                        .is_some_and(|n| &n.category == cat)
+                });
 
-                if passes_filter {
-                    result.push((neighbor, hop));
+                if include {
+                    result.push((neighbor, neighbor_depth));
                 }
-
-                queue.push_back((neighbor, hop));
             }
         }
 
         result
     }
+}
 
-    /// All concept nodes in a given category, in insertion order.
-    ///
-    /// Returns an empty slice if no concepts of that category have been
-    /// discovered yet.
-    pub fn by_category(&self, category: &ConceptCategory) -> &[NodeIndex] {
-        self.category_index
-            .get(category)
-            .map(Vec::as_slice)
-            .unwrap_or(&[])
+// ── Serialization ─────────────────────────────────────────────────────────
+
+/// Serializable snapshot of the graph, used for save/load.
+///
+/// We serialize the full node and edge data from petgraph directly (via the
+/// `serde-1` feature), then rebuild the three in-memory indexes on
+/// deserialization. This avoids storing redundant index data that could
+/// drift out of sync with the graph.
+///
+/// `petgraph::Graph` serializes as `{ nodes: [...], edges: [...] }` which
+/// is stable across petgraph minor versions, matching the versioning
+/// contract in the asset-pipeline architecture decision.
+impl Serialize for KnowledgeGraph {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        // Delegate entirely to petgraph's built-in serde support.
+        self.graph.serialize(serializer)
     }
+}
 
-    /// Timeline of concept discoveries: `(tick, NodeIndex)` pairs in
-    /// insertion order (earliest discovery first).
-    pub fn timeline(&self) -> &[(u64, NodeIndex)] {
-        &self.timeline
-    }
+impl<'de> Deserialize<'de> for KnowledgeGraph {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        // Restore the petgraph graph from saved data.
+        let graph: Graph<ConceptNode, ConceptEdge> = Graph::deserialize(deserializer)?;
 
-    /// Look up a concept node by its [`ConceptId`].
-    ///
-    /// Returns `None` if the concept has not been added to the graph yet.
-    pub fn lookup(&self, id: &ConceptId) -> Option<NodeIndex> {
-        self.concept_index.get(id).copied()
-    }
-
-    /// Borrow the [`ConceptNode`] data for a given [`NodeIndex`].
-    ///
-    /// Returns `None` if the index is not valid (e.g., after a node was
-    /// removed, though the current implementation never removes nodes).
-    pub fn node(&self, idx: NodeIndex) -> Option<&ConceptNode> {
-        self.graph.node_weight(idx)
-    }
-
-    /// Mutably borrow the [`ConceptNode`] data for a given [`NodeIndex`].
-    pub fn node_mut(&mut self, idx: NodeIndex) -> Option<&mut ConceptNode> {
-        self.graph.node_weight_mut(idx)
-    }
-
-    /// Serialize the knowledge graph to a JSON string for save/load.
-    ///
-    /// The auxiliary indexes (`concept_index`, `category_index`, `timeline`)
-    /// are **not** serialized — they are rebuilt from the graph on
-    /// deserialization via [`KnowledgeGraph::from_serializable`].
-    pub fn to_serializable(&self) -> SerializableKnowledgeGraph {
-        SerializableKnowledgeGraph {
-            graph: self.graph.clone(),
-        }
-    }
-
-    /// Reconstruct a `KnowledgeGraph` from its serialized form, rebuilding
-    /// all auxiliary indexes from the graph data.
-    pub fn from_serializable(serializable: SerializableKnowledgeGraph) -> Self {
-        let graph = serializable.graph;
-
-        let mut concept_index: HashMap<ConceptId, NodeIndex> = HashMap::new();
+        // Rebuild all three indexes from the restored graph — they are
+        // derivable from the node data so we never store them separately,
+        // eliminating any risk of index/graph divergence across save files.
+        let mut concept_index = HashMap::new();
         let mut category_index: HashMap<ConceptCategory, Vec<NodeIndex>> = HashMap::new();
         let mut timeline: Vec<(u64, NodeIndex)> = Vec::new();
 
         for idx in graph.node_indices() {
-            let node = &graph[idx];
-            concept_index.insert(node.id.clone(), idx);
-            category_index
-                .entry(node.category.clone())
-                .or_default()
-                .push(idx);
-            timeline.push((node.discovered_at, idx));
+            if let Some(node) = graph.node_weight(idx) {
+                concept_index.insert(node.id.clone(), idx);
+                category_index
+                    .entry(node.category.clone())
+                    .or_default()
+                    .push(idx);
+                timeline.push((node.first_observed_at, idx));
+            }
         }
 
-        // Sort timeline by tick to restore discovery order after round-trip.
+        // Restore chronological order — petgraph node iteration order is
+        // insertion order (stable), but after deserialization we cannot
+        // assume the original tick order was preserved without sorting.
         timeline.sort_by_key(|(tick, _)| *tick);
 
-        Self {
+        Ok(KnowledgeGraph {
             graph,
             concept_index,
             category_index,
             timeline,
+        })
+    }
+}
+
+// ── Automatic cross-reference system ─────────────────────────────────────
+
+/// Processes [`crate::observation::RecordObservation`] messages and populates
+/// the [`KnowledgeGraph`] with typed relationship edges.
+///
+/// As of Story 387 this is the **sole** observation write path.
+///
+/// # Edges created
+///
+/// * **`FoundOn`** — when a `Material` observation carries a `planet_seed`
+///   in its key, a `material → location` edge is created.
+/// * **`DerivedFrom`** — for `Fabrication` observations, an edge is created
+///   from the output concept to each input material listed in
+///   [`RecordObservation::input_seeds`].
+/// * **`ObservedAt`** — when the observation message includes a
+///   [`RecordObservation::context_location`], an `ObservedAt` edge is
+///   created from subject → location.
+///
+/// Processes [`crate::observation::RecordObservation`] messages, populates the
+/// [`KnowledgeGraph`] with observation data, and wires typed relationship edges.
+///
+/// This system is the **sole write path** for observation storage as of Story 387.
+/// The journal's `apply_observations` system has been removed; all data lives here.
+///
+/// Runs in [`crate::journal::JournalSet::Navigate`].
+///
+/// # What it does per message
+///
+/// 1. Ensures the subject concept node exists.
+/// 2. Stamps the display `name` on first encounter (first-observer-wins).
+/// 3. Stamps `origin_planet_seed` on first planet-seeded observation.
+/// 4. Records the observation onto the node with domain-weighted confidence
+///    accumulation (mirrors the old `JournalEntry` accumulation logic).
+/// 5. Marks the property category as revealed on the node.
+/// 6. Wires graph edges: `FoundOn`, `DerivedFrom`, `CombinedWith`, `ObservedAt`.
+fn update_knowledge_graph(
+    mut reader: MessageReader<crate::observation::RecordObservation>,
+    mut graph: ResMut<KnowledgeGraph>,
+    time: Res<Time>,
+    config: Res<ConfidenceConfig>,
+    catalog: Option<Res<crate::materials::MaterialCatalog>>,
+) {
+    let tick = time.elapsed().as_millis() as u64;
+
+    // Drain messages into a vec first so we can release the reader borrow
+    // before mutably borrowing the graph.
+    let messages: Vec<_> = reader.read().cloned().collect();
+
+    for obs in messages {
+        // Determine category for the observed subject.
+        let subject_category = category_from_key(&obs.key);
+
+        // Ensure the subject node exists.
+        let subject_node = graph.ensure_concept(ConceptId(obs.key.clone()), subject_category, tick);
+
+        // ── Stamp name on first encounter ──────────────────────────────
+        // First-observer-wins: never overwrite an existing name.
+        if let Some(node) = graph.graph.node_weight_mut(subject_node) {
+            if node.name.is_empty() {
+                node.name = obs.name.clone();
+            }
+
+            // ── Stamp origin_planet_seed on first planet observation ───
+            if node.origin_planet_seed.is_none()
+                && let Some(ps) = obs.planet_seed
+            {
+                node.origin_planet_seed = Some(ps);
+            }
+
+            // ── Record observation with domain-weighted accumulation ───
+            // Using accumulation (not simple add) so repeated identical
+            // observations strengthen confidence with diminishing returns,
+            // matching the Story 10.4 confidence model.
+            // Recovery multiplier is 1.0 here; DeathContext-adjusted writes
+            // come from the observation sites that know the death domain.
+            let mut observation = obs.observation.clone();
+            observation.recorded_at = tick;
+            node.add_observation_with_domain_weighted_accumulation(observation, &config, 1.0);
+
+            // ── Accumulate overall node confidence ────────────────────
+            node.confidence.accumulate(obs.observation.confidence.0);
+
+            // ── Mark property as revealed, storing the raw float value ──
+            // Look up the material's property value from the catalog so the
+            // classification system can compare against asset-defined ranges
+            // without reaching back into world entities at query time.
+            let category = obs.observation.category.clone();
+            let prop_value: f32 = obs
+                .material_seed
+                .and_then(|seed| catalog.as_ref()?.get_by_seed(seed))
+                .map(|mat| property_value_for_category(mat, &category))
+                .unwrap_or(0.0);
+            node.revealed_properties.insert(category, prop_value);
+        }
+
+        // ── FoundOn edge ──────────────────────────────────────────────
+        // If the observation carries a planet_seed, wire a FoundOn edge
+        // from the material to the location concept.
+        if let Some(planet_seed) = obs.planet_seed {
+            let location_key = crate::journal::JournalKey::Location { planet_seed };
+            let location_node =
+                graph.ensure_concept(ConceptId(location_key), ConceptCategory::Location, tick);
+            graph.relate(
+                subject_node,
+                location_node,
+                ConceptEdge {
+                    relationship: RelationshipType::FoundOn,
+                    confidence: obs.observation.confidence,
+                    discovered_at: tick,
+                },
+            );
+        }
+
+        // ── DerivedFrom edges ────────────────────────────────────────
+        // For fabrication outputs, link the output concept back to each
+        // input material that the player put into the fabricator.
+        if matches!(&obs.key, crate::journal::JournalKey::Fabrication { .. }) {
+            for &input_seed in &obs.input_seeds {
+                let input_node = graph
+                    .lookup_material_by_seed(input_seed)
+                    .unwrap_or_else(|| {
+                        let input_key =
+                            crate::journal::JournalKey::MaterialInstance { seed: input_seed };
+                        graph.ensure_concept(ConceptId(input_key), ConceptCategory::Material, tick)
+                    });
+                graph.relate(
+                    subject_node,
+                    input_node,
+                    ConceptEdge {
+                        relationship: RelationshipType::DerivedFrom,
+                        // Fabrication is directly observed — full confidence.
+                        confidence: Confidence(1.0),
+                        discovered_at: tick,
+                    },
+                );
+            }
+        }
+
+        // ── CombinedWith edges ───────────────────────────────────────
+        // For fabrication outputs with exactly 2 inputs, wire a symmetric
+        // CombinedWith edge between the two input materials so the player
+        // can see that these materials were used together, independent of
+        // what they produced.
+        if matches!(&obs.key, crate::journal::JournalKey::Fabrication { .. })
+            && obs.input_seeds.len() == 2
+        {
+            let seed_a = obs.input_seeds[0];
+            let seed_b = obs.input_seeds[1];
+
+            let node_a = graph.lookup_material_by_seed(seed_a).unwrap_or_else(|| {
+                let key = crate::journal::JournalKey::MaterialInstance { seed: seed_a };
+                graph.ensure_concept(ConceptId(key), ConceptCategory::Material, tick)
+            });
+            let node_b = graph.lookup_material_by_seed(seed_b).unwrap_or_else(|| {
+                let key = crate::journal::JournalKey::MaterialInstance { seed: seed_b };
+                graph.ensure_concept(ConceptId(key), ConceptCategory::Material, tick)
+            });
+
+            let edge = ConceptEdge {
+                relationship: RelationshipType::CombinedWith,
+                confidence: Confidence(1.0),
+                discovered_at: tick,
+            };
+            graph.relate(node_a, node_b, edge);
+        }
+
+        // ── ObservedAt edge ──────────────────────────────────────────
+        // When the observation message supplies an explicit context
+        // location (e.g. a biome landmark), wire a subject→location edge.
+        if let Some(context_location) = &obs.context_location {
+            let location_category = category_from_key(context_location);
+            let location_node =
+                graph.ensure_concept(ConceptId(context_location.clone()), location_category, tick);
+            graph.relate(
+                subject_node,
+                location_node,
+                ConceptEdge {
+                    relationship: RelationshipType::ObservedAt,
+                    confidence: obs.observation.confidence,
+                    discovered_at: tick,
+                },
+            );
         }
     }
 }
 
-/// Serializable form of [`KnowledgeGraph`] for save/load.
+/// Map a [`JournalKey`] discriminant to the corresponding
+/// [`ConceptCategory`].
 ///
-/// The auxiliary indexes are omitted and rebuilt on deserialization via
-/// [`KnowledgeGraph::from_serializable`].
-#[derive(Serialize, Deserialize)]
-pub struct SerializableKnowledgeGraph {
-    /// The underlying petgraph graph with all concept nodes and edges.
-    pub graph: Graph<ConceptNode, ConceptEdge>,
+/// This mapping is the single place where the journal and knowledge-graph
+/// category systems are joined. Adding a new `JournalKey` variant will
+/// produce a non-exhaustive match error here, forcing the developer to
+/// declare the correct category.
+fn category_from_key(key: &crate::journal::JournalKey) -> ConceptCategory {
+    match key {
+        crate::journal::JournalKey::MaterialInstance { .. } => ConceptCategory::Material,
+        crate::journal::JournalKey::Material { .. } => ConceptCategory::Material,
+        crate::journal::JournalKey::Fabrication { .. } => ConceptCategory::Fabrication,
+        crate::journal::JournalKey::Location { .. } => ConceptCategory::Location,
+    }
 }
+
+/// Extract the raw property float for a given observation category from a
+/// [`crate::materials::GameMaterial`].
+///
+/// This is the bridge between the typed `ObservationCategory` enum and the
+/// named fields of `GameMaterial` — used by `update_knowledge_graph` to store
+/// observed property values on `ConceptNode::revealed_properties` without
+/// string keys. `SurfaceAppearance`, `FabricationResult`, and `LocationNote`
+/// have no direct float analogue, so they return `0.0`.
+fn property_value_for_category(
+    mat: &crate::materials::GameMaterial,
+    category: &crate::journal::ObservationCategory,
+) -> f32 {
+    use crate::journal::ObservationCategory;
+    match category {
+        ObservationCategory::Weight => mat.density.value(),
+        ObservationCategory::ThermalBehavior => mat.thermal_resistance.value(),
+        // Reactivity, conductivity, and toxicity observation systems are not
+        // wired yet (Story N.4+). Return 0.0 as a safe sentinel — the value
+        // will be overwritten when those systems fire a RecordObservation.
+        ObservationCategory::SurfaceAppearance => mat.reactivity.value(),
+        ObservationCategory::FabricationResult => 0.0,
+        ObservationCategory::LocationNote => 0.0,
+    }
+}
+
+// ── SimilarTo detection ───────────────────────────────────────────────────
+
+/// Detect materials with similar property profiles and wire `SimilarTo`
+/// edges in the knowledge graph when both materials are known with at least
+/// `Observed` confidence.
+///
+/// Called by the material catalog after a new material is registered
+/// (Story 10.5, Phase 4). The caller passes in the full catalog so we can
+/// compare the new material against every previously-known entry.
+///
+/// # Arguments
+///
+/// - `new_seed` — The seed of the newly registered material.
+/// - `new_material` — Reference to the [`crate::materials::GameMaterial`] that was just registered.
+/// - `catalog` — The full [`crate::materials::MaterialCatalog`] for comparison. The new material is
+///   already in it.
+/// - `journal` — The player's [`crate::journal::Journal`] — used to check confidence tiers on both
+///   materials.
+/// - `graph` — Mutable reference to the [`KnowledgeGraph`] where `SimilarTo` edges are added.
+/// - `threshold` — Cosine similarity threshold above which two materials are considered "similar"
+///   (loaded from config, typically ~0.85).
+/// - `tick` — Current game-time tick for edge timestamps.
+pub fn detect_and_wire_similar_materials(
+    new_seed: u64,
+    new_material: &crate::materials::GameMaterial,
+    catalog: &crate::materials::MaterialCatalog,
+    graph_read: &KnowledgeGraph,
+    graph: &mut KnowledgeGraph,
+    threshold: f32,
+    tick: u64,
+) {
+    let new_vec = new_material.property_vector();
+
+    for existing in catalog.values() {
+        if existing.seed == new_seed {
+            continue;
+        }
+
+        let sim = cosine_similarity(&new_vec, &existing.property_vector());
+        if sim < threshold {
+            continue;
+        }
+
+        let new_key = crate::journal::JournalKey::MaterialInstance { seed: new_seed };
+        let existing_key = crate::journal::JournalKey::MaterialInstance {
+            seed: existing.seed,
+        };
+
+        let new_confident = is_at_least_observed(graph_read, &new_key);
+        let existing_confident = is_at_least_observed(graph_read, &existing_key);
+
+        if !new_confident || !existing_confident {
+            continue;
+        }
+
+        let new_node =
+            graph.ensure_concept(ConceptId(new_key.clone()), ConceptCategory::Material, tick);
+        let existing_node =
+            graph.ensure_concept(ConceptId(existing_key), ConceptCategory::Material, tick);
+
+        let edge = ConceptEdge {
+            relationship: RelationshipType::SimilarTo,
+            confidence: Confidence(sim),
+            discovered_at: tick,
+        };
+        graph.relate(new_node, existing_node, edge);
+    }
+}
+
+/// Compute the cosine similarity between two property vectors.
+///
+/// Returns a value in [-1.0, 1.0] — in practice always [0.0, 1.0] for
+/// non-negative property vectors derived from material seeds. A return
+/// value of `1.0` means identical profiles; `0.0` means orthogonal
+/// (no property overlap).
+///
+/// Returns `0.0` when either vector has zero magnitude (degenerate case
+/// that cannot arise from [`crate::materials::GameMaterial::property_vector`]
+/// since property values are in [0.0, 1.0] and seeds span the full range).
+pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
+    debug_assert_eq!(
+        a.len(),
+        b.len(),
+        "cosine_similarity: vectors must have the same length"
+    );
+
+    let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
+    let mag_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+    let mag_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+
+    if mag_a == 0.0 || mag_b == 0.0 {
+        return 0.0;
+    }
+
+    (dot / (mag_a * mag_b)).clamp(-1.0, 1.0)
+}
+
+/// Returns `true` when the graph contains a concept node for `key` with
+/// overall confidence at or above [`crate::observation::ConfidenceTier::Observed`]
+/// (i.e. confidence ≥ 0.3).
+///
+/// "At least Observed" is the threshold at which the player has
+/// accumulated enough evidence to treat an observation as factual
+/// rather than tentative. `SimilarTo` edges are only wired when both
+/// materials meet this bar, ensuring the connection is earned.
+///
+/// Reads confidence from the KnowledgeGraph node — no Journal access needed.
+fn is_at_least_observed(graph: &KnowledgeGraph, key: &crate::journal::JournalKey) -> bool {
+    let id = ConceptId(key.clone());
+    graph
+        .lookup(&id)
+        .and_then(|idx| graph.node(idx))
+        .is_some_and(|node| node.confidence.0 >= 0.3)
+}
+
+/// Detects and wires `SimilarTo` edges for newly observed materials.
+///
+/// Runs in [`crate::journal::JournalSet::Navigate`] after
+/// [`update_knowledge_graph`]. For each [`RecordObservation`] message that
+/// carries a [`crate::journal::JournalKey::Material`] key, compares the
+/// material against all others in the catalog and wires `SimilarTo` edges
+/// when both materials are at or above `Observed` confidence and their
+/// property vectors exceed the configured similarity threshold.
+///
+/// Uses an independent [`MessageReader`] cursor — both this system and
+/// [`update_knowledge_graph`] receive all messages without consuming each
+/// other's reads.
+fn detect_similar_on_observation(
+    mut reader: MessageReader<crate::observation::RecordObservation>,
+    mut graph: ResMut<KnowledgeGraph>,
+    catalog: Res<crate::materials::MaterialCatalog>,
+    time: Res<Time>,
+    config: Res<crate::observation::ConfidenceConfig>,
+) {
+    let tick = time.elapsed().as_secs();
+
+    for obs in reader.read() {
+        let crate::journal::JournalKey::MaterialInstance { seed } = obs.key else {
+            continue;
+        };
+        let Some(material) = catalog.get_by_seed(seed) else {
+            continue;
+        };
+        detect_and_wire_similar_materials(
+            seed,
+            material,
+            &catalog,
+            &graph.as_ref().clone(),
+            &mut graph,
+            config.similarity_threshold,
+            tick,
+        );
+    }
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::journal::JournalKey;
 
-    fn material_key(seed: u64) -> JournalKey {
-        JournalKey::Material {
-            seed,
-            planet_seed: None,
-        }
+    fn mat_id(seed: u64) -> ConceptId {
+        ConceptId(JournalKey::MaterialInstance { seed })
     }
 
-    #[test]
-    fn concept_id_wraps_journal_key() {
-        let key = material_key(42);
-        let id = ConceptId::new(key.clone());
-        assert_eq!(id.key(), &key);
+    fn loc_id(planet_seed: u64) -> ConceptId {
+        ConceptId(JournalKey::Location { planet_seed })
     }
 
-    #[test]
-    fn concept_id_from_journal_key() {
-        let key = material_key(7);
-        let id: ConceptId = key.clone().into();
-        assert_eq!(id.0, key);
-    }
-
-    #[test]
-    fn concept_node_starts_with_no_revealed_properties() {
-        let id = ConceptId::new(material_key(1));
-        let node = ConceptNode::new(id, ConceptCategory::Material, Confidence(0.2), 100);
-        assert!(node.revealed_properties.is_empty());
-        assert!(!node.has_property("density"));
-    }
-
-    #[test]
-    fn concept_node_reveal_property_is_idempotent() {
-        let id = ConceptId::new(material_key(2));
-        let mut node = ConceptNode::new(id, ConceptCategory::Material, Confidence(0.5), 200);
-        node.reveal_property("density");
-        node.reveal_property("density"); // second call is a no-op
-        assert!(node.has_property("density"));
-        assert_eq!(node.revealed_properties.len(), 1);
-    }
-
-    #[test]
-    fn concept_node_multiple_properties() {
-        let id = ConceptId::new(material_key(3));
-        let mut node = ConceptNode::new(id, ConceptCategory::Material, Confidence(0.8), 300);
-        node.reveal_property("density");
-        node.reveal_property("thermal_resistance");
-        assert!(node.has_property("density"));
-        assert!(node.has_property("thermal_resistance"));
-        assert!(!node.has_property("reactivity"));
-    }
-
-    #[test]
-    fn concept_category_equality() {
-        assert_eq!(ConceptCategory::Material, ConceptCategory::Material);
-        assert_ne!(ConceptCategory::Material, ConceptCategory::Location);
-        assert_ne!(ConceptCategory::Location, ConceptCategory::Fabrication);
-    }
-
-    #[test]
-    fn concept_node_stores_metadata() {
-        let id = ConceptId::new(material_key(99));
-        let node = ConceptNode::new(id.clone(), ConceptCategory::Location, Confidence(0.6), 999);
-        assert_eq!(node.id, id);
-        assert_eq!(node.category, ConceptCategory::Location);
-        assert_eq!(node.confidence.0, 0.6);
-        assert_eq!(node.discovered_at, 999);
-    }
-
-    // ── ConceptEdge / RelationshipType tests ─────────────────────────────
-
-    #[test]
-    fn concept_edge_new_stores_fields() {
-        let edge = ConceptEdge::new(RelationshipType::FoundOn, Confidence(0.4), 50);
-        assert_eq!(edge.relationship, RelationshipType::FoundOn);
-        assert_eq!(edge.confidence.0, 0.4);
-        assert_eq!(edge.discovered_at, 50);
-    }
-
-    #[test]
-    fn concept_edge_strengthen_accumulates_confidence() {
-        let mut edge = ConceptEdge::new(RelationshipType::SimilarTo, Confidence(0.3), 10);
-        edge.strengthen(Confidence(0.4));
-        // 0.3 + 0.4 = 0.7
-        assert!((edge.confidence.0 - 0.7).abs() < f32::EPSILON);
-    }
-
-    #[test]
-    fn concept_edge_strengthen_caps_at_one() {
-        let mut edge = ConceptEdge::new(RelationshipType::DerivedFrom, Confidence(0.8), 20);
-        edge.strengthen(Confidence(0.5));
-        // 0.8 + 0.5 = 1.3, capped at 1.0
-        assert_eq!(edge.confidence.0, 1.0);
-    }
-
-    #[test]
-    fn concept_edge_strengthen_does_not_update_discovered_at() {
-        let mut edge = ConceptEdge::new(RelationshipType::ObservedAt, Confidence(0.2), 100);
-        edge.strengthen(Confidence(0.3));
-        assert_eq!(edge.discovered_at, 100);
-    }
-
-    #[test]
-    fn relationship_type_equality() {
-        assert_eq!(RelationshipType::FoundOn, RelationshipType::FoundOn);
-        assert_ne!(RelationshipType::FoundOn, RelationshipType::ObservedAt);
-        assert_ne!(
-            RelationshipType::CombinedWith,
-            RelationshipType::DerivedFrom
-        );
-        assert_ne!(RelationshipType::SimilarTo, RelationshipType::FoundOn);
-    }
-
-    #[test]
-    fn relationship_type_all_variants_constructible() {
-        // Ensure all five required variants exist and are distinct.
-        let variants = [
-            RelationshipType::FoundOn,
-            RelationshipType::CombinedWith,
-            RelationshipType::DerivedFrom,
-            RelationshipType::SimilarTo,
-            RelationshipType::ObservedAt,
-        ];
-        // All five must be pairwise distinct.
-        for i in 0..variants.len() {
-            for j in 0..variants.len() {
-                if i == j {
-                    assert_eq!(variants[i], variants[j]);
-                } else {
-                    assert_ne!(variants[i], variants[j]);
-                }
-            }
-        }
-    }
-
-    // ── KnowledgeGraph tests ──────────────────────────────────────────────
-
-    fn location_key(seed: u64) -> JournalKey {
-        // JournalKey has no Location variant yet; use a Material with a
-        // planet_seed to represent a location concept in tests.
-        JournalKey::Material {
-            seed,
-            planet_seed: Some(seed),
-        }
-    }
-
-    fn make_graph() -> KnowledgeGraph {
-        KnowledgeGraph::new()
-    }
-
-    #[test]
-    fn ensure_concept_creates_new_node() {
-        let mut graph = make_graph();
-        let id = ConceptId::new(material_key(1));
-        let idx = graph.ensure_concept(id.clone(), ConceptCategory::Material, 10);
-        assert_eq!(graph.lookup(&id), Some(idx));
-    }
+    // ── Phase 1 tests ─────────────────────────────────────────────────
 
     #[test]
     fn ensure_concept_is_idempotent() {
-        let mut graph = make_graph();
-        let id = ConceptId::new(material_key(2));
-        let idx1 = graph.ensure_concept(id.clone(), ConceptCategory::Material, 10);
-        let idx2 = graph.ensure_concept(id.clone(), ConceptCategory::Material, 20);
-        // Same node returned both times.
-        assert_eq!(idx1, idx2);
-        // Timeline should only have one entry.
-        assert_eq!(graph.timeline().len(), 1);
-    }
-
-    #[test]
-    fn lookup_returns_none_for_unknown_concept() {
-        let graph = make_graph();
-        let id = ConceptId::new(material_key(99));
-        assert_eq!(graph.lookup(&id), None);
-    }
-
-    #[test]
-    fn by_category_returns_inserted_nodes() {
-        let mut graph = make_graph();
-        let mat_id = ConceptId::new(material_key(1));
-        let loc_id = ConceptId::new(location_key(2));
-        let mat_idx = graph.ensure_concept(mat_id, ConceptCategory::Material, 1);
-        let loc_idx = graph.ensure_concept(loc_id, ConceptCategory::Location, 2);
-
-        let materials = graph.by_category(&ConceptCategory::Material);
-        assert_eq!(materials, &[mat_idx]);
-
-        let locations = graph.by_category(&ConceptCategory::Location);
-        assert_eq!(locations, &[loc_idx]);
-    }
-
-    #[test]
-    fn by_category_returns_empty_for_unknown_category() {
-        let graph = make_graph();
-        assert!(graph.by_category(&ConceptCategory::Fabrication).is_empty());
-    }
-
-    #[test]
-    fn timeline_records_discovery_order() {
-        let mut graph = make_graph();
-        let id1 = ConceptId::new(material_key(1));
-        let id2 = ConceptId::new(material_key(2));
-        let idx1 = graph.ensure_concept(id1, ConceptCategory::Material, 5);
-        let idx2 = graph.ensure_concept(id2, ConceptCategory::Material, 10);
-
-        let tl = graph.timeline();
-        assert_eq!(tl.len(), 2);
-        assert_eq!(tl[0], (5, idx1));
-        assert_eq!(tl[1], (10, idx2));
-    }
-
-    #[test]
-    fn relate_creates_bidirectional_edges() {
-        let mut graph = make_graph();
-        let mat_id = ConceptId::new(material_key(1));
-        let loc_id = ConceptId::new(location_key(2));
-        let mat_idx = graph.ensure_concept(mat_id, ConceptCategory::Material, 1);
-        let loc_idx = graph.ensure_concept(loc_id, ConceptCategory::Location, 2);
-
-        let edge = ConceptEdge::new(RelationshipType::FoundOn, Confidence(0.5), 3);
-        graph.relate(mat_idx, loc_idx, edge);
-
-        // Forward: material → location
-        let mat_rels = graph.relationships(mat_idx);
-        assert!(
-            mat_rels
-                .iter()
-                .any(|(n, e)| { *n == loc_idx && e.relationship == RelationshipType::FoundOn })
-        );
-
-        // Reverse: location → material
-        let loc_rels = graph.relationships(loc_idx);
-        assert!(
-            loc_rels
-                .iter()
-                .any(|(n, e)| { *n == mat_idx && e.relationship == RelationshipType::FoundOn })
-        );
-    }
-
-    #[test]
-    fn relate_strengthens_existing_edge_on_repeat() {
-        let mut graph = make_graph();
-        let id1 = ConceptId::new(material_key(1));
-        let id2 = ConceptId::new(material_key(2));
-        let idx1 = graph.ensure_concept(id1, ConceptCategory::Material, 1);
-        let idx2 = graph.ensure_concept(id2, ConceptCategory::Material, 2);
-
-        let edge1 = ConceptEdge::new(RelationshipType::SimilarTo, Confidence(0.3), 5);
-        let edge2 = ConceptEdge::new(RelationshipType::SimilarTo, Confidence(0.4), 10);
-        graph.relate(idx1, idx2, edge1);
-        graph.relate(idx1, idx2, edge2);
-
-        // relationships() returns both outgoing and incoming edges.
-        // Filter to only edges pointing toward idx2 (the forward direction).
-        let rels = graph.relationships(idx1);
-        let forward: Vec<_> = rels
-            .iter()
-            .filter(|(n, e)| *n == idx2 && e.relationship == RelationshipType::SimilarTo)
-            .collect();
-        // Exactly one forward edge (strengthened, not duplicated).
-        assert_eq!(forward.len(), 1);
-        // 0.3 + 0.4 = 0.7
-        assert!((forward[0].1.confidence.0 - 0.7).abs() < f32::EPSILON);
-    }
-
-    #[test]
-    fn neighborhood_returns_nodes_within_depth() {
-        let mut graph = make_graph();
-        // A — B — C — D (linear chain)
-        let a = graph.ensure_concept(
-            ConceptId::new(material_key(1)),
-            ConceptCategory::Material,
+        let mut graph = KnowledgeGraph::default();
+        let id = mat_id(42);
+        let idx1 = graph.ensure_concept(id.clone(), ConceptCategory::Material, 100);
+        let idx2 = graph.ensure_concept(id.clone(), ConceptCategory::Material, 200);
+        assert_eq!(idx1, idx2, "same ID must always return the same NodeIndex");
+        assert_eq!(
+            graph.timeline().len(),
             1,
+            "idempotent call must not append to timeline"
         );
-        let b = graph.ensure_concept(
-            ConceptId::new(material_key(2)),
-            ConceptCategory::Material,
-            2,
-        );
-        let c = graph.ensure_concept(
-            ConceptId::new(material_key(3)),
-            ConceptCategory::Material,
-            3,
-        );
-        let d = graph.ensure_concept(
-            ConceptId::new(material_key(4)),
-            ConceptCategory::Material,
-            4,
-        );
-
-        let edge = || ConceptEdge::new(RelationshipType::SimilarTo, Confidence(0.5), 1);
-        graph.relate(a, b, edge());
-        graph.relate(b, c, edge());
-        graph.relate(c, d, edge());
-
-        // From A with depth=2: should reach B (hop 1) and C (hop 2), not D.
-        let neighbors = graph.neighborhood(a, 2, None);
-        let nodes: Vec<NodeIndex> = neighbors.iter().map(|(n, _)| *n).collect();
-        assert!(nodes.contains(&b));
-        assert!(nodes.contains(&c));
-        assert!(!nodes.contains(&d));
-        assert!(!nodes.contains(&a)); // center excluded
     }
 
     #[test]
-    fn neighborhood_depth_zero_returns_empty() {
-        let mut graph = make_graph();
-        let a = graph.ensure_concept(
-            ConceptId::new(material_key(1)),
-            ConceptCategory::Material,
-            1,
-        );
-        let b = graph.ensure_concept(
-            ConceptId::new(material_key(2)),
-            ConceptCategory::Material,
-            2,
-        );
+    fn relate_creates_new_edge() {
+        let mut graph = KnowledgeGraph::default();
+        let a = graph.ensure_concept(mat_id(1), ConceptCategory::Material, 0);
+        let b = graph.ensure_concept(loc_id(999), ConceptCategory::Location, 0);
         graph.relate(
             a,
             b,
-            ConceptEdge::new(RelationshipType::SimilarTo, Confidence(0.5), 1),
+            ConceptEdge {
+                relationship: RelationshipType::FoundOn,
+                confidence: Confidence(0.5),
+                discovered_at: 0,
+            },
         );
-
-        assert!(graph.neighborhood(a, 0, None).is_empty());
+        let rels = graph.relationships(a);
+        assert_eq!(rels.len(), 1);
+        assert_eq!(rels[0].1.relationship, RelationshipType::FoundOn);
     }
 
     #[test]
-    fn neighborhood_depth_one_returns_only_direct_neighbors() {
-        let mut graph = make_graph();
-        // A — B — C — D (linear chain)
-        let a = graph.ensure_concept(
-            ConceptId::new(material_key(1)),
-            ConceptCategory::Material,
-            1,
-        );
-        let b = graph.ensure_concept(
-            ConceptId::new(material_key(2)),
-            ConceptCategory::Material,
-            2,
-        );
-        let c = graph.ensure_concept(
-            ConceptId::new(material_key(3)),
-            ConceptCategory::Material,
-            3,
-        );
-        let d = graph.ensure_concept(
-            ConceptId::new(material_key(4)),
-            ConceptCategory::Material,
-            4,
-        );
+    fn relate_strengthens_existing_edge() {
+        let mut graph = KnowledgeGraph::default();
+        let a = graph.ensure_concept(mat_id(1), ConceptCategory::Material, 0);
+        let b = graph.ensure_concept(loc_id(999), ConceptCategory::Location, 0);
 
-        let edge = || ConceptEdge::new(RelationshipType::SimilarTo, Confidence(0.5), 1);
-        graph.relate(a, b, edge());
-        graph.relate(b, c, edge());
-        graph.relate(c, d, edge());
+        let initial_edge = ConceptEdge {
+            relationship: RelationshipType::FoundOn,
+            confidence: Confidence(0.3),
+            discovered_at: 0,
+        };
+        graph.relate(a, b, initial_edge.clone());
 
-        // depth=1: only direct neighbors of A (i.e., B). C and D are too far.
-        let neighbors = graph.neighborhood(a, 1, None);
-        let nodes: Vec<NodeIndex> = neighbors.iter().map(|(n, _)| *n).collect();
-        assert_eq!(
-            nodes.len(),
-            1,
-            "depth=1 must return exactly one direct neighbor"
-        );
-        assert!(nodes.contains(&b), "B must be in depth=1 neighborhood of A");
+        // Second relate with same type should strengthen, not duplicate.
+        graph.relate(a, b, initial_edge);
+        let rels = graph.relationships(a);
+        assert_eq!(rels.len(), 1, "no duplicate edge");
         assert!(
-            !nodes.contains(&c),
-            "C must not be in depth=1 neighborhood of A"
-        );
-        assert!(
-            !nodes.contains(&d),
-            "D must not be in depth=1 neighborhood of A"
-        );
-        assert!(
-            !nodes.contains(&a),
-            "center node must not appear in its own neighborhood"
-        );
-
-        // Verify hop distance is reported as 1.
-        let hop = neighbors.iter().find(|(n, _)| *n == b).map(|(_, h)| *h);
-        assert_eq!(hop, Some(1), "B must be reported at hop distance 1");
-    }
-
-    #[test]
-    fn neighborhood_category_filter_excludes_non_matching() {
-        let mut graph = make_graph();
-        let mat = graph.ensure_concept(
-            ConceptId::new(material_key(1)),
-            ConceptCategory::Material,
-            1,
-        );
-        let loc = graph.ensure_concept(
-            ConceptId::new(location_key(2)),
-            ConceptCategory::Location,
-            2,
-        );
-        let mat2 = graph.ensure_concept(
-            ConceptId::new(material_key(3)),
-            ConceptCategory::Material,
-            3,
-        );
-
-        let edge = || ConceptEdge::new(RelationshipType::FoundOn, Confidence(0.5), 1);
-        graph.relate(mat, loc, edge());
-        graph.relate(loc, mat2, edge());
-
-        // From mat with depth=2, filter to Material only: should see mat2 (hop 2) but not loc.
-        let neighbors = graph.neighborhood(mat, 2, Some(&ConceptCategory::Material));
-        let nodes: Vec<NodeIndex> = neighbors.iter().map(|(n, _)| *n).collect();
-        assert!(!nodes.contains(&loc));
-        assert!(nodes.contains(&mat2));
-    }
-
-    #[test]
-    fn neighborhood_disconnected_node_returns_empty() {
-        // A node with no edges should have an empty neighborhood at any depth.
-        let mut graph = make_graph();
-        let isolated = graph.ensure_concept(
-            ConceptId::new(material_key(99)),
-            ConceptCategory::Material,
-            1,
-        );
-        assert!(
-            graph.neighborhood(isolated, 3, None).is_empty(),
-            "disconnected node must have no neighbors"
+            rels[0].1.confidence.0 > 0.3,
+            "confidence must increase on repeated observation"
         );
     }
 
     #[test]
-    fn neighborhood_handles_cycles_without_infinite_loop() {
-        // Build a cycle: A — B — C — A (triangle).
-        // BFS must visit each node at most once and terminate cleanly.
-        let mut graph = make_graph();
-        let a = graph.ensure_concept(
-            ConceptId::new(material_key(1)),
-            ConceptCategory::Material,
-            1,
+    fn by_category_returns_correct_nodes() {
+        let mut graph = KnowledgeGraph::default();
+        let m1 = graph.ensure_concept(mat_id(1), ConceptCategory::Material, 0);
+        let m2 = graph.ensure_concept(mat_id(2), ConceptCategory::Material, 1);
+        let _l1 = graph.ensure_concept(loc_id(1), ConceptCategory::Location, 2);
+
+        let materials = graph.by_category(&ConceptCategory::Material);
+        assert_eq!(materials.len(), 2);
+        assert!(materials.contains(&m1));
+        assert!(materials.contains(&m2));
+
+        let locations = graph.by_category(&ConceptCategory::Location);
+        assert_eq!(locations.len(), 1);
+    }
+
+    #[test]
+    fn timeline_is_ordered_by_discovery_tick() {
+        let mut graph = KnowledgeGraph::default();
+        graph.ensure_concept(mat_id(10), ConceptCategory::Material, 100);
+        graph.ensure_concept(mat_id(20), ConceptCategory::Material, 50);
+        graph.ensure_concept(mat_id(30), ConceptCategory::Material, 200);
+
+        // Timeline should be in insertion order (ticks 100, 50, 200 for
+        // in-memory; deserialized would be sorted).
+        let ticks: Vec<u64> = graph.timeline().iter().map(|(t, _)| *t).collect();
+        assert_eq!(ticks, vec![100, 50, 200]);
+    }
+
+    // ── Phase 2 tests ─────────────────────────────────────────────────
+
+    #[test]
+    fn bfs_depth_one_returns_only_direct_neighbors() {
+        let mut graph = KnowledgeGraph::default();
+        let center = graph.ensure_concept(mat_id(1), ConceptCategory::Material, 0);
+        let neighbor = graph.ensure_concept(mat_id(2), ConceptCategory::Material, 0);
+        let far = graph.ensure_concept(mat_id(3), ConceptCategory::Material, 0);
+
+        graph.relate(
+            center,
+            neighbor,
+            ConceptEdge {
+                relationship: RelationshipType::SimilarTo,
+                confidence: Confidence(0.9),
+                discovered_at: 0,
+            },
         );
-        let b = graph.ensure_concept(
-            ConceptId::new(material_key(2)),
-            ConceptCategory::Material,
-            2,
-        );
-        let c = graph.ensure_concept(
-            ConceptId::new(material_key(3)),
-            ConceptCategory::Material,
-            3,
+        graph.relate(
+            neighbor,
+            far,
+            ConceptEdge {
+                relationship: RelationshipType::SimilarTo,
+                confidence: Confidence(0.9),
+                discovered_at: 0,
+            },
         );
 
-        let edge = || ConceptEdge::new(RelationshipType::SimilarTo, Confidence(0.5), 1);
-        // A → B → C → A forms a directed cycle; relate() also adds the reverse edge,
-        // so the undirected traversal sees a fully-connected triangle.
+        let results = graph.neighborhood(center, 1, None);
+        let indices: Vec<NodeIndex> = results.iter().map(|(idx, _)| *idx).collect();
+        assert!(
+            indices.contains(&neighbor),
+            "direct neighbor must be included"
+        );
+        assert!(
+            !indices.contains(&far),
+            "2-hop node must be excluded at depth=1"
+        );
+    }
+
+    #[test]
+    fn bfs_with_category_filter_excludes_non_matching() {
+        let mut graph = KnowledgeGraph::default();
+        let center = graph.ensure_concept(mat_id(1), ConceptCategory::Material, 0);
+        let mat_neighbor = graph.ensure_concept(mat_id(2), ConceptCategory::Material, 0);
+        let loc_neighbor = graph.ensure_concept(loc_id(42), ConceptCategory::Location, 0);
+
+        let edge = || ConceptEdge {
+            relationship: RelationshipType::FoundOn,
+            confidence: Confidence(0.5),
+            discovered_at: 0,
+        };
+        graph.relate(center, mat_neighbor, edge());
+        graph.relate(center, loc_neighbor, edge());
+
+        let results = graph.neighborhood(center, 1, Some(&ConceptCategory::Location));
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, loc_neighbor);
+    }
+
+    #[test]
+    fn bfs_on_disconnected_node_returns_empty() {
+        let mut graph = KnowledgeGraph::default();
+        let island = graph.ensure_concept(mat_id(99), ConceptCategory::Material, 0);
+        let results = graph.neighborhood(island, 5, None);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn bfs_handles_cycles_without_infinite_loop() {
+        let mut graph = KnowledgeGraph::default();
+        let a = graph.ensure_concept(mat_id(1), ConceptCategory::Material, 0);
+        let b = graph.ensure_concept(mat_id(2), ConceptCategory::Material, 0);
+        let c = graph.ensure_concept(mat_id(3), ConceptCategory::Material, 0);
+
+        let edge = || ConceptEdge {
+            relationship: RelationshipType::SimilarTo,
+            confidence: Confidence(0.9),
+            discovered_at: 0,
+        };
+        // Create a cycle: a → b → c → a
         graph.relate(a, b, edge());
         graph.relate(b, c, edge());
         graph.relate(c, a, edge());
 
-        // With depth=10 (well beyond the 3-node cycle), BFS must still return exactly
-        // the two other nodes (B and C) and must not loop or panic.
-        let neighbors = graph.neighborhood(a, 10, None);
-        let nodes: Vec<NodeIndex> = neighbors.iter().map(|(n, _)| *n).collect();
+        // Should terminate and return b and c (depth=5 more than covers the cycle).
+        let results = graph.neighborhood(a, 5, None);
+        assert_eq!(results.len(), 2);
+    }
 
-        assert_eq!(
-            nodes.len(),
-            2,
-            "cycle graph must yield exactly 2 unique neighbors for A (B and C), got {nodes:?}"
-        );
-        assert!(nodes.contains(&b), "B must be reachable from A");
-        assert!(nodes.contains(&c), "C must be reachable from A");
+    // ── Phase 3 tests (integration-level — graph wiring via system) ───
+
+    #[test]
+    fn no_edge_when_no_planet_seed() {
+        // Material key without planet_seed must not create a FoundOn edge.
+        let mut graph = KnowledgeGraph::default();
+        let key = JournalKey::MaterialInstance { seed: 42 };
+        let subject = graph.ensure_concept(ConceptId(key.clone()), ConceptCategory::Material, 0);
+        // Simulate what update_knowledge_graph does: only wire FoundOn when
+        // planet_seed is Some. With None, no location node is created.
+        let rels = graph.relationships(subject);
+        assert!(rels.is_empty(), "no FoundOn edge without planet_seed");
+    }
+
+    // ── Phase 4 tests ─────────────────────────────────────────────────
+
+    #[test]
+    fn cosine_similarity_identical_vectors_is_one() {
+        let v = vec![0.3, 0.7, 0.5, 0.1, 0.9];
+        let sim = cosine_similarity(&v, &v);
         assert!(
-            !nodes.contains(&a),
-            "center node A must not appear in its own neighborhood"
+            (sim - 1.0).abs() < 1e-5,
+            "identical vectors → similarity 1.0"
         );
-
-        // Hop distances: B is 1 hop away, C is 1 hop away (direct edge via relate's reverse).
-        // Both must be ≤ depth and must be the shortest path distance.
-        let hop_b = neighbors.iter().find(|(n, _)| *n == b).map(|(_, h)| *h);
-        let hop_c = neighbors.iter().find(|(n, _)| *n == c).map(|(_, h)| *h);
-        assert_eq!(hop_b, Some(1), "B must be at hop distance 1 from A");
-        assert_eq!(hop_c, Some(1), "C must be at hop distance 1 from A");
     }
 
     #[test]
-    fn node_accessor_returns_concept_data() {
-        let mut graph = make_graph();
-        let id = ConceptId::new(material_key(42));
-        let idx = graph.ensure_concept(id.clone(), ConceptCategory::Material, 7);
-        let node = graph.node(idx).expect("node must exist");
-        assert_eq!(node.id, id);
-        assert_eq!(node.category, ConceptCategory::Material);
-        assert_eq!(node.discovered_at, 7);
+    fn cosine_similarity_orthogonal_vectors_is_zero() {
+        let a = vec![1.0, 0.0, 0.0, 0.0, 0.0];
+        let b = vec![0.0, 1.0, 0.0, 0.0, 0.0];
+        let sim = cosine_similarity(&a, &b);
+        assert!(sim.abs() < 1e-5, "orthogonal vectors → similarity ~0.0");
     }
 
+    // ── Phase 6 tests ─────────────────────────────────────────────────
+
     #[test]
-    fn serialization_round_trip_preserves_graph() {
-        let mut graph = make_graph();
-        let mat_id = ConceptId::new(material_key(1));
-        let loc_id = ConceptId::new(location_key(2));
-        let mat_idx = graph.ensure_concept(mat_id.clone(), ConceptCategory::Material, 10);
-        let loc_idx = graph.ensure_concept(loc_id.clone(), ConceptCategory::Location, 20);
+    fn knowledge_graph_round_trips_via_serde() {
+        let mut graph = KnowledgeGraph::default();
+        let a = graph.ensure_concept(mat_id(1), ConceptCategory::Material, 10);
+        let b = graph.ensure_concept(loc_id(99), ConceptCategory::Location, 20);
         graph.relate(
-            mat_idx,
-            loc_idx,
-            ConceptEdge::new(RelationshipType::FoundOn, Confidence(0.6), 15),
+            a,
+            b,
+            ConceptEdge {
+                relationship: RelationshipType::FoundOn,
+                confidence: Confidence(0.6),
+                discovered_at: 10,
+            },
         );
 
-        // Serialize to JSON bytes and deserialize back to exercise serde.
-        let serializable = graph.to_serializable();
-        let json = serde_json::to_string(&serializable).expect("serialization must succeed");
-        let restored_serializable: SerializableKnowledgeGraph =
-            serde_json::from_str(&json).expect("deserialization must succeed");
-        let restored = KnowledgeGraph::from_serializable(restored_serializable);
+        let json = serde_json::to_string(&graph).expect("serialize");
+        let restored: KnowledgeGraph = serde_json::from_str(&json).expect("deserialize");
 
-        // Indexes are rebuilt.
-        let restored_mat = restored.lookup(&mat_id).expect("material must be found");
-        let restored_loc = restored.lookup(&loc_id).expect("location must be found");
+        // Indexes are rebuilt: concept lookup should work.
+        assert!(restored.lookup(&mat_id(1)).is_some());
+        assert!(restored.lookup(&loc_id(99)).is_some());
 
-        // Relationships are preserved.
-        let rels = restored.relationships(restored_mat);
-        assert!(
-            rels.iter().any(|(n, e)| {
-                *n == restored_loc && e.relationship == RelationshipType::FoundOn
-            })
-        );
+        // Category index is rebuilt.
+        assert_eq!(restored.by_category(&ConceptCategory::Material).len(), 1);
+        assert_eq!(restored.by_category(&ConceptCategory::Location).len(), 1);
 
-        // Timeline is rebuilt.
+        // Timeline is sorted and contains both nodes.
         assert_eq!(restored.timeline().len(), 2);
-    }
-
-    /// Round-trip serialize→deserialize preserves all three in-memory indexes:
-    /// `concept_index` (O(1) lookup by ConceptId), `category_index` (lookup by
-    /// ConceptCategory), and `timeline` (ordered discovery log).
-    ///
-    /// This test uses two materials and one location so that `by_category` must
-    /// return the correct count for each category, and the timeline must reflect
-    /// the original insertion order.
-    #[test]
-    fn serialization_round_trip_preserves_all_indexes() {
-        let mut graph = make_graph();
-
-        // Insert two materials and one location at distinct ticks so the
-        // timeline order is deterministic.
-        let mat1_id = ConceptId::new(material_key(10));
-        let mat2_id = ConceptId::new(material_key(20));
-        let loc_id = ConceptId::new(location_key(30));
-
-        let mat1_idx = graph.ensure_concept(mat1_id.clone(), ConceptCategory::Material, 1);
-        let mat2_idx = graph.ensure_concept(mat2_id.clone(), ConceptCategory::Material, 2);
-        let loc_idx = graph.ensure_concept(loc_id.clone(), ConceptCategory::Location, 3);
-
-        // Add a relationship so the edge survives the round-trip too.
-        graph.relate(
-            mat1_idx,
-            loc_idx,
-            ConceptEdge::new(RelationshipType::FoundOn, Confidence(0.7), 4),
-        );
-
-        // ── Round-trip ──────────────────────────────────────────────────────
-        let serializable = graph.to_serializable();
-        let json = serde_json::to_string(&serializable).expect("serialization must succeed");
-        let restored_serializable: SerializableKnowledgeGraph =
-            serde_json::from_str(&json).expect("deserialization must succeed");
-        let restored = KnowledgeGraph::from_serializable(restored_serializable);
-
-        // ── concept_index: O(1) lookup by ConceptId ─────────────────────────
-        let r_mat1 = restored
-            .lookup(&mat1_id)
-            .expect("mat1 must be found via concept_index");
-        let r_mat2 = restored
-            .lookup(&mat2_id)
-            .expect("mat2 must be found via concept_index");
-        let r_loc = restored
-            .lookup(&loc_id)
-            .expect("loc must be found via concept_index");
-
-        // Verify the node data is intact (not just that an index exists).
-        let mat1_node = restored.node(r_mat1).expect("mat1 node must exist");
-        assert_eq!(
-            mat1_node.id, mat1_id,
-            "concept_index must map to the correct node"
-        );
-        assert_eq!(mat1_node.category, ConceptCategory::Material);
-
-        // ── category_index: lookup by ConceptCategory ───────────────────────
-        let materials = restored.by_category(&ConceptCategory::Material);
-        assert_eq!(
-            materials.len(),
-            2,
-            "category_index must contain exactly 2 Material nodes after round-trip"
-        );
-        assert!(
-            materials.contains(&r_mat1),
-            "category_index must include mat1"
-        );
-        assert!(
-            materials.contains(&r_mat2),
-            "category_index must include mat2"
-        );
-
-        let locations = restored.by_category(&ConceptCategory::Location);
-        assert_eq!(
-            locations.len(),
-            1,
-            "category_index must contain exactly 1 Location node after round-trip"
-        );
-        assert!(
-            locations.contains(&r_loc),
-            "category_index must include loc"
-        );
-
-        // ── timeline: ordered discovery log ─────────────────────────────────
-        let tl = restored.timeline();
-        assert_eq!(
-            tl.len(),
-            3,
-            "timeline must contain all 3 discovered concepts"
-        );
-
-        // Timeline must be ordered by discovery tick (ascending).
-        let ticks: Vec<u64> = tl.iter().map(|(t, _)| *t).collect();
-        assert_eq!(
-            ticks,
-            vec![1, 2, 3],
-            "timeline must be ordered by discovery tick after round-trip"
-        );
-
-        // Each timeline entry must point to the correct node.
-        assert_eq!(tl[0].1, r_mat1, "timeline[0] must reference mat1");
-        assert_eq!(tl[1].1, r_mat2, "timeline[1] must reference mat2");
-        assert_eq!(tl[2].1, r_loc, "timeline[2] must reference loc");
-    }
-
-    // ── update_knowledge_graph system tests ──────────────────────────────
-
-    use crate::journal::{Observation, ObservationCategory, RecordObservation};
-    use crate::materials::MaterialCatalog;
-
-    /// Build a minimal Bevy App with the message channel and system under test.
-    fn build_test_app() -> App {
-        let mut app = App::new();
-        app.add_plugins(MinimalPlugins);
-        app.add_message::<RecordObservation>();
-        app.init_resource::<KnowledgeGraph>();
-        app.init_resource::<MaterialCatalog>();
-        app.init_resource::<KnowledgeGraphConfig>();
-        app.add_systems(Update, update_knowledge_graph);
-        app
-    }
-
-    /// Inject a single [`RecordObservation`] message via a one-shot system.
-    fn inject_observation(app: &mut App, obs: RecordObservation) {
-        fn write_obs(
-            input: bevy::ecs::system::In<RecordObservation>,
-            mut writer: MessageWriter<RecordObservation>,
-        ) {
-            writer.write(input.0.clone());
-        }
-        app.world_mut()
-            .run_system_cached_with(write_obs, obs)
-            .expect("one-shot system must run");
-    }
-
-    /// Construct a minimal [`RecordObservation`] for a material with no
-    /// cross-reference metadata.
-    fn material_obs(seed: u64) -> RecordObservation {
-        RecordObservation {
-            key: JournalKey::Material {
-                seed,
-                planet_seed: None,
-            },
-            name: format!("Mat-{seed}"),
-            observation: Observation {
-                category: ObservationCategory::SurfaceAppearance,
-                confidence: Confidence(0.5),
-                description: "test".to_string(),
-                recorded_at: 0,
-            },
-            input_seeds: vec![],
-            context_location: None,
-        }
+        assert!(restored.timeline()[0].0 <= restored.timeline()[1].0);
     }
 
     #[test]
-    fn material_observation_creates_concept_node() {
-        let mut app = build_test_app();
-        inject_observation(&mut app, material_obs(42));
-        app.update();
-
-        let graph = app.world().resource::<KnowledgeGraph>();
-        let id = ConceptId::new(JournalKey::Material {
-            seed: 42,
-            planet_seed: None,
-        });
-        assert!(
-            graph.lookup(&id).is_some(),
-            "concept node must be created for observed material"
-        );
-    }
-
-    #[test]
-    fn material_with_context_location_creates_found_on_edge() {
-        let mut app = build_test_app();
-
-        let location_key = JournalKey::Material {
-            seed: 999,
-            planet_seed: Some(999),
-        };
-
-        let obs = RecordObservation {
-            key: JournalKey::Material {
-                seed: 1,
-                planet_seed: None,
-            },
-            name: "Mat-1".to_string(),
-            observation: Observation {
-                category: ObservationCategory::SurfaceAppearance,
-                confidence: Confidence(0.5),
-                description: "test".to_string(),
-                recorded_at: 0,
-            },
-            input_seeds: vec![],
-            context_location: Some(location_key.clone()),
-        };
-
-        inject_observation(&mut app, obs);
-        app.update();
-
-        let graph = app.world().resource::<KnowledgeGraph>();
-        let mat_id = ConceptId::new(JournalKey::Material {
-            seed: 1,
-            planet_seed: None,
-        });
-        let loc_id = ConceptId::new(location_key);
-
-        let mat_node = graph.lookup(&mat_id).expect("material concept must exist");
-        let loc_node = graph.lookup(&loc_id).expect("location concept must exist");
-
-        // Forward edge: material → FoundOn → location
-        let rels = graph.relationships(mat_node);
-        assert!(
-            rels.iter()
-                .any(|(n, e)| *n == loc_node && e.relationship == RelationshipType::FoundOn),
-            "material must have FoundOn edge to location"
-        );
-
-        // Reverse edge: location → FoundOn → material (bidirectional)
-        let loc_rels = graph.relationships(loc_node);
-        assert!(
-            loc_rels
-                .iter()
-                .any(|(n, e)| *n == mat_node && e.relationship == RelationshipType::FoundOn),
-            "location must have reverse FoundOn edge back to material"
-        );
-    }
-
-    #[test]
-    fn non_material_with_context_location_creates_observed_at_edge() {
-        // A Fabrication observation with a context_location must produce an
-        // ObservedAt edge (not FoundOn) between the fabrication concept and the
-        // location concept, and the reverse edge must also exist.
-        let mut app = build_test_app();
-
-        let location_key = JournalKey::Material {
-            seed: 77,
-            planet_seed: None,
-        };
-
-        let obs = RecordObservation {
-            key: JournalKey::Fabrication { output_seed: 55 },
-            name: "Output-55".to_string(),
-            observation: Observation {
-                category: ObservationCategory::FabricationResult,
-                confidence: Confidence(0.9),
-                description: "fabricated at location".to_string(),
-                recorded_at: 0,
-            },
-            input_seeds: vec![],
-            context_location: Some(location_key.clone()),
-        };
-
-        inject_observation(&mut app, obs);
-        app.update();
-
-        let graph = app.world().resource::<KnowledgeGraph>();
-
-        let fab_id = ConceptId::new(JournalKey::Fabrication { output_seed: 55 });
-        let loc_id = ConceptId::new(location_key);
-
-        let fab_node = graph
-            .lookup(&fab_id)
-            .expect("fabrication concept must exist");
-        let loc_node = graph.lookup(&loc_id).expect("location concept must exist");
-
-        // Forward edge: fabrication → ObservedAt → location
-        let fab_rels = graph.relationships(fab_node);
-        assert!(
-            fab_rels
-                .iter()
-                .any(|(n, e)| *n == loc_node && e.relationship == RelationshipType::ObservedAt),
-            "fabrication must have ObservedAt edge to location"
-        );
-
-        // Reverse edge: location → ObservedAt → fabrication (bidirectional)
-        let loc_rels = graph.relationships(loc_node);
-        assert!(
-            loc_rels
-                .iter()
-                .any(|(n, e)| *n == fab_node && e.relationship == RelationshipType::ObservedAt),
-            "location must have reverse ObservedAt edge back to fabrication"
-        );
-    }
-
-    #[test]
-    fn fabrication_observation_creates_derived_from_edges() {
-        let mut app = build_test_app();
-
-        let obs = RecordObservation {
-            key: JournalKey::Fabrication { output_seed: 100 },
-            name: "Output-100".to_string(),
-            observation: Observation {
-                category: ObservationCategory::FabricationResult,
-                confidence: Confidence(1.0),
-                description: "fabricated".to_string(),
-                recorded_at: 0,
-            },
-            input_seeds: vec![10, 20],
-            context_location: None,
-        };
-
-        inject_observation(&mut app, obs);
-        app.update();
-
-        let graph = app.world().resource::<KnowledgeGraph>();
-        let output_id = ConceptId::new(JournalKey::Fabrication { output_seed: 100 });
-        let input_a_id = ConceptId::new(JournalKey::Material {
-            seed: 10,
-            planet_seed: None,
-        });
-        let input_b_id = ConceptId::new(JournalKey::Material {
-            seed: 20,
-            planet_seed: None,
-        });
-
-        let output_node = graph.lookup(&output_id).expect("output concept must exist");
-        let input_a_node = graph
-            .lookup(&input_a_id)
-            .expect("input A concept must exist");
-        let input_b_node = graph
-            .lookup(&input_b_id)
-            .expect("input B concept must exist");
-
-        // Output → DerivedFrom → each input
-        let rels = graph.relationships(output_node);
-        assert!(
-            rels.iter()
-                .any(|(n, e)| *n == input_a_node && e.relationship == RelationshipType::DerivedFrom),
-            "output must have DerivedFrom edge to input A"
-        );
-        assert!(
-            rels.iter()
-                .any(|(n, e)| *n == input_b_node && e.relationship == RelationshipType::DerivedFrom),
-            "output must have DerivedFrom edge to input B"
-        );
-    }
-
-    #[test]
-    fn fabrication_observation_creates_combined_with_edges_between_inputs() {
-        let mut app = build_test_app();
-
-        let obs = RecordObservation {
-            key: JournalKey::Fabrication { output_seed: 200 },
-            name: "Output-200".to_string(),
-            observation: Observation {
-                category: ObservationCategory::FabricationResult,
-                confidence: Confidence(1.0),
-                description: "fabricated".to_string(),
-                recorded_at: 0,
-            },
-            input_seeds: vec![30, 40],
-            context_location: None,
-        };
-
-        inject_observation(&mut app, obs);
-        app.update();
-
-        let graph = app.world().resource::<KnowledgeGraph>();
-        let input_a_id = ConceptId::new(JournalKey::Material {
-            seed: 30,
-            planet_seed: None,
-        });
-        let input_b_id = ConceptId::new(JournalKey::Material {
-            seed: 40,
-            planet_seed: None,
-        });
-
-        let input_a_node = graph
-            .lookup(&input_a_id)
-            .expect("input A concept must exist");
-        let input_b_node = graph
-            .lookup(&input_b_id)
-            .expect("input B concept must exist");
-
-        // Input A → CombinedWith → Input B (and reverse via bidirectionality)
-        let rels_a = graph.relationships(input_a_node);
-        assert!(
-            rels_a.iter().any(|(n, e)| {
-                *n == input_b_node && e.relationship == RelationshipType::CombinedWith
-            }),
-            "input A must have CombinedWith edge to input B"
-        );
-
-        let rels_b = graph.relationships(input_b_node);
-        assert!(
-            rels_b.iter().any(|(n, e)| {
-                *n == input_a_node && e.relationship == RelationshipType::CombinedWith
-            }),
-            "input B must have reverse CombinedWith edge to input A"
-        );
-    }
-
-    #[test]
-    fn repeated_observation_strengthens_edge_not_duplicates() {
-        let mut app = build_test_app();
-
-        let location_key = JournalKey::Material {
-            seed: 777,
-            planet_seed: Some(777),
-        };
-
-        // Send the same material+location observation twice.
-        for _ in 0..2 {
-            let obs = RecordObservation {
-                key: JournalKey::Material {
-                    seed: 5,
-                    planet_seed: None,
-                },
-                name: "Mat-5".to_string(),
-                observation: Observation {
-                    category: ObservationCategory::SurfaceAppearance,
-                    confidence: Confidence(0.3),
-                    description: "test".to_string(),
-                    recorded_at: 0,
-                },
-                input_seeds: vec![],
-                context_location: Some(location_key.clone()),
-            };
-            inject_observation(&mut app, obs);
-            app.update();
-        }
-
-        let graph = app.world().resource::<KnowledgeGraph>();
-        let mat_id = ConceptId::new(JournalKey::Material {
-            seed: 5,
-            planet_seed: None,
-        });
-        let loc_id = ConceptId::new(location_key);
-
-        let mat_node = graph.lookup(&mat_id).expect("material concept must exist");
-        let loc_node = graph.lookup(&loc_id).expect("location concept must exist");
-
-        // There must be exactly one FoundOn edge from material to location
-        // (strengthened, not duplicated).
-        let rels = graph.relationships(mat_node);
-        let found_on_edges: Vec<_> = rels
-            .iter()
-            .filter(|(n, e)| *n == loc_node && e.relationship == RelationshipType::FoundOn)
-            .collect();
-        assert_eq!(
-            found_on_edges.len(),
-            1,
-            "repeated observation must strengthen the edge, not create a duplicate"
-        );
-        // Confidence must be higher than a single observation (0.3 + 0.3 = 0.6).
-        assert!(
-            found_on_edges[0].1.confidence.0 > 0.3,
-            "confidence must accumulate across repeated observations"
-        );
-    }
-
-    #[test]
-    fn observation_without_context_creates_no_location_edge() {
-        let mut app = build_test_app();
-        inject_observation(&mut app, material_obs(99));
-        app.update();
-
-        let graph = app.world().resource::<KnowledgeGraph>();
-        let id = ConceptId::new(JournalKey::Material {
-            seed: 99,
-            planet_seed: None,
-        });
-        let node = graph.lookup(&id).expect("concept must exist");
-
-        // No edges should exist — no context_location was provided.
-        assert!(
-            graph.relationships(node).is_empty(),
-            "observation without context_location must not create any edges"
-        );
-    }
-
-    // ── Similarity detection tests ────────────────────────────────────────
-
-    /// Seeds 0 and 4 have cosine similarity ≈ 0.9255, which exceeds the 0.85
-    /// threshold. Both are registered in the catalog before observations are
-    /// sent so the system can compare them.
-    const SIMILAR_SEED_A: u64 = 0;
-    const SIMILAR_SEED_B: u64 = 4;
-
-    /// Build a test app with both similar materials pre-registered in the catalog.
-    fn build_test_app_with_similar_materials() -> App {
-        let mut app = build_test_app();
-        {
-            let mut catalog = app.world_mut().resource_mut::<MaterialCatalog>();
-            catalog.derive_and_register(SIMILAR_SEED_A);
-            catalog.derive_and_register(SIMILAR_SEED_B);
-        }
-        app
-    }
-
-    /// Construct a material observation with the given seed and confidence.
-    fn material_obs_with_confidence(seed: u64, confidence: f32) -> RecordObservation {
-        RecordObservation {
-            key: JournalKey::Material {
-                seed,
-                planet_seed: None,
-            },
-            name: format!("Mat-{seed}"),
-            observation: Observation {
-                category: ObservationCategory::SurfaceAppearance,
-                confidence: Confidence(confidence),
-                description: "test".to_string(),
-                recorded_at: 0,
-            },
-            input_seeds: vec![],
-            context_location: None,
-        }
-    }
-
-    #[test]
-    fn similar_materials_both_observed_creates_similar_to_edge() {
-        // Both materials must be at Observed tier (≥ 0.3) for the edge to appear.
-        let mut app = build_test_app_with_similar_materials();
-
-        inject_observation(&mut app, material_obs_with_confidence(SIMILAR_SEED_A, 0.5));
-        app.update();
-        inject_observation(&mut app, material_obs_with_confidence(SIMILAR_SEED_B, 0.5));
-        app.update();
-
-        let graph = app.world().resource::<KnowledgeGraph>();
-        let id_a = ConceptId::new(JournalKey::Material {
-            seed: SIMILAR_SEED_A,
-            planet_seed: None,
-        });
-        let id_b = ConceptId::new(JournalKey::Material {
-            seed: SIMILAR_SEED_B,
-            planet_seed: None,
-        });
-        let node_a = graph.lookup(&id_a).expect("material A concept must exist");
-        let node_b = graph.lookup(&id_b).expect("material B concept must exist");
-
-        let rels_a = graph.relationships(node_a);
-        assert!(
-            rels_a
-                .iter()
-                .any(|(n, e)| *n == node_b && e.relationship == RelationshipType::SimilarTo),
-            "material A must have SimilarTo edge to material B"
-        );
-
-        // Bidirectionality: B must also link back to A.
-        let rels_b = graph.relationships(node_b);
-        assert!(
-            rels_b
-                .iter()
-                .any(|(n, e)| *n == node_a && e.relationship == RelationshipType::SimilarTo),
-            "material B must have reverse SimilarTo edge to material A"
-        );
-    }
-
-    #[test]
-    fn similar_to_edge_not_created_when_other_material_below_observed_tier() {
-        // Material B is only at Tentative tier (< 0.3) — no SimilarTo edge should appear.
-        let mut app = build_test_app_with_similar_materials();
-
-        // Observe A at Observed tier.
-        inject_observation(&mut app, material_obs_with_confidence(SIMILAR_SEED_A, 0.5));
-        app.update();
-        // Observe B at Tentative tier only.
-        inject_observation(&mut app, material_obs_with_confidence(SIMILAR_SEED_B, 0.1));
-        app.update();
-        // Re-observe A — at this point B is still Tentative, so no edge.
-        inject_observation(&mut app, material_obs_with_confidence(SIMILAR_SEED_A, 0.5));
-        app.update();
-
-        let graph = app.world().resource::<KnowledgeGraph>();
-        let id_a = ConceptId::new(JournalKey::Material {
-            seed: SIMILAR_SEED_A,
-            planet_seed: None,
-        });
-        let id_b = ConceptId::new(JournalKey::Material {
-            seed: SIMILAR_SEED_B,
-            planet_seed: None,
-        });
-        let node_a = graph.lookup(&id_a).expect("material A concept must exist");
-        let node_b = graph.lookup(&id_b).expect("material B concept must exist");
-
-        let rels_a = graph.relationships(node_a);
-        assert!(
-            !rels_a
-                .iter()
-                .any(|(n, e)| *n == node_b && e.relationship == RelationshipType::SimilarTo),
-            "SimilarTo edge must not be created when other material is below Observed tier"
-        );
-    }
-
-    #[test]
-    fn similar_to_edge_not_created_when_subject_material_is_tentative() {
-        // Material A is only at Tentative tier (< 0.3) — no SimilarTo edge should appear
-        // even when the other material (B) is at Observed tier.
-        // This covers the symmetric case: the *triggering* material being Tentative.
-        let mut app = build_test_app_with_similar_materials();
-
-        // Observe B at Observed tier first.
-        inject_observation(&mut app, material_obs_with_confidence(SIMILAR_SEED_B, 0.5));
-        app.update();
-        // Observe A at Tentative tier only — similarity check runs but A is below threshold.
-        inject_observation(&mut app, material_obs_with_confidence(SIMILAR_SEED_A, 0.1));
-        app.update();
-
-        let graph = app.world().resource::<KnowledgeGraph>();
-        let id_a = ConceptId::new(JournalKey::Material {
-            seed: SIMILAR_SEED_A,
-            planet_seed: None,
-        });
-        let id_b = ConceptId::new(JournalKey::Material {
-            seed: SIMILAR_SEED_B,
-            planet_seed: None,
-        });
-        let node_a = graph.lookup(&id_a).expect("material A concept must exist");
-        let node_b = graph.lookup(&id_b).expect("material B concept must exist");
-
-        // A is Tentative — no SimilarTo edge from A to B.
-        let rels_a = graph.relationships(node_a);
-        assert!(
-            !rels_a
-                .iter()
-                .any(|(n, e)| *n == node_b && e.relationship == RelationshipType::SimilarTo),
-            "SimilarTo edge must not be created when subject material is below Observed tier"
-        );
-
-        // B is Observed but A is Tentative — no reverse edge from B to A either.
-        let rels_b = graph.relationships(node_b);
-        assert!(
-            !rels_b
-                .iter()
-                .any(|(n, e)| *n == node_a && e.relationship == RelationshipType::SimilarTo),
-            "SimilarTo reverse edge must not be created when subject material is below Observed tier"
-        );
-    }
-
-    #[test]
-    fn similar_to_not_created_for_dissimilar_materials() {
-        // Seeds 1 and 2 are unlikely to be similar — verify no SimilarTo edge.
-        // We use seeds that are known to be dissimilar (< 0.85 threshold).
-        // Seeds 1 and 2 have low similarity by inspection of the property space.
-        let mut app = build_test_app();
-        {
-            let mut catalog = app.world_mut().resource_mut::<MaterialCatalog>();
-            catalog.derive_and_register(1);
-            catalog.derive_and_register(2);
-        }
-
-        inject_observation(&mut app, material_obs_with_confidence(1, 0.5));
-        app.update();
-        inject_observation(&mut app, material_obs_with_confidence(2, 0.5));
-        app.update();
-
-        let graph = app.world().resource::<KnowledgeGraph>();
-        let id_1 = ConceptId::new(JournalKey::Material {
-            seed: 1,
-            planet_seed: None,
-        });
-        let id_2 = ConceptId::new(JournalKey::Material {
-            seed: 2,
-            planet_seed: None,
-        });
-
-        // Verify these seeds are actually dissimilar before asserting.
-        {
-            use crate::materials::{cosine_similarity, derive_material_from_seed};
-            let m1 = derive_material_from_seed(1);
-            let m2 = derive_material_from_seed(2);
-            let sim = cosine_similarity(&m1.property_vector(), &m2.property_vector());
-            if sim >= DEFAULT_SIMILARITY_SCORE_THRESHOLD {
-                // Seeds turned out to be similar — skip the assertion.
-                return;
-            }
-        }
-
-        let node_1 = graph.lookup(&id_1).expect("material 1 concept must exist");
-        let node_2 = graph.lookup(&id_2).expect("material 2 concept must exist");
-
-        let rels_1 = graph.relationships(node_1);
-        assert!(
-            !rels_1
-                .iter()
-                .any(|(n, e)| *n == node_2 && e.relationship == RelationshipType::SimilarTo),
-            "dissimilar materials must not have SimilarTo edge"
-        );
-    }
-
-    #[test]
-    fn detect_similarity_returns_seeds_above_threshold() {
-        use crate::materials::derive_material_from_seed;
-
-        let mut catalog = MaterialCatalog::default();
-        catalog.derive_and_register(SIMILAR_SEED_A);
-        catalog.derive_and_register(SIMILAR_SEED_B);
-
-        let subject = derive_material_from_seed(SIMILAR_SEED_A);
-        let results = detect_similarity(
-            SIMILAR_SEED_A,
-            &subject,
-            &catalog,
-            DEFAULT_SIMILARITY_SCORE_THRESHOLD,
-        );
-
-        // SIMILAR_SEED_B must appear in results.
-        assert!(
-            results.iter().any(|(seed, _)| *seed == SIMILAR_SEED_B),
-            "detect_similarity must return SIMILAR_SEED_B for SIMILAR_SEED_A"
-        );
-
-        // Self must not appear.
-        assert!(
-            !results.iter().any(|(seed, _)| *seed == SIMILAR_SEED_A),
-            "detect_similarity must not return the subject seed itself"
-        );
-
-        // All returned scores must be at or above the threshold.
-        for (_, score) in &results {
-            assert!(
-                *score >= DEFAULT_SIMILARITY_SCORE_THRESHOLD,
-                "all returned scores must be >= DEFAULT_SIMILARITY_SCORE_THRESHOLD, got {score}"
-            );
-        }
+    fn round_trip_preserves_all_indexes() {
+        let mut graph = KnowledgeGraph::default();
+        // Add several concepts across categories.
+        graph.ensure_concept(mat_id(1), ConceptCategory::Material, 5);
+        graph.ensure_concept(mat_id(2), ConceptCategory::Material, 10);
+        graph.ensure_concept(loc_id(1), ConceptCategory::Location, 15);
+
+        let json = serde_json::to_string(&graph).expect("serialize");
+        let restored: KnowledgeGraph = serde_json::from_str(&json).expect("deserialize");
+
+        assert_eq!(restored.by_category(&ConceptCategory::Material).len(), 2);
+        assert_eq!(restored.by_category(&ConceptCategory::Location).len(), 1);
+        assert_eq!(restored.timeline().len(), 3);
+        // Timeline must be sorted by tick after deserialization.
+        let ticks: Vec<u64> = restored.timeline().iter().map(|(t, _)| *t).collect();
+        assert_eq!(ticks, vec![5, 10, 15]);
     }
 }

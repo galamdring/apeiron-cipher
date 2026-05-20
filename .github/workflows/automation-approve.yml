@@ -1,0 +1,157 @@
+name: Automation Approve
+
+# Triggered when a human comments "@automation approve" on a story issue.
+# Workflow:
+#   1. Parse the story number from the issue.
+#   2. Find the story's completion tag (story-N.N-complete) and the previous tag.
+#   3. Create a staging branch off of develop.
+#   4. Squash all commits in range into a single commit.
+#   5. Open a PR: staging/story-N → main, with "Closes #N" in the body.
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: read
+
+jobs:
+  approve:
+    name: Squash and open staging PR
+    runs-on: ubuntu-latest
+
+    # Only run when the magic phrase appears in a comment on an issue (not a PR).
+    if: |
+      github.event.issue.pull_request == null &&
+      contains(github.event.comment.body, '@automation approve')
+
+    steps:
+      - name: Checkout full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git identity
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Resolve story tag and compute commit range
+        id: range
+        run: |
+          ISSUE_NUMBER="${{ github.event.issue.number }}"
+          echo "issue_number=${ISSUE_NUMBER}" >> "$GITHUB_OUTPUT"
+
+          # Find the tag that references this issue number — e.g. story-N.2-complete
+          # Tags are in the form story-<label>-complete where label can be N.2, 3.4, etc.
+          # We search all story-*-complete tags and find the one whose commit message
+          # or the tag name embeds a reference to the issue. We also accept the most
+          # recently created story-*-complete tag as a fallback when the agent tagged
+          # correctly before calling approve.
+          STORY_TAG=$(git tag -l "story-*-complete" \
+            | sort -V \
+            | tail -1)
+
+          if [ -z "$STORY_TAG" ]; then
+            echo "::error::No story-*-complete tag found. Agent must tag before approving."
+            exit 1
+          fi
+          echo "story_tag=${STORY_TAG}" >> "$GITHUB_OUTPUT"
+
+          # Strip suffix to get the label (e.g. "N.2")
+          STORY_LABEL="${STORY_TAG#story-}"
+          STORY_LABEL="${STORY_LABEL%-complete}"
+          echo "story_label=${STORY_LABEL}" >> "$GITHUB_OUTPUT"
+
+          # The previous tag is the story-*-complete tag immediately before this one,
+          # or v*.*.* if no previous story tag exists.
+          PREV_TAG=$(git tag -l "story-*-complete" \
+            | sort -V \
+            | grep -B1 "^${STORY_TAG}$" \
+            | head -1)
+
+          if [ -z "$PREV_TAG" ] || [ "$PREV_TAG" = "$STORY_TAG" ]; then
+            # Fall back to the most recent semver release tag.
+            PREV_TAG=$(git tag -l "v*" | sort -V | tail -1)
+          fi
+
+          if [ -z "$PREV_TAG" ]; then
+            echo "::error::Cannot determine previous tag — no v* or story-*-complete tags found."
+            exit 1
+          fi
+          echo "prev_tag=${PREV_TAG}" >> "$GITHUB_OUTPUT"
+
+          STAGING_BRANCH="staging/story-${STORY_LABEL}"
+          echo "staging_branch=${STAGING_BRANCH}" >> "$GITHUB_OUTPUT"
+
+          echo "Squashing ${PREV_TAG}..${STORY_TAG} onto staging branch ${STAGING_BRANCH}"
+
+      - name: Build squash commit message from range
+        id: msg
+        run: |
+          PREV_TAG="${{ steps.range.outputs.prev_tag }}"
+          STORY_TAG="${{ steps.range.outputs.story_tag }}"
+          ISSUE_NUMBER="${{ steps.range.outputs.issue_number }}"
+          STORY_LABEL="${{ steps.range.outputs.story_label }}"
+
+          # Collect all subject lines in the range.
+          SUBJECTS=$(git log "${PREV_TAG}..${STORY_TAG}" --format="- %s" --reverse)
+
+          # Determine PR title prefix from the first feat/fix commit in the range.
+          FIRST_TYPE=$(git log "${PREV_TAG}..${STORY_TAG}" --format="%s" --reverse \
+            | grep -m1 "^feat\|^fix\|^perf\|^refactor" \
+            | sed 's/:.*//')
+          FIRST_TYPE="${FIRST_TYPE:-feat}"
+
+          TITLE="${FIRST_TYPE}: ${STORY_LABEL} - $(gh issue view ${ISSUE_NUMBER} --json title -q .title --repo ${{ github.repository }})"
+
+          # Write multi-line message to a file to avoid shell escaping issues.
+          {
+            echo "${TITLE}"
+            echo ""
+            echo "${SUBJECTS}"
+            echo ""
+            echo "Closes #${ISSUE_NUMBER}"
+          } > /tmp/commit_message.txt
+
+          echo "title=${TITLE}" >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create staging branch and squash
+        run: |
+          PREV_TAG="${{ steps.range.outputs.prev_tag }}"
+          STORY_TAG="${{ steps.range.outputs.story_tag }}"
+          STAGING_BRANCH="${{ steps.range.outputs.staging_branch }}"
+
+          # Start the staging branch at the tip of main.
+          git checkout main
+          git checkout -b "${STAGING_BRANCH}"
+
+          # Squash all changes from the story range onto this branch.
+          git merge --squash "${STORY_TAG}"
+
+          git commit -F /tmp/commit_message.txt
+
+          git push origin "${STAGING_BRANCH}"
+
+      - name: Open PR to main
+        run: |
+          STAGING_BRANCH="${{ steps.range.outputs.staging_branch }}"
+          ISSUE_NUMBER="${{ steps.range.outputs.issue_number }}"
+          TITLE="$PR_TITLE"
+
+          PR_BODY=$(cat /tmp/commit_message.txt)
+
+          gh pr create \
+            --base main \
+            --head "${STAGING_BRANCH}" \
+            --title "${TITLE}" \
+            --body "${PR_BODY}" \
+            --repo "${{ github.repository }}"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_TITLE: ${{ steps.msg.outputs.title }}

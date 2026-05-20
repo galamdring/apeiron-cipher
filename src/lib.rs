@@ -11,9 +11,11 @@ use bevy::prelude::*;
 
 pub mod carry;
 pub mod carry_feedback;
+pub mod classification;
 pub mod combination;
 pub mod debug_overlay;
 pub mod descriptions;
+pub mod diegetic_ui;
 pub mod fabricator;
 pub mod heat;
 pub mod input;
@@ -53,6 +55,8 @@ pub fn add_game_plugins(app: &mut App) {
         .add_plugins(input::InputPlugin)
         // Materials: data-driven material definitions with observable/hidden properties.
         .add_plugins(materials::MaterialPlugin)
+        // Material classifications: asset-defined property ranges for query-time type grouping.
+        .add_plugins(classification::MaterialClassificationsPlugin)
         // Exterior generation: deterministic baseline surface mineral deposits per active chunk.
         .add_plugins(world_generation::exterior::ExteriorGenerationPlugin)
         // Interaction: raycast, pickup/place, crosshair UI.
@@ -67,12 +71,14 @@ pub fn add_game_plugins(app: &mut App) {
         .add_plugins(observation::ObservationPlugin)
         // Journal: player-owned record of observations and fabrication history.
         .add_plugins(journal::JournalPlugin)
-        // Knowledge graph: cross-reference system linking journal entries.
+        // Knowledge graph: typed cross-reference edges between journal concepts (Story 10.5).
         .add_plugins(knowledge_graph::KnowledgeGraphPlugin)
         // Solar system: deterministic star/orbital/planet derivation from system seed.
         .add_plugins(solar_system::SolarSystemPlugin)
         // World generation: deterministic planet/chunk identity foundation for exterior systems.
         .add_plugins(world_generation::WorldGenerationPlugin)
+        // Diegetic UI: in-world information surface framework (Story 10.6).
+        .add_plugins(diegetic_ui::DiegeticUiPlugin)
         // Debug: terrain diagnostic overlay (temporary — remove before shipping).
         .add_plugins(debug_overlay::DebugOverlayPlugin);
 }

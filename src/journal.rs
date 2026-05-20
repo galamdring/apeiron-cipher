@@ -6,18 +6,21 @@
 //! fabricator. Unknown properties are omitted entirely rather than shown as
 //! placeholders.
 
-use std::collections::BTreeMap;
+use std::collections::VecDeque;
 
 use bevy::prelude::*;
 use leafwing_input_manager::prelude::*;
+use petgraph::graph::NodeIndex;
 use serde::{Deserialize, Serialize};
 use strum::IntoEnumIterator;
 
+use crate::classification::MaterialClassifications;
+use crate::diegetic_ui::{DiegeticFocusState, DiegeticSurface, DiegeticSurfaceKind};
 use crate::input::InputAction;
-use crate::knowledge_graph::{ConceptId, KnowledgeGraph, RelationshipType};
+use crate::knowledge_graph::{ConceptId, ConceptNode, KnowledgeGraph};
 use crate::observation::Confidence;
 use crate::player::{Player, cursor_is_captured, spawn_player};
-use crate::world_generation::{BiomeType, WorldProfile};
+use crate::world_generation::BiomeType;
 
 // ── Biome key type safety ──────────────────────────────────────────────
 
@@ -118,7 +121,7 @@ impl ObservationCategory {
     }
 
     /// Player-facing label used as a group header in the detail panel.
-    fn display_label(&self) -> &'static str {
+    pub fn display_label(&self) -> &'static str {
         match self {
             ObservationCategory::SurfaceAppearance => "Surface",
             ObservationCategory::ThermalBehavior => "Thermal",
@@ -180,46 +183,47 @@ pub struct Observation {
 
 /// Unique key identifying a journal subject.
 ///
-/// Each variant encodes both the *type* of subject (material, fabrication
-/// output, etc.) and the identity that distinguishes one instance from
+/// Each variant encodes both the *type* of subject (material instance,
+/// fabrication output, etc.) and the identity that distinguishes one from
 /// another. The enum is intentionally non-exhaustive so future systems
-/// (navigation, trade, language) can add variants without breaking
-/// existing match arms.
+/// (navigation, trade, language, material classification) can add variants
+/// without breaking existing match arms.
+///
+/// # Material identity
+///
+/// `MaterialInstance` identifies a specific observed material entity by its
+/// generation seed. Planet of origin is carried on [`RecordObservation`] as
+/// context for the `FoundOn` KnowledgeGraph edge — not baked into the key.
 ///
 /// `Ord` is derived so that `JournalKey` can serve as a `BTreeMap` key,
 /// giving the journal a stable, deterministic iteration order.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum JournalKey {
-    /// A raw or discovered material, keyed by its procedural seed.
+    /// A specific observed material instance, keyed by its generation seed.
     ///
-    /// The optional `planet_seed` records the planet on which this
-    /// material was first observed, so context-aware filters
-    /// (Story 10.3 — "entries relevant to current planet") can match
-    /// entries against the player's [`WorldProfile::planet_seed`]
-    /// without re-deriving provenance from observation history.
-    ///
-    /// `planet_seed` is `None` for entries created in contexts where
-    /// no planetary world profile is in scope (early bring-up, ad-hoc
-    /// integration tests, future non-planetary discovery sites).
-    /// Treating it as `Option<u64>` rather than baking in a sentinel
-    /// keeps the "unknown provenance" case explicit at every match
-    /// site.
-    ///
-    /// Field ordering is `seed` then `planet_seed` so the derived
-    /// `Ord` continues to sort primarily by material identity — the
-    /// existing journal iteration order is preserved when
-    /// `planet_seed` is `None` everywhere, which matches the
-    /// pre-extension behaviour bit-for-bit.
-    Material {
-        /// The deterministic seed that uniquely identifies this material
-        /// within the world generation system.
+    /// All knowledge accumulated about this material — density, reactivity,
+    /// thermal response, sightings — is stored on the KnowledgeGraph node
+    /// identified by this key.  Planet of origin is recorded as a `FoundOn`
+    /// edge on that node, not as part of this key.
+    MaterialInstance {
+        /// The generation seed that uniquely identifies this material instance.
         seed: u64,
-        /// The planet on which this material was first observed, taken
-        /// from `WorldProfile::planet_seed.0` at observation time.
-        /// `None` indicates the recording site had no planetary context
-        /// available; such entries are excluded from
-        /// [`JournalContext::CurrentPlanet`] filtering.
-        planet_seed: Option<u64>,
+    },
+    /// A material *type* (classification), grouping instances that share a
+    /// property profile into a named family — e.g. "cesium", "ferrite".
+    ///
+    /// Classification names are defined by asset-side ranges (Story N.3).
+    /// Until N.3 lands this variant is introduced here so the KnowledgeGraph
+    /// and journal query layer can represent type-level nodes; no instances
+    /// will carry this key until the classification system assigns them.
+    ///
+    /// A `MaterialInstance` node with seed `cesium-386` would be linked to
+    /// its `Material { classification: "cesium" }` node via a `ClassifiedAs`
+    /// edge once N.3 wires the classification pass.
+    Material {
+        /// The human-readable classification name assigned by the asset
+        /// pipeline (e.g. "cesium", "ferrite", "volatite").
+        classification: String,
     },
     /// The output of a fabrication process, keyed by the resulting
     /// material's seed.
@@ -227,34 +231,47 @@ pub enum JournalKey {
         /// The deterministic seed of the fabricated output material.
         output_seed: u64,
     },
+    /// A planetary or regional location, keyed by its planet seed.
+    ///
+    /// Created automatically by the knowledge graph system whenever a
+    /// material observation carries planet provenance — giving the graph
+    /// a concrete node to attach `FoundOn` and `ObservedAt` edges to.
+    /// Location entries are not displayed in the main journal entry list
+    /// because the player encounters planets through the world, not
+    /// through a catalog — but they are reachable as cross-reference
+    /// targets from material entries.
+    Location {
+        /// The planet seed that uniquely identifies this location within
+        /// the world generation system.  Matches `WorldProfile::planet_seed.0`.
+        planet_seed: u64,
+    },
 }
 
 impl JournalKey {
-    /// Planet on which the subject identified by this key was first
-    /// observed, when that information is available.
+    /// Planet on which the subject identified by this key was observed,
+    /// when that information is available.
     ///
-    /// Returns `Some(seed)` for [`JournalKey::Material`] entries that
-    /// were recorded with a planetary world profile in scope, and `None`
-    /// for materials recorded without one (early bring-up, ad-hoc
-    /// integration tests, future non-planetary discovery sites).
-    ///
-    /// [`JournalKey::Fabrication`] entries return `None` because
-    /// fabrications are produced at the player's fabricator and are
-    /// intentionally not tied to a discovery planet — the same recipe
-    /// produces the same output regardless of where it was crafted.  The
-    /// "current planet" filter therefore intentionally hides
-    /// fabrications, which matches the player-mental-model of the
-    /// filter ("show me things tied to where I am") better than
-    /// pretending fabrications belong to whichever planet the player
-    /// happened to be standing on at craft time.
-    ///
-    /// Used by [`matches_filter`] to evaluate
-    /// [`JournalContext::CurrentPlanet`] without re-deriving provenance
-    /// from observation history.
+    /// `Location` keys return their planet seed directly. All other variants
+    /// return `None` — planet provenance for material instances is stored on
+    /// the KnowledgeGraph node as a `FoundOn` edge, not on the key.
     pub fn planet_seed(&self) -> Option<u64> {
         match self {
-            JournalKey::Material { planet_seed, .. } => *planet_seed,
+            JournalKey::MaterialInstance { .. } => None,
+            JournalKey::Material { .. } => None,
             JournalKey::Fabrication { .. } => None,
+            JournalKey::Location { planet_seed } => Some(*planet_seed),
+        }
+    }
+
+    /// Map this key to the coarse [`crate::knowledge_graph::ConceptCategory`]
+    /// used for graph storage.
+    pub fn concept_category(&self) -> crate::knowledge_graph::ConceptCategory {
+        use crate::knowledge_graph::ConceptCategory;
+        match self {
+            JournalKey::MaterialInstance { .. } => ConceptCategory::Material,
+            JournalKey::Material { .. } => ConceptCategory::Material,
+            JournalKey::Fabrication { .. } => ConceptCategory::Fabrication,
+            JournalKey::Location { .. } => ConceptCategory::Location,
         }
     }
 }
@@ -341,69 +358,22 @@ pub struct JournalFilter {
     pub context: Option<JournalContext>,
 }
 
-/// Predicate evaluating whether a journal entry should be shown under the
-/// active filter.
+/// Predicate evaluating whether a knowledge-graph concept node should be shown
+/// under the active journal filter.
 ///
-/// The two filter dimensions combine with **AND** logic: an entry is
-/// kept when *every* `Some(_)` dimension matches it.  `None` on a
-/// dimension means "no restriction on this dimension" — the
-/// [`JournalFilter::default`] value (both dimensions `None`) therefore
-/// returns `true` for every entry, satisfying the Story 10.3
-/// acceptance criterion that the "All" filter shows everything.
-///
-/// Dimension semantics:
-///
-/// * **Category match** — the entry contains at least one observation
-///   whose [`Observation::category`] equals the requested category.  An
-///   entry with no observations cannot match any category restriction
-///   (the `any` fold returns `false` over an empty iterator), which is
-///   the correct behaviour: an entry with zero observations carries no
-///   evidence of belonging to any category.
-/// * **Context match** — the entry's captured location metadata
-///   matches the requested context.  For
-///   [`JournalContext::CurrentPlanet`] this consults
-///   [`JournalKey::planet_seed`]: an entry matches iff its key recorded
-///   the same planet seed.  Entries whose key has no planet seed
-///   (`None`) are excluded from current-planet filtering — this is by
-///   design (see [`JournalKey::Material::planet_seed`]'s docs):
-///   "unknown provenance" should not silently be assumed to mean
-///   "current planet".
-///
-///   [`JournalContext::CurrentBiome`] is not yet evaluated and
-///   currently returns `true` (no restriction).  Biome provenance is
-///   not captured on [`JournalKey`] today; wiring it up is tracked as a
-///   follow-up so that filter UI cycling can already expose the option
-///   without false-negative behaviour.  When biome capture is added,
-///   this arm changes to compare against the entry's recorded biome
-///   key — no other call site needs to change.
-///
-/// The function is intentionally pure (no `WorldContext` parameter):
-/// the filter already carries the planet seed / biome key it is
-/// matching against, and the entry already carries the metadata being
-/// matched.  Keeping the predicate parameter-light means it can be
-/// dropped into an iterator chain (`entries.filter(|e|
-/// matches_filter(e, &filter))`) without threading additional
-/// resources through the render pipeline.
-pub fn matches_filter(entry: &JournalEntry, filter: &JournalFilter) -> bool {
+/// Both filter dimensions combine with AND logic — a node is kept when every
+/// `Some(_)` dimension matches. `None` on any dimension means "no restriction",
+/// so the default filter (both `None`) keeps every node.
+pub fn matches_filter_node(node: &ConceptNode, filter: &JournalFilter) -> bool {
     let category_match = filter
         .category
         .as_ref()
-        .is_none_or(|cat| entry.observations.keys().any(|entry_cat| entry_cat == cat));
+        .is_none_or(|cat| node.observations.keys().any(|node_cat| node_cat == cat));
 
     let context_match = filter.context.as_ref().is_none_or(|ctx| match ctx {
         JournalContext::CurrentPlanet { planet_seed } => {
-            entry.key.planet_seed() == Some(*planet_seed)
+            node.origin_planet_seed == Some(*planet_seed)
         }
-        // Biome provenance is not yet captured on JournalKey; until it
-        // is, the biome filter is a no-op (matches everything) rather
-        // than excluding every entry.  Returning `true` here keeps the
-        // UI affordance usable without producing a misleading "no
-        // matching entries" panel for a filter that hasn't been
-        // wired through to the data model yet.
-        //
-        // When biome capture is added, this arm will compare the entry's
-        // recorded biome key against `biome_key.biome_type()` — no other
-        // call site needs to change.
         JournalContext::CurrentBiome { .. } => true,
     });
 
@@ -448,11 +418,11 @@ pub enum JournalSet {
 
 impl Plugin for JournalPlugin {
     fn build(&self, app: &mut App) {
-        app.add_message::<RecordObservation>()
-            .add_message::<ToggleJournalIntent>()
+        app.add_message::<ToggleJournalIntent>()
             .init_resource::<JournalUiState>()
             .init_resource::<JournalSelectionTracker>()
             .init_resource::<JournalRenderCache>()
+            .init_resource::<JournalNavigationStack>()
             .configure_sets(
                 Update,
                 (JournalSet::Navigate, JournalSet::Compute, JournalSet::Sync).chain(),
@@ -471,15 +441,20 @@ impl Plugin for JournalPlugin {
                     toggle_journal_visibility
                         .in_set(JournalSet::Navigate)
                         .after(emit_toggle_journal_intent),
-                    journal_navigation
+                    sync_journal_ui_state_from_focus
                         .in_set(JournalSet::Navigate)
                         .after(toggle_journal_visibility),
+                    journal_navigation
+                        .in_set(JournalSet::Navigate)
+                        .after(sync_journal_ui_state_from_focus),
                     update_journal_context_on_planet_change
                         .in_set(JournalSet::Navigate)
                         .after(journal_navigation),
-                    apply_observations.in_set(JournalSet::Navigate),
+                    journal_cross_ref_navigation
+                        .in_set(JournalSet::Navigate)
+                        .after(journal_navigation),
                     compute_journal_panels.in_set(JournalSet::Compute),
-                    append_cross_reference_spans
+                    populate_cross_ref_links
                         .in_set(JournalSet::Compute)
                         .after(compute_journal_panels),
                     sync_journal_ui.in_set(JournalSet::Sync),
@@ -488,364 +463,24 @@ impl Plugin for JournalPlugin {
     }
 }
 
-// ── Messages ────────────────────────────────────────────────────────────
+// ── Re-export observation message ────────────────────────────────────────
 
-/// Unified message for recording any observation in the player's journal.
+/// Re-exported for backward compatibility — `RecordObservation` now lives in
+/// [`crate::observation`] where all game-event types belong.
+pub use crate::observation::RecordObservation;
+
+// ── Player-owned journal component ──────────────────────────────────────
+
+/// Marker component attached to the player entity.
 ///
-/// Any game system (materials, heat, carry, fabrication, navigation, trade)
-/// sends this single message type instead of a per-category variant. The
-/// journal ingestion system routes based on the [`Observation::category`]
-/// field — callers only need to fill in the key, name, and observation.
-///
-/// **Planet seed handling:** For [`JournalKey::Material`] observations,
-/// the `planet_seed` field is automatically resolved by the ingestion
-/// system from the current [`WorldProfile`] resource. Observation producers
-/// should pass `planet_seed: None` and let the system fill it in centrally.
-/// This eliminates the need for every observation site to manually extract
-/// `world_profile.as_deref().map(|p| p.planet_seed.0)` and prevents silent
-/// failures when new observation sites forget this pattern.
-#[derive(Message, Clone)]
-pub struct RecordObservation {
-    /// Which journal subject this observation belongs to.
-    pub key: JournalKey,
-    /// Player-facing display name for the subject (used to initialise the
-    /// entry on first encounter; ignored for subsequent observations of the
-    /// same key).
-    pub name: String,
-    /// The observation payload including category, confidence, description,
-    /// and game-time tick.
-    pub observation: Observation,
-    /// For fabrication observations: the seeds of the input materials that
-    /// were combined to produce this output. Used by the knowledge graph to
-    /// create `DerivedFrom` edges. Empty for non-fabrication observations.
-    pub input_seeds: Vec<u64>,
-    /// The location where this observation occurred, if applicable. Used by
-    /// the knowledge graph to create `FoundOn` / `ObservedAt` edges. `None`
-    /// when the observation has no spatial context (e.g., fabrication results,
-    /// abstract property comparisons).
-    pub context_location: Option<JournalKey>,
-}
-
-// ── Player-owned journal data ───────────────────────────────────────────
-
-/// A journal entry that accumulates observations about a single subject over time.
-///
-/// Each entry is keyed by a [`JournalKey`] and holds a chronologically ordered
-/// vector of [`Observation`]s. The `first_observed_at` and `last_updated_at`
-/// timestamps track the game-time ticks bounding the observation window, which
-/// later systems (e.g., confidence decay, staleness indicators) can use without
-/// re-scanning all observations.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct JournalEntry {
-    /// The unique identifier for this journal subject.
-    pub key: JournalKey,
-    /// Player-facing display name for this subject.
-    pub name: String,
-    /// Observations grouped by category, each group in chronological order.
-    ///
-    /// Using a `BTreeMap` gives deterministic iteration order over categories
-    /// (important for rendering stability and save/load reproducibility).
-    /// Within each category the `Vec` preserves insertion (chronological) order.
-    pub observations: BTreeMap<ObservationCategory, Vec<Observation>>,
-    /// Game-time tick when the player first recorded *any* observation about
-    /// this subject.
-    pub first_observed_at: u64,
-    /// Game-time tick of the most recent observation recorded for this subject.
-    pub last_updated_at: u64,
-}
-
-impl JournalEntry {
-    /// Create a new journal entry with no observations yet recorded.
-    ///
-    /// The `tick` parameter sets both `first_observed_at` and `last_updated_at`
-    /// to the same initial value; they diverge once additional observations
-    /// arrive.
-    pub fn new(key: JournalKey, name: String, tick: u64) -> Self {
-        Self {
-            key,
-            name,
-            observations: BTreeMap::new(),
-            first_observed_at: tick,
-            last_updated_at: tick,
-        }
-    }
-
-    /// Record an observation, deduplicating against existing entries in the
-    /// same category group.
-    ///
-    /// If an observation with the same category **and** the same description
-    /// already exists, the duplicate is not appended. Instead, the existing
-    /// observation's confidence is upgraded to the higher of the two values
-    /// and the `last_updated_at` timestamp is advanced. This prevents the
-    /// journal from bloating when systems repeatedly report the same finding
-    /// (e.g., picking up the same material multiple times).
-    ///
-    /// When the observation is genuinely new (different category or different
-    /// description), it is appended to the appropriate category group.
-    pub fn add_observation(&mut self, observation: Observation) {
-        self.last_updated_at = observation.recorded_at;
-
-        let group = self
-            .observations
-            .entry(observation.category.clone())
-            .or_default();
-
-        // Look for an existing observation with the same description within this category.
-        if let Some(existing) = group
-            .iter_mut()
-            .find(|o| o.description == observation.description)
-        {
-            // Upgrade confidence if the new evidence is stronger.
-            if observation.confidence.0 > existing.confidence.0 {
-                existing.confidence = observation.confidence;
-            }
-            return;
-        }
-
-        group.push(observation);
-    }
-
-    /// Record an observation with confidence accumulation for existing observations.
-    ///
-    /// This method implements the confidence evolution system described in Story 10.4.
-    /// When an observation with the same category and description already exists,
-    /// it calls `accumulate()` on the existing observation's confidence using the
-    /// base observation weight from the configuration. This provides diminishing
-    /// returns as evidence accumulates, matching the technical design.
-    ///
-    /// When the observation is genuinely new (different category or different
-    /// description), it is appended to the appropriate category group.
-    pub fn add_observation_with_accumulation(
-        &mut self,
-        observation: Observation,
-        config: &crate::observation::ConfidenceConfig,
-    ) {
-        self.add_observation_with_domain_weighted_accumulation(observation, config, 1.0);
-    }
-
-    /// Add an observation with domain-weighted confidence accumulation.
-    ///
-    /// This method extends the basic accumulation system with domain-weighted
-    /// recovery. The recovery multiplier adjusts the accumulation rate based
-    /// on recent death context and whether the player is engaging with the
-    /// death-relevant domain.
-    ///
-    /// # Arguments
-    /// * `recovery_multiplier` - Multiplier applied to base observation weight
-    ///   - > 1.0 for death-relevant domain (faster recovery)
-    ///   - < 1.0 for unrelated domains (slower recovery)
-    ///   - = 1.0 for no death context (normal rate)
-    pub fn add_observation_with_domain_weighted_accumulation(
-        &mut self,
-        observation: Observation,
-        config: &crate::observation::ConfidenceConfig,
-        recovery_multiplier: f32,
-    ) {
-        self.last_updated_at = observation.recorded_at;
-
-        let group = self
-            .observations
-            .entry(observation.category.clone())
-            .or_default();
-
-        // Look for an existing observation with the same description within this category.
-        if let Some(existing) = group
-            .iter_mut()
-            .find(|o| o.description == observation.description)
-        {
-            // Apply domain-weighted recovery to the accumulation weight
-            let adjusted_weight = config.base_observation_weight * recovery_multiplier;
-
-            // Accumulate evidence using the confidence system with diminishing returns.
-            existing.confidence.accumulate(adjusted_weight);
-            return;
-        }
-
-        group.push(observation);
-    }
-
-    /// Return all observations matching a given category, in recorded order.
-    ///
-    /// Returns an empty slice if no observations exist for the category.
-    pub fn observations_by_category(&self, category: &ObservationCategory) -> &[Observation] {
-        self.observations
-            .get(category)
-            .map_or(&[], |v| v.as_slice())
-    }
-
-    /// Total number of observations across all categories.
-    pub fn observation_count(&self) -> usize {
-        self.observations.values().map(|v| v.len()).sum()
-    }
-
-    /// Iterator over all observations across all categories, ordered by
-    /// category (deterministic via `BTreeMap`) then by insertion order
-    /// within each category.
-    pub fn all_observations(&self) -> impl Iterator<Item = &Observation> {
-        self.observations.values().flat_map(|v| v.iter())
-    }
-}
-
-/// The player's journal — accumulates all observations about every subject
-/// the player has investigated.
-///
-/// Keyed by [`JournalKey`] so lookups are O(log n) and iteration order is
-/// deterministic (important for save/load reproducibility and test stability).
+/// As of Story 387 the `Journal` no longer stores observations — that data
+/// lives in [`KnowledgeGraph`] `ConceptNode`s. The component is kept so
+/// existing system queries (`With<Player>`, `With<Journal>`) continue to
+/// compile without change while the query layer is being migrated in Phase 5.
 #[derive(Component, Default, Clone, Debug, Serialize, Deserialize)]
-pub struct Journal {
-    /// All journal entries, keyed by subject identity.
-    ///
-    /// Serialized as a list of entries (not a JSON object) because
-    /// [`JournalKey`] is an enum and cannot serve as a JSON map key.
-    #[serde(with = "journal_entries_serde")]
-    pub entries: BTreeMap<JournalKey, JournalEntry>,
-}
-
-/// Serialize/deserialize a `BTreeMap<JournalKey, JournalEntry>` as a
-/// `Vec<JournalEntry>`. Each entry already carries its key, so the vec
-/// representation is lossless and avoids the JSON "keys must be strings"
-/// limitation.
-mod journal_entries_serde {
-    use super::*;
-    use serde::de::Deserializer;
-    use serde::ser::Serializer;
-
-    pub fn serialize<S: Serializer>(
-        map: &BTreeMap<JournalKey, JournalEntry>,
-        serializer: S,
-    ) -> Result<S::Ok, S::Error> {
-        let entries: Vec<&JournalEntry> = map.values().collect();
-        entries.serialize(serializer)
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(
-        deserializer: D,
-    ) -> Result<BTreeMap<JournalKey, JournalEntry>, D::Error> {
-        let entries: Vec<JournalEntry> = Vec::deserialize(deserializer)?;
-        Ok(entries.into_iter().map(|e| (e.key.clone(), e)).collect())
-    }
-}
-
-impl Journal {
-    /// Look up or create a journal entry for the given key.
-    ///
-    /// If no entry exists yet, one is created with the provided `name` and
-    /// `tick` as the initial observation timestamp. If an entry already exists,
-    /// the existing entry is returned unchanged (name is *not* overwritten —
-    /// the first observer wins).
-    pub fn ensure_entry(&mut self, key: JournalKey, name: &str, tick: u64) -> &mut JournalEntry {
-        self.entries
-            .entry(key.clone())
-            .or_insert_with(|| JournalEntry::new(key, name.to_string(), tick))
-    }
-
-    /// Record an observation against a subject, creating the entry if needed.
-    ///
-    /// This is the primary write path that future systems (materials, heat,
-    /// fabrication, navigation, trade, language) use to push knowledge into
-    /// the journal.
-    pub fn record(&mut self, key: JournalKey, name: &str, observation: Observation) {
-        let entry = self.ensure_entry(key, name, observation.recorded_at);
-        entry.add_observation(observation);
-    }
-
-    /// Record an observation with confidence accumulation for existing observations.
-    ///
-    /// This method uses the confidence accumulation system to properly handle
-    /// repeated observations of the same property. When an observation with the
-    /// same category and description already exists, it calls `accumulate()` on
-    /// the existing observation's confidence using the base observation weight
-    /// from the configuration.
-    pub fn record_with_accumulation(
-        &mut self,
-        key: JournalKey,
-        name: &str,
-        observation: Observation,
-        config: &crate::observation::ConfidenceConfig,
-    ) {
-        let entry = self.ensure_entry(key, name, observation.recorded_at);
-        entry.add_observation_with_accumulation(observation, config);
-    }
-
-    /// Record an observation with domain-weighted confidence accumulation.
-    ///
-    /// This method extends the basic accumulation system with domain-weighted
-    /// recovery based on recent death context. The recovery multiplier adjusts
-    /// the accumulation rate based on whether the player is engaging with the
-    /// death-relevant domain or avoiding it.
-    ///
-    /// # Arguments
-    /// * `recovery_multiplier` - Multiplier applied to base observation weight
-    ///   - > 1.0 for death-relevant domain (faster recovery)
-    ///   - < 1.0 for unrelated domains (slower recovery)
-    ///   - = 1.0 for no death context (normal rate)
-    pub fn record_with_domain_weighted_accumulation(
-        &mut self,
-        key: JournalKey,
-        name: &str,
-        observation: Observation,
-        config: &crate::observation::ConfidenceConfig,
-        recovery_multiplier: f32,
-    ) {
-        let entry = self.ensure_entry(key, name, observation.recorded_at);
-        entry.add_observation_with_domain_weighted_accumulation(
-            observation,
-            config,
-            recovery_multiplier,
-        );
-    }
-}
+pub struct Journal;
 
 // ── UI state ────────────────────────────────────────────────────────────
-
-/// Tracks navigation history for back-navigation through cross-references.
-///
-/// When the player follows a cross-reference link, the source entry's key is
-/// pushed onto this stack.  Pressing Backspace while the journal is open pops
-/// the stack and returns to the previous entry.  The stack is bounded by
-/// `max_depth` to prevent unbounded growth during deep exploration sessions.
-#[derive(Clone, Debug)]
-pub struct JournalNavigationStack {
-    /// Previously visited entry keys, oldest first.
-    pub history: Vec<JournalKey>,
-    /// Maximum number of entries retained in the history.  When the stack
-    /// reaches this limit, the oldest entry is dropped before pushing a new
-    /// one.
-    pub max_depth: usize,
-}
-
-impl JournalNavigationStack {
-    /// Default maximum history depth — deep enough for any reasonable
-    /// exploration session without unbounded memory growth.
-    const DEFAULT_MAX_DEPTH: usize = 32;
-
-    fn new() -> Self {
-        Self {
-            history: Vec::new(),
-            max_depth: Self::DEFAULT_MAX_DEPTH,
-        }
-    }
-
-    /// Push a key onto the history stack, evicting the oldest entry when the
-    /// stack is at capacity.
-    fn push(&mut self, key: JournalKey) {
-        if self.history.len() >= self.max_depth {
-            self.history.remove(0);
-        }
-        self.history.push(key);
-    }
-
-    /// Pop the most recently visited key, returning it if the stack is
-    /// non-empty.
-    fn pop(&mut self) -> Option<JournalKey> {
-        self.history.pop()
-    }
-
-    /// Whether the stack has any history to go back to.
-    fn can_go_back(&self) -> bool {
-        !self.history.is_empty()
-    }
-}
 
 /// Tracks the journal panel's visibility and navigation state.
 ///
@@ -891,19 +526,6 @@ pub struct JournalUiState {
     /// accessor and setter on this type, keeping the [`JournalSet`]
     /// ordering contract enforceable.
     filter: JournalFilter,
-    /// Index of the currently highlighted cross-reference link in the detail
-    /// panel, or `None` when no link is focused.
-    ///
-    /// When `Some(i)`, the i-th cross-reference link in the "Related" section
-    /// is highlighted and can be followed with Enter.  Arrow keys within the
-    /// detail panel cycle through links; Escape or ArrowLeft returns to the
-    /// entry list without following a link.
-    selected_link_index: Option<usize>,
-    /// Navigation history for back-navigation through cross-reference links.
-    ///
-    /// When the player follows a link, the source entry's key is pushed here.
-    /// Backspace pops the stack and returns to the previous entry.
-    navigation_stack: JournalNavigationStack,
 }
 
 impl JournalUiState {
@@ -973,19 +595,6 @@ impl JournalUiState {
         self.filter = filter;
     }
 
-    /// Index of the currently highlighted cross-reference link, or `None`
-    /// when no link is focused.
-    #[allow(dead_code)]
-    pub fn selected_link_index(&self) -> Option<usize> {
-        self.selected_link_index
-    }
-
-    /// Whether the navigation stack has any history to go back to.
-    #[allow(dead_code)]
-    pub fn can_go_back(&self) -> bool {
-        self.navigation_stack.can_go_back()
-    }
-
     /// Clamp `selected_index` and `scroll_offset` so they stay within valid
     /// bounds for the given total entry count.  Called after any navigation
     /// input and before rendering so the UI never references out-of-range
@@ -1016,8 +625,6 @@ impl Default for JournalUiState {
             scroll_offset: 0,
             entries_per_page: Self::DEFAULT_ENTRIES_PER_PAGE,
             filter: JournalFilter::default(),
-            selected_link_index: None,
-            navigation_stack: JournalNavigationStack::new(),
         }
     }
 }
@@ -1084,6 +691,68 @@ struct JournalSelectionTracker {
     last_scroll_offset: usize,
 }
 
+// ── Cross-reference navigation stack ────────────────────────────────────
+
+/// Tracks the player's breadcrumb trail through journal cross-reference links.
+///
+/// When the player presses Enter on a cross-reference link, the current
+/// entry's [`JournalKey`] is pushed here before the view jumps to the
+/// linked entry. Pressing Backspace pops the stack and returns to the
+/// previous entry. This gives the player a browser-history-like
+/// back-navigation experience.
+///
+/// The stack is bounded at [`Self::MAX_DEPTH`] entries to prevent
+/// unbounded growth from very long browsing sessions. When the limit is
+/// reached, the oldest entry is silently dropped (the stack slides).
+///
+/// Persists across journal close/reopen so the player can close the
+/// journal mid-browse and return to their trail.
+#[derive(Resource, Default)]
+pub struct JournalNavigationStack {
+    /// Breadcrumb entries from oldest to newest.
+    ///
+    /// Back of the deque is the most recently visited entry — the one that
+    /// Backspace will return the player to. Front of the deque is the oldest
+    /// entry (evicted first when the depth limit is reached).
+    history: VecDeque<(JournalKey, JournalFilter)>,
+}
+
+impl JournalNavigationStack {
+    /// Maximum number of entries held in the navigation history.
+    ///
+    /// Capped to prevent unbounded memory growth and to keep the
+    /// back-navigation depth reasonable. 32 steps should cover any
+    /// real browsing session.
+    pub const MAX_DEPTH: usize = 32;
+
+    /// Push the current entry and active filter onto the back-navigation stack
+    /// before jumping to a cross-reference target. Backspace pops and restores
+    /// both.
+    pub fn push(&mut self, key: JournalKey, filter: JournalFilter) {
+        if self.history.len() >= Self::MAX_DEPTH {
+            // Evict the oldest entry in O(1) — VecDeque makes this free.
+            self.history.pop_front();
+        }
+        self.history.push_back((key, filter));
+    }
+
+    /// Pop and return the most recent entry on the back-navigation stack.
+    ///
+    /// Returns `None` when the history is empty (the player is already at
+    /// their starting point and there is nothing to go back to).
+    pub fn pop(&mut self) -> Option<(JournalKey, JournalFilter)> {
+        self.history.pop_back()
+    }
+
+    /// Returns `true` when there are entries on the back-navigation stack.
+    ///
+    /// Used by the navigation system to decide whether to show the Backspace
+    /// hint in the help bar.
+    pub fn can_go_back(&self) -> bool {
+        !self.history.is_empty()
+    }
+}
+
 /// Root container for the entire journal overlay (two-panel layout).
 #[derive(Component)]
 struct JournalPanel;
@@ -1108,7 +777,7 @@ fn attach_journal_to_player(mut commands: Commands, player_query: Query<Entity, 
     let Ok(player) = player_query.single() else {
         return;
     };
-    commands.entity(player).insert(Journal::default());
+    commands.entity(player).insert(Journal);
 }
 
 /// Spawns the two-panel journal overlay: a vertical flex container holding
@@ -1138,6 +807,27 @@ fn spawn_journal_ui(mut commands: Commands) {
     commands
         .spawn((
             JournalPanel,
+            // ── Diegetic surface registration (Story 10.6) ───────────────
+            //
+            // The journal is an in-world datapad the player holds up to read,
+            // not a HUD overlay.  Attaching these three components registers it
+            // with the DiegeticUiPlugin:
+            //   • DiegeticSurface  — marks it as a diegetic information surface
+            //     so the CI compliance test can verify no rogue screen-space text exists.
+            //   • DiegeticSurfaceKind::Readable — declares interaction model.
+            //     The player "holds up" the datapad (Active state); physical distance
+            //     does not drive focus here because the journal is always on the player.
+            //     The ranges are set to 0.0 so proximity logic collapses to Focused
+            //     the moment the entity exists — actual open/close is managed by
+            //     toggle_journal_datapad_focus below.
+            //   • DiegeticFocusState::OutOfRange — journal starts closed.
+            DiegeticSurface,
+            DiegeticSurfaceKind::Readable {
+                perceivable_range: 0.0,
+                legible_range: 0.0,
+            },
+            DiegeticFocusState::OutOfRange,
+            // ─────────────────────────────────────────────────────────────
             Node {
                 position_type: PositionType::Absolute,
                 top: Val::Px(24.0),
@@ -1258,9 +948,14 @@ fn spawn_journal_ui(mut commands: Commands) {
 
 fn emit_toggle_journal_intent(
     player_query: Query<&ActionState<InputAction>, With<Player>>,
-    cursor_options: Single<&bevy::window::CursorOptions>,
+    cursor_options: Option<Single<&bevy::window::CursorOptions>>,
     mut writer: MessageWriter<ToggleJournalIntent>,
 ) {
+    // If no window entity exists (e.g. headless integration tests), the journal
+    // cannot receive input — skip gracefully.
+    let Some(cursor_options) = cursor_options else {
+        return;
+    };
     if !cursor_is_captured(cursor_options.grab_mode) {
         return;
     }
@@ -1275,11 +970,38 @@ fn emit_toggle_journal_intent(
 
 fn toggle_journal_visibility(
     mut reader: MessageReader<ToggleJournalIntent>,
-    mut state: ResMut<JournalUiState>,
+    mut panel_query: Query<&mut DiegeticFocusState, With<JournalPanel>>,
 ) {
     for _ in reader.read() {
-        state.visible = !state.visible;
+        let Ok(mut focus) = panel_query.single_mut() else {
+            continue;
+        };
+        // Toggle the journal datapad between Active (open) and OutOfRange (closed).
+        // DiegeticUiPlugin's VisibilitySync will flip the Visibility component;
+        // sync_journal_ui_state_from_focus keeps JournalUiState.visible in lockstep.
+        *focus = match *focus {
+            DiegeticFocusState::Active => DiegeticFocusState::OutOfRange,
+            _ => DiegeticFocusState::Active,
+        };
     }
+}
+
+/// Keeps [`JournalUiState::visible`] in lockstep with the journal panel's
+/// [`DiegeticFocusState`].
+///
+/// All existing journal systems (navigation, compute, sync) gate on
+/// `JournalUiState::visible` — this bridge system means none of them need
+/// to know about the diegetic framework.  It runs in [`JournalSet::Navigate`]
+/// before navigation so that `compute_journal_panels` always sees a
+/// consistent `visible` flag.
+fn sync_journal_ui_state_from_focus(
+    panel_query: Query<&DiegeticFocusState, With<JournalPanel>>,
+    mut state: ResMut<JournalUiState>,
+) {
+    let Ok(focus) = panel_query.single() else {
+        return;
+    };
+    state.visible = matches!(focus, DiegeticFocusState::Active);
 }
 
 // ── Navigation ──────────────────────────────────────────────────────────
@@ -1298,30 +1020,13 @@ fn toggle_journal_visibility(
 /// - Home/End: jump to first/last entry.
 /// - Scroll offset auto-adjusts via `clamp_to_entry_count` so the
 ///   selected entry is always within the visible window.
-/// - When a cross-reference link is focused (selected_link_index is Some):
-///   - Up/Down moves the link cursor within the "Related" section.
-///   - Enter follows the focused link, pushing the current entry onto the
-///     navigation stack and jumping to the related entry.
-///   - Backspace or Escape clears the link cursor without navigating.
-/// - Backspace when no link is focused pops the navigation stack and
-///   returns to the previously visited entry.
 fn journal_navigation(
     mut state: ResMut<JournalUiState>,
     keys: Res<ButtonInput<KeyCode>>,
-    q: Query<&Journal, With<Player>>,
-    world_profile: Option<Res<crate::world_generation::WorldProfile>>,
     graph: Option<Res<KnowledgeGraph>>,
+    world_profile: Option<Res<crate::world_generation::WorldProfile>>,
 ) {
     if !state.visible {
-        return;
-    }
-
-    let Ok(journal) = q.single() else {
-        return;
-    };
-
-    let entry_count = journal.entries.len();
-    if entry_count == 0 {
         return;
     }
 
@@ -1411,180 +1116,136 @@ fn journal_navigation(
         state.scroll_offset = 0;
     }
 
-    // ── Cross-reference link navigation ───────────────────────────────
-    //
-    // When a link is focused (selected_link_index is Some), arrow keys move
-    // the cursor within the "Related" section.  Enter follows the focused
-    // link.  Escape or Backspace clears the cursor.
-    //
-    // When no link is focused, Backspace pops the navigation stack to return
-    // to the previously visited entry.  Tab/Shift+Tab and arrow keys operate
-    // on the entry list as usual.
-    //
-    // The link count is derived from the KnowledgeGraph for the currently
-    // selected entry.  When the graph is absent (test apps) link navigation
-    // is silently skipped.
-    let link_count = graph.as_ref().and_then(|g| {
-        let mut sorted: Vec<&JournalEntry> = journal.entries.values().collect();
-        sorted.sort_by(|a, b| a.name.cmp(&b.name));
-        let filtered: Vec<&JournalEntry> = sorted
-            .into_iter()
-            .filter(|e| matches_filter(e, state.filter()))
-            .collect();
-        let entry = filtered.get(state.selected_index)?;
-        let node_idx = g.lookup(&ConceptId::new(entry.key.clone()))?;
-        let rels = g.relationships(node_idx);
-        if rels.is_empty() {
-            None
-        } else {
-            Some(rels.len())
-        }
-    });
-
-    if let Some(link_idx) = state.selected_link_index {
-        // ── Link cursor is active ──────────────────────────────────────
-        let count = link_count.unwrap_or(0);
-
-        if keys.just_pressed(KeyCode::ArrowUp) {
-            state.selected_link_index = if link_idx == 0 {
-                // Wrap back to entry list navigation by clearing the cursor.
-                None
-            } else {
-                Some(link_idx - 1)
-            };
-            // Early return — do not also move the entry list selection.
-            state.clamp_to_entry_count(entry_count);
-            return;
-        }
-        if keys.just_pressed(KeyCode::ArrowDown) {
-            if count > 0 && link_idx + 1 < count {
-                state.selected_link_index = Some(link_idx + 1);
-            }
-            state.clamp_to_entry_count(entry_count);
-            return;
-        }
-        if keys.just_pressed(KeyCode::Escape) || keys.just_pressed(KeyCode::ArrowLeft) {
-            // Cancel link focus without navigating.
-            state.selected_link_index = None;
-            state.clamp_to_entry_count(entry_count);
-            return;
-        }
-        if keys.just_pressed(KeyCode::Backspace) {
-            // Backspace while a link is focused: cancel link focus first.
-            state.selected_link_index = None;
-            state.clamp_to_entry_count(entry_count);
-            return;
-        }
-        if keys.just_pressed(KeyCode::Enter) {
-            // Follow the focused link: look up the target entry and jump to it.
-            if let Some(g) = graph.as_ref() {
-                let mut sorted: Vec<&JournalEntry> = journal.entries.values().collect();
-                sorted.sort_by(|a, b| a.name.cmp(&b.name));
-                let filtered: Vec<&JournalEntry> = sorted
-                    .iter()
-                    .copied()
-                    .filter(|e| matches_filter(e, state.filter()))
-                    .collect();
-                if let Some(current_entry) = filtered.get(state.selected_index) {
-                    let concept_id = ConceptId::new(current_entry.key.clone());
-                    if let Some(node_idx) = g.lookup(&concept_id) {
-                        let rels = g.relationships(node_idx);
-                        // Build ref_lines in the same sort order as
-                        // append_cross_reference_spans: (rel_label, target_name).
-                        let mut ref_lines: Vec<(String, String, JournalKey)> = rels
-                            .iter()
-                            .filter_map(|(neighbor_idx, edge)| {
-                                let neighbor_node = g.node(*neighbor_idx)?;
-                                let target_key = neighbor_node.id.key().clone();
-                                let rel_label =
-                                    relationship_display_label(&edge.relationship).to_string();
-                                let target_name = journal
-                                    .entries
-                                    .get(&target_key)
-                                    .map(|e| e.name.clone())
-                                    .unwrap_or_else(|| format!("{target_key:?}"));
-                                Some((rel_label, target_name, target_key))
-                            })
-                            .collect();
-                        ref_lines.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
-
-                        if let Some((_, _, target_key)) = ref_lines.get(link_idx) {
-                            // Push the current entry onto the navigation stack.
-                            state.navigation_stack.push(current_entry.key.clone());
-                            // Find the target entry's index in the filtered list.
-                            if let Some(target_pos) =
-                                filtered.iter().position(|e| &e.key == target_key)
-                            {
-                                state.selected_index = target_pos;
-                            }
-                            // Clear the link cursor after following the link.
-                            state.selected_link_index = None;
-                        }
-                    }
-                }
-            }
-            state.clamp_to_entry_count(entry_count);
-            return;
-        }
-        // Any other key while link cursor is active: fall through to normal
-        // entry-list navigation (Tab, Shift+Tab, PageUp/Down, Home/End).
-    } else {
-        // ── No link cursor — handle Backspace for back-navigation ─────
-        if keys.just_pressed(KeyCode::Backspace) && state.navigation_stack.can_go_back() {
-            if let Some(prev_key) = state.navigation_stack.pop() {
-                // Find the previous entry in the filtered list.
-                let mut sorted: Vec<&JournalEntry> = journal.entries.values().collect();
-                sorted.sort_by(|a, b| a.name.cmp(&b.name));
-                let filtered: Vec<&JournalEntry> = sorted
-                    .into_iter()
-                    .filter(|e| matches_filter(e, state.filter()))
-                    .collect();
-                if let Some(pos) = filtered.iter().position(|e| e.key == prev_key) {
-                    state.selected_index = pos;
-                }
-            }
-            state.clamp_to_entry_count(entry_count);
-            return;
-        }
-
-        // ArrowRight enters link mode when the selected entry has cross-references.
-        if keys.just_pressed(KeyCode::ArrowRight) && link_count.is_some() {
-            state.selected_link_index = Some(0);
-            state.clamp_to_entry_count(entry_count);
-            return;
-        }
+    // ── Navigation keys — only when there are entries ─────────────────
+    let entry_count = graph
+        .as_ref()
+        .map(|g| g.named_node_count_filtered(state.filter()))
+        .unwrap_or(0);
+    if entry_count == 0 {
+        return;
     }
 
     if keys.just_pressed(KeyCode::ArrowUp) {
         state.selected_index = state.selected_index.saturating_sub(1);
-        // Moving the entry list selection clears any stale link cursor.
-        state.selected_link_index = None;
     }
     if keys.just_pressed(KeyCode::ArrowDown) {
         state.selected_index = (state.selected_index + 1).min(entry_count - 1);
-        state.selected_link_index = None;
     }
     if keys.just_pressed(KeyCode::PageUp) {
         state.selected_index = state.selected_index.saturating_sub(state.entries_per_page);
-        state.selected_link_index = None;
     }
     if keys.just_pressed(KeyCode::PageDown) {
         state.selected_index = (state.selected_index + state.entries_per_page).min(entry_count - 1);
-        state.selected_link_index = None;
     }
     if keys.just_pressed(KeyCode::Home) {
         state.selected_index = 0;
-        state.selected_link_index = None;
     }
     if keys.just_pressed(KeyCode::End) {
         state.selected_index = entry_count - 1;
-        state.selected_link_index = None;
     }
 
     state.clamp_to_entry_count(entry_count);
 }
 
-/// System that automatically updates the journal context filter when the
+/// Handles cross-reference link navigation within the journal detail panel.
+///
+/// Runs in Update in [`JournalSet::Navigate`], after `journal_navigation`.
+/// Only active when the journal is visible and the current entry has cross-
+/// reference links (i.e. `cache.cross_ref_links` is non-empty).
+///
+/// Key bindings:
+/// - `Alt+Down` / `Alt+Up` — cycle the highlighted cross-reference link.
+/// - `Enter` — follow the highlighted link: push current key onto
+///   [`JournalNavigationStack`], then find the linked entry's position
+///   in the sorted filtered list and set `selected_index` to it.
+/// - `Backspace` — pop the navigation stack and return to the previous
+///   entry.
+fn journal_cross_ref_navigation(
+    mut state: ResMut<JournalUiState>,
+    mut cache: ResMut<JournalRenderCache>,
+    mut nav_stack: ResMut<JournalNavigationStack>,
+    keys: Res<ButtonInput<KeyCode>>,
+    graph: Option<Res<KnowledgeGraph>>,
+) {
+    if !state.visible {
+        return;
+    }
+
+    // ── Back-navigation (Backspace) ─────────────────────────────────
+    if keys.just_pressed(KeyCode::Backspace) {
+        if let Some((prev_key, prev_filter)) = nav_stack.pop() {
+            state.set_filter(prev_filter);
+            if let Some(graph) = graph.as_ref() {
+                let sorted = graph.nodes_sorted_by_name();
+                let filtered: Vec<NodeIndex> = sorted
+                    .into_iter()
+                    .filter(|&idx| {
+                        graph
+                            .node(idx)
+                            .is_some_and(|n| matches_filter_node(n, state.filter()))
+                    })
+                    .collect();
+                let target_id = ConceptId(prev_key);
+                if let Some(pos) = filtered
+                    .iter()
+                    .position(|&idx| graph.lookup(&target_id).is_some_and(|ti| ti == idx))
+                {
+                    state.selected_index = pos;
+                    state.scroll_offset = pos.saturating_sub(state.entries_per_page / 2);
+                    state.clamp_to_entry_count(filtered.len());
+                }
+            }
+        }
+        return;
+    }
+
+    let link_count = cache.cross_ref_links.len();
+    if link_count == 0 {
+        return;
+    }
+
+    // ── Cross-ref link cursor movement (Alt+Up / Alt+Down) ───────────
+    let alt = keys.pressed(KeyCode::AltLeft) || keys.pressed(KeyCode::AltRight);
+    if alt && keys.just_pressed(KeyCode::ArrowDown) {
+        cache.selected_cross_ref = (cache.selected_cross_ref + 1).min(link_count - 1);
+    }
+    if alt && keys.just_pressed(KeyCode::ArrowUp) {
+        cache.selected_cross_ref = cache.selected_cross_ref.saturating_sub(1);
+    }
+
+    // ── Follow cross-reference (Enter) ────────────────────────────────
+    if keys.just_pressed(KeyCode::Enter) {
+        let selected_idx = cache.selected_cross_ref.min(link_count - 1);
+        let (_, target_key, _) = cache.cross_ref_links[selected_idx].clone();
+
+        let Some(graph) = graph.as_ref() else {
+            return;
+        };
+
+        let sorted = graph.nodes_sorted_by_name();
+
+        // Push the current selection AND active filter onto the back-nav stack.
+        if let Some(&current_idx) = sorted.get(state.selected_index)
+            && let Some(node) = graph.node(current_idx)
+        {
+            nav_stack.push(node.id.0.clone(), state.filter().clone());
+        }
+
+        // Clear filter so the target is always in view, then jump.
+        state.set_filter(JournalFilter::default());
+        let sorted_all = graph.nodes_sorted_by_name();
+        let target_id = ConceptId(target_key);
+        if let Some(pos) = sorted_all
+            .iter()
+            .position(|&idx| graph.lookup(&target_id).is_some_and(|ti| ti == idx))
+        {
+            state.selected_index = pos;
+            state.scroll_offset = pos.saturating_sub(state.entries_per_page / 2);
+            state.clamp_to_entry_count(sorted_all.len());
+            cache.selected_cross_ref = 0;
+        }
+    }
+}
 /// planet changes (WorldProfile resource changes).
 ///
 /// When the player switches planets, this system detects the change in
@@ -1638,66 +1299,6 @@ fn update_journal_context_on_planet_change(
     }
 }
 
-// ── Record ingestion ────────────────────────────────────────────────────
-
-/// Unified ingestion system — reads [`RecordObservation`] messages and
-/// writes them into the player's [`Journal`] with domain-weighted recovery.
-///
-/// Callers pass `recorded_at: 0` — this system overwrites with real
-/// elapsed time so caller signatures stay lean.
-///
-/// The system applies domain-weighted confidence recovery based on recent
-/// death context. If the player died recently and is now observing the
-/// death-relevant domain, confidence accumulates faster. If they're
-/// avoiding the death domain, it accumulates slower.
-fn apply_observations(
-    mut reader: MessageReader<RecordObservation>,
-    mut player_query: Query<&mut Journal, With<Player>>,
-    time: Res<Time>,
-    config: Res<crate::observation::ConfidenceConfig>,
-    death_context: Option<Res<crate::observation::DeathContext>>,
-    world_profile: Option<Res<WorldProfile>>,
-) {
-    let Ok(mut journal) = player_query.single_mut() else {
-        return;
-    };
-
-    let tick = time.elapsed().as_millis() as u64;
-    let current_planet_seed = world_profile.as_deref().map(|p| p.planet_seed.0);
-
-    for event in reader.read() {
-        let mut obs = event.observation.clone();
-        obs.recorded_at = tick;
-
-        // Automatically resolve planet_seed for Material observations if not already set
-        let key = match &event.key {
-            JournalKey::Material {
-                seed,
-                planet_seed: None,
-            } => JournalKey::Material {
-                seed: *seed,
-                planet_seed: current_planet_seed,
-            },
-            key => key.clone(),
-        };
-
-        // Calculate recovery multiplier based on death context
-        let recovery_multiplier = if let Some(death_ctx) = &death_context {
-            death_ctx.recovery_multiplier(&obs.category, tick, &config)
-        } else {
-            1.0 // No death context, use base rate
-        };
-
-        journal.record_with_domain_weighted_accumulation(
-            key,
-            &event.name,
-            obs,
-            &config,
-            recovery_multiplier,
-        );
-    }
-}
-
 /// Cached text output computed by `compute_journal_panels` and consumed
 /// by `sync_journal_ui` to update the Bevy `Text` nodes.  Keeping the
 /// computation and UI sync in separate systems allows each system to stay
@@ -1714,6 +1315,23 @@ struct JournalRenderCache {
     detail_spans: Vec<DetailSpan>,
     /// Text for the bottom help bar.
     help: String,
+    /// Cross-reference links available on the currently selected entry.
+    ///
+    /// Each entry is `(relationship_label, target_key, target_name)`. The
+    /// navigation system uses this list to jump to a related entry when Enter
+    /// is pressed. Populated each frame by `compute_journal_panels`.
+    cross_ref_links: Vec<(String, JournalKey, String)>,
+    /// Index of the currently highlighted cross-reference link.
+    ///
+    /// `0` when no cross-references exist (no link is highlighted). Clamped
+    /// to `[0, cross_ref_links.len() - 1]` each frame.
+    selected_cross_ref: usize,
+    /// The journal key of the entry whose cross-references are currently cached.
+    ///
+    /// When `populate_cross_ref_links` finds a different selected entry than this
+    /// key, it resets `selected_cross_ref` to 0 so the link cursor doesn't carry
+    /// over from a different entry.
+    cross_ref_entry_key: Option<JournalKey>,
 }
 
 /// A single line in the entry list panel, carrying its display text and
@@ -1739,15 +1357,18 @@ enum DetailSpanKind {
     /// Qualitative confidence label (e.g. "Uncertain", "Noted", "Confirmed")
     /// rendered after each observation description in a subdued style.
     ConfidenceLabel,
-    /// Section header for the "Related" cross-reference block (e.g. "\n\nRelated").
-    CrossReferenceHeader,
-    /// A single cross-reference link line (e.g. "\n  → Found on: Volcanic Plains").
-    CrossReferenceLink,
-    /// A cross-reference link that is currently highlighted by the link cursor.
-    /// Rendered with a brighter color to signal that Enter will follow it.
-    CrossReferenceLinkSelected,
     /// Placeholder text when the journal is empty.
     Placeholder,
+    /// A cross-reference link in the "Related" section.
+    ///
+    /// The selected link is highlighted with a brighter cyan accent so the
+    /// player can see which one Enter will follow.  Unselected links use a
+    /// muted teal.
+    CrossRef {
+        /// Whether this link is the one currently highlighted by the
+        /// cross-reference cursor (i.e. Enter will follow this link).
+        selected: bool,
+    },
 }
 
 /// A styled segment in the detail panel.  The panel is rebuilt each frame
@@ -1787,7 +1408,8 @@ struct DetailSpan {
 ///   onto whatever entry is now selected.
 fn compute_journal_panels(
     mut state: ResMut<JournalUiState>,
-    player_query: Query<&Journal, With<Player>>,
+    graph: Option<Res<KnowledgeGraph>>,
+    classifications: Option<Res<MaterialClassifications>>,
     mut cache: ResMut<JournalRenderCache>,
     mut tracker: ResMut<JournalSelectionTracker>,
 ) {
@@ -1799,7 +1421,7 @@ fn compute_journal_panels(
         return;
     }
 
-    let Ok(journal) = player_query.single() else {
+    let Some(graph) = graph else {
         cache.filter_bar.clear();
         cache.list_lines.clear();
         cache.detail_spans.clear();
@@ -1807,76 +1429,59 @@ fn compute_journal_panels(
         return;
     };
 
-    // Sort entries alphabetically for stable display order.
-    let mut sorted_entries: Vec<&JournalEntry> = journal.entries.values().collect();
-    sorted_entries.sort_by(|a, b| a.name.cmp(&b.name));
-
-    // Apply active filter to the sorted entries
-    let filtered_entries: Vec<&JournalEntry> = sorted_entries
+    // Alphabetically sorted, filtered node list.
+    let filtered_nodes: Vec<NodeIndex> = graph
+        .nodes_sorted_by_name()
         .into_iter()
-        .filter(|entry| matches_filter(entry, state.filter()))
+        .filter(|&idx| {
+            graph
+                .node(idx)
+                .is_some_and(|n| matches_filter_node(n, state.filter()))
+        })
         .collect();
 
-    let entry_count = filtered_entries.len();
+    let entry_count = filtered_nodes.len();
+    let has_any = graph.named_node_count() > 0;
 
     // ── Selection reconciliation ────────────────────────────────────
-    //
-    // Only follow the tracked key when the user did NOT navigate this
-    // frame.  We detect navigation by comparing the live `selected_index`
-    // to the index the tracker recorded at the end of the previous frame:
-    // they match iff no navigation key fired in between.
-    // When the user has not navigated this frame and the tracked entry
-    // still exists, snap `selected_index` to its (possibly shifted) sort
-    // position.  When it no longer exists, `selected_index` is left as-is
-    // so that `clamp_to_entry_count` pulls it to the nearest valid entry
-    // — the entry now occupying the deleted slot, or the new last entry
-    // if the deletion was at the end of the list.
     if let Some(tracked_key) = tracker.key.clone()
         && state.selected_index == tracker.last_index
-        && let Some(new_pos) = filtered_entries.iter().position(|e| e.key == tracked_key)
     {
-        state.selected_index = new_pos;
+        let tracked_id = ConceptId(tracked_key);
+        if let Some(pos) = filtered_nodes
+            .iter()
+            .position(|&idx| graph.lookup(&tracked_id).is_some_and(|ti| ti == idx))
+        {
+            state.selected_index = pos;
+        }
     }
 
     // ── Scroll-offset reconciliation ────────────────────────────────
-    //
-    // Same idea as selection reconciliation, but for the top of the
-    // visible window.  When the user did not page/jump this frame
-    // (`scroll_offset` matches what the tracker recorded last frame) and
-    // the entry that was at the top of the window still exists, snap
-    // `scroll_offset` to that entry's new sort position.  This keeps the
-    // visible rows pinned to the same subjects when a new entry is
-    // recorded outside the visible window — without it, an insertion
-    // before `scroll_offset` would silently scroll every visible row
-    // down by one and disrupt the player's reading.
-    //
-    // When the previous top entry has been deleted we leave
-    // `scroll_offset` alone; `clamp_to_entry_count` below ensures the
-    // (possibly already re-anchored) selection stays visible.
     if let Some(top_key) = tracker.top_key.clone()
         && state.scroll_offset == tracker.last_scroll_offset
-        && let Some(new_top_pos) = filtered_entries.iter().position(|e| e.key == top_key)
     {
-        state.scroll_offset = new_top_pos;
+        let top_id = ConceptId(top_key);
+        if let Some(new_top_pos) = filtered_nodes
+            .iter()
+            .position(|&idx| graph.lookup(&top_id).is_some_and(|ti| ti == idx))
+        {
+            state.scroll_offset = new_top_pos;
+        }
     }
 
     state.clamp_to_entry_count(entry_count);
 
     // ── Update tracker for the next frame ───────────────────────────
-    //
-    // Anchor onto whatever entry is now selected (which, after clamping,
-    // is guaranteed to exist when entry_count > 0) and onto whatever
-    // entry now occupies the top of the visible window.
-    if let Some(entry) = filtered_entries.get(state.selected_index) {
-        tracker.key = Some(entry.key.clone());
+    if let Some(&sel_idx) = filtered_nodes.get(state.selected_index) {
+        if let Some(node) = graph.node(sel_idx) {
+            tracker.key = Some(node.id.0.clone());
+        }
         tracker.last_index = state.selected_index;
-        tracker.top_key = filtered_entries
+        tracker.top_key = filtered_nodes
             .get(state.scroll_offset)
-            .map(|e| e.key.clone());
+            .and_then(|&idx| graph.node(idx).map(|n| n.id.0.clone()));
         tracker.last_scroll_offset = state.scroll_offset;
     } else {
-        // Empty journal: clear the tracker so a future first observation
-        // does not cause us to re-anchor onto a stale key.
         tracker.key = None;
         tracker.last_index = 0;
         tracker.top_key = None;
@@ -1884,9 +1489,96 @@ fn compute_journal_panels(
     }
 
     cache.filter_bar = build_filter_bar_text(state.filter());
-    cache.list_lines = build_entry_list_lines(&filtered_entries, &state);
-    cache.detail_spans = build_detail_spans(&filtered_entries, &state, !journal.entries.is_empty());
-    cache.help = build_help_text(entry_count, &state);
+    cache.list_lines =
+        build_entry_list_lines(&filtered_nodes, &graph, &state, classifications.as_deref());
+    cache.cross_ref_links.clear();
+
+    // Build detail spans from the selected ConceptNode.
+    let selected_node = filtered_nodes
+        .get(state.selected_index)
+        .and_then(|&idx| graph.node(idx));
+    cache.detail_spans = build_detail_spans(selected_node, has_any, classifications.as_deref());
+    cache.help = build_help_text(entry_count, &state, 0);
+}
+
+/// Populates [`JournalRenderCache::cross_ref_links`] from the knowledge
+/// graph for the currently selected journal entry.
+///
+/// Runs in the [`JournalSet::Compute`] set, immediately after
+/// [`compute_journal_panels`], which clears `cross_ref_links` first.
+///
+/// If the KnowledgeGraph resource is absent (lightweight tests), cross-
+/// references are silently omitted.
+fn populate_cross_ref_links(
+    state: Res<JournalUiState>,
+    mut cache: ResMut<JournalRenderCache>,
+    graph: Option<Res<KnowledgeGraph>>,
+) {
+    if !state.visible {
+        return;
+    }
+    let Some(graph) = graph else {
+        return;
+    };
+
+    // Rebuild the filtered node list to find the selected node.
+    let filtered_nodes: Vec<NodeIndex> = graph
+        .nodes_sorted_by_name()
+        .into_iter()
+        .filter(|&idx| {
+            graph
+                .node(idx)
+                .is_some_and(|n| matches_filter_node(n, state.filter()))
+        })
+        .collect();
+
+    let Some(&sel_idx) = filtered_nodes.get(state.selected_index) else {
+        return;
+    };
+    let Some(selected_node) = graph.node(sel_idx) else {
+        return;
+    };
+
+    // Reset link cursor when selected entry changes.
+    if cache.cross_ref_entry_key.as_ref() != Some(&selected_node.id.0) {
+        cache.selected_cross_ref = 0;
+        cache.cross_ref_entry_key = Some(selected_node.id.0.clone());
+    }
+
+    // Collect relationships from the graph.
+    for (neighbor_idx, edge) in graph.relationships(sel_idx) {
+        let Some(neighbor_node) = graph.node(neighbor_idx) else {
+            continue;
+        };
+        // Use the node's own name; fall back to category label for unnamed concepts.
+        let target_name = if neighbor_node.name.is_empty() {
+            format!("{:?}", neighbor_node.category)
+        } else {
+            neighbor_node.name.clone()
+        };
+        let rel_label = edge.relationship.display_label().to_string();
+        cache
+            .cross_ref_links
+            .push((rel_label, neighbor_node.id.0.clone(), target_name));
+    }
+
+    let link_count = cache.cross_ref_links.len();
+    if link_count > 0 {
+        cache.selected_cross_ref = cache.selected_cross_ref.min(link_count - 1);
+    } else {
+        cache.selected_cross_ref = 0;
+    }
+
+    let links_snapshot = cache.cross_ref_links.clone();
+    let selected_cross_ref = cache.selected_cross_ref;
+
+    cache.detail_spans = build_detail_spans_with_cross_refs(
+        selected_node,
+        true,
+        &links_snapshot,
+        selected_cross_ref,
+    );
+    cache.help = build_help_text(filtered_nodes.len(), &state, links_snapshot.len());
 }
 
 /// Syncs the cached text into the Bevy UI `Text` nodes and toggles
@@ -1903,7 +1595,6 @@ fn sync_journal_ui(
     state: Res<JournalUiState>,
     cache: Res<JournalRenderCache>,
     mut commands: Commands,
-    mut panel_query: Query<&mut Visibility, With<JournalPanel>>,
     list_query: Query<(Entity, Option<&Children>), With<JournalEntryListText>>,
     detail_query: Query<(Entity, Option<&Children>), With<JournalDetailText>>,
     mut texts: ParamSet<(
@@ -1913,16 +1604,12 @@ fn sync_journal_ui(
         Query<&mut Text, With<JournalHelpText>>,
     )>,
 ) {
-    let Ok(mut panel_vis) = panel_query.single_mut() else {
-        return;
-    };
-
+    // Visibility is now managed by DiegeticUiPlugin::sync_readable_surface_visibility.
+    // This system only updates text content; it skips work when the journal is not
+    // visible to avoid rebuilding TextSpan trees every frame while closed.
     if !state.visible {
-        *panel_vis = Visibility::Hidden;
         return;
     }
-
-    *panel_vis = Visibility::Visible;
 
     // ── Entry list: rebuild TextSpan children for per-line coloring ──
     //
@@ -1979,13 +1666,6 @@ fn sync_journal_ui(
     let body_color = TextColor(Color::srgba(0.92, 0.92, 0.88, 1.0));
     let confidence_color = TextColor(Color::srgba(0.6, 0.65, 0.7, 1.0));
     let placeholder_color = TextColor(Color::srgba(0.55, 0.55, 0.50, 1.0));
-    // Cross-reference section header uses the same amber accent as category headers.
-    let cross_ref_header_color = TextColor(Color::srgba(0.75, 0.68, 0.45, 1.0));
-    // Cross-reference links use a cyan-tinted color to signal navigability.
-    let cross_ref_link_color = TextColor(Color::srgba(0.45, 0.80, 0.85, 1.0));
-    // Selected cross-reference link uses a bright white-cyan to signal it is
-    // focused and can be followed with Enter.
-    let cross_ref_link_selected_color = TextColor(Color::srgba(1.0, 1.0, 0.35, 1.0));
 
     if let Ok((detail_entity, detail_children)) = detail_query.single() {
         if let Some(children) = detail_children {
@@ -2005,10 +1685,16 @@ fn sync_journal_ui(
                     DetailSpanKind::CategoryGroupHeader => category_group_color,
                     DetailSpanKind::Body => body_color,
                     DetailSpanKind::ConfidenceLabel => confidence_color,
-                    DetailSpanKind::CrossReferenceHeader => cross_ref_header_color,
-                    DetailSpanKind::CrossReferenceLink => cross_ref_link_color,
-                    DetailSpanKind::CrossReferenceLinkSelected => cross_ref_link_selected_color,
                     DetailSpanKind::Placeholder => placeholder_color,
+                    // Selected cross-reference link: bright cyan to draw the eye.
+                    DetailSpanKind::CrossRef { selected: true } => {
+                        TextColor(Color::srgba(0.3, 0.9, 0.85, 1.0))
+                    }
+                    // Unselected cross-reference link: muted teal — visible but not
+                    // competing with the observation text.
+                    DetailSpanKind::CrossRef { selected: false } => {
+                        TextColor(Color::srgba(0.3, 0.65, 0.62, 1.0))
+                    }
                 };
                 parent.spawn((TextSpan::new(span.text.clone()), span_font.clone(), color));
             }
@@ -2053,24 +1739,52 @@ fn build_filter_bar_text(filter: &JournalFilter) -> String {
 /// Each line carries its display text and a flag indicating whether it is
 /// the currently selected entry.  The selected entry is prefixed with `>`
 /// and rendered with a distinct highlight color by the UI sync system.
-fn build_entry_list_lines(entries: &[&JournalEntry], state: &JournalUiState) -> Vec<EntryListLine> {
-    if entries.is_empty() {
+/// Builds structured line data for the left-panel entry list from KG nodes.
+fn build_entry_list_lines(
+    nodes: &[NodeIndex],
+    graph: &KnowledgeGraph,
+    state: &JournalUiState,
+    classifications: Option<&crate::classification::MaterialClassifications>,
+) -> Vec<EntryListLine> {
+    if nodes.is_empty() {
         return Vec::new();
     }
 
-    let page_end = (state.scroll_offset + state.entries_per_page).min(entries.len());
-    let visible = &entries[state.scroll_offset..page_end];
+    let page_end = (state.scroll_offset + state.entries_per_page).min(nodes.len());
+    let visible = &nodes[state.scroll_offset..page_end];
 
     visible
         .iter()
         .enumerate()
-        .map(|(i, entry)| {
+        .map(|(i, &idx)| {
             let abs_index = state.scroll_offset + i;
             let selected = abs_index == state.selected_index;
             let prefix = if selected { ">" } else { " " };
-            let obs_count = entry.observation_count();
+
+            let (name, obs_count) = graph
+                .node(idx)
+                .map(|n| (n.name.as_str(), n.observation_count()))
+                .unwrap_or(("<unknown>", 0));
+
+            // Show classification in brackets if the player has observed
+            // enough properties for a match, otherwise show "Unknown [name]"
+            // so unclassified materials are still consistently identifiable.
+            let display_name = if let Some(node) = graph.node(idx)
+                && let Some(cls) = classifications
+                && let Some(entry) = cls.classify_observed(&node.revealed_properties)
+            {
+                format!("{} [{}]", name, entry.display_name)
+            } else if graph
+                .node(idx)
+                .is_some_and(|n| !n.revealed_properties.is_empty())
+            {
+                format!("Unknown [{}]", name)
+            } else {
+                name.to_string()
+            };
+
             EntryListLine {
-                text: format!("{prefix} {} ({obs_count} obs)", entry.name),
+                text: format!("{prefix} {} ({obs_count} obs)", display_name),
                 selected,
             }
         })
@@ -2078,23 +1792,44 @@ fn build_entry_list_lines(entries: &[&JournalEntry], state: &JournalUiState) -> 
 }
 
 /// Builds styled spans for the right-panel detail view of the currently
-/// selected entry.
+/// selected `ConceptNode`.
 ///
-/// The header (entry name) renders in a bright highlight color.  Category
-/// labels ("Surface:", "Heat:", etc.) use an amber accent, while observation
-/// descriptions use the normal body color.  If no entries exist, a single
-/// placeholder span is returned.
-///
-/// The `has_any_entries` parameter distinguishes between an empty journal
-/// (shows "No observations yet.") and a filter that produces no results
-/// (shows "No matching entries").
+/// `has_any` — whether the KG has any named nodes at all (distinguishes
+/// "no observations yet" from "filter produced no results").
 fn build_detail_spans(
-    entries: &[&JournalEntry],
-    state: &JournalUiState,
-    has_any_entries: bool,
+    node: Option<&ConceptNode>,
+    has_any: bool,
+    classifications: Option<&crate::classification::MaterialClassifications>,
 ) -> Vec<DetailSpan> {
-    if entries.is_empty() {
-        let message = if has_any_entries {
+    build_detail_spans_with_cross_refs_opt(node, has_any, &[], 0, classifications)
+}
+
+/// Internal implementation of detail-span building that accepts cross-reference
+/// data computed externally.
+fn build_detail_spans_with_cross_refs(
+    node: &ConceptNode,
+    has_any: bool,
+    cross_ref_links: &[(String, JournalKey, String)],
+    selected_cross_ref: usize,
+) -> Vec<DetailSpan> {
+    build_detail_spans_with_cross_refs_opt(
+        Some(node),
+        has_any,
+        cross_ref_links,
+        selected_cross_ref,
+        None,
+    )
+}
+
+fn build_detail_spans_with_cross_refs_opt(
+    node: Option<&ConceptNode>,
+    has_any: bool,
+    cross_ref_links: &[(String, JournalKey, String)],
+    selected_cross_ref: usize,
+    classifications: Option<&crate::classification::MaterialClassifications>,
+) -> Vec<DetailSpan> {
+    let Some(node) = node else {
+        let message = if has_any {
             "No matching entries"
         } else {
             "No observations yet."
@@ -2103,46 +1838,44 @@ fn build_detail_spans(
             text: message.to_string(),
             kind: DetailSpanKind::Placeholder,
         }];
-    }
+    };
 
-    let entry = entries[state.selected_index.min(entries.len() - 1)];
     let mut spans: Vec<DetailSpan> = Vec::new();
 
-    // Entry name header.
+    // Entry name header — show classification in the header if known.
+    let header_text = if let Some(cls) = classifications
+        && let Some(entry) = cls.classify_observed(&node.revealed_properties)
+    {
+        format!("{} — {}", node.name, entry.display_name)
+    } else if !node.revealed_properties.is_empty() {
+        format!("{} — Unknown [{}]", node.name, node.name)
+    } else {
+        node.name.clone()
+    };
     spans.push(DetailSpan {
-        text: entry.name.clone(),
+        text: header_text,
         kind: DetailSpanKind::Header,
     });
 
-    // Iterate categories in canonical display order, emitting a group
-    // header followed by the observations for each non-empty category.
-    // The order is driven by `ObservationCategory::display_order` (backed
-    // by `strum::EnumIter`) so a new variant added to the enum is
-    // automatically rendered here in its declared position.
+    // Iterate categories in canonical display order.
     for category in ObservationCategory::display_order() {
-        let observations = entry.observations_by_category(&category);
+        let observations = node.observations_by_category(&category);
         if observations.is_empty() {
             continue;
         }
 
-        // Category group header (e.g. "\n\nSurface").
         spans.push(DetailSpan {
             text: format!("\n\n{}", category.display_label()),
             kind: DetailSpanKind::CategoryGroupHeader,
         });
 
-        // For categories that converge on a single reading, show only
-        // the most recent observation. Otherwise show all.
         let visible: &[Observation] = if category.shows_latest_only() {
-            // Safe: we checked `!is_empty()` above.
             &observations[observations.len() - 1..]
         } else {
             observations
         };
 
         for obs in visible {
-            // Multi-line descriptions (e.g. surface observations that combine
-            // color + weight) need each line indented consistently.
             let indented = obs
                 .description
                 .lines()
@@ -2152,8 +1885,6 @@ fn build_detail_spans(
                 text: indented,
                 kind: DetailSpanKind::Body,
             });
-            // Qualitative confidence indicator — communicates certainty
-            // without exposing internal counts.
             spans.push(DetailSpan {
                 text: format!("  [{}]", obs.confidence.tier().display_label()),
                 kind: DetailSpanKind::ConfidenceLabel,
@@ -2161,150 +1892,33 @@ fn build_detail_spans(
         }
     }
 
+    // ── Related section (cross-references) ──────────────────────────
+    if !cross_ref_links.is_empty() {
+        spans.push(DetailSpan {
+            text: "\n\nRelated".to_string(),
+            kind: DetailSpanKind::CategoryGroupHeader,
+        });
+        for (i, (rel_label, _, target_name)) in cross_ref_links.iter().enumerate() {
+            let selected = i == selected_cross_ref;
+            let prefix = if selected { "→ " } else { "  " };
+            spans.push(DetailSpan {
+                text: format!("\n{prefix}{}: {}", rel_label, target_name),
+                kind: DetailSpanKind::CrossRef { selected },
+            });
+        }
+    }
+
     spans
 }
 
-/// Appends cross-reference spans to the detail panel render cache.
-///
-/// Runs in [`JournalSet::Compute`] after [`compute_journal_panels`].  Reads
-/// the [`KnowledgeGraph`] to find all relationships for the currently selected
-/// journal entry and appends a "Related" section to the cached detail spans.
-///
-/// The section is omitted entirely when the selected entry has no cross-
-/// references in the graph, keeping the panel clean for newly discovered
-/// concepts.
-///
-/// Each cross-reference line shows the relationship type label and the display
-/// name of the related concept (looked up from the player's journal).  When
-/// the related concept has no journal entry yet (e.g., a location concept that
-/// predates the journal entry system), the raw key debug representation is
-/// used as a fallback.
-fn append_cross_reference_spans(
-    state: Res<JournalUiState>,
-    player_query: Query<&Journal, With<Player>>,
-    mut cache: ResMut<JournalRenderCache>,
-    graph: Option<Res<KnowledgeGraph>>,
-) {
-    // Only append when the journal is visible and has a selected entry.
-    if !state.visible {
-        return;
-    }
-
-    // KnowledgeGraph may not be present in test apps that don't add
-    // KnowledgeGraphPlugin — skip gracefully rather than panicking.
-    let Some(graph) = graph else {
-        return;
-    };
-
-    let Ok(journal) = player_query.single() else {
-        return;
-    };
-
-    // Sort entries alphabetically — same order as compute_journal_panels.
-    let mut sorted_entries: Vec<&JournalEntry> = journal.entries.values().collect();
-    sorted_entries.sort_by(|a, b| a.name.cmp(&b.name));
-
-    let filtered_entries: Vec<&JournalEntry> = sorted_entries
-        .into_iter()
-        .filter(|entry| matches_filter(entry, state.filter()))
-        .collect();
-
-    let Some(entry) = filtered_entries.get(
-        state
-            .selected_index
-            .min(filtered_entries.len().saturating_sub(1)),
-    ) else {
-        return;
-    };
-
-    // Look up the concept node for the selected entry.
-    let concept_id = ConceptId::new(entry.key.clone());
-    let Some(node_idx) = graph.lookup(&concept_id) else {
-        // No concept node yet — no cross-references to show.
-        return;
-    };
-
-    let relationships = graph.relationships(node_idx);
-    if relationships.is_empty() {
-        return;
-    }
-
-    // Append the "Related" section header.
-    cache.detail_spans.push(DetailSpan {
-        text: "\n\nRelated".to_string(),
-        kind: DetailSpanKind::CrossReferenceHeader,
-    });
-
-    // Append one line per cross-reference, sorted by relationship type label
-    // then by target name for stable display order.
-    let mut ref_lines: Vec<(String, String)> = relationships
-        .iter()
-        .filter_map(|(neighbor_idx, edge)| {
-            let neighbor_node = graph.node(*neighbor_idx)?;
-            let target_key = neighbor_node.id.key();
-            // Prefer the journal entry name; fall back to a key-derived label.
-            let target_name = journal
-                .entries
-                .get(target_key)
-                .map(|e| e.name.clone())
-                .unwrap_or_else(|| format!("{target_key:?}"));
-            let rel_label = relationship_display_label(&edge.relationship).to_string();
-            Some((rel_label, target_name))
-        })
-        .collect();
-
-    ref_lines.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
-
-    for (link_idx, (rel_label, target_name)) in ref_lines.iter().enumerate() {
-        // Highlight the link that the cursor is currently on so the player
-        // knows which entry Enter will jump to.
-        let kind = if state.selected_link_index == Some(link_idx) {
-            DetailSpanKind::CrossReferenceLinkSelected
-        } else {
-            DetailSpanKind::CrossReferenceLink
-        };
-        cache.detail_spans.push(DetailSpan {
-            text: format!("\n  \u{2192} {rel_label}: {target_name}"),
-            kind,
-        });
-    }
-}
-
-/// Returns the player-facing label for a [`RelationshipType`].
-///
-/// These labels appear in the "Related" section of the journal detail panel.
-/// They are intentionally terse — the arrow prefix (`→`) already signals
-/// directionality, so the label only needs to name the relationship.
-fn relationship_display_label(rel: &RelationshipType) -> &'static str {
-    match rel {
-        RelationshipType::FoundOn => "Found on",
-        RelationshipType::CombinedWith => "Combined with",
-        RelationshipType::DerivedFrom => "Derived from",
-        RelationshipType::SimilarTo => "Similar to",
-        RelationshipType::ObservedAt => "Observed at",
-    }
-}
-
 /// Builds the bottom help bar showing navigation hints and a page indicator.
-fn build_help_text(entry_count: usize, state: &JournalUiState) -> String {
+fn build_help_text(entry_count: usize, state: &JournalUiState, cross_ref_count: usize) -> String {
     if entry_count == 0 {
         return "J: Close".to_string();
     }
 
     let page_start = state.scroll_offset + 1;
     let page_end = (state.scroll_offset + state.entries_per_page).min(entry_count);
-
-    // When a cross-reference link is focused, show link-specific hints.
-    if state.selected_link_index.is_some() {
-        let back_hint = if state.navigation_stack.can_go_back() {
-            "  Backspace: Cancel"
-        } else {
-            "  Esc: Cancel"
-        };
-        return format!(
-            "\u{2191}\u{2193} Move link  Enter: Follow  {back_hint}  J: Close  [{page_start}-{page_end} of {entry_count}]"
-        );
-    }
 
     // Show active filter status if any filter is applied
     let filter_status = match (&state.filter().category, &state.filter().context) {
@@ -2324,14 +1938,15 @@ fn build_help_text(entry_count: usize, state: &JournalUiState) -> String {
         }
     };
 
-    let back_hint = if state.navigation_stack.can_go_back() {
-        "  Backspace: Back"
+    // Cross-reference hint when links exist.
+    let cross_ref_hint = if cross_ref_count > 0 {
+        "  Alt+↑↓: Link  Enter: Follow  Backspace: Back"
     } else {
         ""
     };
 
     format!(
-        "\u{2191}\u{2193} Navigate  \u{2192}: Links  PgUp/PgDn: Page  Home/End: Jump  Shift+Tab: Context Filter  J: Close{filter_status}{back_hint}  [{page_start}-{page_end} of {entry_count}]"
+        "\u{2191}\u{2193} Navigate  PgUp/PgDn: Page  Home/End: Jump  Shift+Tab: Context Filter  J: Close{filter_status}{cross_ref_hint}  [{page_start}-{page_end} of {entry_count}]"
     )
 }
 

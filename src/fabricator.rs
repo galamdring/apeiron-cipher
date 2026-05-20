@@ -14,11 +14,12 @@
 use bevy::prelude::*;
 
 use crate::combination::CombinationRules;
-use crate::journal::{JournalKey, Observation, ObservationCategory, RecordObservation};
+use crate::journal::{JournalKey, Observation, ObservationCategory};
 use crate::materials::{
     GameMaterial, MATERIAL_SURFACE_GAP, MaterialCatalog, MaterialObject, MaterialProperty,
     PropertyVisibility,
 };
+use crate::observation::RecordObservation;
 use crate::scene::{FabricatorSceneConfig, FurnitureConfig, Workbench};
 
 /// Registers the fabricator workbench systems for combining materials.
@@ -287,14 +288,16 @@ fn tick_processing(
             output_seed: output_mat.seed,
         },
         name: output_mat.name.clone(),
+        material_seed: None,
         observation: Observation {
             category: ObservationCategory::FabricationResult,
             confidence: crate::observation::Confidence(0.8), // High confidence for fabrication results
             description,
             recorded_at: 0,
         },
-        // Populate input seeds so the knowledge graph can create DerivedFrom
-        // edges from the output material back to each input material.
+        // Pass input material seeds so the knowledge graph can wire DerivedFrom
+        // edges from the output concept to each input material (Story 10.5).
+        planet_seed: None,
         input_seeds: input_mats.iter().map(|m| m.seed).collect(),
         context_location: None,
     });
@@ -409,7 +412,7 @@ fn blend_color(a: &[f32; 3], b: &[f32; 3], catalytic: bool) -> [f32; 3] {
 // ── Main combine function ────────────────────────────────────────────────
 
 fn rule_combine(rules: &CombinationRules, a: &GameMaterial, b: &GameMaterial) -> GameMaterial {
-    let pair_rules = rules.rules_for(&a.name, &b.name);
+    let pair_rules = rules.rules_for(a.seed, b.seed);
 
     let combined_seed = a.seed.wrapping_mul(31).wrapping_add(b.seed);
     let name = procedural_name(combined_seed);
@@ -438,6 +441,9 @@ fn rule_combine(rules: &CombinationRules, a: &GameMaterial, b: &GameMaterial) ->
         name,
         seed: combined_seed,
         color,
+        // Fabricated materials have no planet origin — they are produced at
+        // the fabricator, not found in the world.
+        origin_planet_seed: None,
         density: {
             let base_density = apply_rule_with_perturbation(
                 &pair_rules.density,
@@ -489,6 +495,7 @@ mod tests {
             name: name.into(),
             seed,
             color: [0.5, 0.5, 0.5],
+            origin_planet_seed: None,
             density: MaterialProperty::new(density, PropertyVisibility::Observable),
             thermal_resistance: prop(0.4),
             reactivity: prop(0.6),
@@ -577,7 +584,7 @@ mod tests {
     fn catalytic_pair_shifts_color_hue() {
         let mut rules = default_rules();
         rules.pair_rules.insert(
-            ("Aaa".into(), "Bbb".into()),
+            (1, 2),
             PairRuleSet {
                 density: PropertyRule::Catalyze { multiplier: 1.5 },
                 thermal_resistance: PropertyRule::default(),
@@ -678,9 +685,7 @@ mod tests {
     #[test]
     fn inert_pair_produces_waste() {
         let mut rules = default_rules();
-        rules
-            .pair_rules
-            .insert(("Alpha".into(), "Beta".into()), PairRuleSet::all_inert());
+        rules.pair_rules.insert((1, 2), PairRuleSet::all_inert());
 
         let a = test_material("Alpha", 1, 0.8);
         let b = test_material("Beta", 2, 0.9);
@@ -720,7 +725,7 @@ mod tests {
     fn pair_order_independent() {
         let mut rules = default_rules();
         rules.pair_rules.insert(
-            ("Alpha".into(), "Beta".into()),
+            (1, 2),
             PairRuleSet {
                 density: PropertyRule::Max,
                 thermal_resistance: PropertyRule::Min,
