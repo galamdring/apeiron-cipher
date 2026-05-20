@@ -132,10 +132,16 @@ struct CombinationFile {
     rules: Vec<PairRuleEntry>,
 }
 
+/// TOML schema for a single pair rule entry.
+///
+/// Uses `material_seed_a` / `material_seed_b` — the generation seeds that
+/// deterministically identify each material — rather than names. Names are
+/// query-time artefacts (classification or procedural); seeds are the stable
+/// ground-truth identity (Core Principle 6, Data Architecture ADR).
 #[derive(Debug, Deserialize)]
 struct PairRuleEntry {
-    material_a: String,
-    material_b: String,
+    material_seed_a: u64,
+    material_seed_b: u64,
     #[serde(default)]
     density: Option<PropertyRule>,
     #[serde(default)]
@@ -150,28 +156,32 @@ struct PairRuleEntry {
 
 // ── Resource ────────────────────────────────────────────────────────────
 
-/// Canonical key for a material pair — alphabetically sorted so (A,B) == (B,A).
-fn pair_key(a: &str, b: &str) -> (String, String) {
-    if a <= b {
-        (a.to_string(), b.to_string())
+/// Canonical key for a material pair — lower seed first so (A,B) == (B,A).
+fn pair_key(seed_a: u64, seed_b: u64) -> (u64, u64) {
+    if seed_a <= seed_b {
+        (seed_a, seed_b)
     } else {
-        (b.to_string(), a.to_string())
+        (seed_b, seed_a)
     }
 }
 
-/// Loaded combination rules, keyed by sorted material name pairs.
+/// Loaded combination rules, keyed by sorted material seed pairs.
+///
+/// Seeds are the stable ground-truth identity of a material — names are
+/// query-time artefacts that must never be used as storage keys (ADR).
 #[derive(Resource, Debug, Default)]
 pub struct CombinationRules {
     /// Fallback rule used when no pair-specific entry exists.
     pub default_rule: PropertyRule,
-    /// Per-pair overrides keyed by alphabetically sorted material name tuples.
-    pub pair_rules: HashMap<(String, String), PairRuleSet>,
+    /// Per-pair overrides keyed by `(min_seed, max_seed)` tuples.
+    pub pair_rules: HashMap<(u64, u64), PairRuleSet>,
 }
 
 impl CombinationRules {
-    /// Look up the rule set for a pair, falling back to the default for each property.
-    pub fn rules_for(&self, name_a: &str, name_b: &str) -> PairRuleSet {
-        let key = pair_key(name_a, name_b);
+    /// Look up the rule set for a pair by their generation seeds,
+    /// falling back to the default for each property.
+    pub fn rules_for(&self, seed_a: u64, seed_b: u64) -> PairRuleSet {
+        let key = pair_key(seed_a, seed_b);
         if let Some(rules) = self.pair_rules.get(&key) {
             rules.clone()
         } else {
@@ -200,7 +210,7 @@ fn load_combination_rules(mut commands: Commands) {
                     let mut pair_rules = HashMap::new();
 
                     for entry in file.rules {
-                        let key = pair_key(&entry.material_a, &entry.material_b);
+                        let key = pair_key(entry.material_seed_a, entry.material_seed_b);
                         let rule_set = PairRuleSet {
                             density: entry.density.unwrap_or_else(|| default.clone()),
                             thermal_resistance: entry
@@ -296,13 +306,13 @@ mod tests {
 
     #[test]
     fn pair_key_is_order_independent() {
-        assert_eq!(pair_key("Ferrite", "Silite"), pair_key("Silite", "Ferrite"));
+        assert_eq!(pair_key(1001, 1009), pair_key(1009, 1001));
     }
 
     #[test]
     fn rules_for_returns_default_for_unknown_pair() {
         let rules = CombinationRules::default();
-        let pair = rules.rules_for("Unknown", "Other");
+        let pair = rules.rules_for(9999, 8888);
         assert_eq!(pair.density, PropertyRule::default());
     }
 
@@ -321,8 +331,8 @@ weight_a = 0.5
 weight_b = 0.5
 
 [[rules]]
-material_a = "A"
-material_b = "B"
+material_seed_a = 1001
+material_seed_b = 1010
 density = { type = "Max" }
 thermal_resistance = { type = "Catalyze", multiplier = 1.3 }
 reactivity = { type = "Min" }
