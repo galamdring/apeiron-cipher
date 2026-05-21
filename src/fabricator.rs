@@ -412,7 +412,7 @@ fn blend_color(a: &[f32; 3], b: &[f32; 3], catalytic: bool) -> [f32; 3] {
 // ── Main combine function ────────────────────────────────────────────────
 
 fn rule_combine(rules: &CombinationRules, a: &GameMaterial, b: &GameMaterial) -> GameMaterial {
-    let pair_rules = rules.rules_for(&a.name, &b.name);
+    let pair_rules = rules.rules_for(a.seed, b.seed);
 
     let combined_seed = a.seed.wrapping_mul(31).wrapping_add(b.seed);
     let name = procedural_name(combined_seed);
@@ -584,7 +584,7 @@ mod tests {
     fn catalytic_pair_shifts_color_hue() {
         let mut rules = default_rules();
         rules.pair_rules.insert(
-            ("Aaa".into(), "Bbb".into()),
+            (1, 2),
             PairRuleSet {
                 density: PropertyRule::Catalyze { multiplier: 1.5 },
                 thermal_resistance: PropertyRule::default(),
@@ -685,9 +685,7 @@ mod tests {
     #[test]
     fn inert_pair_produces_waste() {
         let mut rules = default_rules();
-        rules
-            .pair_rules
-            .insert(("Alpha".into(), "Beta".into()), PairRuleSet::all_inert());
+        rules.pair_rules.insert((1, 2), PairRuleSet::all_inert());
 
         let a = test_material("Alpha", 1, 0.8);
         let b = test_material("Beta", 2, 0.9);
@@ -727,7 +725,7 @@ mod tests {
     fn pair_order_independent() {
         let mut rules = default_rules();
         rules.pair_rules.insert(
-            ("Alpha".into(), "Beta".into()),
+            (1, 2),
             PairRuleSet {
                 density: PropertyRule::Max,
                 thermal_resistance: PropertyRule::Min,
