@@ -345,7 +345,7 @@ mod tests {
     fn well_known_seeds_classify_correctly_when_fully_revealed() {
         // Each well-known seed should classify to the expected type when the
         // player has observed both Weight and ThermalBehavior.
-        use crate::materials::{WELL_KNOWN_MATERIAL_SEEDS, derive_material_from_seed};
+        use crate::materials::{WellKnownMaterial, derive_material_from_seed};
 
         let contents = std::fs::read_to_string(CLASSIFICATIONS_PATH)
             .expect("classifications.toml should exist");
@@ -368,19 +368,20 @@ mod tests {
             ("Phosphite", "phosphite"),
         ];
 
-        for (seed, (mat_name, expected_class)) in
-            WELL_KNOWN_MATERIAL_SEEDS.iter().zip(expected.iter())
+        for (&wk, &(_mat_name, expected_class)) in
+            WellKnownMaterial::all().iter().zip(expected.iter())
         {
-            let (_label, seed_val) = seed;
-            let mat = derive_material_from_seed(*seed_val);
+            let mat = derive_material_from_seed(wk.seed());
             let props = mat.property_vector();
             // Simulate player having observed both Weight and ThermalBehavior.
             let revealed = weight_and_thermal(props[0], props[1]);
             let result = classifications.classify_observed(&revealed);
             assert_eq!(
                 result.map(|e| e.name.as_str()),
-                Some(*expected_class),
-                "{mat_name} (seed {seed_val}): density={:.4} thermal={:.4} — expected {} got {:?}",
+                Some(expected_class),
+                "{} (seed {}): density={:.4} thermal={:.4} — expected {} got {:?}",
+                wk.display_name(),
+                wk.seed(),
                 props[0],
                 props[1],
                 expected_class,
