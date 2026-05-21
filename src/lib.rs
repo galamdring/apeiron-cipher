@@ -65,8 +65,6 @@ pub fn add_game_plugins(app: &mut App) {
         .add_plugins(heat::HeatPlugin)
         // Fabricator: input/output slots on the workbench for material combination.
         .add_plugins(fabricator::FabricatorPlugin)
-        // Combination: data-driven rules for material pair outcomes.
-        .add_plugins(combination::CombinationPlugin)
         // Observation: confidence tracking for player knowledge.
         .add_plugins(observation::ObservationPlugin)
         // Journal: player-owned record of observations and fabrication history.
