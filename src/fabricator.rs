@@ -395,7 +395,7 @@ fn blend_color(a: &[f32; 3], b: &[f32; 3], reactive: bool) -> [f32; 3] {
 /// seed so results are reproducible but not perfectly clean averages.
 pub fn property_combine(a: &GameMaterial, b: &GameMaterial) -> GameMaterial {
     let combined_seed = a.seed.wrapping_mul(31).wrapping_add(b.seed);
-    let name = procedural_name(combined_seed);
+    let name = crate::naming::compositional_name(&a.name, &b.name);
 
     // ── Density: weighted by each input's density (denser dominates) ──
     let total_d = a.density.value() + b.density.value();
