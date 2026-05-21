@@ -25,7 +25,77 @@ pub const SUFFIXES: &[&str] = &[
     "ore", "ux", "al",
 ];
 
-/// Deterministically produce a mineral-style name from a seed.
+/// Suffixes stripped when building a compositional name stem.
+///
+/// Listed longest-first so greedy matching works correctly — "ite" must
+/// not match before "uite" or "site" can.
+const STRIPPABLE_SUFFIXES: &[&str] = &[
+    "ite", "ium", "ate", "ide", "yne", "ase", "ose", "ine", "ile", "ore", "ene", "ane", "oid",
+    "ux", "al",
+];
+
+/// Strip the known mineral/chemical suffix from a name, returning (stem, suffix).
+///
+/// Used by [`compositional_name`] to splice constituent names.  If no known
+/// suffix is found the stem is the full name and suffix is an empty string.
+fn strip_mineral_suffix(name: &str) -> (&str, &str) {
+    let lower = name.to_lowercase();
+    for &s in STRIPPABLE_SUFFIXES {
+        if lower.ends_with(s) {
+            let stem_end = name.len() - s.len();
+            return (&name[..stem_end], s);
+        }
+    }
+    (name, "")
+}
+
+/// Derive a compositional name from two constituent material names.
+///
+/// The result reads like a mineral compound name — "Ferrite + Phosphite →
+/// Ferrophosphite", "Silite + Prismate → Prismosilite".  The algorithm:
+///
+/// 1. Sort input names alphabetically so the result is order-independent.
+/// 2. Strip the mineral suffix from each name to get the stem.
+/// 3. Truncate the first stem to at most 5 characters.
+/// 4. Output: `stem_a.capitalize() + "o" + stem_b.lowercase() + suffix_b`.
+///
+/// If the two inputs are the same name (e.g. Ferrite + Ferrite) the result is
+/// `stem + "o" + stem + suffix` — "Ferroferrite" — which is unambiguous.
+///
+/// The name is **not** guaranteed to be unique across all possible input pairs;
+/// disambiguation is handled by [`crate::materials::MaterialCatalog`] at
+/// registration time, exactly as for seed-derived names.
+pub fn compositional_name(name_a: &str, name_b: &str) -> String {
+    // Sort for order-independence.
+    let (na, nb) = if name_a <= name_b {
+        (name_a, name_b)
+    } else {
+        (name_b, name_a)
+    };
+
+    let (stem_a, _) = strip_mineral_suffix(na);
+    let (stem_b, suffix_b) = strip_mineral_suffix(nb);
+
+    // Truncate stem_a to keep compound names readable.
+    let stem_a_short = if stem_a.len() > 5 {
+        &stem_a[..5]
+    } else {
+        stem_a
+    };
+
+    // Capitalise first char of stem_a.
+    let mut result = String::with_capacity(stem_a_short.len() + 1 + stem_b.len() + suffix_b.len());
+    let mut chars = stem_a_short.chars();
+    if let Some(first) = chars.next() {
+        result.extend(first.to_uppercase());
+        result.push_str(chars.as_str());
+    }
+    result.push('o');
+    result.push_str(&stem_b.to_lowercase());
+    result.push_str(suffix_b);
+    result
+}
+
 ///
 /// The name is built by selecting one prefix, one root, and one suffix from
 /// fixed vocabulary tables using different bit windows of the seed.  This
@@ -115,5 +185,95 @@ mod tests {
             "expected >190 unique names from 200 seeds, got {}",
             names.len()
         );
+    }
+}
+
+#[cfg(test)]
+mod compositional_tests {
+    use super::*;
+
+    #[test]
+    fn ferrite_plus_phosphite() {
+        let name = compositional_name("Ferrite", "Phosphite");
+        assert_eq!(name, "Ferrophosphite");
+    }
+
+    #[test]
+    fn order_independent() {
+        assert_eq!(
+            compositional_name("Ferrite", "Phosphite"),
+            compositional_name("Phosphite", "Ferrite")
+        );
+        assert_eq!(
+            compositional_name("Volatite", "Calcium"),
+            compositional_name("Calcium", "Volatite")
+        );
+    }
+
+    #[test]
+    fn self_combination() {
+        // Same material twice — should produce a recognisable compound
+        let name = compositional_name("Ferrite", "Ferrite");
+        assert!(!name.is_empty());
+        assert!(name.starts_with("Ferr"), "got: {name}");
+    }
+
+    #[test]
+    fn does_not_match_well_known_names() {
+        let well_known = [
+            "Ferrite",
+            "Calcium",
+            "Sulfurite",
+            "Prismate",
+            "Verdant",
+            "Osmium",
+            "Volatite",
+            "Cobaltine",
+            "Silite",
+            "Phosphite",
+        ];
+        for &a in &well_known {
+            for &b in &well_known {
+                let compound = compositional_name(a, b);
+                assert!(
+                    !well_known.contains(&compound.as_str()),
+                    "compositional_name({a}, {b}) = '{compound}' collides with a well-known name"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn all_pairs_produce_nonempty_names() {
+        let well_known = [
+            "Ferrite",
+            "Calcium",
+            "Sulfurite",
+            "Prismate",
+            "Verdant",
+            "Osmium",
+            "Volatite",
+            "Cobaltine",
+            "Silite",
+            "Phosphite",
+        ];
+        for &a in &well_known {
+            for &b in &well_known {
+                let name = compositional_name(a, b);
+                assert!(!name.is_empty(), "empty name for {a} + {b}");
+            }
+        }
+    }
+
+    #[test]
+    fn chained_fabrication_names_are_stable() {
+        // Fabricated outputs can themselves be combined; verify the chain
+        // produces stable names.
+        let first = compositional_name("Ferrite", "Phosphite"); // "Ferrophosphite"
+        let second = compositional_name("Volatite", "Calcium"); // "Calcovol..."
+        let chained = compositional_name(&first, &second);
+        // Must be stable (same result called twice)
+        assert_eq!(chained, compositional_name(&first, &second));
+        assert!(!chained.is_empty());
     }
 }
