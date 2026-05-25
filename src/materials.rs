@@ -51,6 +51,93 @@ pub const PROPERTY_DIM: usize = 5;
 
 /// Well-known material seeds: `(name, seed)` pairs for the 10 original
 /// materials that shipped in the static TOML catalog.
+/// The 10 base materials whose seeds, display names, and classification
+/// identities are part of the game's authoritative data model.
+///
+/// Seeds are stable forever — changing a seed renames every deposit of that
+/// material across every generated world. Display names are cosmetic and may
+/// be updated freely. Classification ranges in `classifications.toml` must
+/// stay in sync with the seed values here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum WellKnownMaterial {
+    /// Iron-rich metal. Dense, thermally resilient, conductive.
+    Ferrite,
+    /// Bone-like mineral. Light, calcium-rich, high thermal emission.
+    Calcium,
+    /// Volcanic compound. Reactive, sulfurous, medium density.
+    Sulfurite,
+    /// Crystalline lattice material. Low density, moderate thermal.
+    Prismate,
+    /// Organic mineral. Moderate density, thrives in temperate biomes.
+    Verdant,
+    /// Ultra-dense metal. Very high density, robust thermal resistance.
+    Osmium,
+    /// Volatile reactive compound. Medium density, very low thermal.
+    Volatite,
+    /// Metallic ore. High density, mid-range all-round properties.
+    Cobaltine,
+    /// Silicate mineral. Light, very low thermal resistance.
+    Silite,
+    /// Phosphorescent mineral. Very low density, very high thermal.
+    Phosphite,
+}
+
+impl WellKnownMaterial {
+    /// The generation seed that deterministically defines this material's
+    /// property vector, color, and procedural name. Stable across all worlds.
+    pub const fn seed(self) -> u64 {
+        match self {
+            Self::Ferrite => 1001,
+            Self::Calcium => 1002,
+            Self::Sulfurite => 1003,
+            Self::Prismate => 1004,
+            Self::Verdant => 1005,
+            Self::Osmium => 1006,
+            Self::Volatite => 1007,
+            Self::Cobaltine => 1008,
+            Self::Silite => 1009,
+            Self::Phosphite => 1010,
+        }
+    }
+
+    /// Human-readable classification label used in journal and examine panels.
+    pub const fn display_name(self) -> &'static str {
+        match self {
+            Self::Ferrite => "Ferrite",
+            Self::Calcium => "Calcium",
+            Self::Sulfurite => "Sulfurite",
+            Self::Prismate => "Prismate",
+            Self::Verdant => "Verdant",
+            Self::Osmium => "Osmium",
+            Self::Volatite => "Volatite",
+            Self::Cobaltine => "Cobaltine",
+            Self::Silite => "Silite",
+            Self::Phosphite => "Phosphite",
+        }
+    }
+
+    /// All well-known materials in seed order.
+    ///
+    /// Use this wherever the old `WELL_KNOWN_MATERIAL_SEEDS` array was iterated.
+    pub fn all() -> &'static [WellKnownMaterial] {
+        &[
+            Self::Ferrite,
+            Self::Calcium,
+            Self::Sulfurite,
+            Self::Prismate,
+            Self::Verdant,
+            Self::Osmium,
+            Self::Volatite,
+            Self::Cobaltine,
+            Self::Silite,
+            Self::Phosphite,
+        ]
+    }
+}
+
+/// Backward-compatible flat array for code that still iterates `(label, seed)` pairs.
+/// New code should use [`WellKnownMaterial::all()`] instead.
+#[deprecated(note = "use WellKnownMaterial::all() instead")]
 pub const WELL_KNOWN_MATERIAL_SEEDS: &[(&str, u64)] = &[
     ("Ferrite", 1001),
     ("Calcium", 1002),
@@ -468,8 +555,8 @@ fn load_material_catalog(mut commands: Commands) {
     // Pre-seed the catalog with the 10 well-known materials so that indoor
     // scenes (which spawn material objects at PostStartup) have something to
     // display before exterior chunk generation populates the catalog further.
-    for &(_name, seed) in WELL_KNOWN_MATERIAL_SEEDS {
-        catalog.derive_and_register(seed);
+    for mat in WellKnownMaterial::all() {
+        catalog.derive_and_register(mat.seed());
     }
 
     info!(
@@ -914,17 +1001,18 @@ visibility = "Hidden"
     /// seeds collide on all properties, and that names are non-empty.
     #[test]
     fn well_known_seeds_produce_reasonable_materials() {
-        let materials: Vec<GameMaterial> = WELL_KNOWN_MATERIAL_SEEDS
+        let materials: Vec<(WellKnownMaterial, GameMaterial)> = WellKnownMaterial::all()
             .iter()
-            .map(|&(_label, seed)| derive_material_from_seed(seed))
+            .map(|&wk| (wk, derive_material_from_seed(wk.seed())))
             .collect();
 
-        for (i, (label, seed)) in WELL_KNOWN_MATERIAL_SEEDS.iter().enumerate() {
-            let mat = &materials[i];
+        for (wk, mat) in &materials {
+            let label = wk.display_name();
+            let seed = wk.seed();
 
             // Seed round-trips.
             assert_eq!(
-                mat.seed, *seed,
+                mat.seed, seed,
                 "{label}: seed not preserved (expected {seed}, got {})",
                 mat.seed
             );
@@ -972,8 +1060,8 @@ visibility = "Hidden"
         // No two well-known materials share every property (uniqueness).
         for i in 0..materials.len() {
             for j in (i + 1)..materials.len() {
-                let a = &materials[i];
-                let b = &materials[j];
+                let (wk_a, a) = &materials[i];
+                let (wk_b, b) = &materials[j];
                 let all_same = a.density.value().to_bits() == b.density.value().to_bits()
                     && a.thermal_resistance.value().to_bits()
                         == b.thermal_resistance.value().to_bits()
@@ -983,17 +1071,18 @@ visibility = "Hidden"
                 assert!(
                     !all_same,
                     "well-known seeds {} ({}) and {} ({}) produced identical properties",
-                    a.seed, WELL_KNOWN_MATERIAL_SEEDS[i].0, b.seed, WELL_KNOWN_MATERIAL_SEEDS[j].0,
+                    a.seed,
+                    wk_a.display_name(),
+                    b.seed,
+                    wk_b.display_name(),
                 );
             }
         }
 
-        // Spot-check: across 10 materials we expect meaningful spread.  At
-        // least 5 distinct density values among 10 materials ensures the mixer
-        // is not collapsing small sequential seeds into the same bucket.
+        // Spot-check: across 10 materials we expect meaningful spread.
         let unique_densities: std::collections::HashSet<u32> = materials
             .iter()
-            .map(|m| m.density.value().to_bits())
+            .map(|(_, m)| m.density.value().to_bits())
             .collect();
         assert!(
             unique_densities.len() >= 5,
@@ -1006,17 +1095,21 @@ visibility = "Hidden"
     /// Duplicate names would confuse the player and break the journal/catalog UX.
     #[test]
     fn well_known_seeds_have_distinct_names() {
-        let mut seen: std::collections::HashMap<String, (&str, u64)> =
+        let mut seen: std::collections::HashMap<String, (&'static str, u64)> =
             std::collections::HashMap::new();
-        for &(label, seed) in WELL_KNOWN_MATERIAL_SEEDS {
-            let mat = derive_material_from_seed(seed);
+        for &wk in WellKnownMaterial::all() {
+            let mat = derive_material_from_seed(wk.seed());
             if let Some(&(prev_label, prev_seed)) = seen.get(&mat.name) {
                 panic!(
                     "name collision: \"{}\") produced by both {} (seed {:#X}) and {} (seed {:#X})",
-                    mat.name, prev_label, prev_seed, label, seed,
+                    mat.name,
+                    prev_label,
+                    prev_seed,
+                    wk.display_name(),
+                    wk.seed(),
                 );
             }
-            seen.insert(mat.name.clone(), (label, seed));
+            seen.insert(mat.name.clone(), (wk.display_name(), wk.seed()));
         }
     }
 
@@ -1036,10 +1129,11 @@ visibility = "Hidden"
             .expect("MaterialCatalog resource must exist after startup");
         assert_eq!(
             catalog.len(),
-            WELL_KNOWN_MATERIAL_SEEDS.len(),
+            WellKnownMaterial::all().len(),
             "catalog must contain exactly the well-known starter materials",
         );
-        for &(_name, seed) in WELL_KNOWN_MATERIAL_SEEDS {
+        for &wk in WellKnownMaterial::all() {
+            let seed = wk.seed();
             assert!(
                 catalog.get_by_seed(seed).is_some(),
                 "well-known seed {seed} must be present in the catalog after startup",
