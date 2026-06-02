@@ -66,6 +66,30 @@ The full workflow (pick story → implement → PR → review) is documented in 
 - If blocked: move to `status:blocked`, cascade to dependents, pick next ready story. **Collaborate, don't decide.**
 - **Before committing or opening a PR:** re-read `docs/bmad/planning-artifacts/architecture/core-principles.md` and verify your changes do not violate any of the 10 principles. This is not optional. The principles are short — read them in full, not just the ones that seem relevant. An agent that skips this step and ships a violation has failed the task.
 
+### Branch Workflow
+
+Normal development work happens on `develop`.
+
+- Agents work on `develop` unless the user explicitly instructs otherwise.
+- When a story or task is complete, commit the completed work to `develop`.
+- To release or PR completed work to `main`, create a short-lived branch from the current `develop` state and open the PR from that branch to `main`.
+- `develop` is expected to be ahead of `main`.
+- PRs to `main` are squash-merged, so `main` and `develop` histories may diverge normally.
+- Do not merge `main` back into `develop` as part of normal workflow.
+- Do not branch from `main` unless the user explicitly instructs it.
+
+Hotfix exception:
+
+- Hotfixes are only done when explicitly requested by the user.
+- Hotfix branches should be created from the tagged release being hotfixed, not from `main`.
+- After the hotfix is completed, the change must be applied back to both `main` and `develop`.
+
+If `main` contains work that is not present on `develop`:
+
+- Stop and inform the user.
+- Attempt to identify the origin of the workflow break.
+- Do not automatically merge, reset, rebase, or cherry-pick without explicit user direction.
+
 ### Branch & PR Naming
 
 - **Game code (Bevy/Rust):** `feat/{work-description}` or `epic-N/story-N.N-short-description` — no subsystem prefix.

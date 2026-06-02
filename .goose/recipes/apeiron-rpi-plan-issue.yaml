@@ -1,0 +1,151 @@
+version: "1.0.0"
+title: "Apeiron RPI Plan Issue"
+description: "Wrapper recipe that runs rpi-plan for an Apeiron Cipher GitHub issue with consistent repository-root resolution, research discovery, and plan output conventions."
+
+parameters:
+  - key: issue_number
+    input_type: number
+    requirement: required
+    description: "GitHub issue number to plan"
+
+  - key: repo
+    input_type: string
+    requirement: optional
+    default: "galamdring/apeiron-cipher"
+    description: "GitHub repository in owner/repo format"
+
+  - key: working_directory
+    input_type: string
+    requirement: optional
+    default: "."
+    description: "Directory to start from when resolving the repository root. Defaults to the current directory."
+
+  - key: output_dir
+    input_type: string
+    requirement: optional
+    default: "thoughts/plans"
+    description: "Plan output directory relative to the resolved repository root"
+
+  - key: extra_context
+    input_type: string
+    requirement: optional
+    default: ""
+    description: "Any extra issue-specific guidance to include in the rpi-plan context"
+
+extensions:
+  - type: platform
+    name: summon
+
+  - type: builtin
+    name: developer
+    timeout: 300
+    bundled: true
+
+instructions: |
+  You are a thin wrapper around the existing rpi-plan recipe.
+
+  Your job is to resolve the current repository root, write a temporary context
+  file for rpi-plan, and delegate to rpi-plan with that file path.
+
+  Important: do not pass the full multi-line context directly as the
+  ticket_or_context parameter. The rpi-plan recipe renders that parameter inline,
+  so multi-line values containing colons can break YAML rendering. Always write
+  the context to a temporary markdown file and pass only the file path.
+
+  Do not implement code.
+  Do not edit source files.
+  Do not write the implementation plan yourself unless rpi-plan fails to run and
+  the user explicitly asks you to recover manually.
+  Stop after rpi-plan completes and report the plan path it produced.
+
+prompt: |
+  Resolve the repository root before doing anything else.
+
+  Starting directory:
+  {{ working_directory }}
+
+  Run this command:
+
+  cd "{{ working_directory }}" && git rev-parse --show-toplevel 2>/dev/null || pwd
+
+  Treat the command result as REPO_ROOT.
+
+  Next, create a temporary markdown context file outside the repository, for example with:
+
+  mktemp "/tmp/apeiron-rpi-plan-issue-{{ issue_number }}.XXXXXX.md"
+
+  Write the following content into that temporary context file, replacing REPO_ROOT with the resolved absolute repository root path:
+
+  Repository root:
+  REPO_ROOT
+
+  Create an implementation plan for GitHub issue #{{ issue_number }} in repo {{ repo }}.
+
+  First retrieve the issue from GitHub, including title, body, labels, state, and comments:
+
+  gh issue view {{ issue_number }} --repo {{ repo }} --comments
+
+  Load the required repo guidance docs from Agents.md before planning, and follow the branch workflow documented there.
+
+  All relative paths are relative to REPO_ROOT.
+
+  Research-file discovery requirements:
+  - Before doing new codebase research, inspect:
+    REPO_ROOT/thoughts/research/
+  - Look for existing research files relevant to:
+    - GitHub issue #{{ issue_number }}
+    - the epic or story mentioned by the issue
+    - keywords from the issue title
+    - keywords from the issue body
+    - affected subsystems, files, or modules
+  - Read any relevant research files fully before creating the plan.
+  - If no relevant research files exist, state that explicitly in the plan's Current State Analysis.
+  - If relevant research files are found, cite them in the plan and incorporate their findings.
+
+  Output requirements:
+  - Do not implement code.
+  - Produce the implementation plan under:
+    REPO_ROOT/{{ output_dir }}/
+  - Before writing the plan, run:
+    date +%Y-%m-%d-%H%M
+  - Use that timestamp to create a filename in this format:
+    REPO_ROOT/{{ output_dir }}/<timestamp>-issue-{{ issue_number }}-<short-kebab-description>.md
+  - Use the actual current timestamp from the system, not an inferred timestamp.
+  - Near the top of the plan, include a section titled:
+    ## Initial Understanding of the Issue
+  - In that section, summarize:
+    - issue title and intent
+    - acceptance criteria as understood
+    - current implementation state
+    - desired behavior
+    - relevant existing research found in thoughts/research/
+    - known constraints
+    - explicit out-of-scope work
+  - Then continue with the normal rpi-plan structure:
+    - Current State Analysis
+    - Desired End State
+    - What We're NOT Doing
+    - Implementation Approach
+    - Phases
+    - Testing Strategy
+    - Risk Assessment
+    - Completion Checklist
+
+  Scope control:
+  - Do not implement.
+  - Do not modify files outside the plan.
+  - If the issue lacks enough detail to plan safely, stop and ask instead of inventing architecture.
+  - Preserve the repository's stop-and-ask autonomy rules.
+  - Follow the branch workflow documented in Agents.md; do not duplicate or reinterpret it.
+  - GitHub Issues are the source of truth.
+  - Keep unrelated stories and nearby-but-separate work out of scope unless the issue explicitly requires them.
+
+  Extra context from the caller:
+  {{ extra_context }}
+
+  After writing the temporary context file, delegate to the rpi-plan recipe with:
+  - source: rpi-plan
+  - parameters:
+      ticket_or_context: the absolute path to the temporary context file
+
+  Do not pass the multi-line content itself as ticket_or_context. Pass only the file path.
