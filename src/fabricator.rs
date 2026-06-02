@@ -691,7 +691,7 @@ mod tests {
 
         for &a in &palette_seeds {
             for &b in &palette_seeds {
-                let combined = a.wrapping_mul(31).wrapping_add(b);
+                let combined = combined_material_seed(a, b);
                 assert!(
                     !palette_set.contains(&combined),
                     "fabrication of ({a}, {b}) → {combined} collides with a palette seed"
