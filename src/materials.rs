@@ -49,8 +49,6 @@ pub const PROPERTY_DIM: usize = 5;
 // appear naturally through exploration. The seed values must never change —
 // doing so would break saved worlds and biome palette references.
 
-/// Well-known material seeds: `(name, seed)` pairs for the 10 original
-/// materials that shipped in the static TOML catalog.
 /// The 10 base materials whose seeds, display names, and classification
 /// identities are part of the game's authoritative data model.
 ///
@@ -58,6 +56,11 @@ pub const PROPERTY_DIM: usize = 5;
 /// material across every generated world. Display names are cosmetic and may
 /// be updated freely. Classification ranges in `classifications.toml` must
 /// stay in sync with the seed values here.
+///
+/// Every variant's [`Self::seed`] value must be unique. A const assertion below
+/// validates the full variant list at compile time so a duplicate seed fails
+/// the build before it can silently collapse two deterministic material
+/// identities into the same generated material.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum WellKnownMaterial {
     /// Iron-rich metal. Dense, thermally resilient, conductive.
@@ -81,6 +84,19 @@ pub enum WellKnownMaterial {
     /// Phosphorescent mineral. Very low density, very high thermal.
     Phosphite,
 }
+
+const ALL_WELL_KNOWN_MATERIALS: [WellKnownMaterial; 10] = [
+    WellKnownMaterial::Ferrite,
+    WellKnownMaterial::Calcium,
+    WellKnownMaterial::Sulfurite,
+    WellKnownMaterial::Prismate,
+    WellKnownMaterial::Verdant,
+    WellKnownMaterial::Osmium,
+    WellKnownMaterial::Volatite,
+    WellKnownMaterial::Cobaltine,
+    WellKnownMaterial::Silite,
+    WellKnownMaterial::Phosphite,
+];
 
 impl WellKnownMaterial {
     /// The generation seed that deterministically defines this material's
@@ -120,20 +136,47 @@ impl WellKnownMaterial {
     ///
     /// Use this wherever the old `WELL_KNOWN_MATERIAL_SEEDS` array was iterated.
     pub fn all() -> &'static [WellKnownMaterial] {
-        &[
-            Self::Ferrite,
-            Self::Calcium,
-            Self::Sulfurite,
-            Self::Prismate,
-            Self::Verdant,
-            Self::Osmium,
-            Self::Volatite,
-            Self::Cobaltine,
-            Self::Silite,
-            Self::Phosphite,
-        ]
+        &ALL_WELL_KNOWN_MATERIALS
     }
 }
+
+const WELL_KNOWN_MATERIAL_SEEDS_FOR_VALIDATION: [u64; ALL_WELL_KNOWN_MATERIALS.len()] =
+    well_known_material_seed_values();
+
+const fn well_known_material_seed_values() -> [u64; ALL_WELL_KNOWN_MATERIALS.len()] {
+    let mut seeds = [0_u64; ALL_WELL_KNOWN_MATERIALS.len()];
+    let mut i = 0;
+
+    while i < ALL_WELL_KNOWN_MATERIALS.len() {
+        seeds[i] = ALL_WELL_KNOWN_MATERIALS[i].seed();
+        i += 1;
+    }
+
+    seeds
+}
+
+const fn validate_well_known_material_seed_uniqueness(seeds: &[u64]) {
+    let mut i = 0;
+
+    while i < seeds.len() {
+        let mut j = i + 1;
+
+        while j < seeds.len() {
+            if seeds[i] == seeds[j] {
+                panic!(
+                    "duplicate WellKnownMaterial seed detected; every \
+                     WellKnownMaterial::seed() value must be unique",
+                );
+            }
+            j += 1;
+        }
+
+        i += 1;
+    }
+}
+
+const _: () =
+    validate_well_known_material_seed_uniqueness(&WELL_KNOWN_MATERIAL_SEEDS_FOR_VALIDATION);
 
 /// Backward-compatible flat array for code that still iterates `(label, seed)` pairs.
 /// New code should use [`WellKnownMaterial::all()`] instead.
@@ -992,6 +1035,47 @@ visibility = "Hidden"
         let a = MaterialCatalog::disambiguated_name("Coranite", 777, &existing);
         let b = MaterialCatalog::disambiguated_name("Coranite", 777, &existing);
         assert_eq!(a, b);
+    }
+
+    /// Defense-in-depth check for the compile-time uniqueness assertion above.
+    ///
+    /// The const assertion fails the build before tests can run when two variants
+    /// share a seed. This test keeps a human-readable regression check in the test
+    /// suite and verifies that the canonical 10 starter seeds are still represented
+    /// exactly once.
+    #[test]
+    fn well_known_seeds_are_unique() {
+        let mut seen: std::collections::HashMap<u64, &'static str> =
+            std::collections::HashMap::new();
+
+        for &wk in WellKnownMaterial::all() {
+            let seed = wk.seed();
+            if let Some(previous_label) = seen.insert(seed, wk.display_name()) {
+                panic!(
+                    "duplicate WellKnownMaterial seed {seed} produced by both \
+                     {previous_label} and {}",
+                    wk.display_name(),
+                );
+            }
+        }
+
+        assert_eq!(
+            WellKnownMaterial::all().len(),
+            10,
+            "WellKnownMaterial must continue to expose exactly 10 starter variants",
+        );
+        assert_eq!(
+            seen.len(),
+            10,
+            "all 10 WellKnownMaterial seeds must appear exactly once",
+        );
+
+        for expected_seed in 1001_u64..=1010_u64 {
+            assert!(
+                seen.contains_key(&expected_seed),
+                "canonical WellKnownMaterial seed {expected_seed} is missing",
+            );
+        }
     }
 
     /// Verifies that the 10 well-known material seeds each produce a material
