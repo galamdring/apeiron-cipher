@@ -1,0 +1,149 @@
+version: "1.0.0"
+title: "Apeiron RPI Plan Review"
+description: "Reviews an RPI implementation plan against the GitHub issue, existing research, and Apeiron Cipher repository rules before implementation begins."
+
+parameters:
+  - key: issue_number
+    input_type: number
+    requirement: required
+    description: "GitHub issue number whose plan should be reviewed"
+
+  - key: repo
+    input_type: string
+    requirement: optional
+    default: "galamdring/apeiron-cipher"
+    description: "GitHub repository in owner/repo format"
+
+  - key: working_directory
+    input_type: string
+    requirement: optional
+    default: "."
+    description: "Directory to start from when resolving the repository root. Defaults to the current directory."
+
+  - key: plan_path
+    input_type: string
+    requirement: optional
+    default: ""
+    description: "Path to the plan to review. If empty, find likely plans under thoughts/plans/."
+
+  - key: research_dir
+    input_type: string
+    requirement: optional
+    default: "thoughts/research"
+    description: "Research directory, relative to the resolved repository root"
+
+  - key: output_dir
+    input_type: string
+    requirement: optional
+    default: "thoughts/reviews"
+    description: "Directory for the review report, relative to the resolved repository root"
+
+  - key: extra_context
+    input_type: string
+    requirement: optional
+    default: ""
+    description: "Additional review instructions or context"
+
+extensions:
+  - type: builtin
+    name: developer
+    timeout: 300
+    bundled: true
+
+instructions: |
+  You are an adversarial-but-fair plan reviewer for Apeiron Cipher RPI work.
+
+  Your job is to review an implementation plan before coding begins. You must
+  decide whether the plan is ready to implement or needs revision.
+
+  Do not implement code.
+  Do not edit the implementation plan.
+  Do not create source changes.
+  You may write exactly one review report under the requested review output directory.
+
+  Review posture:
+  - Be strict about issue requirements, repo architecture rules, and ambiguity.
+  - Do not nitpick harmless wording.
+  - Reject plans that invent unspecified architecture, skip required repo guidance,
+    lack verification, conflate separate stories, or are not implementation-ready.
+  - If the issue is underspecified and the plan guesses names/types/events/API choices,
+    mark the plan REVISE.
+
+prompt: |
+  Review the RPI implementation plan for GitHub issue #{{ issue_number }} in {{ repo }}.
+
+  Resolve repository root first:
+
+  cd "{{ working_directory }}" && git rev-parse --show-toplevel 2>/dev/null || pwd
+
+  Treat the result as REPO_ROOT. All relative paths below are relative to REPO_ROOT.
+
+  Required context gathering:
+  1. Fetch the GitHub issue with comments:
+     gh issue view {{ issue_number }} --repo {{ repo }} --comments
+  2. Load Agents.md from REPO_ROOT and follow its branch workflow. Do not duplicate or reinterpret branch policy; use Agents.md as the source of truth.
+  3. Load the required repository guidance docs from Agents.md, including at minimum:
+     - docs/bmad/planning-artifacts/architecture/core-principles.md
+     - docs/bmad/planning-artifacts/architecture/agent-context-routing.md
+     - docs/bmad/planning-artifacts/architecture/implementation-patterns-consistency-rules.md
+     - docs/bmad/project-context.md
+     - docs/bmad/agent-workflow.md
+  4. Read the implementation plan fully.
+     - If plan_path is provided, use: {{ plan_path }}
+     - If plan_path is empty, search REPO_ROOT/thoughts/plans/ for plans relevant to issue #{{ issue_number }}.
+     - If zero or multiple plausible plans exist and you cannot choose safely, stop and report PLAN_REVISE with the ambiguity.
+  5. Inspect REPO_ROOT/{{ research_dir }}/ for research relevant to:
+     - issue #{{ issue_number }}
+     - the story/epic named by the issue
+     - issue title/body keywords
+     - affected subsystems and files named in the plan
+     Read every relevant research file fully before reviewing.
+     If no relevant research exists, note that explicitly.
+
+  Review criteria:
+  - Issue coverage: Does the plan address every acceptance criterion and issue requirement?
+  - Branch workflow compliance: Does the plan follow the branch workflow in Agents.md without duplicating, changing, or contradicting it?
+  - Research use: Does the plan incorporate relevant research accurately, with file references where needed?
+  - Current-state accuracy: Does the plan match the actual codebase and branch/worktree state?
+  - Scope control: Does the plan keep unrelated stories out of scope?
+  - Architecture compliance: Does it respect the core principles and implementation autonomy rules?
+  - Implementation readiness: Are file paths, functions, phases, and changes concrete enough for rpi-implement?
+  - Stop-and-ask handling: Does the plan identify decisions that require human clarification instead of guessing?
+  - Verification: Are automated and manual success criteria specific, realistic, and sufficient?
+  - Sequencing: Are phases ordered safely and incrementally?
+  - Risk: Are risks and rollback/failure modes documented where relevant?
+
+  Output requirements:
+  - Create REPO_ROOT/{{ output_dir }}/ if needed.
+  - Before writing the report, run:
+    date +%Y-%m-%d-%H%M
+  - Write the report to:
+    REPO_ROOT/{{ output_dir }}/<timestamp>-issue-{{ issue_number }}-plan-review.md
+  - The first decision line of the report must be exactly one of:
+    PLAN_APPROVED
+    PLAN_REVISE
+  - Include these sections:
+    # Plan Review: Issue #{{ issue_number }}
+    ## Decision
+    ## Issue Summary
+    ## Plan Reviewed
+    ## Research Reviewed
+    ## Branch Workflow Assessment
+    ## Requirements Coverage
+    ## Architecture and Autonomy Compliance
+    ## Implementation Readiness
+    ## Verification Assessment
+    ## Findings
+    ## Required Revisions
+    ## Final Recommendation
+  - In Findings, use severity labels:
+    - BLOCKER: must fix before implementation
+    - MAJOR: should fix before implementation
+    - MINOR: optional improvement
+  - If the decision is PLAN_APPROVED, Required Revisions should say "None."
+  - If the decision is PLAN_REVISE, Required Revisions must be concrete enough for rpi-iterate.
+
+  Extra context from the caller:
+  {{ extra_context }}
+
+  Finish by printing the report path and the decision.
