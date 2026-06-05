@@ -22,6 +22,9 @@ use std::path::Path;
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 
+use crate::materials::MaterialSeed;
+use crate::world_generation::PlanetSeed;
+
 /// Plugin that initialises the observation confidence tracking system.
 pub struct ObservationPlugin;
 
@@ -411,7 +414,7 @@ pub struct DescriptorVocabulary {
     /// Linear search is acceptable because each category typically has a
     /// small number of value ranges (3-5) and confidence tiers (3), resulting
     /// in at most 15 entries per category.
-    pub tables: HashMap<crate::journal::ObservationCategory, Vec<DescriptorEntry>>,
+    tables: HashMap<crate::journal::ObservationCategory, Vec<DescriptorEntry>>,
 }
 
 impl DescriptorVocabulary {
@@ -1032,6 +1035,7 @@ impl ConfidenceTracker {
         since = "0.1.0",
         note = "Query journal observations directly for confidence information"
     )]
+    /// Kept for API compatibility during transition to journal-based confidence tracking.
     #[allow(dead_code)]
     pub fn count(&self, seed: u64, property: PropertyName) -> u32 {
         self.counts.get(&(seed, property)).copied().unwrap_or(0)
@@ -1298,17 +1302,17 @@ pub struct RecordObservation {
     ///
     /// `None` for fabrication results, location notes, and any observation
     /// that is not about a specific material instance.
-    pub material_seed: Option<u64>,
+    pub material_seed: Option<MaterialSeed>,
     /// Planet on which this observation was made.
     ///
     /// When `Some`, the knowledge graph system wires a `FoundOn` edge from
     /// the observed subject to the corresponding location concept.
-    pub planet_seed: Option<u64>,
+    pub planet_seed: Option<PlanetSeed>,
     /// For fabrication observations: seeds of the input materials combined
     /// to produce the output. Used to wire `DerivedFrom` edges.
     ///
     /// Empty for non-fabrication observations.
-    pub input_seeds: Vec<u64>,
+    pub input_seeds: Vec<MaterialSeed>,
     /// Optional location context where this observation was made.
     ///
     /// When `Some`, wires an `ObservedAt` edge to this location concept.
@@ -2733,7 +2737,7 @@ mod tests {
         // Populate the KnowledgeGraph with concept nodes carrying observations.
         let mut graph = KnowledgeGraph::default();
 
-        let key42 = JournalKey::MaterialInstance { seed: 42 };
+        let key42 = JournalKey::MaterialInstance { seed: crate::materials::MaterialSeed(42) };
         let node42 = graph.ensure_concept(ConceptId(key42.clone()), ConceptCategory::Material, 0);
         if let Some(n) = graph.graph_mut().node_weight_mut(node42) {
             n.name = "Test Material".to_string();
@@ -2752,7 +2756,7 @@ mod tests {
             });
         }
 
-        let key99 = JournalKey::MaterialInstance { seed: 99 };
+        let key99 = JournalKey::MaterialInstance { seed: crate::materials::MaterialSeed(99) };
         let node99 = graph.ensure_concept(ConceptId(key99.clone()), ConceptCategory::Material, 0);
         if let Some(n) = graph.graph_mut().node_weight_mut(node99) {
             n.name = "Another Material".to_string();
@@ -2820,7 +2824,7 @@ mod tests {
             .insert_resource(Time::<()>::default());
 
         let mut graph = KnowledgeGraph::default();
-        let key42 = JournalKey::MaterialInstance { seed: 42 };
+        let key42 = JournalKey::MaterialInstance { seed: crate::materials::MaterialSeed(42) };
         let node42 = graph.ensure_concept(ConceptId(key42.clone()), ConceptCategory::Material, 0);
         if let Some(n) = graph.graph_mut().node_weight_mut(node42) {
             n.add_observation(Observation {
