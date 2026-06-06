@@ -1001,6 +1001,11 @@ pub struct ConfidenceTracker {
     counts: HashMap<ObsKey, u32>,
 }
 
+// Implementing methods on a deprecated type requires suppressing the deprecation warning on
+// the impl block itself. ConfidenceTracker is deprecated in favour of journal-based
+// RecordObservation messages but the impl must remain compilable during the migration
+// window so existing call-sites can be updated incrementally. Remove this allow once all
+// call-sites have been migrated and ConfidenceTracker is deleted.
 #[allow(deprecated)]
 impl ConfidenceTracker {
     /// Record one observation. Returns the new count.
