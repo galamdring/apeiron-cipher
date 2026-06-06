@@ -309,6 +309,91 @@ mod tests {
         assert_eq!(pair_key(1001, 1009), pair_key(1009, 1001));
     }
 
+    // ── pair_key property tests ──────────────────────────────────────────────
+
+    /// Commutativity: swapping inputs always yields the same canonical key.
+    /// Verified across zero, large, boundary, and equal values.
+    #[test]
+    fn pair_key_commutativity_varied_inputs() {
+        assert_eq!(pair_key(0, 1), pair_key(1, 0));
+        assert_eq!(pair_key(500, 500), pair_key(500, 500));
+        assert_eq!(pair_key(u64::MAX, 0), pair_key(0, u64::MAX));
+        assert_eq!(
+            pair_key(u64::MAX - 1, u64::MAX),
+            pair_key(u64::MAX, u64::MAX - 1)
+        );
+    }
+
+    /// Identical seeds: both orderings are trivially equal; the returned tuple
+    /// should be (x, x).
+    #[test]
+    fn pair_key_identical_seeds() {
+        assert_eq!(pair_key(42, 42), (42, 42));
+        assert_eq!(pair_key(0, 0), (0, 0));
+        assert_eq!(pair_key(u64::MAX, u64::MAX), (u64::MAX, u64::MAX));
+    }
+
+    /// Output ordering: the first element of the returned tuple is always the
+    /// smaller (or equal) seed — i.e. min-first.
+    #[test]
+    fn pair_key_output_is_min_first() {
+        let (lo, hi) = pair_key(9999, 1);
+        assert!(lo <= hi, "expected lo ({lo}) <= hi ({hi})");
+        assert_eq!(lo, 1);
+        assert_eq!(hi, 9999);
+
+        let (lo2, hi2) = pair_key(1, 9999);
+        assert_eq!((lo2, hi2), (1, 9999));
+    }
+
+    /// Determinism: repeated calls with identical inputs must return identical
+    /// output — no randomness or side-effects.
+    #[test]
+    fn pair_key_is_deterministic() {
+        let (a, b) = (123_456_789_u64, 987_654_321_u64);
+        let first = pair_key(a, b);
+        let second = pair_key(a, b);
+        let third = pair_key(a, b);
+        assert_eq!(first, second);
+        assert_eq!(second, third);
+    }
+
+    /// Symmetry table: a set of (a, b) pairs where both orderings are tested
+    /// simultaneously to confirm the canonical form is stable.
+    #[test]
+    fn pair_key_both_orderings_equal() {
+        let cases: &[(u64, u64)] = &[
+            (1, 2),
+            (100, 200),
+            (1_000, 2_000),
+            (u64::MAX / 2, u64::MAX / 2 + 1),
+        ];
+        for &(a, b) in cases {
+            assert_eq!(
+                pair_key(a, b),
+                pair_key(b, a),
+                "commutativity failed for ({a}, {b})"
+            );
+        }
+    }
+
+    /// Idempotency: once a pair is in canonical (sorted) form, applying pair_key
+    /// again is a no-op. This confirms the output is already fully normalised and
+    /// that repeated normalisation never mutates the key.
+    #[test]
+    fn pair_key_idempotent_on_canonical_form() {
+        let cases: &[(u64, u64)] = &[(1, 9), (0, u64::MAX), (42, 42), (1_000, 2_000)];
+        for &(a, b) in cases {
+            let canonical = pair_key(a, b);
+            // The canonical form has lo <= hi; applying pair_key again must be stable.
+            assert_eq!(
+                pair_key(canonical.0, canonical.1),
+                canonical,
+                "idempotency failed for ({a}, {b})"
+            );
+        }
+    }
+
     #[test]
     fn rules_for_returns_default_for_unknown_pair() {
         let rules = CombinationRules::default();
