@@ -1898,11 +1898,7 @@ fn default_biome_definitions() -> Vec<BiomeDefinition> {
             moisture_max: 0.4,
             ground_color: [0.55, 0.38, 0.22],
             density_modifier: 1.15,
-            deposit_weight_modifiers: HashMap::from([
-                ("ferrite".to_string(), 3.0),
-                ("silite".to_string(), 0.8),
-                ("prismate".to_string(), 0.2),
-            ]),
+            deposit_weight_modifiers: HashMap::new(),
             material_palette: vec![
                 PaletteMaterial {
                     material_seed: 1001,
@@ -1953,11 +1949,7 @@ fn default_biome_definitions() -> Vec<BiomeDefinition> {
             moisture_max: 1.0,
             ground_color: [0.42, 0.48, 0.56],
             density_modifier: 0.7,
-            deposit_weight_modifiers: HashMap::from([
-                ("ferrite".to_string(), 0.2),
-                ("silite".to_string(), 1.0),
-                ("prismate".to_string(), 3.0),
-            ]),
+            deposit_weight_modifiers: HashMap::new(),
             material_palette: vec![
                 PaletteMaterial {
                     material_seed: 1004,

@@ -151,6 +151,26 @@ impl MaterialClassifications {
         self.entries.iter().find(|e| e.matches_observed(revealed))
     }
 
+    /// Return *all* classification types that match the observed properties.
+    ///
+    /// Unlike [`classify_observed`] (which returns only the first match),
+    /// this method collects every [`ClassificationEntry`] whose constrained
+    /// properties all satisfy the revealed values. Multiple entries can match
+    /// a single node when their ranges overlap — this is intentional and
+    /// supports cross-cutting classification schemes (e.g. a material that is
+    /// simultaneously "Ferrite" and "Dense").\
+    ///
+    /// Returns an empty `Vec` if no entry matches.
+    pub fn classify_all_observed<'a>(
+        &'a self,
+        revealed: &std::collections::HashMap<crate::journal::ObservationCategory, f32>,
+    ) -> Vec<&'a ClassificationEntry> {
+        self.entries
+            .iter()
+            .filter(|e| e.matches_observed(revealed))
+            .collect()
+    }
+
     /// All loaded classification entries in file order.
     pub fn entries(&self) -> &[ClassificationEntry] {
         &self.entries
@@ -326,6 +346,69 @@ mod tests {
         });
         let result = classifications.classify_observed(&weight_and_thermal(0.51, 0.44));
         assert_eq!(result.map(|e| e.name.as_str()), Some("ferrite"));
+    }
+
+    // ── classify_all_observed ────────────────────────────────────────────
+
+    #[test]
+    fn classify_all_returns_empty_when_no_entries() {
+        let classifications = MaterialClassifications::default();
+        let result = classifications.classify_all_observed(&weight_and_thermal(0.51, 0.45));
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn classify_all_returns_single_match() {
+        let mut classifications = MaterialClassifications::default();
+        classifications.entries.push(ferrite_entry());
+        let result = classifications.classify_all_observed(&weight_and_thermal(0.51, 0.45));
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].name, "ferrite");
+    }
+
+    #[test]
+    fn classify_all_returns_multiple_when_ranges_overlap() {
+        // A single node (weight=0.51, thermal=0.45) matches two classification
+        // entries whose ranges overlap — verifying the multi-match AC.
+        let mut classifications = MaterialClassifications::default();
+        // Entry 1: ferrite — density [0.49, 0.56], thermal [0.38, 0.51]
+        classifications.entries.push(ferrite_entry());
+        // Entry 2: dense_iron — overlapping density range, no thermal constraint
+        // (weight=0.51 is in [0.40, 0.60] and that is the only constraint)
+        classifications.entries.push(ClassificationEntry {
+            name: "dense_iron".into(),
+            display_name: "Dense Iron".into(),
+            density: Some(PropertyRange {
+                min: 0.40,
+                max: 0.60,
+            }),
+            thermal_resistance: None,
+            reactivity: None,
+            conductivity: None,
+            toxicity: None,
+        });
+        let result = classifications.classify_all_observed(&weight_and_thermal(0.51, 0.45));
+        let names: Vec<&str> = result.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names.len(), 2, "expected 2 matches, got {:?}", names);
+        assert!(
+            names.contains(&"ferrite"),
+            "expected ferrite in {:?}",
+            names
+        );
+        assert!(
+            names.contains(&"dense_iron"),
+            "expected dense_iron in {:?}",
+            names
+        );
+    }
+
+    #[test]
+    fn classify_all_returns_none_when_no_range_matches() {
+        let mut classifications = MaterialClassifications::default();
+        classifications.entries.push(ferrite_entry());
+        // density=0.10 is well outside ferrite range [0.49, 0.56]
+        let result = classifications.classify_all_observed(&weight_and_thermal(0.10, 0.45));
+        assert!(result.is_empty());
     }
 
     #[test]
