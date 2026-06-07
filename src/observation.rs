@@ -1318,6 +1318,8 @@ pub struct RecordObservation {
 // ── Tests ────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
+// ConfidenceTracker is deprecated in favour of journal-based RecordObservation messages,
+// but its tests are retained to guard against regressions during the migration period.
 #[allow(deprecated)]
 mod tests {
     use super::*;

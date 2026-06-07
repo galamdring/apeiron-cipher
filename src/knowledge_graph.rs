@@ -728,7 +728,7 @@ impl KnowledgeGraph {
                 (idx, n.name.as_str())
             })
             .collect();
-        pairs.sort_by(|(_, a), (_, b)| a.cmp(b));
+        pairs.sort_by_key(|(_, a)| *a);
         pairs.into_iter().map(|(idx, _)| idx).collect()
     }
 
@@ -743,7 +743,7 @@ impl KnowledgeGraph {
             .iter()
             .filter_map(|&idx| self.graph.node_weight(idx).map(|n| (idx, n.name.as_str())))
             .collect();
-        pairs.sort_by(|(_, a), (_, b)| a.cmp(b));
+        pairs.sort_by_key(|(_, a)| *a);
         pairs.into_iter().map(|(idx, _)| idx).collect()
     }
 
