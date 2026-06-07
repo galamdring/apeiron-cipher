@@ -2820,7 +2820,7 @@ mod tests {
         // Populate the KnowledgeGraph with concept nodes carrying observations.
         let mut graph = KnowledgeGraph::default();
 
-        let key42 = JournalKey::MaterialInstance { seed: crate::materials::MaterialSeed(42) };
+        let key42 = JournalKey::MaterialInstance { seed: 42 };
         let node42 = graph.ensure_concept(ConceptId(key42.clone()), ConceptCategory::Material, 0);
         if let Some(n) = graph.graph_mut().node_weight_mut(node42) {
             n.name = "Test Material".to_string();
@@ -2839,7 +2839,7 @@ mod tests {
             });
         }
 
-        let key99 = JournalKey::MaterialInstance { seed: crate::materials::MaterialSeed(99) };
+        let key99 = JournalKey::MaterialInstance { seed: 99 };
         let node99 = graph.ensure_concept(ConceptId(key99.clone()), ConceptCategory::Material, 0);
         if let Some(n) = graph.graph_mut().node_weight_mut(node99) {
             n.name = "Another Material".to_string();
@@ -2907,7 +2907,7 @@ mod tests {
             .insert_resource(Time::<()>::default());
 
         let mut graph = KnowledgeGraph::default();
-        let key42 = JournalKey::MaterialInstance { seed: crate::materials::MaterialSeed(42) };
+        let key42 = JournalKey::MaterialInstance { seed: 42 };
         let node42 = graph.ensure_concept(ConceptId(key42.clone()), ConceptCategory::Material, 0);
         if let Some(n) = graph.graph_mut().node_weight_mut(node42) {
             n.add_observation(Observation {

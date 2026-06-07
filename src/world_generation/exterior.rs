@@ -636,7 +636,7 @@ fn sync_active_exterior_chunks(
                 .clone();
             // Tag the spawn origin so observation systems can wire the FoundOn
             // KnowledgeGraph edge and the CurrentPlanet journal filter can match.
-            deposit_material.origin_planet_seed = Some(world_profile.planet_seed.0);
+            deposit_material.origin_planet_seed = Some(world_profile.planet_seed);
             let mesh = deposit_material.mesh_for_density(&mut meshes);
             let render_material = render_materials.add(StandardMaterial {
                 base_color: deposit_material.bevy_color(),

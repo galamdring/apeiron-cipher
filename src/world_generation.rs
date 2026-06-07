@@ -594,7 +594,20 @@ impl Plugin for WorldGenerationPlugin {
 /// runtime. That choice is deliberate: the point of Story 5.1 is to make
 /// determinism obvious and testable. A config-backed seed means anyone can read
 /// the world seed, rerun the game, and get the same foundational world state.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+    Serialize,
+    Deserialize,
+    Reflect,
+)]
 pub struct PlanetSeed(pub u64);
 
 /// Signed chunk coordinate on the exterior X/Z ground plane.
