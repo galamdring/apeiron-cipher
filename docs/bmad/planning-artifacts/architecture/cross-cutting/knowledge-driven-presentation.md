@@ -9,6 +9,16 @@ Knowledge state is a continuous spectrum (not boolean gates) that affects three 
 
 Every system must handle the full gradient from "player knows nothing" to "player knows everything."
 
+## Intrinsic Material Rendering vs Knowledge-Gated Rendering
+
+These are two different things and must not be conflated.
+
+**Intrinsic rendering** — terrain texture and surface detail are always the visual output of material property parameters. The rendering system derives texture from the same property vector that drives simulation. This output is unconditional: it does not change based on player knowledge state. What changes with knowledge is the player's ability to *interpret* what they see, not what the system shows.
+
+**Knowledge-gated rendering** — inspect panel detail, dialogue options, and fabrication availability change based on KnowledgeGraph state. These systems explicitly query the graph before deciding what to present.
+
+The rule: if a visual output is derived directly from a world property, it is intrinsic and always visible. If a UI or interaction element is conditioned on what the player knows, it queries the KnowledgeGraph.
+
 ## Architecture: KnowledgeGraph as Source of Truth
 
 **The KnowledgeGraph is the sole store for player knowledge.** The Journal is a stateless query layer over it — it holds no knowledge state of its own.
@@ -31,6 +41,10 @@ Any system that needs to know "what does the player know about X" must query the
 - **Revealed property flags** — which properties the player has observed on each node (density revealed on pickup, thermal resistance revealed by heat exposure, etc.)
 - **Sighting records** — where and when an entity was encountered (planet, tick)
 - **Confidence** — continuous f32 per observation, grows with repeated encounters
+
+### Observable Entities: No Special Case for Substrate Type
+
+Biological materials observed inside giant flora interiors are first-class graph nodes — same architecture as inorganic materials. The knowledge graph has no special case for material substrate type. A resin from inside a giant flower is recorded and queried the same way as a metallic ore from a cave wall.
 
 ## What Does NOT Belong on Entity Components
 
