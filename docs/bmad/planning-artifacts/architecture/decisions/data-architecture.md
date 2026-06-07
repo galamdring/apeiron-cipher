@@ -13,6 +13,7 @@
 - Entities carry lightweight ID components (`MaterialId`, `BiomeId`) for O(1) registry lookup
 - Material similarity computed directly on property vectors — no vector DB needed at this scale
 - Registries are effectively write-rarely, read-constantly — `Res<T>` access only after initial insertion
+- Terrain visual representation is a derived output of material property parameters at region load time — not pre-authored texture assets. Planet seed + position + material parameters → visual texture. No separate texture registry.
 
 **Player Knowledge (Journal, Encyclopedia, Associative Web):**
 - `KnowledgeGraph` resource backed by `petgraph::Graph` (not `StableGraph`), behind a trait interface for swappability — this is the **sole store** for all player knowledge; the Journal is a stateless query layer over it, not a parallel storage layer
@@ -41,5 +42,17 @@
 - Entity components may store transient world state (transform, held/placed status, current heat exposure, temporary visual reaction state) but must not store player knowledge state (`PropertyVisibility` on a `GameMaterial` is transient world state; what the player *knows* about that material lives exclusively in the KnowledgeGraph).
 - If two entities share the same property profile, learning a property from one sample makes that knowledge available everywhere the same profile is encountered — because knowledge is keyed by the KnowledgeGraph node for that observed instance, and the Journal query groups nodes by range-match at query time.
 - Planet of origin is recorded as a sighting on the KnowledgeGraph node, not encoded into any key or identifier.
+
+**Giant Flora Entity State:**
+- Mesh-fidelity collision data as entity component (not bounding box)
+- Seasonal phase as mutable entity state component
+- Interior biological material palette follows seed-derived registry, same as inorganic
+- Base locations within flora are region-scoped entities, not special-cased
+
+**Found Ship State:**
+- World-spawned entity at specific region location, not procedurally replicated
+- Broken component state stored as entity components
+- Hull materials follow material-identity model — seed-derived, no type at spawn
+- Ship repair generates KnowledgeGraph edges: used-in (material → fabrication event), fabrication event → installed component
 
 **Rationale:** The hybrid model separates immutable ground-truth (seed-derived, write-once registries) from mutable player progression (append-only knowledge graph). Registry lookups are O(1) via entity ID components. The knowledge graph uses a real graph library rather than hand-rolling adjacency lists, getting BFS traversal, connected components, and serde serialization for free. Journal visualization queries map directly to bounded graph operations.

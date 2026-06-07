@@ -58,6 +58,8 @@ Classification ranges live in `assets/` (data-driven, Core Principle 6). The Jou
 
 World generation uses planet seed + position to produce raw property values. Property values are what gets stored in the graph. Classification into named types ("iron", "ferrite") is a **query-time operation**, not a generation-time assignment.
 
+Material property values drive both gameplay simulation and visual representation. The same property vector produces both. The rendering system is a consumer of material property data, the same as heat simulation or fabrication. There is no separate cosmetic property set.
+
 ```
 planet_seed + position → raw property values → KnowledgeGraph node (on observation)
                                                       ↓
@@ -140,6 +142,9 @@ The correct architecture requires inverting the Journal/KnowledgeGraph relations
    - Story N.4: Material generation produces raw property values only — no type assignment at spawn
 
 5. **Classification** is always query-time, never generation-time. Material type names are never stored on entities or in the graph — they are the result of matching observed property values against asset-defined ranges.
+
+**Material Substrate Universality:**
+Biological materials (flora tissue, biological compounds, chemical secretions) follow the same architecture: seed-derived properties, classification by range-match, no type at spawn. Classification ranges in `assets/` must include biological categories. No special handling for material substrate.
 
 ---
 

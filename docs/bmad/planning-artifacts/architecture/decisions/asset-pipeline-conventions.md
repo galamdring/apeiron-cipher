@@ -17,7 +17,8 @@
 - **Load-time (runtime layer):** Custom `AssetLoader` validates field ranges, required fields, and cross-references after deserialization. Invalid assets emit `error!()` through the tracing stack (Decision 3) and return a typed error. Bevy surfaces this as a failed asset handle. Systems check handle state and degrade gracefully — no panic on bad data.
 
 **Custom `AssetLoader` for all data files:**
-- Every data file type (`MaterialDefinition`, `CraftingRecipe`, `BiomeConfig`, `GameConfig`, etc.) gets a Bevy `AssetLoader` implementation. No manual serde-at-startup.
+- Every data file type (`MaterialDefinition`, `CraftingRecipe`, `BiomeConfig`, `GameConfig`, `FloraStructureDefinition`, `ShipDefinition`, `HullComponentDefinition`, etc.) gets a Bevy `AssetLoader` implementation. No manual serde-at-startup.
+- `FloraStructureDefinition` loader validation must assert that a surface-traced collision mesh is present. Bounding box and convex hull collision meshes are rejected.
 - Loader pipeline: read bytes → deserialize TOML/RON → check `schema_version` → migrate if needed → validate → return typed asset.
 - This provides Bevy's hot-reload, async loading, dependency tracking, and handle-based cross-references for free.
 - Registry Resources (Decision 1) are populated by systems reacting to `AssetEvent::Added` / `AssetEvent::Modified` — loaded assets propagate into registries automatically. Hot-reload propagates to registries through the same path.
@@ -33,6 +34,8 @@
 - `assets/biomes/` — biome/terrain definitions
 - `assets/crafting/` — recipes, fabricator configurations
 - `assets/exterior/` — surface generation data
+- `assets/flora/` — flora structure definitions
+- `assets/vehicles/` — ship and vehicle definitions
 - New gameplay domains get new top-level directories. Subdirectories within a domain only when file count exceeds ~20.
 
 **File conventions:**
@@ -40,4 +43,4 @@
 - No version numbers in filenames — version lives inside the file as `schema_version`.
 - TOML for anything a designer/player might edit. RON for serialized Bevy types where Reflect/serde roundtripping matters.
 
-**Rationale:** Custom `AssetLoader`s are the correct integration point for data-driven content in Bevy — they provide hot-reload, async loading, and handle-based dependency tracking without reimplementation. Schema versioning with mandatory migration (never rejection) ensures save compatibility across rings. Dual-layer validation catches errors both in CI (without launching the game) and at runtime (graceful degradation). The `AssetEvent`-driven registry population pattern connects the asset pipeline to Decision 1's registry architecture cleanly.
+**Rationale:** Custom `AssetLoader`s are the correct integration point for data-driven content in Bevy — they provide hot-reload, async loading, and handle-based dependency tracking without reimplementation. Schema versioning with mandatory migration (never rejection) ensures save compatibility across rings. Dual-layer validation catches errors both in CI (without launching the game) and at runtime (graceful degradation). The `AssetEvent`-driven registry population pattern connects the asset pipeline to Decision 1's registry architecture cleanly. Terrain texture parameters live in `assets/materials/` — they are the visual expression of material properties, not a separate art domain.
