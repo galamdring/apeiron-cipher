@@ -3617,12 +3617,14 @@ fn restart_same_seed_same_biome_yields_identical_materials() {
     // Every material in catalog A must exist in catalog B with identical
     // name, color, and all scalar properties.
     for mat_a in catalog_a.values() {
-        let mat_b = catalog_b.get_by_seed(mat_a.seed).unwrap_or_else(|| {
-            panic!(
-                "seed {} ({}) present in run 1 but missing in run 2",
-                mat_a.seed, mat_a.name
-            )
-        });
+        let mat_b = catalog_b
+            .get_by_seed(crate::materials::MaterialSeed(mat_a.seed))
+            .unwrap_or_else(|| {
+                panic!(
+                    "seed {} ({}) present in run 1 but missing in run 2",
+                    mat_a.seed, mat_a.name
+                )
+            });
 
         assert_eq!(
             mat_a.name, mat_b.name,
@@ -3911,7 +3913,7 @@ fn restart_system_seed_chain_yields_identical_world() {
     for mat_a in session_a.materials.values() {
         let mat_b = session_b
             .materials
-            .get_by_seed(mat_a.seed)
+            .get_by_seed(crate::materials::MaterialSeed(mat_a.seed))
             .unwrap_or_else(|| {
                 panic!(
                     "seed {} ({}) present in run 1 but missing in run 2",

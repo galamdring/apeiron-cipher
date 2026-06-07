@@ -296,7 +296,10 @@ fn tick_processing(
         // Pass input material seeds so the knowledge graph can wire DerivedFrom
         // edges from the output concept to each input material (Story 10.5).
         planet_seed: None,
-        input_seeds: input_mats.iter().map(|m| m.seed).collect(),
+        input_seeds: input_mats
+            .iter()
+            .map(|m| crate::materials::MaterialSeed(m.seed))
+            .collect(),
         context_location: None,
     });
 

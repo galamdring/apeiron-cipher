@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 use crate::input::InputAction;
 use crate::interaction::HeldItem;
 use crate::journal::{JournalKey, Observation, ObservationCategory};
-use crate::materials::{GameMaterial, MaterialObject};
+use crate::materials::{GameMaterial, MaterialObject, MaterialSeed};
 use crate::observation::Confidence;
 use crate::observation::RecordObservation;
 use crate::player::{Player, PlayerCamera, cursor_is_captured};
@@ -1408,7 +1408,7 @@ pub fn record_weight_observation(
             seed: material.seed,
         },
         name: material.name.clone(),
-        material_seed: Some(material.seed),
+        material_seed: Some(MaterialSeed(material.seed)),
         planet_seed: material.origin_planet_seed,
         observation: Observation {
             category: ObservationCategory::Weight,
@@ -2254,8 +2254,8 @@ exponent = 1.0
         for (label, origin_planet_seed, expected) in [
             (
                 "with planet origin",
-                Some(0xDEAD_BEEFu64),
-                Some(0xDEAD_BEEFu64),
+                Some(crate::world_generation::PlanetSeed(0xDEAD_BEEFu64)),
+                Some(crate::world_generation::PlanetSeed(0xDEAD_BEEFu64)),
             ),
             ("without planet origin", None, None),
         ] {

@@ -24,7 +24,7 @@ use crate::carry::{CarryConfig, CarryState, ObserveWeight, StashHeldForPickup};
 use crate::descriptions::describe_density;
 use crate::fabricator::{ActivateIntent, InputSlot, OutputSlot};
 use crate::input::InputAction;
-use crate::materials::{GameMaterial, MATERIAL_SURFACE_GAP, MaterialObject};
+use crate::materials::{GameMaterial, MATERIAL_SURFACE_GAP, MaterialObject, MaterialSeed};
 use crate::observation::Confidence;
 use crate::player::{Player, PlayerCamera, cursor_is_captured};
 use crate::scene::{PlayerSceneConfig, Surface};
@@ -832,7 +832,7 @@ fn build_examine_text(
 ) -> String {
     // Look up what the player has revealed about this material instance.
     let revealed = graph
-        .lookup_material_by_seed(mat.seed)
+        .lookup_material_by_seed(MaterialSeed(mat.seed))
         .and_then(|idx| graph.node_weight(idx))
         .map(|node| &node.revealed_properties);
 

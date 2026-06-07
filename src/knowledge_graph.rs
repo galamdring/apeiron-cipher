@@ -27,6 +27,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::journal::JournalKey;
 use crate::observation::{Confidence, ConfidenceConfig};
+use crate::world_generation::PlanetSeed;
 
 // ── Plugin ────────────────────────────────────────────────────────────────
 
@@ -120,7 +121,7 @@ pub struct ConceptNode {
     /// the first observation that carries a planet seed. `None` for fabricated
     /// materials and concepts recorded without planetary context. Used by the
     /// `CurrentPlanet` journal filter.
-    pub origin_planet_seed: Option<u64>,
+    pub origin_planet_seed: Option<PlanetSeed>,
     /// Which named properties the player has directly observed on this concept.
     ///
     /// Keys match [`crate::journal::ObservationCategory::display_label`] so
@@ -646,9 +647,12 @@ impl KnowledgeGraph {
     /// prevents that by finding the existing node by seed.
     ///
     /// Returns `None` when no material with that seed exists in the graph yet.
-    pub fn lookup_material_by_seed(&self, seed: u64) -> Option<NodeIndex> {
+    pub fn lookup_material_by_seed(
+        &self,
+        seed: crate::materials::MaterialSeed,
+    ) -> Option<NodeIndex> {
         self.concept_index.iter().find_map(|(id, &idx)| {
-            if matches!(&id.0, crate::journal::JournalKey::MaterialInstance { seed: s } if *s == seed) {
+            if matches!(&id.0, crate::journal::JournalKey::MaterialInstance { seed: s } if *s == seed.0) {
                 Some(idx)
             } else {
                 None
@@ -1027,7 +1031,7 @@ fn update_knowledge_graph(
                     .lookup_material_by_seed(input_seed)
                     .unwrap_or_else(|| {
                         let input_key =
-                            crate::journal::JournalKey::MaterialInstance { seed: input_seed };
+                            crate::journal::JournalKey::MaterialInstance { seed: input_seed.0 };
                         graph.ensure_concept(ConceptId(input_key), ConceptCategory::Material, tick)
                     });
                 graph.relate(
@@ -1055,11 +1059,11 @@ fn update_knowledge_graph(
             let seed_b = obs.input_seeds[1];
 
             let node_a = graph.lookup_material_by_seed(seed_a).unwrap_or_else(|| {
-                let key = crate::journal::JournalKey::MaterialInstance { seed: seed_a };
+                let key = crate::journal::JournalKey::MaterialInstance { seed: seed_a.0 };
                 graph.ensure_concept(ConceptId(key), ConceptCategory::Material, tick)
             });
             let node_b = graph.lookup_material_by_seed(seed_b).unwrap_or_else(|| {
-                let key = crate::journal::JournalKey::MaterialInstance { seed: seed_b };
+                let key = crate::journal::JournalKey::MaterialInstance { seed: seed_b.0 };
                 graph.ensure_concept(ConceptId(key), ConceptCategory::Material, tick)
             });
 
@@ -1272,7 +1276,7 @@ fn detect_similar_on_observation(
         let crate::journal::JournalKey::MaterialInstance { seed } = obs.key else {
             continue;
         };
-        let Some(material) = catalog.get_by_seed(seed) else {
+        let Some(material) = catalog.get_by_seed(crate::materials::MaterialSeed(seed)) else {
             continue;
         };
         detect_and_wire_similar_materials(
@@ -1299,7 +1303,9 @@ mod tests {
     }
 
     fn loc_id(planet_seed: u64) -> ConceptId {
-        ConceptId(JournalKey::Location { planet_seed })
+        ConceptId(JournalKey::Location {
+            planet_seed: PlanetSeed(planet_seed),
+        })
     }
 
     // ── Phase 1 tests ─────────────────────────────────────────────────

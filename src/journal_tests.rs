@@ -1,7 +1,7 @@
 use super::*;
 use crate::knowledge_graph::{ConceptId, ConceptNode, KnowledgeGraph};
 use crate::observation::Confidence;
-use crate::world_generation::BiomeType;
+use crate::world_generation::{BiomeType, PlanetSeed};
 
 fn build_entry_list_text(
     nodes: &[NodeIndex],
@@ -302,7 +302,7 @@ fn node_with_observation_on_planet(
     planet_seed: Option<u64>,
 ) -> ConceptNode {
     let mut entry = ConceptNode::new(key, "Subject", 0);
-    entry.origin_planet_seed = planet_seed;
+    entry.origin_planet_seed = planet_seed.map(PlanetSeed);
     entry.add_observation(Observation {
         category,
         confidence: Confidence(0.2),
@@ -479,8 +479,11 @@ fn journal_key_planet_seed_accessor() {
         None
     );
     assert_eq!(
-        JournalKey::Location { planet_seed: 42 }.planet_seed(),
-        Some(42)
+        JournalKey::Location {
+            planet_seed: PlanetSeed(42),
+        }
+        .planet_seed(),
+        Some(PlanetSeed(42))
     );
 }
 
