@@ -267,6 +267,7 @@ fn apply_thermal_reaction(
 fn reveal_thermal_property(
     mut commands: Commands,
     hs_cfg: Res<HeatSourceConfig>,
+    conf_cfg: Res<crate::observation::ConfidenceConfig>,
     mut journal_writer: MessageWriter<RecordObservation>,
     descriptor_vocab: Res<crate::observation::DescriptorVocabulary>,
     mut material_query: Query<
@@ -306,9 +307,9 @@ fn reveal_thermal_property(
                 .entity(entity)
                 .insert(ThermalObservationRecordedThisCycle);
 
-            // Use initial confidence for new observations - the journal system
-            // will handle accumulation automatically for repeated observations
-            let initial_confidence = Confidence::new(0.2);
+            // Use initial confidence from ConfidenceConfig so tuning is centralized
+            // in assets/config/confidence.toml rather than hardcoded here.
+            let initial_confidence = Confidence(conf_cfg.initial_observation_confidence);
 
             journal_writer.write(RecordObservation {
                 key: JournalKey::MaterialInstance { seed: mat.seed },
