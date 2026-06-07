@@ -13,6 +13,7 @@
 use bevy::prelude::*;
 use bevy::window::{CursorGrabMode, CursorOptions};
 use leafwing_input_manager::prelude::*;
+use serde::{Deserialize, Serialize};
 
 use crate::carry::CarryMovementState;
 use crate::input::InputAction;
@@ -36,7 +37,7 @@ const PLAYER_COLLISION_RADIUS: f32 = 0.2;
 ///
 /// This is intentionally enough to make weight feel physical without pretending
 /// we already have the final progression system.
-#[derive(Component, Clone, Copy, Debug, PartialEq)]
+#[derive(Component, Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 struct StaminaState {
     pub current: f32,
     pub max: f32,
@@ -618,5 +619,20 @@ mod tests {
     fn calculate_effective_speed_zero_modifier() {
         let result = calculate_effective_speed(5.0, 0.0, true, 2.0);
         assert_eq!(result, 0.0);
+    }
+
+    // ── Serde round-trip tests ────────────────────────────────────────────
+
+    #[test]
+    fn stamina_state_serde_round_trip() {
+        let state = StaminaState {
+            current: 0.75,
+            max: 1.0,
+        };
+        let json = serde_json::to_string(&state).expect("StaminaState must serialise");
+        let restored: StaminaState =
+            serde_json::from_str(&json).expect("StaminaState must deserialise");
+        assert_eq!(restored.current, state.current);
+        assert_eq!(restored.max, state.max);
     }
 }
