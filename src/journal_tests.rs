@@ -93,7 +93,7 @@ fn journal_omits_unknown_properties() {
         "Ferrite",
         Observation {
             category: ObservationCategory::SurfaceAppearance,
-            confidence: Confidence(0.2),
+            confidence: Confidence::new(0.2),
             description: "Weight: Heavy".into(),
             recorded_at: 1,
         },
@@ -112,7 +112,7 @@ fn journal_includes_fabrication_history() {
         "Neoite",
         Observation {
             category: ObservationCategory::FabricationResult,
-            confidence: Confidence(0.8),
+            confidence: Confidence::new(0.8),
             description: "Combined Ferrite + Silite -> Neoite".into(),
             recorded_at: 1,
         },
@@ -131,7 +131,7 @@ fn journal_shows_thermal_observation_when_present() {
         "TestMat",
         Observation {
             category: ObservationCategory::ThermalBehavior,
-            confidence: Confidence(0.5),
+            confidence: Confidence::new(0.5),
             description: "Reliably hold together under heat".into(),
             recorded_at: 1,
         },
@@ -305,7 +305,7 @@ fn node_with_observation_on_planet(
     entry.origin_planet_seed = planet_seed;
     entry.add_observation(Observation {
         category,
-        confidence: Confidence(0.2),
+        confidence: Confidence::new(0.2),
         description: "obs".to_string(),
         recorded_at: 0,
     });
@@ -598,7 +598,7 @@ fn journal_shows_weight_observation_only_when_present() {
         "Ferrite",
         Observation {
             category: ObservationCategory::SurfaceAppearance,
-            confidence: Confidence(0.2),
+            confidence: Confidence::new(0.2),
             description: "Color: Cool blue tone".into(),
             recorded_at: 1,
         },
@@ -612,7 +612,7 @@ fn journal_shows_weight_observation_only_when_present() {
         "Ferrite",
         Observation {
             category: ObservationCategory::Weight,
-            confidence: Confidence(0.5),
+            confidence: Confidence::new(0.5),
             description: "Heavy but manageable".into(),
             recorded_at: 2,
         },
@@ -642,7 +642,7 @@ fn journal_entry_add_observation_updates_timestamp() {
 
     entry.add_observation(Observation {
         category: ObservationCategory::SurfaceAppearance,
-        confidence: Confidence(0.2),
+        confidence: Confidence::new(0.2),
         description: "Warm rust tone".into(),
         recorded_at: 20,
     });
@@ -659,19 +659,19 @@ fn journal_entry_accumulates_multiple_observations() {
 
     entry.add_observation(Observation {
         category: ObservationCategory::SurfaceAppearance,
-        confidence: Confidence(0.2),
+        confidence: Confidence::new(0.2),
         description: "Warm rust tone".into(),
         recorded_at: 10,
     });
     entry.add_observation(Observation {
         category: ObservationCategory::ThermalBehavior,
-        confidence: Confidence(0.5),
+        confidence: Confidence::new(0.5),
         description: "Holds together under heat".into(),
         recorded_at: 50,
     });
     entry.add_observation(Observation {
         category: ObservationCategory::Weight,
-        confidence: Confidence(0.2),
+        confidence: Confidence::new(0.2),
         description: "Heavy".into(),
         recorded_at: 55,
     });
@@ -687,19 +687,19 @@ fn journal_entry_observations_by_category() {
 
     entry.add_observation(Observation {
         category: ObservationCategory::SurfaceAppearance,
-        confidence: Confidence(0.2),
+        confidence: Confidence::new(0.2),
         description: "Warm rust tone".into(),
         recorded_at: 10,
     });
     entry.add_observation(Observation {
         category: ObservationCategory::ThermalBehavior,
-        confidence: Confidence(0.5),
+        confidence: Confidence::new(0.5),
         description: "Holds together under heat".into(),
         recorded_at: 20,
     });
     entry.add_observation(Observation {
         category: ObservationCategory::SurfaceAppearance,
-        confidence: Confidence(0.5),
+        confidence: Confidence::new(0.5),
         description: "Slightly rough texture".into(),
         recorded_at: 30,
     });
@@ -728,7 +728,7 @@ fn new_journal_ensure_entry_creates_and_retrieves() {
         "Ferrite",
         Observation {
             category: ObservationCategory::SurfaceAppearance,
-            confidence: Confidence(0.2),
+            confidence: Confidence::new(0.2),
             description: "obs".to_string(),
             recorded_at: 100,
         },
@@ -739,7 +739,7 @@ fn new_journal_ensure_entry_creates_and_retrieves() {
         "Ignored Name",
         Observation {
             category: ObservationCategory::SurfaceAppearance,
-            confidence: Confidence(0.2),
+            confidence: Confidence::new(0.2),
             description: "obs2".to_string(),
             recorded_at: 200,
         },
@@ -768,7 +768,7 @@ fn new_journal_record_accumulates_observations() {
         "Ferrite",
         Observation {
             category: ObservationCategory::SurfaceAppearance,
-            confidence: Confidence(0.2),
+            confidence: Confidence::new(0.2),
             description: "Warm rust tone".into(),
             recorded_at: 10,
         },
@@ -778,7 +778,7 @@ fn new_journal_record_accumulates_observations() {
         "Ferrite",
         Observation {
             category: ObservationCategory::ThermalBehavior,
-            confidence: Confidence(0.5),
+            confidence: Confidence::new(0.5),
             description: "Holds together under heat".into(),
             recorded_at: 50,
         },
@@ -806,7 +806,7 @@ fn new_journal_different_keys_coexist() {
         "Ferrite",
         Observation {
             category: ObservationCategory::SurfaceAppearance,
-            confidence: Confidence(0.2),
+            confidence: Confidence::new(0.2),
             description: "Warm rust tone".into(),
             recorded_at: 10,
         },
@@ -816,7 +816,7 @@ fn new_journal_different_keys_coexist() {
         "Neoite",
         Observation {
             category: ObservationCategory::FabricationResult,
-            confidence: Confidence(0.8),
+            confidence: Confidence::new(0.8),
             description: "Combined Ferrite + Silite -> Neoite".into(),
             recorded_at: 20,
         },
@@ -835,7 +835,7 @@ fn new_journal_serde_round_trip() {
         "Ferrite",
         Observation {
             category: ObservationCategory::SurfaceAppearance,
-            confidence: Confidence(0.2),
+            confidence: Confidence::new(0.2),
             description: "Warm rust tone".into(),
             recorded_at: 10,
         },
@@ -845,7 +845,7 @@ fn new_journal_serde_round_trip() {
         "Neoite",
         Observation {
             category: ObservationCategory::FabricationResult,
-            confidence: Confidence(0.8),
+            confidence: Confidence::new(0.8),
             description: "Combined Ferrite + Silite -> Neoite".into(),
             recorded_at: 50,
         },
@@ -891,7 +891,7 @@ fn single_observation_recorded_correctly() {
         "Quarite",
         Observation {
             category: ObservationCategory::ThermalBehavior,
-            confidence: Confidence(0.5),
+            confidence: Confidence::new(0.5),
             description: "Cracks under rapid heating".into(),
             recorded_at: 42,
         },
@@ -916,7 +916,7 @@ fn single_observation_recorded_correctly() {
     assert_eq!(entry.observation_count(), 1);
     let obs = &entry.observations_by_category(&ObservationCategory::ThermalBehavior)[0];
     assert_eq!(obs.category, ObservationCategory::ThermalBehavior);
-    assert_eq!(obs.confidence, Confidence(0.5));
+    assert_eq!(obs.confidence, Confidence::new(0.5));
     assert_eq!(obs.description, "Cracks under rapid heating");
     assert_eq!(obs.recorded_at, 42);
 }
@@ -928,14 +928,14 @@ fn duplicate_observation_same_category_and_description_is_skipped() {
 
     entry.add_observation(Observation {
         category: ObservationCategory::SurfaceAppearance,
-        confidence: Confidence(0.2),
+        confidence: Confidence::new(0.2),
         description: "Warm rust tone".into(),
         recorded_at: 10,
     });
     // Same category + same description at a later tick — should NOT add a second entry.
     entry.add_observation(Observation {
         category: ObservationCategory::SurfaceAppearance,
-        confidence: Confidence(0.2),
+        confidence: Confidence::new(0.2),
         description: "Warm rust tone".into(),
         recorded_at: 20,
     });
@@ -952,14 +952,14 @@ fn duplicate_observation_upgrades_confidence() {
 
     entry.add_observation(Observation {
         category: ObservationCategory::ThermalBehavior,
-        confidence: Confidence(0.2),
+        confidence: Confidence::new(0.2),
         description: "Holds together under heat".into(),
         recorded_at: 10,
     });
     // Same category + description but higher confidence — should upgrade.
     entry.add_observation(Observation {
         category: ObservationCategory::ThermalBehavior,
-        confidence: Confidence(0.8),
+        confidence: Confidence::new(0.8),
         description: "Holds together under heat".into(),
         recorded_at: 30,
     });
@@ -967,7 +967,7 @@ fn duplicate_observation_upgrades_confidence() {
     assert_eq!(entry.observation_count(), 1, "duplicate should be skipped");
     assert_eq!(
         entry.observations_by_category(&ObservationCategory::ThermalBehavior)[0].confidence,
-        Confidence(0.8),
+        Confidence::new(0.8),
         "confidence should be upgraded"
     );
     assert_eq!(entry.last_updated_at, 30);
@@ -980,14 +980,14 @@ fn duplicate_does_not_downgrade_confidence() {
 
     entry.add_observation(Observation {
         category: ObservationCategory::Weight,
-        confidence: Confidence(0.8),
+        confidence: Confidence::new(0.8),
         description: "Heavy".into(),
         recorded_at: 10,
     });
     // Same category + description but lower confidence — confidence should stay.
     entry.add_observation(Observation {
         category: ObservationCategory::Weight,
-        confidence: Confidence(0.2),
+        confidence: Confidence::new(0.2),
         description: "Heavy".into(),
         recorded_at: 20,
     });
@@ -995,7 +995,7 @@ fn duplicate_does_not_downgrade_confidence() {
     assert_eq!(entry.observation_count(), 1);
     assert_eq!(
         entry.observations_by_category(&ObservationCategory::Weight)[0].confidence,
-        Confidence(0.8),
+        Confidence::new(0.8),
         "confidence should not downgrade"
     );
 }
@@ -1011,7 +1011,7 @@ fn examine_same_material_twice_does_not_duplicate() {
 
     let observation = Observation {
         category: ObservationCategory::SurfaceAppearance,
-        confidence: Confidence(0.2),
+        confidence: Confidence::new(0.2),
         description: "Warm rust tone".into(),
         recorded_at: 10,
     };
@@ -1025,7 +1025,7 @@ fn examine_same_material_twice_does_not_duplicate() {
         "Ferrite",
         Observation {
             category: ObservationCategory::SurfaceAppearance,
-            confidence: Confidence(0.2),
+            confidence: Confidence::new(0.2),
             description: "Warm rust tone".into(),
             recorded_at: 50,
         },
@@ -1058,7 +1058,7 @@ fn examine_same_material_twice_upgrades_confidence() {
         "Ferrite",
         Observation {
             category: ObservationCategory::SurfaceAppearance,
-            confidence: Confidence(0.2),
+            confidence: Confidence::new(0.2),
             description: "Warm rust tone".into(),
             recorded_at: 10,
         },
@@ -1070,7 +1070,7 @@ fn examine_same_material_twice_upgrades_confidence() {
         "Ferrite",
         Observation {
             category: ObservationCategory::SurfaceAppearance,
-            confidence: Confidence(0.5),
+            confidence: Confidence::new(0.5),
             description: "Warm rust tone".into(),
             recorded_at: 50,
         },
@@ -1086,7 +1086,7 @@ fn examine_same_material_twice_upgrades_confidence() {
     assert_eq!(entry.observation_count(), 1);
     assert_eq!(
         entry.observations_by_category(&ObservationCategory::SurfaceAppearance)[0].confidence,
-        Confidence(0.5),
+        Confidence::new(0.5),
         "confidence should upgrade on re-examination"
     );
 }
@@ -1098,13 +1098,13 @@ fn same_category_different_description_is_not_duplicate() {
 
     entry.add_observation(Observation {
         category: ObservationCategory::SurfaceAppearance,
-        confidence: Confidence(0.2),
+        confidence: Confidence::new(0.2),
         description: "Warm rust tone".into(),
         recorded_at: 10,
     });
     entry.add_observation(Observation {
         category: ObservationCategory::SurfaceAppearance,
-        confidence: Confidence(0.2),
+        confidence: Confidence::new(0.2),
         description: "Slightly rough texture".into(),
         recorded_at: 20,
     });
@@ -1125,13 +1125,13 @@ fn same_description_different_category_is_not_duplicate() {
 
     entry.add_observation(Observation {
         category: ObservationCategory::SurfaceAppearance,
-        confidence: Confidence(0.2),
+        confidence: Confidence::new(0.2),
         description: "Notable".into(),
         recorded_at: 10,
     });
     entry.add_observation(Observation {
         category: ObservationCategory::LocationNote,
-        confidence: Confidence(0.2),
+        confidence: Confidence::new(0.2),
         description: "Notable".into(),
         recorded_at: 20,
     });
@@ -1159,7 +1159,7 @@ fn multiple_observations_for_same_key_accumulate() {
         "Volite",
         Observation {
             category: ObservationCategory::SurfaceAppearance,
-            confidence: Confidence(0.2),
+            confidence: Confidence::new(0.2),
             description: "Dark mineral grey".into(),
             recorded_at: 10,
         },
@@ -1171,7 +1171,7 @@ fn multiple_observations_for_same_key_accumulate() {
         "Volite",
         Observation {
             category: ObservationCategory::ThermalBehavior,
-            confidence: Confidence(0.5),
+            confidence: Confidence::new(0.5),
             description: "Glows faintly when heated".into(),
             recorded_at: 25,
         },
@@ -1183,7 +1183,7 @@ fn multiple_observations_for_same_key_accumulate() {
         "Volite",
         Observation {
             category: ObservationCategory::SurfaceAppearance,
-            confidence: Confidence(0.5),
+            confidence: Confidence::new(0.5),
             description: "Slightly crystalline texture".into(),
             recorded_at: 40,
         },
@@ -1195,7 +1195,7 @@ fn multiple_observations_for_same_key_accumulate() {
         "Volite",
         Observation {
             category: ObservationCategory::Weight,
-            confidence: Confidence(0.8),
+            confidence: Confidence::new(0.8),
             description: "Very heavy".into(),
             recorded_at: 60,
         },
@@ -1207,7 +1207,7 @@ fn multiple_observations_for_same_key_accumulate() {
         "Volite",
         Observation {
             category: ObservationCategory::FabricationResult,
-            confidence: Confidence(0.8),
+            confidence: Confidence::new(0.8),
             description: "Combined Volite + Silite -> Crystite".into(),
             recorded_at: 80,
         },
@@ -1236,28 +1236,28 @@ fn multiple_observations_for_same_key_accumulate() {
     let surface = entry.observations_by_category(&ObservationCategory::SurfaceAppearance);
     assert_eq!(surface.len(), 2);
     assert_eq!(surface[0].description, "Dark mineral grey");
-    assert_eq!(surface[0].confidence, Confidence(0.2));
+    assert_eq!(surface[0].confidence, Confidence::new(0.2));
     assert_eq!(surface[0].recorded_at, 10);
     assert_eq!(surface[1].description, "Slightly crystalline texture");
-    assert_eq!(surface[1].confidence, Confidence(0.5));
+    assert_eq!(surface[1].confidence, Confidence::new(0.5));
     assert_eq!(surface[1].recorded_at, 40);
 
     let thermal = entry.observations_by_category(&ObservationCategory::ThermalBehavior);
     assert_eq!(thermal.len(), 1);
     assert_eq!(thermal[0].description, "Glows faintly when heated");
-    assert_eq!(thermal[0].confidence, Confidence(0.5));
+    assert_eq!(thermal[0].confidence, Confidence::new(0.5));
     assert_eq!(thermal[0].recorded_at, 25);
 
     let weight = entry.observations_by_category(&ObservationCategory::Weight);
     assert_eq!(weight.len(), 1);
     assert_eq!(weight[0].description, "Very heavy");
-    assert_eq!(weight[0].confidence, Confidence(0.8));
+    assert_eq!(weight[0].confidence, Confidence::new(0.8));
     assert_eq!(weight[0].recorded_at, 60);
 
     let fab = entry.observations_by_category(&ObservationCategory::FabricationResult);
     assert_eq!(fab.len(), 1);
     assert_eq!(fab[0].description, "Combined Volite + Silite -> Crystite");
-    assert_eq!(fab[0].confidence, Confidence(0.8));
+    assert_eq!(fab[0].confidence, Confidence::new(0.8));
     assert_eq!(fab[0].recorded_at, 80);
 
     let loc = entry.observations_by_category(&ObservationCategory::LocationNote);
@@ -1307,7 +1307,11 @@ fn all_types_serde_round_trip() {
     }
 
     // ── Confidence variants ────────────────────────────────
-    let levels = vec![Confidence(0.2), Confidence(0.5), Confidence(0.8)];
+    let levels = vec![
+        Confidence::new(0.2),
+        Confidence::new(0.5),
+        Confidence::new(0.8),
+    ];
     for level in &levels {
         let json = serde_json::to_string(level).expect("Confidence should serialize");
         let rt: Confidence = serde_json::from_str(&json).expect("Confidence should deserialize");
@@ -1317,7 +1321,7 @@ fn all_types_serde_round_trip() {
     // ── Observation struct ──────────────────────────────────────
     let observation = Observation {
         category: ObservationCategory::ThermalBehavior,
-        confidence: Confidence(0.5),
+        confidence: Confidence::new(0.5),
         description: "Holds together under heat".into(),
         recorded_at: 999,
     };
@@ -1336,13 +1340,13 @@ fn all_types_serde_round_trip() {
     );
     entry.add_observation(Observation {
         category: ObservationCategory::SurfaceAppearance,
-        confidence: Confidence(0.2),
+        confidence: Confidence::new(0.2),
         description: "Warm rust tone".into(),
         recorded_at: 10,
     });
     entry.add_observation(Observation {
         category: ObservationCategory::Weight,
-        confidence: Confidence(0.8),
+        confidence: Confidence::new(0.8),
         description: "Very heavy".into(),
         recorded_at: 20,
     });
@@ -1375,7 +1379,7 @@ fn all_types_serde_round_trip() {
         "Silite",
         Observation {
             category: ObservationCategory::SurfaceAppearance,
-            confidence: Confidence(0.2),
+            confidence: Confidence::new(0.2),
             description: "Cool blue tone".into(),
             recorded_at: 1,
         },
@@ -1385,7 +1389,7 @@ fn all_types_serde_round_trip() {
         "Silite",
         Observation {
             category: ObservationCategory::ThermalBehavior,
-            confidence: Confidence(0.5),
+            confidence: Confidence::new(0.5),
             description: "Softens quickly under heat".into(),
             recorded_at: 5,
         },
@@ -1395,7 +1399,7 @@ fn all_types_serde_round_trip() {
         "Silite",
         Observation {
             category: ObservationCategory::Weight,
-            confidence: Confidence(0.8),
+            confidence: Confidence::new(0.8),
             description: "Light".into(),
             recorded_at: 8,
         },
@@ -1408,7 +1412,7 @@ fn all_types_serde_round_trip() {
         "Neoite",
         Observation {
             category: ObservationCategory::FabricationResult,
-            confidence: Confidence(0.8),
+            confidence: Confidence::new(0.8),
             description: "Combined Silite + Ferrite -> Neoite".into(),
             recorded_at: 10,
         },
@@ -1418,7 +1422,7 @@ fn all_types_serde_round_trip() {
         "Neoite",
         Observation {
             category: ObservationCategory::LocationNote,
-            confidence: Confidence(0.2),
+            confidence: Confidence::new(0.2),
             description: "Found near volcanic ridge".into(),
             recorded_at: 15,
         },
@@ -1448,7 +1452,7 @@ fn all_types_serde_round_trip() {
     );
     assert_eq!(
         silite.observations_by_category(&ObservationCategory::SurfaceAppearance)[0].confidence,
-        Confidence(0.2)
+        Confidence::new(0.2)
     );
     assert_eq!(
         silite
@@ -1481,7 +1485,7 @@ fn all_types_serde_round_trip() {
     );
     assert_eq!(
         neoite.observations_by_category(&ObservationCategory::FabricationResult)[0].confidence,
-        Confidence(0.8)
+        Confidence::new(0.8)
     );
     assert_eq!(
         neoite
@@ -1516,7 +1520,7 @@ fn different_keys_stored_independently() {
         "Ferrite",
         Observation {
             category: ObservationCategory::SurfaceAppearance,
-            confidence: Confidence(0.2),
+            confidence: Confidence::new(0.2),
             description: "Warm rust tone".into(),
             recorded_at: 1,
         },
@@ -1528,7 +1532,7 @@ fn different_keys_stored_independently() {
         "Silite",
         Observation {
             category: ObservationCategory::SurfaceAppearance,
-            confidence: Confidence(0.5),
+            confidence: Confidence::new(0.5),
             description: "Cool blue tone".into(),
             recorded_at: 2,
         },
@@ -1540,7 +1544,7 @@ fn different_keys_stored_independently() {
         "Neoite",
         Observation {
             category: ObservationCategory::FabricationResult,
-            confidence: Confidence(0.8),
+            confidence: Confidence::new(0.8),
             description: "Combined Ferrite + Silite -> Neoite".into(),
             recorded_at: 3,
         },
@@ -1553,7 +1557,7 @@ fn different_keys_stored_independently() {
         "Ferrite",
         Observation {
             category: ObservationCategory::ThermalBehavior,
-            confidence: Confidence(0.5),
+            confidence: Confidence::new(0.5),
             description: "Holds together under heat".into(),
             recorded_at: 4,
         },
@@ -1671,7 +1675,7 @@ fn rendered_text_contains_same_information_as_legacy_journal() {
         "Ferrite",
         Observation {
             category: ObservationCategory::SurfaceAppearance,
-            confidence: Confidence(0.2),
+            confidence: Confidence::new(0.2),
             description: "Warm rust tone".into(),
             recorded_at: 1,
         },
@@ -1681,7 +1685,7 @@ fn rendered_text_contains_same_information_as_legacy_journal() {
         "Ferrite",
         Observation {
             category: ObservationCategory::SurfaceAppearance,
-            confidence: Confidence(0.5),
+            confidence: Confidence::new(0.5),
             description: "Slightly rough texture".into(),
             recorded_at: 2,
         },
@@ -1691,7 +1695,7 @@ fn rendered_text_contains_same_information_as_legacy_journal() {
         "Ferrite",
         Observation {
             category: ObservationCategory::ThermalBehavior,
-            confidence: Confidence(0.5),
+            confidence: Confidence::new(0.5),
             description: "Holds together under heat".into(),
             recorded_at: 3,
         },
@@ -1701,7 +1705,7 @@ fn rendered_text_contains_same_information_as_legacy_journal() {
         "Ferrite",
         Observation {
             category: ObservationCategory::Weight,
-            confidence: Confidence(0.8),
+            confidence: Confidence::new(0.8),
             description: "Heavy but manageable".into(),
             recorded_at: 4,
         },
@@ -1716,7 +1720,7 @@ fn rendered_text_contains_same_information_as_legacy_journal() {
         "Silite",
         Observation {
             category: ObservationCategory::SurfaceAppearance,
-            confidence: Confidence(0.2),
+            confidence: Confidence::new(0.2),
             description: "Cool blue tone".into(),
             recorded_at: 5,
         },
@@ -1729,7 +1733,7 @@ fn rendered_text_contains_same_information_as_legacy_journal() {
         "Neoite",
         Observation {
             category: ObservationCategory::FabricationResult,
-            confidence: Confidence(0.8),
+            confidence: Confidence::new(0.8),
             description: "Combined Ferrite + Silite -> Neoite".into(),
             recorded_at: 6,
         },
@@ -1840,7 +1844,11 @@ fn journal_with_100_plus_mixed_entries_does_not_panic() {
         ObservationCategory::LocationNote,
     ];
 
-    let confidences = [Confidence(0.2), Confidence(0.5), Confidence(0.8)];
+    let confidences = [
+        Confidence::new(0.2),
+        Confidence::new(0.5),
+        Confidence::new(0.8),
+    ];
 
     let mut kg = KnowledgeGraph::default();
 
@@ -1878,7 +1886,7 @@ fn journal_with_100_plus_mixed_entries_does_not_panic() {
                 &name,
                 Observation {
                     category: secondary_cat.clone(),
-                    confidence: Confidence(0.2),
+                    confidence: Confidence::new(0.2),
                     description: format!("Secondary observation for {name}"),
                     recorded_at: tick_base + 1,
                 },
@@ -1893,7 +1901,7 @@ fn journal_with_100_plus_mixed_entries_does_not_panic() {
                 &name,
                 Observation {
                     category: primary_cat.clone(),
-                    confidence: Confidence(0.8),
+                    confidence: Confidence::new(0.8),
                     description: format!("Follow-up observation for {name}"),
                     recorded_at: tick_base + 2,
                 },
@@ -1974,7 +1982,7 @@ fn multiple_materials_have_separate_entries_and_rendering() {
         "Ferrite",
         Observation {
             category: ObservationCategory::SurfaceAppearance,
-            confidence: Confidence(0.2),
+            confidence: Confidence::new(0.2),
             description: "Warm rust tone".into(),
             recorded_at: 1,
         },
@@ -1984,7 +1992,7 @@ fn multiple_materials_have_separate_entries_and_rendering() {
         "Ferrite",
         Observation {
             category: ObservationCategory::ThermalBehavior,
-            confidence: Confidence(0.5),
+            confidence: Confidence::new(0.5),
             description: "Holds together under heat".into(),
             recorded_at: 2,
         },
@@ -1997,7 +2005,7 @@ fn multiple_materials_have_separate_entries_and_rendering() {
         "Silite",
         Observation {
             category: ObservationCategory::SurfaceAppearance,
-            confidence: Confidence(0.5),
+            confidence: Confidence::new(0.5),
             description: "Cool blue tone".into(),
             recorded_at: 3,
         },
@@ -2007,7 +2015,7 @@ fn multiple_materials_have_separate_entries_and_rendering() {
         "Silite",
         Observation {
             category: ObservationCategory::Weight,
-            confidence: Confidence(0.8),
+            confidence: Confidence::new(0.8),
             description: "Feather-light".into(),
             recorded_at: 4,
         },
@@ -2020,7 +2028,7 @@ fn multiple_materials_have_separate_entries_and_rendering() {
         "Volite",
         Observation {
             category: ObservationCategory::SurfaceAppearance,
-            confidence: Confidence(0.2),
+            confidence: Confidence::new(0.2),
             description: "Dark mineral grey".into(),
             recorded_at: 5,
         },
@@ -2030,7 +2038,7 @@ fn multiple_materials_have_separate_entries_and_rendering() {
         "Volite",
         Observation {
             category: ObservationCategory::ThermalBehavior,
-            confidence: Confidence(0.8),
+            confidence: Confidence::new(0.8),
             description: "Glows faintly when heated".into(),
             recorded_at: 6,
         },
@@ -2040,7 +2048,7 @@ fn multiple_materials_have_separate_entries_and_rendering() {
         "Volite",
         Observation {
             category: ObservationCategory::Weight,
-            confidence: Confidence(0.5),
+            confidence: Confidence::new(0.5),
             description: "Very heavy".into(),
             recorded_at: 7,
         },
@@ -2053,7 +2061,7 @@ fn multiple_materials_have_separate_entries_and_rendering() {
         "Crystite",
         Observation {
             category: ObservationCategory::SurfaceAppearance,
-            confidence: Confidence(0.5),
+            confidence: Confidence::new(0.5),
             description: "Translucent with prismatic flecks".into(),
             recorded_at: 8,
         },
@@ -2177,7 +2185,7 @@ fn make_kg_with_n_entries(n: usize) -> KnowledgeGraph {
             &name,
             Observation {
                 category: ObservationCategory::SurfaceAppearance,
-                confidence: Confidence(0.2),
+                confidence: Confidence::new(0.2),
                 description: format!("Appearance of {name}"),
                 recorded_at: i as u64,
             },
@@ -2222,7 +2230,7 @@ fn entry_list_shows_observation_count() {
         "Ferrite",
         Observation {
             category: ObservationCategory::SurfaceAppearance,
-            confidence: Confidence(0.2),
+            confidence: Confidence::new(0.2),
             description: "Warm rust".into(),
             recorded_at: 1,
         },
@@ -2232,7 +2240,7 @@ fn entry_list_shows_observation_count() {
         "Ferrite",
         Observation {
             category: ObservationCategory::ThermalBehavior,
-            confidence: Confidence(0.5),
+            confidence: Confidence::new(0.5),
             description: "Heat resistant".into(),
             recorded_at: 2,
         },
@@ -2256,7 +2264,7 @@ fn detail_shows_selected_entry_observations() {
         "Ferrite",
         Observation {
             category: ObservationCategory::SurfaceAppearance,
-            confidence: Confidence(0.2),
+            confidence: Confidence::new(0.2),
             description: "Warm rust tone".into(),
             recorded_at: 1,
         },
@@ -2312,7 +2320,7 @@ fn detail_spans_have_correct_kinds() {
         "Ferrite",
         Observation {
             category: ObservationCategory::SurfaceAppearance,
-            confidence: Confidence(0.2),
+            confidence: Confidence::new(0.2),
             description: "Warm rust tone".into(),
             recorded_at: 1,
         },
@@ -2322,7 +2330,7 @@ fn detail_spans_have_correct_kinds() {
         "Ferrite",
         Observation {
             category: ObservationCategory::Weight,
-            confidence: Confidence(0.5),
+            confidence: Confidence::new(0.5),
             description: "Heavy but manageable".into(),
             recorded_at: 2,
         },
@@ -2378,7 +2386,7 @@ fn detail_panel_shows_correct_observations_for_selected_entry() {
         "Ferrite",
         Observation {
             category: ObservationCategory::SurfaceAppearance,
-            confidence: Confidence(0.2),
+            confidence: Confidence::new(0.2),
             description: "Warm rust tone".into(),
             recorded_at: 1,
         },
@@ -2388,7 +2396,7 @@ fn detail_panel_shows_correct_observations_for_selected_entry() {
         "Silite",
         Observation {
             category: ObservationCategory::SurfaceAppearance,
-            confidence: Confidence(0.5),
+            confidence: Confidence::new(0.5),
             description: "Glassy smooth surface".into(),
             recorded_at: 2,
         },
@@ -2398,7 +2406,7 @@ fn detail_panel_shows_correct_observations_for_selected_entry() {
         "Neoite",
         Observation {
             category: ObservationCategory::Weight,
-            confidence: Confidence(0.8),
+            confidence: Confidence::new(0.8),
             description: "Surprisingly light".into(),
             recorded_at: 3,
         },
@@ -2505,7 +2513,7 @@ fn detail_panel_shows_all_observations_for_multi_category_entry() {
         "Ferrite",
         Observation {
             category: ObservationCategory::SurfaceAppearance,
-            confidence: Confidence(0.2),
+            confidence: Confidence::new(0.2),
             description: "Warm rust tone".into(),
             recorded_at: 1,
         },
@@ -2515,7 +2523,7 @@ fn detail_panel_shows_all_observations_for_multi_category_entry() {
         "Ferrite",
         Observation {
             category: ObservationCategory::Weight,
-            confidence: Confidence(0.5),
+            confidence: Confidence::new(0.5),
             description: "Heavy but manageable".into(),
             recorded_at: 2,
         },
@@ -2525,7 +2533,7 @@ fn detail_panel_shows_all_observations_for_multi_category_entry() {
         "Ferrite",
         Observation {
             category: ObservationCategory::SurfaceAppearance,
-            confidence: Confidence(0.8),
+            confidence: Confidence::new(0.8),
             description: "Rough, pitted texture".into(),
             recorded_at: 3,
         },
@@ -2537,7 +2545,7 @@ fn detail_panel_shows_all_observations_for_multi_category_entry() {
         "Silite",
         Observation {
             category: ObservationCategory::SurfaceAppearance,
-            confidence: Confidence(0.2),
+            confidence: Confidence::new(0.2),
             description: "Glassy smooth surface".into(),
             recorded_at: 4,
         },
@@ -2909,7 +2917,7 @@ fn panels_render_without_panic() {
                 &format!("Mat-{i}"),
                 Observation {
                     category: ObservationCategory::SurfaceAppearance,
-                    confidence: Confidence(0.2),
+                    confidence: Confidence::new(0.2),
                     description: format!("Appearance of Mat-{i}"),
                     recorded_at: i,
                 },
@@ -3126,7 +3134,7 @@ fn navigation_ignored_when_journal_is_hidden() {
             &format!("Mat-{i:03}"),
             Observation {
                 category: ObservationCategory::SurfaceAppearance,
-                confidence: Confidence(0.2),
+                confidence: Confidence::new(0.2),
                 description: format!("Obs {i}"),
                 recorded_at: 0,
             },
@@ -3176,7 +3184,7 @@ fn navigation_active_when_journal_is_visible() {
             &format!("Mat-{i:03}"),
             Observation {
                 category: ObservationCategory::SurfaceAppearance,
-                confidence: Confidence(0.2),
+                confidence: Confidence::new(0.2),
                 description: format!("Obs {i}"),
                 recorded_at: 0,
             },
@@ -3228,7 +3236,7 @@ fn navigation_first_to_last_entry() {
             &format!("Mat-{i:03}"),
             Observation {
                 category: ObservationCategory::SurfaceAppearance,
-                confidence: Confidence(0.2),
+                confidence: Confidence::new(0.2),
                 description: format!("Obs {i}"),
                 recorded_at: 0,
             },
@@ -3345,7 +3353,7 @@ fn navigation_bounds_single_entry_journal() {
         "Sole-Material",
         Observation {
             category: ObservationCategory::SurfaceAppearance,
-            confidence: Confidence(0.2),
+            confidence: Confidence::new(0.2),
             description: "Only entry".to_string(),
             recorded_at: 0,
         },
@@ -3411,7 +3419,7 @@ fn navigation_bounds_page_keys_at_extremes() {
             &format!("Mat-{i:03}"),
             Observation {
                 category: ObservationCategory::SurfaceAppearance,
-                confidence: Confidence(0.2),
+                confidence: Confidence::new(0.2),
                 description: format!("Obs {i}"),
                 recorded_at: 0,
             },
@@ -3534,7 +3542,7 @@ fn navigation_never_exceeds_bounds_under_key_sequence() {
             &format!("Mat-{i:03}"),
             Observation {
                 category: ObservationCategory::SurfaceAppearance,
-                confidence: Confidence(0.2),
+                confidence: Confidence::new(0.2),
                 description: format!("Obs {i}"),
                 recorded_at: 0,
             },
@@ -3659,7 +3667,7 @@ fn record(app: &mut App, key: JournalKey, name: &str, recorded_at: u64) {
         name,
         Observation {
             category: ObservationCategory::SurfaceAppearance,
-            confidence: Confidence(0.2),
+            confidence: Confidence::new(0.2),
             description: format!("Appearance of {name}"),
             recorded_at,
         },
@@ -4570,7 +4578,7 @@ fn shift_tab_cycles_context_filter() {
         "Planet0-Material",
         Observation {
             category: ObservationCategory::SurfaceAppearance,
-            confidence: Confidence(0.2),
+            confidence: Confidence::new(0.2),
             description: "From planet 0".to_string(),
             recorded_at: 1,
         },
@@ -4582,7 +4590,7 @@ fn shift_tab_cycles_context_filter() {
         "Planet1-Material",
         Observation {
             category: ObservationCategory::SurfaceAppearance,
-            confidence: Confidence(0.2),
+            confidence: Confidence::new(0.2),
             description: "From planet 1".to_string(),
             recorded_at: 2,
         },
@@ -4594,7 +4602,7 @@ fn shift_tab_cycles_context_filter() {
         "Unknown-Material",
         Observation {
             category: ObservationCategory::SurfaceAppearance,
-            confidence: Confidence(0.2),
+            confidence: Confidence::new(0.2),
             description: "Unknown origin".to_string(),
             recorded_at: 3,
         },
@@ -4684,7 +4692,7 @@ fn tab_cycles_category_filter() {
         "Surface-Material",
         Observation {
             category: ObservationCategory::SurfaceAppearance,
-            confidence: Confidence(0.2),
+            confidence: Confidence::new(0.2),
             description: "Smooth metallic surface".to_string(),
             recorded_at: 1,
         },
@@ -4696,7 +4704,7 @@ fn tab_cycles_category_filter() {
         "Thermal-Material",
         Observation {
             category: ObservationCategory::ThermalBehavior,
-            confidence: Confidence(0.5),
+            confidence: Confidence::new(0.5),
             description: "Warm to the touch".to_string(),
             recorded_at: 2,
         },
@@ -4708,7 +4716,7 @@ fn tab_cycles_category_filter() {
         "Heavy-Material",
         Observation {
             category: ObservationCategory::Weight,
-            confidence: Confidence(0.8),
+            confidence: Confidence::new(0.8),
             description: "Heavy material".to_string(),
             recorded_at: 3,
         },
@@ -4720,7 +4728,7 @@ fn tab_cycles_category_filter() {
         "Alloy-Fabrication",
         Observation {
             category: ObservationCategory::FabricationResult,
-            confidence: Confidence(0.8),
+            confidence: Confidence::new(0.8),
             description: "Successfully fabricated alloy".to_string(),
             recorded_at: 4,
         },
@@ -5282,7 +5290,7 @@ fn test_confidence_accumulation_in_journal_entry() {
     // Create an initial observation
     let obs1 = Observation {
         category: ObservationCategory::ThermalBehavior,
-        confidence: Confidence(0.2), // Initial confidence
+        confidence: Confidence::new(0.2), // Initial confidence
         description: "Softens under heat".to_string(),
         recorded_at: 1000,
     };
@@ -5294,14 +5302,15 @@ fn test_confidence_accumulation_in_journal_entry() {
     let observations = entry.observations_by_category(&ObservationCategory::ThermalBehavior);
     assert_eq!(observations.len(), 1, "Should have exactly one observation");
     assert_eq!(
-        observations[0].confidence.0, 0.2,
+        observations[0].confidence.value(),
+        0.2,
         "First observation should have initial confidence"
     );
 
     // Add the same observation again (should accumulate)
     let obs2 = Observation {
         category: ObservationCategory::ThermalBehavior,
-        confidence: Confidence(0.2), // Same initial confidence
+        confidence: Confidence::new(0.2), // Same initial confidence
         description: "Softens under heat".to_string(), // Same description
         recorded_at: 2000,
     };
@@ -5321,16 +5330,16 @@ fn test_confidence_accumulation_in_journal_entry() {
     // Expected: 0.2 + (1.0 - 0.2) * 0.2 = 0.2 + 0.8 * 0.2 = 0.2 + 0.16 = 0.36
     let expected_confidence = 0.36;
     assert!(
-        (observations[0].confidence.0 - expected_confidence).abs() < f32::EPSILON,
+        (observations[0].confidence.value() - expected_confidence).abs() < f32::EPSILON,
         "Confidence should accumulate with diminishing returns. Expected: {}, Got: {}",
         expected_confidence,
-        observations[0].confidence.0
+        observations[0].confidence.value()
     );
 
     // Add a third observation to see further accumulation
     let obs3 = Observation {
         category: ObservationCategory::ThermalBehavior,
-        confidence: Confidence(0.2),
+        confidence: Confidence::new(0.2),
         description: "Softens under heat".to_string(),
         recorded_at: 3000,
     };
@@ -5349,10 +5358,10 @@ fn test_confidence_accumulation_in_journal_entry() {
     // Expected: 0.36 + (1.0 - 0.36) * 0.2 = 0.36 + 0.64 * 0.2 = 0.36 + 0.128 = 0.488
     let expected_confidence_2 = 0.488;
     assert!(
-        (observations[0].confidence.0 - expected_confidence_2).abs() < 0.001,
+        (observations[0].confidence.value() - expected_confidence_2).abs() < 0.001,
         "Confidence should continue to accumulate with diminishing returns. Expected: {}, Got: {}",
         expected_confidence_2,
-        observations[0].confidence.0
+        observations[0].confidence.value()
     );
 
     // Verify confidence tier mapping
@@ -5380,14 +5389,14 @@ fn test_confidence_accumulation_different_descriptions() {
     // Add two observations with different descriptions
     let obs1 = Observation {
         category: ObservationCategory::ThermalBehavior,
-        confidence: Confidence(0.2),
+        confidence: Confidence::new(0.2),
         description: "Softens under heat".to_string(),
         recorded_at: 1000,
     };
 
     let obs2 = Observation {
         category: ObservationCategory::ThermalBehavior,
-        confidence: Confidence(0.3),
+        confidence: Confidence::new(0.3),
         description: "Changes color when heated".to_string(), // Different description
         recorded_at: 2000,
     };
@@ -5405,11 +5414,13 @@ fn test_confidence_accumulation_different_descriptions() {
 
     // Both should retain their original confidence since no accumulation occurred
     assert_eq!(
-        observations[0].confidence.0, 0.2,
+        observations[0].confidence.value(),
+        0.2,
         "First observation should retain original confidence"
     );
     assert_eq!(
-        observations[1].confidence.0, 0.3,
+        observations[1].confidence.value(),
+        0.3,
         "Second observation should retain original confidence"
     );
 }
@@ -5436,7 +5447,7 @@ fn recording_same_observation_twice_increases_confidence_and_changes_language() 
     // Create initial observation with low confidence (Tentative tier: < 0.3)
     let initial_observation = Observation {
         category: ObservationCategory::ThermalBehavior,
-        confidence: Confidence(0.2), // Tentative tier
+        confidence: Confidence::new(0.2), // Tentative tier
         description: "softens quickly under heat".to_string(),
         recorded_at: 1000,
     };
@@ -5454,7 +5465,8 @@ fn recording_same_observation_twice_increases_confidence_and_changes_language() 
     let observations = entry.observations_by_category(&ObservationCategory::ThermalBehavior);
     assert_eq!(observations.len(), 1, "Should have exactly one observation");
     assert_eq!(
-        observations[0].confidence.0, 0.2,
+        observations[0].confidence.value(),
+        0.2,
         "Initial confidence should be 0.2"
     );
 
@@ -5469,7 +5481,7 @@ fn recording_same_observation_twice_increases_confidence_and_changes_language() 
     // Record the same observation again (same category and description)
     let repeat_observation = Observation {
         category: ObservationCategory::ThermalBehavior,
-        confidence: Confidence(0.2), // Same initial confidence
+        confidence: Confidence::new(0.2), // Same initial confidence
         description: "softens quickly under heat".to_string(), // Same description
         recorded_at: 2000,
     };
@@ -5495,10 +5507,10 @@ fn recording_same_observation_twice_increases_confidence_and_changes_language() 
     // Expected: 0.2 + (1.0 - 0.2) * 0.3 = 0.2 + 0.8 * 0.3 = 0.2 + 0.24 = 0.44
     let expected_confidence = 0.44;
     assert!(
-        (observations[0].confidence.0 - expected_confidence).abs() < f32::EPSILON,
+        (observations[0].confidence.value() - expected_confidence).abs() < f32::EPSILON,
         "Confidence should have accumulated. Expected: {}, Got: {}",
         expected_confidence,
-        observations[0].confidence.0
+        observations[0].confidence.value()
     );
 
     // Verify confidence tier has changed from Tentative to Observed
@@ -5524,7 +5536,7 @@ fn recording_same_observation_twice_increases_confidence_and_changes_language() 
     // Record the same observation a third time to push into Confident tier
     let third_observation = Observation {
         category: ObservationCategory::ThermalBehavior,
-        confidence: Confidence(0.2),
+        confidence: Confidence::new(0.2),
         description: "softens quickly under heat".to_string(),
         recorded_at: 3000,
     };
@@ -5545,16 +5557,16 @@ fn recording_same_observation_twice_increases_confidence_and_changes_language() 
     // Expected: 0.44 + (1.0 - 0.44) * 0.3 = 0.44 + 0.56 * 0.3 = 0.44 + 0.168 = 0.608
     let expected_confidence_2 = 0.608;
     assert!(
-        (observations[0].confidence.0 - expected_confidence_2).abs() < 0.001,
+        (observations[0].confidence.value() - expected_confidence_2).abs() < 0.001,
         "Confidence should have accumulated further. Expected: {}, Got: {}",
         expected_confidence_2,
-        observations[0].confidence.0
+        observations[0].confidence.value()
     );
 
     // Record one more time to push into Confident tier (>= 0.7)
     let fourth_observation = Observation {
         category: ObservationCategory::ThermalBehavior,
-        confidence: Confidence(0.2),
+        confidence: Confidence::new(0.2),
         description: "softens quickly under heat".to_string(),
         recorded_at: 4000,
     };
@@ -5575,10 +5587,10 @@ fn recording_same_observation_twice_increases_confidence_and_changes_language() 
     // Expected: 0.608 + (1.0 - 0.608) * 0.3 = 0.608 + 0.392 * 0.3 = 0.608 + 0.1176 = 0.7256
     let expected_confidence_3 = 0.7256;
     assert!(
-        (observations[0].confidence.0 - expected_confidence_3).abs() < 0.001,
+        (observations[0].confidence.value() - expected_confidence_3).abs() < 0.001,
         "Confidence should have accumulated to Confident tier. Expected: {}, Got: {}",
         expected_confidence_3,
-        observations[0].confidence.0
+        observations[0].confidence.value()
     );
 
     // Verify we've reached Confident tier
@@ -5613,7 +5625,7 @@ fn journal_entry_shows_confident_language_after_sufficient_observations() {
     let vocab = DescriptorVocabulary::default();
 
     // Create an observation with confident-level confidence (≥0.7)
-    let confident_confidence = Confidence(0.8);
+    let confident_confidence = Confidence::new(0.8);
     let thermal_value = 0.1; // Low thermal resistance value (0.0-0.25 range)
 
     // Generate description using the vocabulary system with confident confidence
@@ -5728,9 +5740,13 @@ fn language_in_journal_regresses_after_death_and_recovers_with_new_observations(
     // Create observations with confident-level confidence (≥0.7)
     let confident_thermal = Observation {
         category: ObservationCategory::ThermalBehavior,
-        confidence: Confidence(0.8), // Confident tier
+        confidence: Confidence::new(0.8), // Confident tier
         description: vocab
-            .describe(&ObservationCategory::ThermalBehavior, 0.1, Confidence(0.8))
+            .describe(
+                &ObservationCategory::ThermalBehavior,
+                0.1,
+                Confidence::new(0.8),
+            )
             .expect("Should find thermal description")
             .to_string(),
         recorded_at: 1000,
@@ -5738,9 +5754,9 @@ fn language_in_journal_regresses_after_death_and_recovers_with_new_observations(
 
     let confident_weight = Observation {
         category: ObservationCategory::Weight,
-        confidence: Confidence(0.75), // Confident tier
+        confidence: Confidence::new(0.75), // Confident tier
         description: vocab
-            .describe(&ObservationCategory::Weight, 0.8, Confidence(0.75))
+            .describe(&ObservationCategory::Weight, 0.8, Confidence::new(0.75))
             .expect("Should find weight description")
             .to_string(),
         recorded_at: 1100,
@@ -5798,8 +5814,8 @@ fn language_in_journal_regresses_after_death_and_recovers_with_new_observations(
     let expected_thermal_confidence = 0.8 * 0.5; // 0.4 (Observed tier: 0.3-0.7)
     let expected_weight_confidence = 0.75 * 0.5; // 0.375 (Observed tier)
 
-    assert!((thermal_obs.confidence.0 - expected_thermal_confidence).abs() < 0.001);
-    assert!((weight_obs.confidence.0 - expected_weight_confidence).abs() < 0.001);
+    assert!((thermal_obs.confidence.value() - expected_thermal_confidence).abs() < 0.001);
+    assert!((weight_obs.confidence.value() - expected_weight_confidence).abs() < 0.001);
     assert_eq!(thermal_obs.confidence.tier(), ConfidenceTier::Observed);
     assert_eq!(weight_obs.confidence.tier(), ConfidenceTier::Observed);
 
@@ -5836,7 +5852,7 @@ fn language_in_journal_regresses_after_death_and_recovers_with_new_observations(
     // Record new thermal observation (death-relevant domain - should recover faster)
     let _recovery_thermal = Observation {
         category: ObservationCategory::ThermalBehavior,
-        confidence: Confidence(0.2), // New observation confidence
+        confidence: Confidence::new(0.2), // New observation confidence
         description: thermal_obs.description.clone(), // Same description to trigger accumulation
         recorded_at: 2000,
     };
@@ -5844,7 +5860,7 @@ fn language_in_journal_regresses_after_death_and_recovers_with_new_observations(
     // Record new weight observation (unrelated domain - should recover slower)
     let _recovery_weight = Observation {
         category: ObservationCategory::Weight,
-        confidence: Confidence(0.2),
+        confidence: Confidence::new(0.2),
         description: weight_obs.description.clone(),
         recorded_at: 2100,
     };
@@ -5903,16 +5919,16 @@ fn language_in_journal_regresses_after_death_and_recovers_with_new_observations(
     let expected_weight_recovery = 0.375 + (1.0 - 0.375) * (0.25 * 0.8);
 
     assert!(
-        (thermal_obs.confidence.0 - expected_thermal_recovery).abs() < 0.001,
+        (thermal_obs.confidence.value() - expected_thermal_recovery).abs() < 0.001,
         "Thermal confidence should recover faster. Expected: {}, Got: {}",
         expected_thermal_recovery,
-        thermal_obs.confidence.0
+        thermal_obs.confidence.value()
     );
     assert!(
-        (weight_obs.confidence.0 - expected_weight_recovery).abs() < 0.001,
+        (weight_obs.confidence.value() - expected_weight_recovery).abs() < 0.001,
         "Weight confidence should recover slower. Expected: {}, Got: {}",
         expected_weight_recovery,
-        weight_obs.confidence.0
+        weight_obs.confidence.value()
     );
 
     // Thermal should have recovered to Confident tier (≥0.7), weight should still be Observed
@@ -5992,7 +6008,7 @@ fn language_in_journal_regresses_after_death_and_recovers_with_new_observations(
     assert!(
         weight_obs.confidence.tier() == ConfidenceTier::Confident,
         "Weight should have recovered to Confident tier after multiple observations (confidence: {:.3})",
-        weight_obs.confidence.0
+        weight_obs.confidence.value()
     );
 
     let final_weight_desc = vocab

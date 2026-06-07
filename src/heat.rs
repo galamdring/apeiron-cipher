@@ -308,7 +308,7 @@ fn reveal_thermal_property(
 
             // Use initial confidence for new observations - the journal system
             // will handle accumulation automatically for repeated observations
-            let initial_confidence = Confidence(0.2);
+            let initial_confidence = Confidence::new(0.2);
 
             journal_writer.write(RecordObservation {
                 key: JournalKey::MaterialInstance { seed: mat.seed },

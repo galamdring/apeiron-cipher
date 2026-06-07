@@ -152,7 +152,7 @@ impl ConceptNode {
             id: ConceptId(key),
             category,
             name: name.to_string(),
-            confidence: Confidence(0.3),
+            confidence: Confidence::new(0.3),
             first_observed_at: tick,
             last_updated_at: tick,
             origin_planet_seed: None,
@@ -187,7 +187,7 @@ impl ConceptNode {
             .find(|o| o.description == observation.description)
         {
             // Upgrade confidence if the new evidence is stronger.
-            if observation.confidence.0 > existing.confidence.0 {
+            if observation.confidence.value() > existing.confidence.value() {
                 existing.confidence = observation.confidence;
             }
             return;
@@ -396,7 +396,7 @@ impl KnowledgeGraph {
             id: id.clone(),
             category: category.clone(),
             name: String::new(),
-            confidence: Confidence(0.3), // Start at Tentative/Observed boundary
+            confidence: Confidence::new(0.3), // Start at Tentative/Observed boundary
             first_observed_at: tick,
             last_updated_at: tick,
             origin_planet_seed: None,
@@ -985,7 +985,8 @@ fn update_knowledge_graph(
             node.add_observation_with_domain_weighted_accumulation(observation, &config, 1.0);
 
             // ── Accumulate overall node confidence ────────────────────
-            node.confidence.accumulate(obs.observation.confidence.0);
+            node.confidence
+                .accumulate(obs.observation.confidence.value());
 
             // ── Mark property as revealed, storing the raw float value ──
             // Look up the material's property value from the catalog so the
@@ -1036,7 +1037,7 @@ fn update_knowledge_graph(
                     ConceptEdge {
                         relationship: RelationshipType::DerivedFrom,
                         // Fabrication is directly observed — full confidence.
-                        confidence: Confidence(1.0),
+                        confidence: Confidence::new(1.0),
                         discovered_at: tick,
                     },
                 );
@@ -1065,7 +1066,7 @@ fn update_knowledge_graph(
 
             let edge = ConceptEdge {
                 relationship: RelationshipType::CombinedWith,
-                confidence: Confidence(1.0),
+                confidence: Confidence::new(1.0),
                 discovered_at: tick,
             };
             graph.relate(node_a, node_b, edge);
@@ -1194,7 +1195,7 @@ pub fn detect_and_wire_similar_materials(
 
         let edge = ConceptEdge {
             relationship: RelationshipType::SimilarTo,
-            confidence: Confidence(sim),
+            confidence: Confidence::new(sim),
             discovered_at: tick,
         };
         graph.relate(new_node, existing_node, edge);
@@ -1244,7 +1245,7 @@ fn is_at_least_observed(graph: &KnowledgeGraph, key: &crate::journal::JournalKey
     graph
         .lookup(&id)
         .and_then(|idx| graph.node(idx))
-        .is_some_and(|node| node.confidence.0 >= 0.3)
+        .is_some_and(|node| node.confidence.value() >= 0.3)
 }
 
 /// Detects and wires `SimilarTo` edges for newly observed materials.
@@ -1328,7 +1329,7 @@ mod tests {
             b,
             ConceptEdge {
                 relationship: RelationshipType::FoundOn,
-                confidence: Confidence(0.5),
+                confidence: Confidence::new(0.5),
                 discovered_at: 0,
             },
         );
@@ -1345,7 +1346,7 @@ mod tests {
 
         let initial_edge = ConceptEdge {
             relationship: RelationshipType::FoundOn,
-            confidence: Confidence(0.3),
+            confidence: Confidence::new(0.3),
             discovered_at: 0,
         };
         graph.relate(a, b, initial_edge.clone());
@@ -1355,7 +1356,7 @@ mod tests {
         let rels = graph.relationships(a);
         assert_eq!(rels.len(), 1, "no duplicate edge");
         assert!(
-            rels[0].1.confidence.0 > 0.3,
+            rels[0].1.confidence.value() > 0.3,
             "confidence must increase on repeated observation"
         );
     }
@@ -1403,7 +1404,7 @@ mod tests {
             neighbor,
             ConceptEdge {
                 relationship: RelationshipType::SimilarTo,
-                confidence: Confidence(0.9),
+                confidence: Confidence::new(0.9),
                 discovered_at: 0,
             },
         );
@@ -1412,7 +1413,7 @@ mod tests {
             far,
             ConceptEdge {
                 relationship: RelationshipType::SimilarTo,
-                confidence: Confidence(0.9),
+                confidence: Confidence::new(0.9),
                 discovered_at: 0,
             },
         );
@@ -1438,7 +1439,7 @@ mod tests {
 
         let edge = || ConceptEdge {
             relationship: RelationshipType::FoundOn,
-            confidence: Confidence(0.5),
+            confidence: Confidence::new(0.5),
             discovered_at: 0,
         };
         graph.relate(center, mat_neighbor, edge());
@@ -1466,7 +1467,7 @@ mod tests {
 
         let edge = || ConceptEdge {
             relationship: RelationshipType::SimilarTo,
-            confidence: Confidence(0.9),
+            confidence: Confidence::new(0.9),
             discovered_at: 0,
         };
         // Create a cycle: a → b → c → a
@@ -1525,7 +1526,7 @@ mod tests {
             b,
             ConceptEdge {
                 relationship: RelationshipType::FoundOn,
-                confidence: Confidence(0.6),
+                confidence: Confidence::new(0.6),
                 discovered_at: 10,
             },
         );

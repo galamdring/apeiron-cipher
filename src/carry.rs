@@ -1383,7 +1383,7 @@ pub fn record_weight_observation(
 ) {
     // Use initial confidence for new observations - the journal system
     // will handle accumulation automatically for repeated observations
-    let initial_confidence = Confidence(0.2);
+    let initial_confidence = Confidence::new(0.2);
 
     // Generate description using the DescriptorVocabulary system
     let description = descriptor_vocab
@@ -2204,7 +2204,7 @@ exponent = 1.0
         let text = describe_weight_observation(
             0.8,
             1.0,
-            Confidence(0.2), // Tentative
+            Confidence::new(0.2), // Tentative
             &default_weight_descriptions(),
         );
 
@@ -2216,7 +2216,7 @@ exponent = 1.0
         let text = describe_weight_observation(
             0.8,
             1.0,
-            Confidence(0.5), // Observed
+            Confidence::new(0.5), // Observed
             &default_weight_descriptions(),
         );
 
