@@ -18,7 +18,7 @@ use crate::materials::{
     GameMaterial, MATERIAL_SURFACE_GAP, MaterialCatalog, MaterialObject, MaterialProperty,
     PropertyVisibility,
 };
-use crate::observation::RecordObservation;
+use crate::observation::{ConfidenceConfig, RecordObservation};
 use crate::scene::{FabricatorSceneConfig, FurnitureConfig, Workbench};
 
 /// Registers the fabricator workbench systems for combining materials.
@@ -190,6 +190,7 @@ fn tick_processing(
     mut commands: Commands,
     time: Res<Time>,
     cfg: Res<FabricatorSceneConfig>,
+    confidence_config: Res<ConfidenceConfig>,
     mut journal_writer: MessageWriter<RecordObservation>,
     mut state: ResMut<FabricatorState>,
     mut catalog: ResMut<MaterialCatalog>,
@@ -289,7 +290,9 @@ fn tick_processing(
         material_seed: None,
         observation: Observation {
             category: ObservationCategory::FabricationResult,
-            confidence: crate::observation::Confidence::new(0.8), // High confidence for fabrication results
+            confidence: crate::observation::Confidence(
+                confidence_config.initial_observation_confidence,
+            ), // Configured in confidence.toml
             description,
             recorded_at: 0,
         },
