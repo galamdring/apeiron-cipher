@@ -565,6 +565,7 @@ impl Default for DescriptorVocabulary {
     /// - Weight: Perceived density and heft when carried
     /// - SurfaceAppearance: Visual and tactile surface properties
     /// - FabricationResult: Outcomes of material combination processes
+    /// - LocationNote: Environmental conditions observed at a location
     ///
     /// Each category includes descriptor entries for all confidence tiers
     /// (Tentative, Observed, Confident) across the full range of normalized
@@ -922,6 +923,82 @@ impl Default for DescriptorVocabulary {
                     tier: ConfidenceTier::Confident,
                     descriptions: &[
                         "Reliably creates refined products — among the most successful",
+                    ],
+                },
+            ],
+        );
+
+        // ── LocationNote vocabulary ──────────────────────────────────────
+        // Covers environmental conditions observed at a location.
+        // Value represents hazard/risk level: 0.0 = safe/benign, 1.0 = extreme hazard.
+        // Ranges are split into four bands (0.0–0.25, 0.25–0.50, 0.50–0.75, 0.75–1.0)
+        // corresponding to: benign, moderate, hazardous, and extreme environments.
+        vocab.add_category(
+            ObservationCategory::LocationNote,
+            vec![
+                // Tentative tier
+                DescriptorEntry {
+                    value_range: 0.0..0.25,
+                    tier: ConfidenceTier::Tentative,
+                    descriptions: &["Area seemed calm and unremarkable"],
+                },
+                DescriptorEntry {
+                    value_range: 0.25..0.50,
+                    tier: ConfidenceTier::Tentative,
+                    descriptions: &["Location appeared to present some hazard"],
+                },
+                DescriptorEntry {
+                    value_range: 0.50..0.75,
+                    tier: ConfidenceTier::Tentative,
+                    descriptions: &["Environment seemed actively dangerous"],
+                },
+                DescriptorEntry {
+                    value_range: 0.75..1.0,
+                    tier: ConfidenceTier::Tentative,
+                    descriptions: &["Area appeared extremely hostile"],
+                },
+                // Observed tier
+                DescriptorEntry {
+                    value_range: 0.0..0.25,
+                    tier: ConfidenceTier::Observed,
+                    descriptions: &["Calm, unremarkable area"],
+                },
+                DescriptorEntry {
+                    value_range: 0.25..0.50,
+                    tier: ConfidenceTier::Observed,
+                    descriptions: &["Area presents moderate hazards"],
+                },
+                DescriptorEntry {
+                    value_range: 0.50..0.75,
+                    tier: ConfidenceTier::Observed,
+                    descriptions: &["Actively dangerous environment"],
+                },
+                DescriptorEntry {
+                    value_range: 0.75..1.0,
+                    tier: ConfidenceTier::Observed,
+                    descriptions: &["Extremely hostile area"],
+                },
+                // Confident tier
+                DescriptorEntry {
+                    value_range: 0.0..0.25,
+                    tier: ConfidenceTier::Confident,
+                    descriptions: &["Reliably calm — among the safest known locations"],
+                },
+                DescriptorEntry {
+                    value_range: 0.25..0.50,
+                    tier: ConfidenceTier::Confident,
+                    descriptions: &["Reliably hazardous — presents consistent moderate risk"],
+                },
+                DescriptorEntry {
+                    value_range: 0.50..0.75,
+                    tier: ConfidenceTier::Confident,
+                    descriptions: &["Reliably dangerous — among the most hostile environments"],
+                },
+                DescriptorEntry {
+                    value_range: 0.75..1.0,
+                    tier: ConfidenceTier::Confident,
+                    descriptions: &[
+                        "Reliably lethal — among the most extreme environments encountered",
                     ],
                 },
             ],
@@ -1970,6 +2047,12 @@ mod tests {
                 .tables
                 .contains_key(&ObservationCategory::FabricationResult)
         );
+        assert!(
+            vocab
+                .tables
+                .contains_key(&ObservationCategory::LocationNote),
+            "LocationNote vocabulary missing from default"
+        );
 
         // Check that each category has entries for all tiers
         for category in [
@@ -1977,6 +2060,7 @@ mod tests {
             ObservationCategory::Weight,
             ObservationCategory::SurfaceAppearance,
             ObservationCategory::FabricationResult,
+            ObservationCategory::LocationNote,
         ] {
             let entries = &vocab.tables[&category];
 
@@ -2000,6 +2084,85 @@ mod tests {
                 "Category {:?} missing Confident tier",
                 category
             );
+        }
+    }
+
+    #[test]
+    fn descriptor_vocabulary_default_location_note_progression() {
+        use crate::journal::ObservationCategory;
+
+        let vocab = DescriptorVocabulary::default();
+
+        // Low value (0.1) — benign environment, range 0.0..0.25
+        let benign_value = 0.1;
+
+        // Tentative tier — Confidence < 0.3
+        let confidence_tentative = Confidence(0.2);
+        let result = vocab.describe(
+            &ObservationCategory::LocationNote,
+            benign_value,
+            confidence_tentative,
+        );
+        assert_eq!(result, Some("Area seemed calm and unremarkable"));
+
+        // Observed tier — 0.3 <= Confidence < 0.7
+        let confidence_observed = Confidence(0.5);
+        let result = vocab.describe(
+            &ObservationCategory::LocationNote,
+            benign_value,
+            confidence_observed,
+        );
+        assert_eq!(result, Some("Calm, unremarkable area"));
+
+        // Confident tier — Confidence >= 0.7
+        let confidence_confident = Confidence(0.8);
+        let result = vocab.describe(
+            &ObservationCategory::LocationNote,
+            benign_value,
+            confidence_confident,
+        );
+        assert_eq!(
+            result,
+            Some("Reliably calm — among the safest known locations")
+        );
+
+        // High value (0.9) — extreme hazard environment, range 0.75..1.0
+        let extreme_value = 0.9;
+
+        let result = vocab.describe(
+            &ObservationCategory::LocationNote,
+            extreme_value,
+            confidence_tentative,
+        );
+        assert_eq!(result, Some("Area appeared extremely hostile"));
+
+        let result = vocab.describe(
+            &ObservationCategory::LocationNote,
+            extreme_value,
+            confidence_observed,
+        );
+        assert_eq!(result, Some("Extremely hostile area"));
+
+        let result = vocab.describe(
+            &ObservationCategory::LocationNote,
+            extreme_value,
+            confidence_confident,
+        );
+        assert_eq!(
+            result,
+            Some("Reliably lethal — among the most extreme environments encountered")
+        );
+
+        // No None returned for any value+tier combination within the defined ranges
+        for value in [0.1_f32, 0.3, 0.6, 0.9] {
+            for confidence in [Confidence(0.2), Confidence(0.5), Confidence(0.8)] {
+                let result = vocab.describe(&ObservationCategory::LocationNote, value, confidence);
+                assert!(
+                    result.is_some(),
+                    "LocationNote describe returned None for value={value}, confidence={:?}",
+                    confidence
+                );
+            }
         }
     }
 
