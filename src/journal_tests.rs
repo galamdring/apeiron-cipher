@@ -5732,6 +5732,7 @@ fn language_in_journal_regresses_after_death_and_recovers_with_new_observations(
         passive_recovery_multiplier: 0.8,
         base_observation_weight: 0.25, // Reasonable accumulation rate
         similarity_threshold: 0.85,
+        initial_observation_confidence: 0.2,
     };
 
     // ── Phase 1: Establish confident language ──────────────────────────────

@@ -33,3 +33,12 @@ passive_recovery_multiplier = 0.7
 # Higher values = fewer observations needed for high confidence
 # Lower values = more repeated testing required
 base_observation_weight = 0.2
+
+# Initial Observation Settings
+# -----------------------------
+
+# Starting confidence value seeded into an entity's first observation in a category.
+# Non-zero so the first experiment registers as meaningful (Tentative tier) rather
+# than requiring repeat tests just to escape zero. Should sit clearly in the
+# Tentative tier (< 0.3) so the player still feels compelled to re-test.
+initial_observation_confidence = 0.2
