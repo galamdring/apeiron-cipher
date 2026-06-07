@@ -14,6 +14,7 @@ pub mod carry;
 pub mod carry_feedback;
 pub mod classification;
 pub mod combination;
+pub mod contextual_materials;
 pub mod debug_overlay;
 pub mod descriptions;
 pub mod diegetic_ui;

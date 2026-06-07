@@ -577,6 +577,29 @@ pub fn property_combine(a: &GameMaterial, b: &GameMaterial) -> GameMaterial {
     // ── Toxicity: max — contamination is worst-case, not averaged ──
     let toxicity_val = perturb(a.toxicity.value().max(b.toxicity.value()), combined_seed, 4);
 
+    // ── Elasticity: averaged — flexibility blends between both materials ──
+    let elasticity_val = perturb(
+        (a.elasticity.value() + b.elasticity.value()) * 0.5,
+        combined_seed,
+        5,
+    );
+
+    // ── Luminosity: max — brightest material dominates the combined emission ──
+    let luminosity_val = perturb(
+        a.luminosity.value().max(b.luminosity.value()),
+        combined_seed,
+        6,
+    );
+
+    // ── Corrosion resistance: min — weakest layer sets the combined durability ──
+    let corrosion_val = perturb(
+        a.corrosion_resistance
+            .value()
+            .min(b.corrosion_resistance.value()),
+        combined_seed,
+        7,
+    );
+
     // ── Reactive pair gets a hue shift so players notice the synergy ──
     let reactive = reactivity_val > 0.6;
     let color = blend_color(&a.color, &b.color, reactive);
@@ -592,6 +615,9 @@ pub fn property_combine(a: &GameMaterial, b: &GameMaterial) -> GameMaterial {
         reactivity: MaterialProperty::new(reactivity_val, PropertyVisibility::Hidden),
         conductivity: MaterialProperty::new(conductivity_val, PropertyVisibility::Hidden),
         toxicity: MaterialProperty::new(toxicity_val, PropertyVisibility::Hidden),
+        elasticity: MaterialProperty::new(elasticity_val, PropertyVisibility::Hidden),
+        luminosity: MaterialProperty::new(luminosity_val, PropertyVisibility::Hidden),
+        corrosion_resistance: MaterialProperty::new(corrosion_val, PropertyVisibility::Hidden),
     }
 }
 
@@ -613,6 +639,9 @@ mod tests {
             reactivity: prop(0.6),
             conductivity: prop(0.3),
             toxicity: prop(0.1),
+            elasticity: prop(0.5),
+            luminosity: prop(0.1),
+            corrosion_resistance: prop(0.5),
         }
     }
 

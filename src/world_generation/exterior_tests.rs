@@ -809,6 +809,9 @@ fn sample_game_material(name: &str) -> GameMaterial {
         reactivity: MaterialProperty::new(0.5, PropertyVisibility::Observable),
         conductivity: MaterialProperty::new(0.5, PropertyVisibility::Observable),
         toxicity: MaterialProperty::new(0.5, PropertyVisibility::Observable),
+        elasticity: MaterialProperty::new(0.5, PropertyVisibility::Observable),
+        luminosity: MaterialProperty::new(0.5, PropertyVisibility::Observable),
+        corrosion_resistance: MaterialProperty::new(0.5, PropertyVisibility::Observable),
     }
 }
 

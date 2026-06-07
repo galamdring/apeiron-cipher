@@ -29,6 +29,7 @@ use crate::materials::{GameMaterial, MaterialObject};
 use crate::observation::Confidence;
 use crate::observation::RecordObservation;
 use crate::player::{Player, PlayerCamera, cursor_is_captured};
+use crate::world_generation::PlanetSeed;
 use leafwing_input_manager::prelude::*;
 
 const CONFIG_PATH: &str = "assets/config/carry.toml";
@@ -1919,6 +1920,9 @@ mod tests {
             reactivity: property(0.5),
             conductivity: property(0.5),
             toxicity: property(0.5),
+            elasticity: property(0.5),
+            luminosity: property(0.5),
+            corrosion_resistance: property(0.5),
         }
     }
 

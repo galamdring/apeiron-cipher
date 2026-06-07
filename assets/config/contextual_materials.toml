@@ -1,0 +1,60 @@
+# Contextual material generation configuration — Story 11.6
+#
+# Controls how planetary and stellar conditions bias the properties of
+# procedurally generated materials.  Adjust thresholds and strengths to
+# tune the feel of each environment type without recompilation.
+
+# ── Temperature bias thresholds ─────────────────────────────────────────
+#
+# temp_factor = (surface_temp_max_k - 293.0) / 1000.0
+# Positive → above Earth-normal; negative → below.
+
+# Planet is "hot" when temp_factor exceeds this value.
+hot_planet_threshold = 0.3
+
+# Planet is "cold" when temp_factor falls below this value.
+cold_planet_threshold = -0.2
+
+# ── Radiation threshold ─────────────────────────────────────────────────
+# radiation_level values in PlanetEnvironment run from 0.0 (none) to 1.0 (extreme).
+
+radiation_threshold = 0.3
+
+# ── Atmosphere density threshold ────────────────────────────────────────
+# Atmosphere density is relative to 1.0 = Earth normal.
+
+dense_atmo_threshold = 1.5
+
+# ── Exotic material threshold ───────────────────────────────────────────
+# Planets whose combined extremity score exceeds this generate exotic seeds.
+# extremity = average(temp_deviation, radiation_level, pressure_deviation)
+
+exotic_threshold = 0.5
+
+# ── Bias strengths ───────────────────────────────────────────────────────
+# Each value is multiplied by the environmental factor exceeding the threshold,
+# then added (or subtracted) from the base property value.
+#
+# Higher values = stronger environmental character, less individual material variance.
+# Lower values = subtler bias, more material individuality.
+
+# Hot planet: thermal_resistance ↑, density ↑
+thermal_bias_strength = 0.2
+density_bias_strength = 0.15
+
+# Cold planet: elasticity ↑, thermal_resistance ↓
+elasticity_bias_strength = 0.2
+
+# Radioactive: luminosity ↑, toxicity ↑
+luminosity_bias_strength = 0.25
+toxicity_bias_strength = 0.2
+
+# Dense atmosphere: corrosion_resistance ↑
+corrosion_bias_strength = 0.2
+
+# ── Exotic material count ─────────────────────────────────────────────
+# num_exotics = floor((extremity - exotic_threshold) * exotics_per_extremity)
+# Clamped to [1, max_exotics_per_planet] when above threshold.
+
+exotics_per_extremity = 5.0
+max_exotics_per_planet = 3
