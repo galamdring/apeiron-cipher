@@ -379,7 +379,23 @@ fn blend_color(a: &[f32; 3], b: &[f32; 3], reactive: bool) -> [f32; 3] {
     }
 }
 
+/// Derives the canonical fabricated output seed for an unordered pair of input seeds.
+///
+/// Fabricator slots are physical placement affordances, not recipe semantics: combining
+/// A+B must be the same experiment as combining B+A. Sorting the seeds before applying
+/// the stable arithmetic formula makes the fabricated material identity independent of
+/// which input slot happened to hold each constituent.
+fn combined_material_seed(seed_a: u64, seed_b: u64) -> u64 {
+    let seed_min = seed_a.min(seed_b);
+    let seed_max = seed_a.max(seed_b);
+    seed_min.wrapping_mul(31).wrapping_add(seed_max)
+}
+
 /// Combine two materials using pure property math — no external rule tables.
+///
+/// Input order does not affect the output: the two input seeds are sorted before
+/// the fabricated seed is derived, so placing A in slot 0 and B in slot 1 yields
+/// the same material as placing B in slot 0 and A in slot 1.
 ///
 /// # Property formulas
 ///
@@ -394,7 +410,7 @@ fn blend_color(a: &[f32; 3], b: &[f32; 3], reactive: bool) -> [f32; 3] {
 /// All outputs receive a small deterministic perturbation from the combined
 /// seed so results are reproducible but not perfectly clean averages.
 pub fn property_combine(a: &GameMaterial, b: &GameMaterial) -> GameMaterial {
-    let combined_seed = a.seed.wrapping_mul(31).wrapping_add(b.seed);
+    let combined_seed = combined_material_seed(a.seed, b.seed);
     let name = crate::naming::compositional_name(&a.name, &b.name);
 
     // ── Density: weighted by each input's density (denser dominates) ──
@@ -485,19 +501,67 @@ mod tests {
 
     #[test]
     fn property_combine_order_independent() {
-        // Combined seed is asymmetric by design (a*31+b ≠ b*31+a) but properties
-        // should still be symmetric since the formulas don't distinguish a from b.
-        // Actually combined_seed IS asymmetric — outputs intentionally differ.
-        // What we verify: neither direction panics and both are valid.
+        // Fabricator input slots are not semantic recipe operands. The output must
+        // be identical no matter which slot receives which constituent material.
         let a = test_material("Alpha", 1, 0.8);
         let b = test_material("Beta", 2, 0.3);
-        let r1 = property_combine(&a, &b);
-        let r2 = property_combine(&b, &a);
-        // Seeds differ (asymmetric by design)
-        assert_ne!(r1.seed, r2.seed);
-        // But both are valid materials
-        assert!(!r1.name.is_empty());
-        assert!(!r2.name.is_empty());
+
+        let ab = property_combine(&a, &b);
+        let ba = property_combine(&b, &a);
+
+        assert_eq!(ab.seed, ba.seed, "combined seed should ignore slot order");
+        assert_eq!(ab.name, ba.name, "display name should ignore slot order");
+        assert_eq!(ab.color, ba.color, "color should ignore slot order");
+        assert_eq!(
+            ab.origin_planet_seed, ba.origin_planet_seed,
+            "origin metadata should ignore slot order"
+        );
+
+        assert_eq!(
+            ab.density.value(),
+            ba.density.value(),
+            "density should ignore slot order"
+        );
+        assert_eq!(
+            ab.density.visibility, ba.density.visibility,
+            "density visibility should ignore slot order"
+        );
+        assert_eq!(
+            ab.thermal_resistance.value(),
+            ba.thermal_resistance.value(),
+            "thermal resistance should ignore slot order"
+        );
+        assert_eq!(
+            ab.thermal_resistance.visibility, ba.thermal_resistance.visibility,
+            "thermal resistance visibility should ignore slot order"
+        );
+        assert_eq!(
+            ab.reactivity.value(),
+            ba.reactivity.value(),
+            "reactivity should ignore slot order"
+        );
+        assert_eq!(
+            ab.reactivity.visibility, ba.reactivity.visibility,
+            "reactivity visibility should ignore slot order"
+        );
+        assert_eq!(
+            ab.conductivity.value(),
+            ba.conductivity.value(),
+            "conductivity should ignore slot order"
+        );
+        assert_eq!(
+            ab.conductivity.visibility, ba.conductivity.visibility,
+            "conductivity visibility should ignore slot order"
+        );
+        assert_eq!(
+            ab.toxicity.value(),
+            ba.toxicity.value(),
+            "toxicity should ignore slot order"
+        );
+        assert_eq!(
+            ab.toxicity.visibility, ba.toxicity.visibility,
+            "toxicity visibility should ignore slot order"
+        );
     }
 
     #[test]
