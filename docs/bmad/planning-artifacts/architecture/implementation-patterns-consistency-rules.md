@@ -37,6 +37,9 @@
 **Dependency Additions:**
 - Pin every crate to a specific version in `Cargo.toml` (no `*` or ranges). Add a brief comment explaining what the dependency is for. Prefer actively maintained crates with high download counts. No dependencies without explicit need — dependency count is a complexity cost.
 
+**Collision Geometry Fidelity:**
+- For any world object the player can enter, traverse, or occupy as a base location, collision geometry must be generated from the visible surface mesh. No bounding boxes. No convex hull simplification. An implementing agent who cannot achieve this must stop and ask.
+
 **Visibility Rules:**
 - `pub` — any type, function, or field that another module in the crate needs. This is a binary crate, so `pub` carries no library-export risk. Shared domain vocabulary types (`GameMaterial`, `MaterialObject`, `Player`, `InputAction`, `ConfidenceTracker`, etc.) are `pub` because multiple plugins legitimately depend on them.
 - `pub(super)` — sub-module internals that only the parent module needs for `impl Plugin` orchestration (system functions in child modules, etc.).
@@ -64,6 +67,7 @@
 - Asset file names describe their contents. `input_config.toml`, `scene_config.toml`, `biome_volcanic.toml`.
 - Materials are NOT asset files. Materials are seed-derived at runtime (Decision 1). The POC `assets/materials/*.toml` files are scaffolding from before seed derivation existed and will be removed.
 - Asset files hold: configuration parameters, recipe templates, biome generation parameters, input mappings, tuning values. Things that are authored, not generated.
+- Terrain texture and surface detail are not pre-authored asset files. Terrain visual representation is derived at runtime from material parameter data. No authored terrain texture files in `assets/`. If an agent finds themselves creating texture files for terrain, the approach is wrong — stop and ask.
 
 ## Agent Autonomy Boundaries
 
@@ -78,6 +82,7 @@
 - System function exceeding 4 parameters — ask how to restructure
 - Anything that crosses a plugin boundary not documented in Decision 5
 - If the story is insufficiently specific to proceed without inventing names, types, or architectural choices — the story is incomplete. Make it explicit by asking.
+- Adding any form of tutorial prompt, objective marker, guidance text, or explanatory UI for the found ship or ship repair. The ship is a broken object in the world — not a tutorial sequence. Its repair needs are communicated diegetically. If a story spec requires tutorial hooks, the spec is wrong. Stop and escalate.
 
 **When an agent proceeds autonomously:**
 - Implementing logic described explicitly in the story's acceptance criteria
