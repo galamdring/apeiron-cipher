@@ -2,7 +2,7 @@ name: Publish Kanban Image
 
 on:
   push:
-    branches: [main]
+    branches: [main, develop]
     paths:
       - "kanban/**"
   pull_request:
