@@ -296,10 +296,10 @@ impl Default for ConfidenceConfig {
 /// the descriptions array to provide variety while maintaining consistency
 /// within the same tier.
 ///
-/// The value range uses Rust's standard `Range<f32>` type, which represents
-/// a half-open interval [start, end). This matches the typical pattern of
-/// property value bucketing where each range covers a distinct segment of
-/// the 0.0-1.0 normalized property space.
+/// The value range uses Rust's standard `RangeInclusive<f32>` type, which
+/// represents a closed interval [start, end]. The last bucket in each
+/// category uses `..=1.0` so that a property value of exactly `1.0`
+/// matches the highest descriptor bucket instead of falling through.
 ///
 /// Multiple descriptions per entry allow for linguistic variety while keeping
 /// the meaning consistent within a tier. For example, "seemed to soften quickly"
@@ -312,12 +312,13 @@ pub struct DescriptorEntry {
     ///
     /// Property values are normalized to [0.0, 1.0] where 0.0 represents
     /// the minimum possible value for the property and 1.0 represents the
-    /// maximum. The range is half-open: [start, end), so a range of 0.0..0.25
-    /// includes 0.0 but excludes 0.25.
+    /// maximum. The range is closed: [start, end], so a range of 0.0..=0.25
+    /// includes both 0.0 and 0.25. The last bucket in each tier uses `..=1.0`
+    /// so that a property value of exactly 1.0 matches correctly.
     ///
     /// Ranges should be non-overlapping within a single observation category
     /// and confidence tier to ensure deterministic descriptor selection.
-    pub value_range: std::ops::Range<f32>,
+    pub value_range: std::ops::RangeInclusive<f32>,
 
     /// The confidence tier this entry applies to.
     ///
@@ -358,7 +359,7 @@ impl DescriptorEntry {
     /// use apeiron_cipher::observation::{DescriptorEntry, ConfidenceTier};
     ///
     /// let entry = DescriptorEntry {
-    ///     value_range: 0.0..0.25,
+    ///     value_range: 0.0..=0.25,
     ///     tier: ConfidenceTier::Tentative,
     ///     descriptions: &["seemed to soften quickly"],
     /// };
@@ -388,7 +389,7 @@ impl DescriptorEntry {
     /// use apeiron_cipher::observation::{DescriptorEntry, ConfidenceTier};
     ///
     /// let entry = DescriptorEntry {
-    ///     value_range: 0.0..0.25,
+    ///     value_range: 0.0..=0.25,
     ///     tier: ConfidenceTier::Tentative,
     ///     descriptions: &["seemed to soften quickly", "appeared to soften rapidly"],
     /// };
@@ -471,12 +472,12 @@ impl DescriptorVocabulary {
     ///     ObservationCategory::ThermalBehavior,
     ///     vec![
     ///         DescriptorEntry {
-    ///             value_range: 0.0..0.5,
+    ///             value_range: 0.0..=0.5,
     ///             tier: ConfidenceTier::Tentative,
     ///             descriptions: &["seemed to soften under heat"],
     ///         },
     ///         DescriptorEntry {
-    ///             value_range: 0.5..1.0,
+    ///             value_range: 0.5..=1.0,
     ///             tier: ConfidenceTier::Tentative,
     ///             descriptions: &["seemed to resist heat"],
     ///         },
@@ -522,7 +523,7 @@ impl DescriptorVocabulary {
     ///     ObservationCategory::ThermalBehavior,
     ///     vec![
     ///         DescriptorEntry {
-    ///             value_range: 0.0..0.5,
+    ///             value_range: 0.0..=0.5,
     ///             tier: ConfidenceTier::Tentative,
     ///             descriptions: &["seemed to soften under heat"],
     ///         },
@@ -588,64 +589,64 @@ impl Default for DescriptorVocabulary {
             vec![
                 // Tentative tier (0.0 < confidence < 0.3)
                 DescriptorEntry {
-                    value_range: 0.0..0.25,
+                    value_range: 0.0..=0.25,
                     tier: ConfidenceTier::Tentative,
                     descriptions: &["Seemed to soften quickly under heat"],
                 },
                 DescriptorEntry {
-                    value_range: 0.25..0.50,
+                    value_range: 0.25..=0.50,
                     tier: ConfidenceTier::Tentative,
                     descriptions: &["Seemed to change noticeably under heat"],
                 },
                 DescriptorEntry {
-                    value_range: 0.50..0.75,
+                    value_range: 0.50..=0.75,
                     tier: ConfidenceTier::Tentative,
                     descriptions: &["Seemed to hold together under heat"],
                 },
                 DescriptorEntry {
-                    value_range: 0.75..1.0,
+                    value_range: 0.75..=1.0,
                     tier: ConfidenceTier::Tentative,
                     descriptions: &["Seemed to barely react to heat"],
                 },
                 // Observed tier (0.3 <= confidence < 0.7)
                 DescriptorEntry {
-                    value_range: 0.0..0.25,
+                    value_range: 0.0..=0.25,
                     tier: ConfidenceTier::Observed,
                     descriptions: &["Softens quickly under heat"],
                 },
                 DescriptorEntry {
-                    value_range: 0.25..0.50,
+                    value_range: 0.25..=0.50,
                     tier: ConfidenceTier::Observed,
                     descriptions: &["Changes noticeably under heat"],
                 },
                 DescriptorEntry {
-                    value_range: 0.50..0.75,
+                    value_range: 0.50..=0.75,
                     tier: ConfidenceTier::Observed,
                     descriptions: &["Holds together under heat"],
                 },
                 DescriptorEntry {
-                    value_range: 0.75..1.0,
+                    value_range: 0.75..=1.0,
                     tier: ConfidenceTier::Observed,
                     descriptions: &["Barely reacts to heat"],
                 },
                 // Confident tier (0.7 <= confidence <= 1.0)
                 DescriptorEntry {
-                    value_range: 0.0..0.25,
+                    value_range: 0.0..=0.25,
                     tier: ConfidenceTier::Confident,
                     descriptions: &["Reliably softens under heat — among the least resistant"],
                 },
                 DescriptorEntry {
-                    value_range: 0.25..0.50,
+                    value_range: 0.25..=0.50,
                     tier: ConfidenceTier::Confident,
                     descriptions: &["Reliably deforms under heat"],
                 },
                 DescriptorEntry {
-                    value_range: 0.50..0.75,
+                    value_range: 0.50..=0.75,
                     tier: ConfidenceTier::Confident,
                     descriptions: &["Reliably withstands heat"],
                 },
                 DescriptorEntry {
-                    value_range: 0.75..1.0,
+                    value_range: 0.75..=1.0,
                     tier: ConfidenceTier::Confident,
                     descriptions: &["Reliably heat-resistant — among the most resilient"],
                 },
@@ -658,64 +659,64 @@ impl Default for DescriptorVocabulary {
             vec![
                 // Tentative tier
                 DescriptorEntry {
-                    value_range: 0.0..0.25,
+                    value_range: 0.0..=0.25,
                     tier: ConfidenceTier::Tentative,
                     descriptions: &["Seemed almost weightless"],
                 },
                 DescriptorEntry {
-                    value_range: 0.25..0.50,
+                    value_range: 0.25..=0.50,
                     tier: ConfidenceTier::Tentative,
                     descriptions: &["Seemed light to carry"],
                 },
                 DescriptorEntry {
-                    value_range: 0.50..0.75,
+                    value_range: 0.50..=0.75,
                     tier: ConfidenceTier::Tentative,
                     descriptions: &["Seemed to have noticeable weight"],
                 },
                 DescriptorEntry {
-                    value_range: 0.75..1.0,
+                    value_range: 0.75..=1.0,
                     tier: ConfidenceTier::Tentative,
                     descriptions: &["Seemed quite heavy"],
                 },
                 // Observed tier
                 DescriptorEntry {
-                    value_range: 0.0..0.25,
+                    value_range: 0.0..=0.25,
                     tier: ConfidenceTier::Observed,
                     descriptions: &["Almost weightless"],
                 },
                 DescriptorEntry {
-                    value_range: 0.25..0.50,
+                    value_range: 0.25..=0.50,
                     tier: ConfidenceTier::Observed,
                     descriptions: &["Light to carry"],
                 },
                 DescriptorEntry {
-                    value_range: 0.50..0.75,
+                    value_range: 0.50..=0.75,
                     tier: ConfidenceTier::Observed,
                     descriptions: &["Noticeable weight"],
                 },
                 DescriptorEntry {
-                    value_range: 0.75..1.0,
+                    value_range: 0.75..=1.0,
                     tier: ConfidenceTier::Observed,
                     descriptions: &["Quite heavy"],
                 },
                 // Confident tier
                 DescriptorEntry {
-                    value_range: 0.0..0.25,
+                    value_range: 0.0..=0.25,
                     tier: ConfidenceTier::Confident,
                     descriptions: &["Reliably lightweight — among the least dense"],
                 },
                 DescriptorEntry {
-                    value_range: 0.25..0.50,
+                    value_range: 0.25..=0.50,
                     tier: ConfidenceTier::Confident,
                     descriptions: &["Reliably light to handle"],
                 },
                 DescriptorEntry {
-                    value_range: 0.50..0.75,
+                    value_range: 0.50..=0.75,
                     tier: ConfidenceTier::Confident,
                     descriptions: &["Reliably substantial weight"],
                 },
                 DescriptorEntry {
-                    value_range: 0.75..1.0,
+                    value_range: 0.75..=1.0,
                     tier: ConfidenceTier::Confident,
                     descriptions: &["Reliably heavy — among the most dense"],
                 },
@@ -729,127 +730,127 @@ impl Default for DescriptorVocabulary {
                 // Color-based descriptors (0.0-0.5 range for color properties)
                 // Tentative tier
                 DescriptorEntry {
-                    value_range: 0.0..0.125,
+                    value_range: 0.0..=0.125,
                     tier: ConfidenceTier::Tentative,
                     descriptions: &["Appeared to have a dark, muted coloration"],
                 },
                 DescriptorEntry {
-                    value_range: 0.125..0.25,
+                    value_range: 0.125..=0.25,
                     tier: ConfidenceTier::Tentative,
                     descriptions: &["Seemed to show subtle color variations"],
                 },
                 DescriptorEntry {
-                    value_range: 0.25..0.375,
+                    value_range: 0.25..=0.375,
                     tier: ConfidenceTier::Tentative,
                     descriptions: &["Appeared to have moderate color saturation"],
                 },
                 DescriptorEntry {
-                    value_range: 0.375..0.5,
+                    value_range: 0.375..=0.5,
                     tier: ConfidenceTier::Tentative,
                     descriptions: &["Seemed to display vibrant coloration"],
                 },
                 // Density-based descriptors (0.5-1.0 range for visual density cues)
                 DescriptorEntry {
-                    value_range: 0.5..0.625,
+                    value_range: 0.5..=0.625,
                     tier: ConfidenceTier::Tentative,
                     descriptions: &["Appeared to have a light, airy structure"],
                 },
                 DescriptorEntry {
-                    value_range: 0.625..0.75,
+                    value_range: 0.625..=0.75,
                     tier: ConfidenceTier::Tentative,
                     descriptions: &["Seemed to show moderate visual density"],
                 },
                 DescriptorEntry {
-                    value_range: 0.75..0.875,
+                    value_range: 0.75..=0.875,
                     tier: ConfidenceTier::Tentative,
                     descriptions: &["Appeared to have a compact, solid look"],
                 },
                 DescriptorEntry {
-                    value_range: 0.875..1.0,
+                    value_range: 0.875..=1.0,
                     tier: ConfidenceTier::Tentative,
                     descriptions: &["Seemed to display an extremely dense appearance"],
                 },
                 // Observed tier - Color-based
                 DescriptorEntry {
-                    value_range: 0.0..0.125,
+                    value_range: 0.0..=0.125,
                     tier: ConfidenceTier::Observed,
                     descriptions: &["Dark, muted coloration"],
                 },
                 DescriptorEntry {
-                    value_range: 0.125..0.25,
+                    value_range: 0.125..=0.25,
                     tier: ConfidenceTier::Observed,
                     descriptions: &["Subtle color variations"],
                 },
                 DescriptorEntry {
-                    value_range: 0.25..0.375,
+                    value_range: 0.25..=0.375,
                     tier: ConfidenceTier::Observed,
                     descriptions: &["Moderate color saturation"],
                 },
                 DescriptorEntry {
-                    value_range: 0.375..0.5,
+                    value_range: 0.375..=0.5,
                     tier: ConfidenceTier::Observed,
                     descriptions: &["Vibrant coloration"],
                 },
                 // Observed tier - Density-based
                 DescriptorEntry {
-                    value_range: 0.5..0.625,
+                    value_range: 0.5..=0.625,
                     tier: ConfidenceTier::Observed,
                     descriptions: &["Light, airy structure"],
                 },
                 DescriptorEntry {
-                    value_range: 0.625..0.75,
+                    value_range: 0.625..=0.75,
                     tier: ConfidenceTier::Observed,
                     descriptions: &["Moderate visual density"],
                 },
                 DescriptorEntry {
-                    value_range: 0.75..0.875,
+                    value_range: 0.75..=0.875,
                     tier: ConfidenceTier::Observed,
                     descriptions: &["Compact, solid appearance"],
                 },
                 DescriptorEntry {
-                    value_range: 0.875..1.0,
+                    value_range: 0.875..=1.0,
                     tier: ConfidenceTier::Observed,
                     descriptions: &["Extremely dense appearance"],
                 },
                 // Confident tier - Color-based
                 DescriptorEntry {
-                    value_range: 0.0..0.125,
+                    value_range: 0.0..=0.125,
                     tier: ConfidenceTier::Confident,
                     descriptions: &["Reliably dark coloration — among the most muted"],
                 },
                 DescriptorEntry {
-                    value_range: 0.125..0.25,
+                    value_range: 0.125..=0.25,
                     tier: ConfidenceTier::Confident,
                     descriptions: &["Reliably shows subtle color variations"],
                 },
                 DescriptorEntry {
-                    value_range: 0.25..0.375,
+                    value_range: 0.25..=0.375,
                     tier: ConfidenceTier::Confident,
                     descriptions: &["Reliably moderate color saturation"],
                 },
                 DescriptorEntry {
-                    value_range: 0.375..0.5,
+                    value_range: 0.375..=0.5,
                     tier: ConfidenceTier::Confident,
                     descriptions: &["Reliably vibrant coloration — among the most saturated"],
                 },
                 // Confident tier - Density-based
                 DescriptorEntry {
-                    value_range: 0.5..0.625,
+                    value_range: 0.5..=0.625,
                     tier: ConfidenceTier::Confident,
                     descriptions: &["Reliably light structure — among the most airy"],
                 },
                 DescriptorEntry {
-                    value_range: 0.625..0.75,
+                    value_range: 0.625..=0.75,
                     tier: ConfidenceTier::Confident,
                     descriptions: &["Reliably moderate visual density"],
                 },
                 DescriptorEntry {
-                    value_range: 0.75..0.875,
+                    value_range: 0.75..=0.875,
                     tier: ConfidenceTier::Confident,
                     descriptions: &["Reliably compact appearance"],
                 },
                 DescriptorEntry {
-                    value_range: 0.875..1.0,
+                    value_range: 0.875..=1.0,
                     tier: ConfidenceTier::Confident,
                     descriptions: &["Reliably dense appearance — among the most compact"],
                 },
@@ -862,64 +863,64 @@ impl Default for DescriptorVocabulary {
             vec![
                 // Tentative tier
                 DescriptorEntry {
-                    value_range: 0.0..0.25,
+                    value_range: 0.0..=0.25,
                     tier: ConfidenceTier::Tentative,
                     descriptions: &["Process seemed to fail"],
                 },
                 DescriptorEntry {
-                    value_range: 0.25..0.50,
+                    value_range: 0.25..=0.50,
                     tier: ConfidenceTier::Tentative,
                     descriptions: &["Appeared to produce an unstable result"],
                 },
                 DescriptorEntry {
-                    value_range: 0.50..0.75,
+                    value_range: 0.50..=0.75,
                     tier: ConfidenceTier::Tentative,
                     descriptions: &["Seemed to combine successfully"],
                 },
                 DescriptorEntry {
-                    value_range: 0.75..1.0,
+                    value_range: 0.75..=1.0,
                     tier: ConfidenceTier::Tentative,
                     descriptions: &["Appeared to create a refined product"],
                 },
                 // Observed tier
                 DescriptorEntry {
-                    value_range: 0.0..0.25,
+                    value_range: 0.0..=0.25,
                     tier: ConfidenceTier::Observed,
                     descriptions: &["Process failed"],
                 },
                 DescriptorEntry {
-                    value_range: 0.25..0.50,
+                    value_range: 0.25..=0.50,
                     tier: ConfidenceTier::Observed,
                     descriptions: &["Produced an unstable result"],
                 },
                 DescriptorEntry {
-                    value_range: 0.50..0.75,
+                    value_range: 0.50..=0.75,
                     tier: ConfidenceTier::Observed,
                     descriptions: &["Combined successfully"],
                 },
                 DescriptorEntry {
-                    value_range: 0.75..1.0,
+                    value_range: 0.75..=1.0,
                     tier: ConfidenceTier::Observed,
                     descriptions: &["Created a refined product"],
                 },
                 // Confident tier
                 DescriptorEntry {
-                    value_range: 0.0..0.25,
+                    value_range: 0.0..=0.25,
                     tier: ConfidenceTier::Confident,
                     descriptions: &["Reliably fails to combine"],
                 },
                 DescriptorEntry {
-                    value_range: 0.25..0.50,
+                    value_range: 0.25..=0.50,
                     tier: ConfidenceTier::Confident,
                     descriptions: &["Reliably produces unstable results"],
                 },
                 DescriptorEntry {
-                    value_range: 0.50..0.75,
+                    value_range: 0.50..=0.75,
                     tier: ConfidenceTier::Confident,
                     descriptions: &["Reliably combines into stable products"],
                 },
                 DescriptorEntry {
-                    value_range: 0.75..1.0,
+                    value_range: 0.75..=1.0,
                     tier: ConfidenceTier::Confident,
                     descriptions: &[
                         "Reliably creates refined products — among the most successful",
@@ -1776,7 +1777,7 @@ mod tests {
     #[test]
     fn descriptor_entry_matches_value_and_tier() {
         let entry = DescriptorEntry {
-            value_range: 0.0..0.25,
+            value_range: 0.0..=0.25,
             tier: ConfidenceTier::Tentative,
             descriptions: &["seemed to soften quickly"],
         };
@@ -1799,7 +1800,7 @@ mod tests {
     #[test]
     fn descriptor_entry_select_description_returns_first() {
         let entry = DescriptorEntry {
-            value_range: 0.0..0.25,
+            value_range: 0.0..=0.25,
             tier: ConfidenceTier::Tentative,
             descriptions: &[
                 "first description",
@@ -1814,7 +1815,7 @@ mod tests {
     #[test]
     fn descriptor_entry_select_description_single_item() {
         let entry = DescriptorEntry {
-            value_range: 0.0..0.25,
+            value_range: 0.0..=0.25,
             tier: ConfidenceTier::Tentative,
             descriptions: &["only description"],
         };
@@ -1837,12 +1838,12 @@ mod tests {
         let mut vocab = DescriptorVocabulary::new();
         let entries = vec![
             DescriptorEntry {
-                value_range: 0.0..0.5,
+                value_range: 0.0..=0.5,
                 tier: ConfidenceTier::Tentative,
                 descriptions: &["seemed to soften"],
             },
             DescriptorEntry {
-                value_range: 0.5..1.0,
+                value_range: 0.5..=1.0,
                 tier: ConfidenceTier::Tentative,
                 descriptions: &["seemed to resist"],
             },
@@ -1868,17 +1869,17 @@ mod tests {
             ObservationCategory::ThermalBehavior,
             vec![
                 DescriptorEntry {
-                    value_range: 0.0..0.25,
+                    value_range: 0.0..=0.25,
                     tier: ConfidenceTier::Tentative,
                     descriptions: &["seemed to soften quickly"],
                 },
                 DescriptorEntry {
-                    value_range: 0.25..0.50,
+                    value_range: 0.25..=0.50,
                     tier: ConfidenceTier::Tentative,
                     descriptions: &["seemed to change noticeably"],
                 },
                 DescriptorEntry {
-                    value_range: 0.0..0.25,
+                    value_range: 0.0..=0.25,
                     tier: ConfidenceTier::Observed,
                     descriptions: &["softens quickly"],
                 },
@@ -1930,7 +1931,7 @@ mod tests {
         vocab.add_category(
             ObservationCategory::ThermalBehavior,
             vec![DescriptorEntry {
-                value_range: 0.0..0.25,
+                value_range: 0.0..=0.25,
                 tier: ConfidenceTier::Tentative,
                 descriptions: &["seemed to soften quickly"],
             }],
@@ -2519,10 +2520,9 @@ mod tests {
             for tier in confidence_tiers {
                 let tier_entries: Vec<_> = entries.iter().filter(|e| e.tier == tier).collect();
 
-                // Check coverage at key boundary points
-                // Note: Rust ranges are exclusive of the end, so 0.75..1.0 doesn't include 1.0
-                // We test 0.99 instead of 1.0 to avoid this edge case
-                let boundary_values = [0.0, 0.25, 0.5, 0.75, 0.99];
+                // Check coverage at key boundary points.
+                // Ranges are now inclusive (RangeInclusive), so 1.0 is included.
+                let boundary_values = [0.0, 0.25, 0.5, 0.75, 1.0];
                 for &value in &boundary_values {
                     let has_coverage = tier_entries
                         .iter()
@@ -2841,29 +2841,16 @@ mod tests {
                 );
             }
 
-            // For boundary values that should have coverage, verify we get a result
-            // Note: Some boundary values (like 0.25, 0.5, 0.75) are range endpoints
-            // and may not be included due to Rust's exclusive end ranges (0.0..0.25 excludes 0.25)
+            // For boundary values that should have coverage, verify we get a result.
+            // Ranges are now inclusive (RangeInclusive), so 1.0 is covered by the last bucket.
             if boundary_value == 0.0 || boundary_value == 1.0 {
-                // 0.0 should always be included (range start), 1.0 needs special handling
-                if boundary_value == 1.0 {
-                    // Test with 0.99 instead since ranges are exclusive of end
-                    let near_max_result = vocab.describe(&category, 0.99, confidence);
-                    assert!(
-                        near_max_result.is_some(),
-                        "Value 0.99 should have coverage for category {:?}, tier {:?}",
-                        category,
-                        tier
-                    );
-                } else {
-                    assert!(
-                        first_result.is_some(),
-                        "Boundary value {} should have coverage for category {:?}, tier {:?}",
-                        boundary_value,
-                        category,
-                        tier
-                    );
-                }
+                assert!(
+                    first_result.is_some(),
+                    "Boundary value {} should have coverage for category {:?}, tier {:?}",
+                    boundary_value,
+                    category,
+                    tier
+                );
             }
 
             // Test that the same boundary value produces the same result across different vocabulary instances
@@ -2960,6 +2947,72 @@ mod tests {
                 tier
             );
         }
+    }
+
+    #[test]
+    fn descriptor_vocabulary_describe_1_0_returns_highest_descriptor() {
+        // Regression test: describe(1.0) must return the highest descriptor bucket,
+        // not None. Previously Range<f32> excluded 1.0; RangeInclusive fixes this.
+        use crate::journal::ObservationCategory;
+
+        let vocab = DescriptorVocabulary::default();
+
+        let categories = [
+            (
+                ObservationCategory::ThermalBehavior,
+                "Reliably heat-resistant — among the most resilient",
+            ),
+            (
+                ObservationCategory::Weight,
+                "Reliably heavy — among the most dense",
+            ),
+            (
+                ObservationCategory::FabricationResult,
+                "Reliably creates refined products — among the most successful",
+            ),
+            (
+                ObservationCategory::LocationNote,
+                "Reliably lethal — among the most extreme environments encountered",
+            ),
+        ];
+
+        for (category, expected) in categories {
+            for &(confidence_val, tier_label) in &[
+                (0.2_f32, "Tentative"),
+                (0.5_f32, "Observed"),
+                (0.8_f32, "Confident"),
+            ] {
+                let result = vocab.describe(&category, 1.0, Confidence(confidence_val));
+                assert!(
+                    result.is_some(),
+                    "describe({:?}, 1.0, Confidence({})) ({}) must not return None",
+                    category,
+                    confidence_val,
+                    tier_label
+                );
+            }
+
+            // Specifically test that the Confident tier returns the expected phrase
+            let confident_result = vocab.describe(&category, 1.0, Confidence(0.8));
+            assert_eq!(
+                confident_result,
+                Some(expected),
+                "describe({:?}, 1.0, Confident) should return highest descriptor",
+                category
+            );
+        }
+
+        // SurfaceAppearance has a finer grid ending at 0.875..=1.0
+        let surface_result = vocab.describe(
+            &ObservationCategory::SurfaceAppearance,
+            1.0,
+            Confidence(0.8),
+        );
+        assert_eq!(
+            surface_result,
+            Some("Reliably dense appearance — among the most compact"),
+            "SurfaceAppearance describe(1.0, Confident) should return highest descriptor"
+        );
     }
 
     #[test]
