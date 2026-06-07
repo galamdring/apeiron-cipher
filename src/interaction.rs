@@ -852,7 +852,7 @@ fn build_examine_text(
 
     // Heat response — revealed by heat exposure system
     if is_revealed(&crate::journal::ObservationCategory::ThermalBehavior) {
-        let display_confidence = Confidence(0.5);
+        let display_confidence = Confidence::new(0.5);
         let description = descriptor_vocab
             .describe(
                 &crate::journal::ObservationCategory::ThermalBehavior,

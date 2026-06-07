@@ -35,7 +35,7 @@ impl Plugin for ObservationPlugin {
     fn build(&self, app: &mut App) {
         app
             // ConfidenceTracker removed - confidence is now tracked per-observation
-            // in the journal system via Confidence(f32) and accumulate() method
+            // in the journal system via Confidence and accumulate() method
             .init_resource::<DescriptorVocabulary>()
             .add_message::<RecordObservation>()
             .add_message::<OnPlayerDeathEvent>()
@@ -57,9 +57,26 @@ impl Plugin for ObservationPlugin {
 /// death penalties, domain-weighted recovery) while the discrete tiers
 /// provide stable language selection for player-facing descriptions.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Confidence(pub f32);
+pub struct Confidence(f32);
 
 impl Confidence {
+    /// Construct a `Confidence` value, clamping to `[0.0, 1.0]`.
+    ///
+    /// NaN is treated as `0.0` (unknown). Any value outside the valid range is
+    /// clamped, so callers never need to guard before constructing.
+    pub fn new(value: f32) -> Self {
+        if value.is_nan() {
+            Self(0.0)
+        } else {
+            Self(value.clamp(0.0, 1.0))
+        }
+    }
+
+    /// Return the underlying confidence value in `[0.0, 1.0]`.
+    pub fn value(&self) -> f32 {
+        self.0
+    }
+
     /// Map continuous value to qualitative tier for language selection.
     ///
     /// The tier boundaries are:
@@ -512,7 +529,7 @@ impl DescriptorVocabulary {
     ///     ],
     /// );
     ///
-    /// let confidence = Confidence(0.2); // Maps to Tentative tier
+    /// let confidence = Confidence::new(0.2); // Maps to Tentative tier
     /// let description = vocab.describe(
     ///     &ObservationCategory::ThermalBehavior,
     ///     0.25,
@@ -918,7 +935,7 @@ impl Default for DescriptorVocabulary {
 /// Used by the examine panel and journal to select descriptor language.
 ///
 /// **DEPRECATED:** This enum is retained for backward compatibility with
-/// existing tests and POC code, but new code should use `Confidence(f32)`
+/// existing tests and POC code, but new code should use `Confidence`
 /// and `ConfidenceTier` instead. The discrete levels will be phased out
 /// as the continuous confidence system is fully integrated.
 #[allow(dead_code)]
@@ -987,7 +1004,7 @@ type ObsKey = (u64, PropertyName);
 #[allow(dead_code)]
 /// **DEPRECATED**: This resource has been replaced by per-observation confidence
 /// tracking in the journal system. Each `Observation` now carries its own
-/// `Confidence(f32)` value that accumulates evidence using the `accumulate()`
+/// `Confidence` value that accumulates evidence using the `accumulate()`
 /// method. The journal's `add_observation_with_accumulation()` handles
 /// confidence evolution automatically.
 ///
@@ -1045,11 +1062,11 @@ impl ConfidenceTracker {
 
     /// Confidence level for a specific (material, property) pair.
     ///
-    /// **DEPRECATED**: Use the `Confidence(f32)` system in journal observations.
+    /// **DEPRECATED**: Use the `Confidence` system in journal observations.
     /// Each observation carries its own confidence that evolves with evidence.
     #[deprecated(
         since = "0.1.0",
-        note = "Use Confidence(f32) in journal observations instead of ConfidenceLevel"
+        note = "Use Confidence in journal observations instead of ConfidenceLevel"
     )]
     #[allow(dead_code)]
     pub fn level(&self, seed: u64, property: PropertyName) -> ConfidenceLevel {
@@ -1405,20 +1422,20 @@ mod tests {
 
     #[test]
     fn confidence_tier_mapping() {
-        assert_eq!(Confidence(0.0).tier(), ConfidenceTier::Tentative);
-        assert_eq!(Confidence(0.1).tier(), ConfidenceTier::Tentative);
-        assert_eq!(Confidence(0.29).tier(), ConfidenceTier::Tentative);
-        assert_eq!(Confidence(0.3).tier(), ConfidenceTier::Observed);
-        assert_eq!(Confidence(0.5).tier(), ConfidenceTier::Observed);
-        assert_eq!(Confidence(0.69).tier(), ConfidenceTier::Observed);
-        assert_eq!(Confidence(0.7).tier(), ConfidenceTier::Confident);
-        assert_eq!(Confidence(0.9).tier(), ConfidenceTier::Confident);
-        assert_eq!(Confidence(1.0).tier(), ConfidenceTier::Confident);
+        assert_eq!(Confidence::new(0.0).tier(), ConfidenceTier::Tentative);
+        assert_eq!(Confidence::new(0.1).tier(), ConfidenceTier::Tentative);
+        assert_eq!(Confidence::new(0.29).tier(), ConfidenceTier::Tentative);
+        assert_eq!(Confidence::new(0.3).tier(), ConfidenceTier::Observed);
+        assert_eq!(Confidence::new(0.5).tier(), ConfidenceTier::Observed);
+        assert_eq!(Confidence::new(0.69).tier(), ConfidenceTier::Observed);
+        assert_eq!(Confidence::new(0.7).tier(), ConfidenceTier::Confident);
+        assert_eq!(Confidence::new(0.9).tier(), ConfidenceTier::Confident);
+        assert_eq!(Confidence::new(1.0).tier(), ConfidenceTier::Confident);
     }
 
     #[test]
     fn confidence_accumulate_basic() {
-        let mut conf = Confidence(0.0);
+        let mut conf = Confidence::new(0.0);
 
         // First observation has significant impact
         conf.accumulate(0.2);
@@ -1432,7 +1449,7 @@ mod tests {
 
     #[test]
     fn confidence_accumulate_asymptotic() {
-        let mut conf = Confidence(0.9);
+        let mut conf = Confidence::new(0.9);
 
         // High confidence accumulates slowly
         conf.accumulate(0.2);
@@ -1446,21 +1463,21 @@ mod tests {
 
     #[test]
     fn confidence_accumulate_clamping() {
-        let mut conf = Confidence(0.5);
+        let mut conf = Confidence::new(0.5);
 
         // Large weight is clamped to 1.0
         conf.accumulate(2.0);
         assert_eq!(conf.0, 1.0);
 
         // Negative weight is clamped to 0.0
-        let mut conf2 = Confidence(0.5);
+        let mut conf2 = Confidence::new(0.5);
         conf2.accumulate(-1.0);
         assert_eq!(conf2.0, 0.0);
     }
 
     #[test]
     fn confidence_accumulate_converges_toward_one_with_diminishing_returns() {
-        let mut conf = Confidence(0.0);
+        let mut conf = Confidence::new(0.0);
         let weight = 0.2;
 
         // Track confidence values to verify diminishing returns
@@ -1516,7 +1533,7 @@ mod tests {
 
     #[test]
     fn confidence_degrade_basic() {
-        let mut conf = Confidence(0.8);
+        let mut conf = Confidence::new(0.8);
 
         // 40% penalty (factor 0.6)
         conf.degrade(0.6, 0.1);
@@ -1525,7 +1542,7 @@ mod tests {
 
     #[test]
     fn confidence_degrade_floor() {
-        let mut conf = Confidence(0.3);
+        let mut conf = Confidence::new(0.3);
 
         // Large penalty would drop below floor
         conf.degrade(0.1, 0.2);
@@ -1534,7 +1551,7 @@ mod tests {
 
     #[test]
     fn confidence_degrade_no_floor_violation() {
-        let mut conf = Confidence(0.8);
+        let mut conf = Confidence::new(0.8);
 
         // Penalty doesn't hit floor
         conf.degrade(0.7, 0.2);
@@ -1550,7 +1567,7 @@ mod tests {
 
     #[test]
     fn confidence_serialization() {
-        let conf = Confidence(0.42);
+        let conf = Confidence::new(0.42);
         let json = serde_json::to_string(&conf).expect("Confidence should serialize");
         let deserialized: Confidence =
             serde_json::from_str(&json).expect("Confidence should deserialize");
@@ -1561,7 +1578,7 @@ mod tests {
 
     #[test]
     fn confidence_accumulate_at_max_stays_at_max() {
-        let mut conf = Confidence(1.0);
+        let mut conf = Confidence::new(1.0);
 
         // Accumulating at 1.0 should stay at 1.0
         conf.accumulate(0.2);
@@ -1590,7 +1607,7 @@ mod tests {
     #[test]
     fn confidence_degrade_at_floor_stays_at_floor() {
         let floor = 0.2;
-        let mut conf = Confidence(floor);
+        let mut conf = Confidence::new(floor);
 
         // Degrading at floor should stay at floor
         conf.degrade(0.5, floor);
@@ -1617,7 +1634,7 @@ mod tests {
 
         // Test with different floor values
         let higher_floor = 0.5;
-        let mut conf2 = Confidence(higher_floor);
+        let mut conf2 = Confidence::new(higher_floor);
         conf2.degrade(0.1, higher_floor);
         assert_eq!(
             conf2.0, higher_floor,
@@ -1792,7 +1809,7 @@ mod tests {
         );
 
         // Test tentative tier, low value
-        let confidence_tentative = Confidence(0.2);
+        let confidence_tentative = Confidence::new(0.2);
         let result = vocab.describe(
             &ObservationCategory::ThermalBehavior,
             0.1,
@@ -1809,7 +1826,7 @@ mod tests {
         assert_eq!(result, Some("seemed to change noticeably"));
 
         // Test observed tier, low value
-        let confidence_observed = Confidence(0.5);
+        let confidence_observed = Confidence::new(0.5);
         let result = vocab.describe(
             &ObservationCategory::ThermalBehavior,
             0.1,
@@ -1823,7 +1840,7 @@ mod tests {
         use crate::journal::ObservationCategory;
 
         let vocab = DescriptorVocabulary::new();
-        let confidence = Confidence(0.2);
+        let confidence = Confidence::new(0.2);
         let result = vocab.describe(&ObservationCategory::ThermalBehavior, 0.1, confidence);
         assert_eq!(result, None);
     }
@@ -1843,12 +1860,12 @@ mod tests {
         );
 
         // Value outside range
-        let confidence = Confidence(0.2);
+        let confidence = Confidence::new(0.2);
         let result = vocab.describe(&ObservationCategory::ThermalBehavior, 0.5, confidence);
         assert_eq!(result, None);
 
         // Wrong tier (confident tier not defined)
-        let confidence_confident = Confidence(0.8);
+        let confidence_confident = Confidence::new(0.8);
         let result = vocab.describe(
             &ObservationCategory::ThermalBehavior,
             0.1,
@@ -1867,7 +1884,7 @@ mod tests {
         let low_color_value = 0.1; // Should be in 0.0..0.125 range
 
         // Tentative tier
-        let confidence_tentative = Confidence(0.2);
+        let confidence_tentative = Confidence::new(0.2);
         let result = vocab.describe(
             &ObservationCategory::SurfaceAppearance,
             low_color_value,
@@ -1876,7 +1893,7 @@ mod tests {
         assert_eq!(result, Some("Appeared to have a dark, muted coloration"));
 
         // Observed tier
-        let confidence_observed = Confidence(0.5);
+        let confidence_observed = Confidence::new(0.5);
         let result = vocab.describe(
             &ObservationCategory::SurfaceAppearance,
             low_color_value,
@@ -1885,7 +1902,7 @@ mod tests {
         assert_eq!(result, Some("Dark, muted coloration"));
 
         // Confident tier
-        let confidence_confident = Confidence(0.8);
+        let confidence_confident = Confidence::new(0.8);
         let result = vocab.describe(
             &ObservationCategory::SurfaceAppearance,
             low_color_value,
@@ -1996,7 +2013,7 @@ mod tests {
         let low_value = 0.1; // Should be in 0.0..0.25 range
 
         // Tentative tier
-        let confidence_tentative = Confidence(0.2);
+        let confidence_tentative = Confidence::new(0.2);
         let result = vocab.describe(
             &ObservationCategory::ThermalBehavior,
             low_value,
@@ -2005,7 +2022,7 @@ mod tests {
         assert_eq!(result, Some("Seemed to soften quickly under heat"));
 
         // Observed tier
-        let confidence_observed = Confidence(0.5);
+        let confidence_observed = Confidence::new(0.5);
         let result = vocab.describe(
             &ObservationCategory::ThermalBehavior,
             low_value,
@@ -2014,7 +2031,7 @@ mod tests {
         assert_eq!(result, Some("Softens quickly under heat"));
 
         // Confident tier
-        let confidence_confident = Confidence(0.8);
+        let confidence_confident = Confidence::new(0.8);
         let result = vocab.describe(
             &ObservationCategory::ThermalBehavior,
             low_value,
@@ -2029,12 +2046,12 @@ mod tests {
     #[test]
     fn descriptor_vocabulary_confidence_tier_mapping() {
         // Test that confidence values map to the correct tiers
-        assert_eq!(Confidence(0.0).tier(), ConfidenceTier::Tentative);
-        assert_eq!(Confidence(0.29).tier(), ConfidenceTier::Tentative);
-        assert_eq!(Confidence(0.3).tier(), ConfidenceTier::Observed);
-        assert_eq!(Confidence(0.69).tier(), ConfidenceTier::Observed);
-        assert_eq!(Confidence(0.7).tier(), ConfidenceTier::Confident);
-        assert_eq!(Confidence(1.0).tier(), ConfidenceTier::Confident);
+        assert_eq!(Confidence::new(0.0).tier(), ConfidenceTier::Tentative);
+        assert_eq!(Confidence::new(0.29).tier(), ConfidenceTier::Tentative);
+        assert_eq!(Confidence::new(0.3).tier(), ConfidenceTier::Observed);
+        assert_eq!(Confidence::new(0.69).tier(), ConfidenceTier::Observed);
+        assert_eq!(Confidence::new(0.7).tier(), ConfidenceTier::Confident);
+        assert_eq!(Confidence::new(1.0).tier(), ConfidenceTier::Confident);
     }
 
     #[test]
@@ -2046,24 +2063,52 @@ mod tests {
         // Test cases covering all categories and confidence tiers
         let test_cases = [
             // ThermalBehavior tests
-            (ObservationCategory::ThermalBehavior, 0.1, Confidence(0.2)), // Tentative, low thermal resistance
-            (ObservationCategory::ThermalBehavior, 0.3, Confidence(0.5)), // Observed, medium thermal resistance
-            (ObservationCategory::ThermalBehavior, 0.8, Confidence(0.9)), // Confident, high thermal resistance
+            (
+                ObservationCategory::ThermalBehavior,
+                0.1,
+                Confidence::new(0.2),
+            ), // Tentative, low thermal resistance
+            (
+                ObservationCategory::ThermalBehavior,
+                0.3,
+                Confidence::new(0.5),
+            ), // Observed, medium thermal resistance
+            (
+                ObservationCategory::ThermalBehavior,
+                0.8,
+                Confidence::new(0.9),
+            ), // Confident, high thermal resistance
             // SurfaceAppearance tests
             (
                 ObservationCategory::SurfaceAppearance,
                 0.05,
-                Confidence(0.1),
+                Confidence::new(0.1),
             ), // Tentative, dark color
-            (ObservationCategory::SurfaceAppearance, 0.4, Confidence(0.4)), // Observed, medium color
-            (ObservationCategory::SurfaceAppearance, 0.9, Confidence(0.8)), // Confident, dense appearance
+            (
+                ObservationCategory::SurfaceAppearance,
+                0.4,
+                Confidence::new(0.4),
+            ), // Observed, medium color
+            (
+                ObservationCategory::SurfaceAppearance,
+                0.9,
+                Confidence::new(0.8),
+            ), // Confident, dense appearance
             // Weight tests
-            (ObservationCategory::Weight, 0.15, Confidence(0.25)), // Tentative, light
-            (ObservationCategory::Weight, 0.5, Confidence(0.6)),   // Observed, medium
-            (ObservationCategory::Weight, 0.85, Confidence(0.95)), // Confident, heavy
+            (ObservationCategory::Weight, 0.15, Confidence::new(0.25)), // Tentative, light
+            (ObservationCategory::Weight, 0.5, Confidence::new(0.6)),   // Observed, medium
+            (ObservationCategory::Weight, 0.85, Confidence::new(0.95)), // Confident, heavy
             // FabricationResult tests
-            (ObservationCategory::FabricationResult, 0.2, Confidence(0.3)), // Observed, low success
-            (ObservationCategory::FabricationResult, 0.7, Confidence(0.8)), // Confident, high success
+            (
+                ObservationCategory::FabricationResult,
+                0.2,
+                Confidence::new(0.3),
+            ), // Observed, low success
+            (
+                ObservationCategory::FabricationResult,
+                0.7,
+                Confidence::new(0.8),
+            ), // Confident, high success
         ];
 
         // For each test case, call describe() multiple times and verify identical results
@@ -2101,16 +2146,40 @@ mod tests {
         // Test edge cases that might be prone to non-deterministic behavior
         let edge_cases = [
             // Boundary values for confidence tiers
-            (ObservationCategory::ThermalBehavior, 0.5, Confidence(0.3)), // Exactly at Observed threshold
-            (ObservationCategory::ThermalBehavior, 0.5, Confidence(0.7)), // Exactly at Confident threshold
+            (
+                ObservationCategory::ThermalBehavior,
+                0.5,
+                Confidence::new(0.3),
+            ), // Exactly at Observed threshold
+            (
+                ObservationCategory::ThermalBehavior,
+                0.5,
+                Confidence::new(0.7),
+            ), // Exactly at Confident threshold
             // Boundary values for value ranges
-            (ObservationCategory::SurfaceAppearance, 0.0, Confidence(0.5)), // Minimum value
-            (ObservationCategory::SurfaceAppearance, 1.0, Confidence(0.5)), // Maximum value
-            (ObservationCategory::Weight, 0.25, Confidence(0.5)),           // Range boundary
-            (ObservationCategory::Weight, 0.75, Confidence(0.5)),           // Range boundary
+            (
+                ObservationCategory::SurfaceAppearance,
+                0.0,
+                Confidence::new(0.5),
+            ), // Minimum value
+            (
+                ObservationCategory::SurfaceAppearance,
+                1.0,
+                Confidence::new(0.5),
+            ), // Maximum value
+            (ObservationCategory::Weight, 0.25, Confidence::new(0.5)), // Range boundary
+            (ObservationCategory::Weight, 0.75, Confidence::new(0.5)), // Range boundary
             // Extreme confidence values
-            (ObservationCategory::FabricationResult, 0.5, Confidence(0.0)), // Minimum confidence
-            (ObservationCategory::FabricationResult, 0.5, Confidence(1.0)), // Maximum confidence
+            (
+                ObservationCategory::FabricationResult,
+                0.5,
+                Confidence::new(0.0),
+            ), // Minimum confidence
+            (
+                ObservationCategory::FabricationResult,
+                0.5,
+                Confidence::new(1.0),
+            ), // Maximum confidence
         ];
 
         for (category, value, confidence) in edge_cases {
@@ -2139,10 +2208,22 @@ mod tests {
         let vocab3 = DescriptorVocabulary::default();
 
         let test_cases = [
-            (ObservationCategory::ThermalBehavior, 0.1, Confidence(0.2)),
-            (ObservationCategory::SurfaceAppearance, 0.6, Confidence(0.5)),
-            (ObservationCategory::Weight, 0.8, Confidence(0.9)),
-            (ObservationCategory::FabricationResult, 0.3, Confidence(0.4)),
+            (
+                ObservationCategory::ThermalBehavior,
+                0.1,
+                Confidence::new(0.2),
+            ),
+            (
+                ObservationCategory::SurfaceAppearance,
+                0.6,
+                Confidence::new(0.5),
+            ),
+            (ObservationCategory::Weight, 0.8, Confidence::new(0.9)),
+            (
+                ObservationCategory::FabricationResult,
+                0.3,
+                Confidence::new(0.4),
+            ),
         ];
 
         for (category, value, confidence) in test_cases {
@@ -2243,9 +2324,9 @@ mod tests {
 
                         // Test the actual describe() method returns a non-empty result
                         let confidence = match tier {
-                            ConfidenceTier::Tentative => Confidence(0.2),
-                            ConfidenceTier::Observed => Confidence(0.5),
-                            ConfidenceTier::Confident => Confidence(0.8),
+                            ConfidenceTier::Tentative => Confidence::new(0.2),
+                            ConfidenceTier::Observed => Confidence::new(0.5),
+                            ConfidenceTier::Confident => Confidence::new(0.8),
                         };
 
                         let result = vocab.describe(&category, value, confidence);
@@ -2572,9 +2653,9 @@ mod tests {
         for (category, boundary_value, tier) in boundary_test_cases {
             // Convert tier to appropriate confidence value
             let confidence = match tier {
-                ConfidenceTier::Tentative => Confidence(0.2),
-                ConfidenceTier::Observed => Confidence(0.5),
-                ConfidenceTier::Confident => Confidence(0.8),
+                ConfidenceTier::Tentative => Confidence::new(0.2),
+                ConfidenceTier::Observed => Confidence::new(0.5),
+                ConfidenceTier::Confident => Confidence::new(0.8),
             };
 
             // Get the first result
@@ -2689,9 +2770,9 @@ mod tests {
 
         for (category, value, tier) in just_inside_boundary_cases {
             let confidence = match tier {
-                ConfidenceTier::Tentative => Confidence(0.2),
-                ConfidenceTier::Observed => Confidence(0.5),
-                ConfidenceTier::Confident => Confidence(0.8),
+                ConfidenceTier::Tentative => Confidence::new(0.2),
+                ConfidenceTier::Observed => Confidence::new(0.5),
+                ConfidenceTier::Confident => Confidence::new(0.8),
             };
 
             let first_result = vocab.describe(&category, value, confidence);
@@ -2743,16 +2824,16 @@ mod tests {
         let node42 = graph.ensure_concept(ConceptId(key42.clone()), ConceptCategory::Material, 0);
         if let Some(n) = graph.graph_mut().node_weight_mut(node42) {
             n.name = "Test Material".to_string();
-            n.confidence = Confidence(0.8);
+            n.confidence = Confidence::new(0.8);
             n.add_observation(Observation {
                 category: ObservationCategory::ThermalBehavior,
-                confidence: Confidence(0.8),
+                confidence: Confidence::new(0.8),
                 description: "Reliably withstands heat".to_string(),
                 recorded_at: 100,
             });
             n.add_observation(Observation {
                 category: ObservationCategory::SurfaceAppearance,
-                confidence: Confidence(0.5),
+                confidence: Confidence::new(0.5),
                 description: "Smooth metallic surface".to_string(),
                 recorded_at: 150,
             });
@@ -2762,10 +2843,10 @@ mod tests {
         let node99 = graph.ensure_concept(ConceptId(key99.clone()), ConceptCategory::Material, 0);
         if let Some(n) = graph.graph_mut().node_weight_mut(node99) {
             n.name = "Another Material".to_string();
-            n.confidence = Confidence(0.9);
+            n.confidence = Confidence::new(0.9);
             n.add_observation(Observation {
                 category: ObservationCategory::Weight,
-                confidence: Confidence(0.9),
+                confidence: Confidence::new(0.9),
                 description: "Notably heavy".to_string(),
                 recorded_at: 200,
             });
@@ -2791,19 +2872,19 @@ mod tests {
 
         // Expected: original * 0.6, not below 0.2 floor
         assert!(
-            (thermal.confidence.0 - 0.8 * 0.6).abs() < 1e-5,
+            (thermal.confidence.value() - 0.8 * 0.6).abs() < 1e-5,
             "thermal: {}",
-            thermal.confidence.0
+            thermal.confidence.value()
         );
         assert!(
-            (weight.confidence.0 - 0.9 * 0.6).abs() < 1e-5,
+            (weight.confidence.value() - 0.9 * 0.6).abs() < 1e-5,
             "weight: {}",
-            weight.confidence.0
+            weight.confidence.value()
         );
         assert!(
-            (surface.confidence.0 - 0.5 * 0.6).abs() < 1e-5,
+            (surface.confidence.value() - 0.5 * 0.6).abs() < 1e-5,
             "surface: {}",
-            surface.confidence.0
+            surface.confidence.value()
         );
     }
 
@@ -2831,7 +2912,7 @@ mod tests {
         if let Some(n) = graph.graph_mut().node_weight_mut(node42) {
             n.add_observation(Observation {
                 category: ObservationCategory::ThermalBehavior,
-                confidence: Confidence(0.4),
+                confidence: Confidence::new(0.4),
                 description: "Seemed to react to heat".to_string(),
                 recorded_at: 100,
             });
@@ -2851,7 +2932,7 @@ mod tests {
             .node(node42)
             .unwrap()
             .observations_by_category(&ObservationCategory::ThermalBehavior)[0];
-        assert_eq!(thermal.confidence.0, 0.3);
+        assert_eq!(thermal.confidence.value(), 0.3);
     }
 
     #[test]
@@ -3019,7 +3100,7 @@ mod tests {
         let current_time = 2000; // Within recovery window
 
         // Test confidence accumulation in death-relevant domain (thermal)
-        let mut thermal_confidence = Confidence(0.3); // Starting confidence after death
+        let mut thermal_confidence = Confidence::new(0.3); // Starting confidence after death
         let thermal_multiplier = death_context.recovery_multiplier(
             &ObservationCategory::ThermalBehavior,
             current_time,
@@ -3028,7 +3109,7 @@ mod tests {
         thermal_confidence.accumulate(config.base_observation_weight * thermal_multiplier);
 
         // Test confidence accumulation in unrelated domain (weight)
-        let mut weight_confidence = Confidence(0.3); // Same starting confidence
+        let mut weight_confidence = Confidence::new(0.3); // Same starting confidence
         let weight_multiplier =
             death_context.recovery_multiplier(&ObservationCategory::Weight, current_time, &config);
         weight_confidence.accumulate(config.base_observation_weight * weight_multiplier);

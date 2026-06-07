@@ -289,7 +289,7 @@ fn tick_processing(
         material_seed: None,
         observation: Observation {
             category: ObservationCategory::FabricationResult,
-            confidence: crate::observation::Confidence(0.8), // High confidence for fabrication results
+            confidence: crate::observation::Confidence::new(0.8), // High confidence for fabrication results
             description,
             recorded_at: 0,
         },
