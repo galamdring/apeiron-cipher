@@ -235,6 +235,19 @@ pub struct ConfidenceConfig {
     /// Typical range: 0.80-0.95
     #[serde(default = "default_similarity_threshold")]
     pub similarity_threshold: f32,
+
+    /// Starting confidence value assigned to an entity's first observation in a category.
+    ///
+    /// When a player records a brand-new observation in a domain they have never
+    /// tested before, this value seeds the initial confidence rather than
+    /// starting from zero. A non-zero seed ensures the very first experiment
+    /// registers as meaningful (Tentative tier) without requiring repeat tests
+    /// just to escape the floor.
+    ///
+    /// Should be low enough that it clearly sits in the Tentative tier so the
+    /// player still feels the need to repeat experiments. Typical range: 0.1-0.3
+    #[serde(default = "default_initial_observation_confidence")]
+    pub initial_observation_confidence: f32,
 }
 
 /// Default value for death_degradation_factor field.
@@ -267,6 +280,11 @@ fn default_similarity_threshold() -> f32 {
     0.85
 }
 
+/// Default value for initial_observation_confidence field.
+fn default_initial_observation_confidence() -> f32 {
+    0.2
+}
+
 impl Default for ConfidenceConfig {
     /// Default confidence configuration values.
     ///
@@ -275,12 +293,13 @@ impl Default for ConfidenceConfig {
     /// meaningful but not punishing confidence degradation.
     fn default() -> Self {
         Self {
-            death_degradation_factor: 0.6,    // Lose 40% confidence on death
-            death_floor: 0.2,                 // Never drop below 20% confidence
-            domain_recovery_multiplier: 2.0,  // 2x recovery in death domain
-            passive_recovery_multiplier: 0.7, // 0.7x recovery elsewhere
-            base_observation_weight: 0.2,     // Standard observation strength
-            similarity_threshold: 0.85,       // 85% cosine similarity = "similar materials"
+            death_degradation_factor: 0.6,       // Lose 40% confidence on death
+            death_floor: 0.2,                    // Never drop below 20% confidence
+            domain_recovery_multiplier: 2.0,     // 2x recovery in death domain
+            passive_recovery_multiplier: 0.7,    // 0.7x recovery elsewhere
+            base_observation_weight: 0.2,        // Standard observation strength
+            similarity_threshold: 0.85,          // 85% cosine similarity = "similar materials"
+            initial_observation_confidence: 0.2, // Seed first observation at Tentative tier
         }
     }
 }
@@ -1730,6 +1749,7 @@ mod tests {
         assert_eq!(config.domain_recovery_multiplier, 2.0);
         assert_eq!(config.passive_recovery_multiplier, 0.7);
         assert_eq!(config.base_observation_weight, 0.2);
+        assert_eq!(config.initial_observation_confidence, 0.2);
     }
 
     #[test]
@@ -1741,6 +1761,7 @@ mod tests {
             passive_recovery_multiplier: 0.8,
             base_observation_weight: 0.25,
             similarity_threshold: 0.85,
+            initial_observation_confidence: 0.2,
         };
 
         let toml = toml::to_string(&config).expect("ConfidenceConfig should serialize to TOML");
@@ -1769,6 +1790,35 @@ mod tests {
         assert_eq!(config.death_floor, 0.2);
         assert_eq!(config.domain_recovery_multiplier, 2.0);
         assert_eq!(config.passive_recovery_multiplier, 0.7);
+    }
+
+    #[test]
+    fn confidence_config_initial_observation_confidence_defaults_to_0_2() {
+        // Verify the new field defaults correctly when absent from TOML.
+        let partial_toml = r#"
+            death_degradation_factor = 0.8
+        "#;
+
+        let config: ConfidenceConfig =
+            toml::from_str(partial_toml).expect("Partial TOML should deserialize with defaults");
+
+        // The new field must default to 0.2 (Tentative-tier seed).
+        assert_eq!(config.initial_observation_confidence, 0.2);
+    }
+
+    #[test]
+    fn confidence_config_initial_observation_confidence_round_trips() {
+        // Verify the new field serializes and deserializes correctly.
+        let config = ConfidenceConfig {
+            initial_observation_confidence: 0.15,
+            ..Default::default()
+        };
+
+        let toml = toml::to_string(&config).expect("ConfidenceConfig should serialize to TOML");
+        let deserialized: ConfidenceConfig =
+            toml::from_str(&toml).expect("ConfidenceConfig should deserialize from TOML");
+
+        assert_eq!(deserialized.initial_observation_confidence, 0.15);
     }
 
     // ── DescriptorEntry tests ───────────────────────────────────────────
@@ -2977,6 +3027,7 @@ mod tests {
                 passive_recovery_multiplier: 0.7,
                 base_observation_weight: 0.2,
                 similarity_threshold: 0.85,
+                initial_observation_confidence: 0.2,
             })
             .insert_resource(Time::<()>::default());
 
@@ -3066,6 +3117,7 @@ mod tests {
                 passive_recovery_multiplier: 0.7,
                 base_observation_weight: 0.2,
                 similarity_threshold: 0.85,
+                initial_observation_confidence: 0.2,
             })
             .insert_resource(Time::<()>::default());
 
@@ -3179,6 +3231,7 @@ mod tests {
             passive_recovery_multiplier: 0.7,
             base_observation_weight: 0.2,
             similarity_threshold: 0.85,
+            initial_observation_confidence: 0.2,
         };
 
         let context = DeathContext::new(DeathCause::HeatSystem, 1000);
@@ -3256,6 +3309,7 @@ mod tests {
             passive_recovery_multiplier: 0.7, // 0.7x recovery elsewhere
             base_observation_weight: 0.2,
             similarity_threshold: 0.85,
+            initial_observation_confidence: 0.2,
         };
 
         // Create death context for heat system death
