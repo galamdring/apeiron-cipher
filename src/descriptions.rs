@@ -7,7 +7,7 @@
 //! normalised `0.0–1.0` value (or similar) into a `&'static str` or
 //! `String` that can go straight into UI text.
 
-use crate::observation::Confidence;
+use crate::observation::{Confidence, ConfidenceTier};
 
 // ── Generic value ───────────────────────────────────────────────────────
 
@@ -94,18 +94,16 @@ fn describe_thermal_behavior(value: f32) -> &'static str {
 /// Thermal observation with confidence-level framing applied.
 pub fn describe_thermal_observation(value: f32, confidence: Confidence) -> String {
     let behavior = describe_thermal_behavior(value);
-    let tier = confidence.tier();
-    match tier.display_label() {
-        "Uncertain" => format!("Seemed to {behavior}"),
-        "Noted" => {
+    match confidence.tier() {
+        ConfidenceTier::Tentative => format!("Seemed to {behavior}"),
+        ConfidenceTier::Observed => {
             let mut chars = behavior.chars();
             let Some(first) = chars.next() else {
                 return String::new();
             };
             format!("{}{}", first.to_uppercase(), chars.as_str())
         }
-        "Confirmed" => format!("Reliably {behavior}"),
-        _ => behavior.to_string(), // fallback for any unexpected labels
+        ConfidenceTier::Confident => format!("Reliably {behavior}"),
     }
 }
 
