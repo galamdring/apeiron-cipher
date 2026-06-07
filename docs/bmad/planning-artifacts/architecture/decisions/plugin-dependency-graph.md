@@ -17,6 +17,21 @@ Core plugins form a mesh — they may depend on each other freely. This reflects
 
 **Leaf plugin definition:** A leaf plugin does not have Intent phase systems (InputPlugin owns intent emission) and does not define events consumed by core plugins. Leaves have Simulation systems (validate and process intents for their domain), WorldResponse systems (translate outcomes into diegetic feedback), and Presentation systems (rendering). Leaves consume core APIs. Leaves never import from other leaves.
 
+**Leaf Plugins:**
+
+| Plugin | Consumes (core) | Consumed by | Responsibility |
+|--------|-----------------|-------------|----------------|
+| `ScenePlugin` | — | — | Scene/camera setup |
+| `PlayerPlugin` | `InputPlugin`, `WorldGenerationPlugin` | — | Player entity, movement |
+| `CarryPlugin` → `InventoryPlugin` | `InputPlugin`, `MaterialPlugin` | — | Item carry/inventory (renamed Epic 4) |
+| `InteractionPlugin` | `InputPlugin`, `KnowledgePlugin` | — | General interaction dispatch |
+| `HeatPlugin` | `MaterialPlugin`, `WorldGenerationPlugin` | — | Material property simulation |
+| `FabricatorPlugin` | `InputPlugin`, `MaterialPlugin`, `KnowledgePlugin` | — | Input/output slot mechanics; owns fabrication core events |
+| `CombinationPlugin` | `InputPlugin`, `MaterialPlugin` | — | Material combination logic |
+| `JournalUIPlugin` | `KnowledgePlugin` | — | Presentation-phase journal rendering |
+| `FloraPlugin` | `WorldGenerationPlugin`, `MaterialPlugin`, `KnowledgePlugin` | — | Flora entity lifecycle, mesh-fidelity collision (consuming WorldGenerationPlugin region data), seasonal state simulation, biological material environment, interior base location support |
+| `ShipPlugin` | `KnowledgePlugin` | — | Ship entity state, broken component tracking, repair interaction handling via core-owned events from FabricatorPlugin, ship flight/travel. Hull repair emits observation events through KnowledgePlugin. Never imports FabricatorPlugin directly — leaf-never-imports-leaf rule. |
+
 **Core Graph (8 plugins):**
 
 | Plugin | Registers (Resources) | Registers (Events) | Registers (Components) | Notes |
@@ -53,6 +68,8 @@ app
     .add_plugins(FabricatorPlugin)
     .add_plugins(CombinationPlugin)
     .add_plugins(JournalUIPlugin)
+    .add_plugins(FloraPlugin)
+    .add_plugins(ShipPlugin)
 ```
 
 Registration order doesn't affect Bevy's runtime execution (SchedulingPlugin's system sets handle that). It documents the dependency direction for the next developer or agent reading `main.rs`.

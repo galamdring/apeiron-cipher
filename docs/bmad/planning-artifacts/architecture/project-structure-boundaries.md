@@ -46,6 +46,8 @@ apeiron-cipher/
 │   │── fabricator.rs                    # FabricatorPlugin (leaf)
 │   │── combination.rs                   # CombinationPlugin (leaf)
 │   │── journal_ui.rs                    # JournalUIPlugin (leaf, new — Presentation phase)
+│   │── flora.rs                         # FloraPlugin — giant flora collision, seasonal state, biological material env
+│   │── ship.rs                          # ShipPlugin — found ship entity, repair state, fabrication integration
 │   │
 ├── tests/
 │   ├── common/
@@ -80,7 +82,9 @@ apeiron-cipher/
 │   │   └── world_generation_config.toml
 │   ├── biomes/                          # Biome generation parameters (TOML)
 │   ├── crafting/                        # Recipe templates (TOML)
-│   ├── exterior/                        # Surface generation data (TOML)
+│   ├── exterior/                        # Surface generation data (TOML). Note: terrain texture parameters derive from material property data; no separate texture files live here.
+│   ├── flora/                           # Giant flora structure definitions, biological material palette configs, hazard parameter files
+│   ├── vehicles/                        # Found ship definition and per-component repair schemas
 │   └── ...                              # New domains get new directories
 │   │
 ├── docs/
@@ -132,6 +136,8 @@ Each integration test file tests one plugin through its public API. The test har
 | Epic 11 — Material Science Depth | `materials.rs` + sub-modules (core) | Evolves from POC, adds registry + seed derivation |
 | Epic 12 — Crafting | `fabricator.rs`, `combination.rs` (leaves) | Consume MaterialPlugin + KnowledgePlugin APIs |
 | Epic 13 — Base Building | New leaf plugin(s) as needed | Consumes core APIs |
+| Epic 13 — Base Building | `flora.rs` (leaf) | `FloraPlugin` — interior base location support, giant flora collision |
+| GDD v1.1 — Ship Systems | `ship.rs` (leaf) | `ShipPlugin` — found ship entity, repair via FabricatorPlugin core events |
 
 **Infrastructure (created before/during Ring 1):**
 
