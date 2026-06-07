@@ -1016,6 +1016,8 @@ impl ConfidenceTracker {
         since = "0.1.0",
         note = "Use RecordObservation messages with journal system instead"
     )]
+    // Retained for backward compatibility while call-sites migrate to journal-based
+    // RecordObservation messages. Remove once all consumers are migrated.
     #[allow(dead_code)]
     pub fn record(&mut self, seed: u64, property: PropertyName) -> u32 {
         let key = (seed, property);
