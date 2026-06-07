@@ -20,7 +20,7 @@ use crate::input::InputAction;
 use crate::knowledge_graph::{ConceptId, ConceptNode, KnowledgeGraph};
 use crate::observation::Confidence;
 use crate::player::{Player, cursor_is_captured, spawn_player};
-use crate::world_generation::BiomeType;
+use crate::world_generation::{BiomeType, PlanetSeed};
 
 // ── Biome key type safety ──────────────────────────────────────────────
 
@@ -242,8 +242,8 @@ pub enum JournalKey {
     /// targets from material entries.
     Location {
         /// The planet seed that uniquely identifies this location within
-        /// the world generation system.  Matches `WorldProfile::planet_seed.0`.
-        planet_seed: u64,
+        /// the world generation system.  Matches `WorldProfile::planet_seed`.
+        planet_seed: PlanetSeed,
     },
 }
 
@@ -254,7 +254,7 @@ impl JournalKey {
     /// `Location` keys return their planet seed directly. All other variants
     /// return `None` — planet provenance for material instances is stored on
     /// the KnowledgeGraph node as a `FoundOn` edge, not on the key.
-    pub fn planet_seed(&self) -> Option<u64> {
+    pub fn planet_seed(&self) -> Option<PlanetSeed> {
         match self {
             JournalKey::MaterialInstance { .. } => None,
             JournalKey::Material { .. } => None,
@@ -372,7 +372,7 @@ pub fn matches_filter_node(node: &ConceptNode, filter: &JournalFilter) -> bool {
 
     let context_match = filter.context.as_ref().is_none_or(|ctx| match ctx {
         JournalContext::CurrentPlanet { planet_seed } => {
-            node.origin_planet_seed == Some(*planet_seed)
+            node.origin_planet_seed == Some(PlanetSeed(*planet_seed))
         }
         JournalContext::CurrentBiome { .. } => true,
     });

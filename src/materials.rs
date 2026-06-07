@@ -28,6 +28,16 @@ use crate::seed_util::{
     MAT_DENSITY_CHANNEL, MAT_REACTIVITY_CHANNEL, MAT_THERMAL_RESISTANCE_CHANNEL,
     MAT_TOXICITY_CHANNEL, mix_seed,
 };
+use crate::world_generation::PlanetSeed;
+
+/// Typed seed for a material instance.
+///
+/// Wraps the raw `u64` seed so that material seeds cannot be silently confused
+/// with planet seeds or other seed domains at the type level.  Bare `u64` is
+/// only permitted at serialisation / asset-loading edges; everywhere else pass
+/// `MaterialSeed`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Reflect)]
+pub struct MaterialSeed(pub u64);
 /// Registers the material data model, catalog, and world-object spawning systems.
 pub struct MaterialPlugin;
 
@@ -312,7 +322,7 @@ pub struct GameMaterial {
     ///
     /// `None` in contexts where no planetary world profile exists (early
     /// bring-up, fabricated materials, integration tests).
-    pub origin_planet_seed: Option<u64>,
+    pub origin_planet_seed: Option<PlanetSeed>,
     /// How heavy the material feels — affects mesh shape selection.
     pub density: MaterialProperty,
     /// Resistance to heat transfer.
@@ -507,8 +517,8 @@ impl MaterialCatalog {
 
     /// Look up a material by its seed, returning `None` if not yet registered.
     #[allow(dead_code)]
-    pub fn get_by_seed(&self, seed: u64) -> Option<&GameMaterial> {
-        self.by_seed.get(&seed)
+    pub fn get_by_seed(&self, seed: MaterialSeed) -> Option<&GameMaterial> {
+        self.by_seed.get(&seed.0)
     }
 
     /// Look up a material by its display name, returning `None` if not found.
@@ -1219,7 +1229,7 @@ visibility = "Hidden"
         for &wk in WellKnownMaterial::all() {
             let seed = wk.seed();
             assert!(
-                catalog.get_by_seed(seed).is_some(),
+                catalog.get_by_seed(MaterialSeed(seed)).is_some(),
                 "well-known seed {seed} must be present in the catalog after startup",
             );
         }

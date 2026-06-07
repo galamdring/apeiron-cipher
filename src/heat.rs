@@ -18,7 +18,7 @@ use bevy::prelude::*;
 
 use crate::descriptions::describe_thermal_observation;
 use crate::journal::{JournalKey, Observation, ObservationCategory};
-use crate::materials::{GameMaterial, MaterialObject, PropertyVisibility};
+use crate::materials::{GameMaterial, MaterialObject, MaterialSeed, PropertyVisibility};
 use crate::observation::Confidence;
 use crate::observation::RecordObservation;
 use crate::scene::{FurnitureConfig, HeatSourceConfig, Workbench};
@@ -313,7 +313,7 @@ fn reveal_thermal_property(
             journal_writer.write(RecordObservation {
                 key: JournalKey::MaterialInstance { seed: mat.seed },
                 name: mat.name.clone(),
-                material_seed: Some(mat.seed),
+                material_seed: Some(MaterialSeed(mat.seed)),
                 planet_seed: mat.origin_planet_seed,
                 observation: Observation {
                     category: ObservationCategory::ThermalBehavior,
@@ -615,7 +615,7 @@ mod tests {
             MaterialObject,
             {
                 let mut mat = test_material(7);
-                mat.origin_planet_seed = Some(expected_seed);
+                mat.origin_planet_seed = Some(PlanetSeed(expected_seed));
                 mat
             },
             HeatExposure {
@@ -640,7 +640,7 @@ mod tests {
                 assert_eq!(*seed, 7, "material seed should match the test material");
                 assert_eq!(
                     recorded[0].planet_seed,
-                    Some(expected_seed),
+                    Some(PlanetSeed(expected_seed)),
                     "observation must capture the WorldProfile's planet seed so the journal's current-planet filter can match it"
                 );
             }
