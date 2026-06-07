@@ -1001,6 +1001,10 @@ pub struct ConfidenceTracker {
     counts: HashMap<ObsKey, u32>,
 }
 
+// ConfidenceTracker is deprecated in favor of journal-based confidence tracking via
+// RecordObservation messages (see KnowledgeGraph node storage). This impl block is
+// still compiled to avoid dead-code churn while callers are migrated; remove once all
+// uses of ConfidenceTracker::record have been replaced by RecordObservation dispatch.
 #[allow(deprecated)]
 impl ConfidenceTracker {
     /// Record one observation. Returns the new count.
