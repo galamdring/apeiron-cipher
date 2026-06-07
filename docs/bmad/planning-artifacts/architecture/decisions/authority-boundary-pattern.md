@@ -36,12 +36,20 @@ All simulation outcomes — successes, failures, constraints, ambiguous results,
 
 **Every Simulation-level outcome must map to a visible, behavioral, or systemic in-world response** produced through Simulation → WorldResponse. All response events implement a `DiegeticResponse` marker trait for telemetry and test harness hookability. WorldResponse translates Simulation outcomes into:
 
-- **Physical reactions:** resistance, failure to transition state, instability, incomplete execution. The character strains against an object too heavy to lift. A fabricator sputters and stalls on incompatible materials. A structure buckles under unsupported weight.
+- **Physical reactions:** resistance, failure to transition state, instability, incomplete execution. The character strains against an object too heavy to lift. A fabricator sputters and stalls on incompatible materials. A structure buckles under unsupported weight. A giant flora structure closes around a player base: the interior compresses, materials react to the chemical environment change, fauna activates — no UI warning. The world is consistent.
 - **Systemic inconsistencies made observable:** subsystems disagreeing, partial activation, stalled processes. A crafting sequence begins but fails to reach completion. A heat source ignites one material but not the adjacent one. A mechanism engages partway and jams.
 - **Behavioral feedback loops:** attempt → resistance → resolution or failure. The player sees the full arc of the attempt, not a binary state change.
 - **Ambiguous and unexpected results:** Outcomes that are neither success nor failure. A material combination produces something — not what was expected, not nothing, an intermediate or surprising state. The world doesn't owe the player binary outcomes. Discovery lives in the space between intent and result.
 
 Each system expresses failure through its own physics and logic, not through a shared "rejection feedback" abstraction. The fabricator fails differently than lifting fails differently than navigation fails. Diegetic responses emerge from domain-specific behavior, not a generic feedback system.
+
+**Domain-specific intent type examples:**
+- `TryPickUp { entity: Entity }` — pickup, subject to weight and range validation
+- `TryCombine { a: Entity, b: Entity }` — material combination, subject to compatibility validation
+- `TryFabricate { ... }` — fabrication, subject to material availability and fabricator state
+- `TryRepairHull { component: Entity, material: Entity }` — hull repair, uses the same intent/simulation/worldresponse loop as TryFabricate. Not a special-cased tutorial action.
+
+Flora seasonal closure is a diegetic event: when a giant flora structure closes, any player base inside experiences it physically (compression, reduced light, chemical change, fauna activation). This is Simulation-driven mutation producing `WorldResponse` diegetic effects. No UI warning is given — the world communicates entirely through observable physical consequence.
 
 **Journal event log as diegetic understanding surface:**
 - The journal's chronological event log (Decision 1, third visualization layer) serves as the player's "what just happened?" interface.
@@ -49,7 +57,7 @@ Each system expresses failure through its own physics and logic, not through a s
 - The journal event log is the escape hatch for "what did that feedback mean?" It provides an understanding surface without breaking the no-explanation contract — the player is reading their own journal, not receiving system messages.
 - The event log never provides additional knowledge the player hasn't already observed. It re-presents what happened, not why.
 
-**Compliance rule:** A system that rejects an intent without producing a diegetic response is architecturally incomplete.
+**Compliance rule:** A system that rejects an intent without producing a diegetic response is architecturally incomplete. World-initiated state changes (flora closure, chemical shifts) that affect player structures must communicate through observable world behavior, not through text notifications or UI alerts.
 
 **The Accretion Test (foundational design constraint):**
 - When implementing a system, ask: "what does the player understand after this action that they didn't understand before?" If the answer is "nothing new," the action isn't earning its place. If the answer requires a UI notification to communicate, it's a reward moment, not accretion. Knowledge accumulates through consequence and observation, never through confirmation. Every architectural decision in this document is downstream of this constraint.
