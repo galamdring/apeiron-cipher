@@ -1034,6 +1034,7 @@ impl ConfidenceTracker {
         since = "0.1.0",
         note = "Query journal observations directly for confidence information"
     )]
+    /// Kept for API compatibility during transition to journal-based confidence tracking.
     #[allow(dead_code)]
     pub fn count(&self, seed: u64, property: PropertyName) -> u32 {
         self.counts.get(&(seed, property)).copied().unwrap_or(0)
