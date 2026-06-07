@@ -83,6 +83,9 @@ Load:
 - [Asset Pipeline Conventions](./decisions/asset-pipeline-conventions.md) — custom AssetLoaders, schema versioning, hot-reload, validation
 - [Starter Template Evaluation](./starter-template-evaluation.md) — data format split (TOML vs RON), dependency discipline
 
+For tasks touching mod content or mod-compatibility:
+- [Mod System Structure](./cross-cutting/mod-system-structure.md) — `mod.toml` manifest shape, directory conventions, asset pipeline invariants, monetization-parity hook
+
 ---
 
 ### Networking / Authority

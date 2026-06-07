@@ -9,3 +9,4 @@
 - [Diegetic Feedback Contract](./diegetic-feedback.md) — no UI explanations of failure or game state; physical in-world objects that display text (journal, datapads) are the diegetic mechanism, not a violation
 - [Asset Pipeline Architecture](./asset-pipeline.md) — hot-reload, versioned schemas, async loading
 - [Persistence / Save Architecture](./persistence.md) — deterministic serialization, version migration, knowledge preservation
+- [Mod System Structure](./mod-system-structure.md) — structural definition: `mod.toml` manifest, directory conventions, asset pipeline invariants for mod-compatibility, monetization-parity hook (Epic 23 / Ring 5)
