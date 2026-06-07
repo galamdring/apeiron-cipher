@@ -19,6 +19,9 @@
 
 **Seed-instance consistency tests:**
 - When the architecture says knowledge is seed-level (Decision 1 — Material Seed Canonicality), tests must prove that learning from one entity updates the behavior of other same-seed entities in inspect, journal, and other player-facing systems. If two entities share a seed and a property is discovered on one, the second entity must reflect that knowledge immediately. This is an explicit test category, not an implied consequence.
+- **Terrain texture determinism:** Same `MaterialSeed` → same `TerrainTextureSeed` → same texture parameters across two independent runs. Golden file for a known `MaterialSeed` value.
+- **Ship repair fabrication path equivalence:** `TryRepairHull` and `TryFabricate` use the same underlying material-to-component validation. Integration test with equivalent inputs to both, asserting the same validation fires.
+- **Flora seasonal + base invalidation:** Integration test advancing to a flora-closing event, asserting a `DiegeticResponse` event is emitted, and asserting no UI text event is emitted.
 
 **Unified test harness** — shared utilities in `tests/common/mod.rs`:
 - **App builders provide infrastructure only, NOT the plugin under test.** Builders configure `SchedulingPlugin` + a `TestObservabilityPlugin` that replaces the production tracing stack with the `Vec<LogEvent>` capture layer. Each integration test file adds its own plugin: `app.add_plugins(MaterialPlugin)`. This enforces the per-plugin-boundary rule from Decision 5.
@@ -26,7 +29,7 @@
 - **Event assertions:** `assert_event_emitted::<T>(&app)`, `assert_no_event::<T>(&app)`. Wraps the boilerplate of reading `Events<T>` from the world.
 - **Fixture utilities:** Load helpers for reading golden files and input fixtures from `tests/fixtures/`.
 - **Determinism helpers:** Run-compare utility that executes a closure twice with identical inputs and asserts output equality.
-- **Diegetic compliance enforcement — automatic, not opt-in.** The test harness automatically validates diegetic compliance on every integration test run. After each test's tick execution, the harness iterates all `Intent`-marked events fired during the test and asserts a corresponding `DiegeticResponse`-marked event exists for each. A system that rejects an intent without producing a diegetic response fails the test automatically. No plugin opts into this — the harness enforces it globally.
+- **Diegetic compliance enforcement — automatic, not opt-in.** The test harness automatically validates diegetic compliance on every integration test run. After each test's tick execution, the harness iterates all `Intent`-marked events fired during the test and asserts a corresponding `DiegeticResponse`-marked event exists for each. A system that rejects an intent without producing a diegetic response fails the test automatically. No plugin opts into this — the harness enforces it globally. Diegetic compliance enforcement covers world-initiated events (flora closure, chemical change) in addition to player-initiated intents.
 
 **Test parallelism (documented, not configured):** Cargo runs integration test files as separate binaries in parallel. Tests within each binary run serially. For Bevy testing with `App` instances, serial-within-binary is correct — each test gets its own `App`, no shared global state. This is Cargo's default behavior and is the correct behavior for this project.
 
@@ -48,6 +51,7 @@
 - **Not part of `make check`.** Fuzz tests explore the seed space and input space stochastically — they're for intentional exploration sessions, not CI gates. A separate `make fuzz` target runs them.
 - **Primary candidates:** Material seed derivation (invariants hold across random seeds), knowledge graph operations (append-only growth invariant, no orphan edges), world generation (determinism invariant across random seeds), intent validation (no panic on arbitrary input combinations).
 - **Invariant-style assertions only.** Fuzz tests don't assert specific outputs. They assert invariants: "for any seed, derived material density is within [0.0, max]", "for any sequence of DiscoveryEvents, the knowledge graph has no orphan edges."
+- **Flora collision geometry invariant:** For any `GiantFloraSeed`, collision geometry must not be a bounding box or convex hull. If the mesh has concave regions (e.g. an open flower top), the collision mesh must also be concave. The test asserts the AABB of the collision geometry contains open space not blocked by collision faces.
 
 **Benchmark testing — baseline from Ring 1, separate suite:**
 - `criterion` as a dev-dependency. Benchmarks in `benches/` directory (standard Cargo convention).
