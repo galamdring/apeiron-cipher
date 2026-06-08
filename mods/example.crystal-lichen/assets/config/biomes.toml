@@ -1,0 +1,62 @@
+# assets/config/biomes.toml (mod addition)
+# schema_version must be the first field in every asset file.
+schema_version = 1
+
+# ── Crystal-Lichen Fields biome ───────────────────────────────────────────
+#
+# Crystal-Lichen Fields occupy the cool-wet corner of temperature × moisture
+# space — a region the base game leaves uncovered (the base frost_shelf ends
+# at moisture 1.0 but only down to temperature 0.0 at 0.5–1.0 moisture; the
+# cool-wet mid-range at temperature 0.0–0.3 with moisture 0.4–0.8 is
+# unoccupied).
+#
+# This biome introduces Crystal-Lichen Substrate (seed 9002) as its primary
+# surface material. The glassy crystalline crust reflects a blue-green ground
+# color. Dense lichen growth traps moisture and reduces deposit exposure
+# slightly relative to baseline.
+#
+# Temperature range: 0.0 – 0.3   (cold)
+# Moisture range:    0.5 – 1.0   (wet)
+# Absolute temperature: 180–260 K  (sub-freezing to cold temperate)
+#
+# Range overlap note: frost_shelf covers temperature 0.0–0.4, moisture 0.5–1.0.
+# That entry appears first in the base game file. To claim this region for
+# Crystal-Lichen Fields you need this mod's entry to load before the base game
+# file — or, alternatively, accept that frost_shelf wins on overlap until
+# mod-load-order control arrives in Epic 23. The biome is designed to
+# complement, not conflict: most of its unique region (temp 0.0–0.25,
+# moisture 0.5–0.75) is occupied territory. Treat this as a preview template
+# for when biome override control is fully implemented.
+
+[[biomes]]
+biome_type = "crystal_lichen_fields"
+temperature_min = 0.0
+temperature_max = 0.25
+temperature_abs_min_k = 180.0
+temperature_abs_max_k = 260.0
+moisture_min = 0.5
+moisture_max = 0.85
+# Blue-green crystalline crust — teal-grey surface, faintly luminous.
+ground_color = [0.41, 0.63, 0.72]
+# Slightly below baseline — living crust traps deposits beneath the surface.
+density_modifier = 0.85
+
+# Crystal-Lichen Substrate — the defining surface material.
+[[biomes.material_palette]]
+material_seed = 9002   # Crystal-Lichen Substrate (this mod)
+selection_weight = 4.0
+
+# Calcium — embedded in the biological matrix; released as the crust degrades.
+[[biomes.material_palette]]
+material_seed = 1002   # Calcium (base game)
+selection_weight = 1.5
+
+# Silite — the rocky substrate beneath the lichen layer.
+[[biomes.material_palette]]
+material_seed = 1009   # Silite (base game)
+selection_weight = 2.0
+
+# Prismate — rare crystals nucleated inside the lichen matrix.
+[[biomes.material_palette]]
+material_seed = 1004   # Prismate (base game)
+selection_weight = 0.8
