@@ -1,0 +1,44 @@
+schema_version = 1
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Veth Race Configuration
+#
+# The Veth are a sapient species of bioluminescent deep-sea cephalopods.
+# They are native to the crushing-pressure zones of ocean worlds and are
+# the sole speakers of Deep-Sign. Their biology shapes every aspect of how
+# the player encounters and interacts with them.
+#
+# This file defines the race's surface-level properties — how they look, what
+# strangeness gradient they represent, and which language they use. Full NPC
+# spawn and behaviour parameters are Epic 23+ deliverables.
+# ──────────────────────────────────────────────────────────────────────────────
+
+[race]
+id           = "veth"
+display_name = "Veth"
+language_id  = "deep_sign"
+
+# Strangeness gradient: how far from the player's origin this race's culture feels.
+# 0.0 = near home / familiar, 1.0 = maximally alien.
+# The Veth are non-bipedal, communicate without sound, and live in environments
+# lethal to unprotected players — very alien.
+strangeness = 0.78
+
+# The biome type(s) where Veth settlements or individuals are found.
+# They occupy deep-ocean world surfaces and interior dome settlements.
+biome_affinity = ["deep_ocean_shelf", "thermal_vent_field"]
+
+# Visual signature: how a Veth looks at max-strangeness (before any language
+# knowledge). The player observes these properties before understanding anything.
+[race.appearance]
+mobility        = "multi-limbed crawler"
+distinguishing  = "rhythmic chromatic skin pulses"
+size_class      = "medium"   # comparable in volume to a human
+eye_count       = 8
+
+# Economic role: what Veth traders typically offer and seek.
+# These drive the trade interface when a Veth NPC is encountered.
+[race.economy]
+primary_exports = ["vel-keth", "sorh-keth"]   # bioluminescent minerals, thermal substrates
+primary_imports = ["ferrite", "prismate"]      # ferromagnetic materials they cannot produce
+trade_language  = "deep_sign"                 # all Veth trade is conducted in Deep-Sign
