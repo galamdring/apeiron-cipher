@@ -42,7 +42,14 @@ export default function App({ config }) {
     return localStorage.getItem("gh_kanban_repo") || "";
   });
 
-  const [view, setView] = useState("board");
+  const [view, setView] = useState(
+    () => localStorage.getItem("gh_kanban_view") || "board"
+  );
+
+  function handleViewChange(v) {
+    localStorage.setItem("gh_kanban_view", v);
+    setView(v);
+  }
 
   useEffect(() => {
     async function bootstrap() {
@@ -88,7 +95,7 @@ export default function App({ config }) {
 
   return (
     <div style={styles.app}>
-      <Header repo={repo} onRepoChange={handleRepoChange} view={view} onViewChange={setView} />
+      <Header repo={repo} onRepoChange={handleRepoChange} view={view} onViewChange={handleViewChange} />
       <div style={styles.body}>
         {view === "board" ? (
           <>

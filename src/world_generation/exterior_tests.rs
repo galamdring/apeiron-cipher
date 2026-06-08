@@ -1,4 +1,5 @@
 use super::*;
+use crate::seeds::MaterialSeed;
 use crate::test_support::{FlatSurface, SteppedSurface, TiltedSurface};
 use crate::world_generation::{BiomeType, PlanetSeed, WorldGenerationConfig};
 
@@ -2293,8 +2294,8 @@ fn deposit_sites_carry_material_seed_from_palette() {
     let catalog = sample_catalog();
     let surface = sample_flat_surface();
 
-    let seed_a: u64 = 0xFE00_0000_0000_0001;
-    let seed_b: u64 = 0xFE00_0000_0000_0002;
+    let seed_a: MaterialSeed = MaterialSeed(0xFE00_0000_0000_0001);
+    let seed_b: MaterialSeed = MaterialSeed(0xFE00_0000_0000_0002);
     let biome = ChunkBiome {
         biome_type: BiomeType::MineralSteppe,
         ground_color: [0.5, 0.5, 0.5],
@@ -2325,12 +2326,14 @@ fn deposit_sites_carry_material_seed_from_palette() {
         "biome with a material palette should produce deposit sites"
     );
 
+    let seed_a_raw = seed_a.0;
+    let seed_b_raw = seed_b.0;
     for site in &sites {
         assert!(
             site.material_seed == seed_a || site.material_seed == seed_b,
             "deposit site material_seed ({:#018X}) must come from the biome palette, \
-                 expected one of {seed_a:#018X} or {seed_b:#018X}",
-            site.material_seed,
+                 expected one of {seed_a_raw:#018X} or {seed_b_raw:#018X}",
+            site.material_seed.0,
         );
     }
 }
@@ -2341,7 +2344,7 @@ fn deposit_placements_inherit_material_seed_from_site() {
     let catalog = sample_catalog();
     let surface = sample_flat_surface();
 
-    let seed: u64 = 0xAB00_0000_0000_0099;
+    let seed: MaterialSeed = MaterialSeed(0xAB00_0000_0000_0099);
     let biome = ChunkBiome {
         biome_type: BiomeType::MineralSteppe,
         ground_color: [0.3, 0.3, 0.3],
@@ -2407,7 +2410,8 @@ fn empty_palette_produces_zero_material_seed() {
             for site in &sites {
                 total_sites += 1;
                 assert_eq!(
-                    site.material_seed, 0,
+                    site.material_seed,
+                    MaterialSeed(0),
                     "empty palette must produce material_seed 0"
                 );
             }
@@ -2450,7 +2454,8 @@ fn empty_palette_baseline_placements_exist_but_all_have_zero_seed() {
             for p in &placements {
                 total_placements += 1;
                 assert_eq!(
-                    p.material_seed, 0,
+                    p.material_seed,
+                    MaterialSeed(0),
                     "all placements from an empty-palette biome must have material_seed 0"
                 );
             }
@@ -2480,15 +2485,15 @@ fn all_zero_weight_palette_produces_zero_material_seed() {
         deposit_weight_modifiers: HashMap::new(),
         material_palette: vec![
             PaletteMaterial {
-                material_seed: 0xAA00_0000_0000_0001,
+                material_seed: MaterialSeed(0xAA00_0000_0000_0001),
                 selection_weight: 0.0,
             },
             PaletteMaterial {
-                material_seed: 0xAA00_0000_0000_0002,
+                material_seed: MaterialSeed(0xAA00_0000_0000_0002),
                 selection_weight: 0.0,
             },
             PaletteMaterial {
-                material_seed: 0xAA00_0000_0000_0003,
+                material_seed: MaterialSeed(0xAA00_0000_0000_0003),
                 selection_weight: 0.0,
             },
         ],
@@ -2507,9 +2512,12 @@ fn all_zero_weight_palette_produces_zero_material_seed() {
             for site in &sites {
                 total_sites += 1;
                 assert_eq!(
-                    site.material_seed, 0,
+                    site.material_seed,
+                    MaterialSeed(0),
                     "all-zero-weight palette must produce material_seed 0, got {} for site in chunk ({}, {})",
-                    site.material_seed, cx, cz
+                    site.material_seed.0,
+                    cx,
+                    cz
                 );
             }
         }
@@ -2530,7 +2538,7 @@ fn single_palette_entry_always_selected() {
     let catalog = sample_catalog();
     let surface = sample_flat_surface();
 
-    let sole_seed: u64 = 0xAA00_0000_0000_0042;
+    let sole_seed: MaterialSeed = MaterialSeed(0xAA00_0000_0000_0042);
     let biome = ChunkBiome {
         biome_type: BiomeType::MineralSteppe,
         ground_color: [0.4, 0.4, 0.4],
@@ -2558,7 +2566,7 @@ fn single_palette_entry_always_selected() {
                     site.material_seed, sole_seed,
                     "single-entry palette must always select the sole seed; \
                          got {:#018X} at chunk ({cx}, {cz})",
-                    site.material_seed,
+                    site.material_seed.0,
                 );
             }
         }
@@ -2584,7 +2592,7 @@ fn deposit_site_has_no_material_key_field() {
             generator_version: 1,
         },
         definition_key: "test".to_string(),
-        material_seed: 0xDEAD_BEEF,
+        material_seed: MaterialSeed(0xDEAD_BEEF),
         center_xz: PositionXZ::new(0.0, 0.0),
         radius_world_units: 1.0,
         child_count: 1,
@@ -2594,7 +2602,7 @@ fn deposit_site_has_no_material_key_field() {
         scale_max: 1.0,
         cluster_compactness: 0.5,
     };
-    assert_eq!(site.material_seed, 0xDEAD_BEEF);
+    assert_eq!(site.material_seed, MaterialSeed(0xDEAD_BEEF));
 
     // Same for the placement struct.
     let placement = GeneratedSurfaceMineralPlacement {
@@ -2607,14 +2615,14 @@ fn deposit_site_has_no_material_key_field() {
         },
         deposit_site_id: site.site_id.clone(),
         definition_key: "test".to_string(),
-        material_seed: 0xCAFE_BABE,
+        material_seed: MaterialSeed(0xCAFE_BABE),
         position_xz: PositionXZ::new(0.0, 0.0),
         surface_y: 0.0,
         surface_normal: [0.0, 1.0, 0.0],
         visual_scale: 1.0,
         local_child_index: 0,
     };
-    assert_eq!(placement.material_seed, 0xCAFE_BABE);
+    assert_eq!(placement.material_seed, MaterialSeed(0xCAFE_BABE));
 }
 
 /// Story 5a.4 – Phase 5: first chunk generation populates the material
@@ -2632,7 +2640,7 @@ fn deposit_site_has_no_material_key_field() {
 ///    high).
 #[test]
 fn first_chunk_generation_populates_catalog_from_biome_palette() {
-    use crate::materials::MaterialCatalog;
+    use crate::materials::{MaterialCatalog, MaterialSeed};
 
     let palette_seeds: Vec<u64> = vec![1001, 1003, 1006];
     let biome = ChunkBiome {
@@ -2643,7 +2651,7 @@ fn first_chunk_generation_populates_catalog_from_biome_palette() {
         material_palette: palette_seeds
             .iter()
             .map(|&seed| PaletteMaterial {
-                material_seed: seed,
+                material_seed: MaterialSeed(seed),
                 selection_weight: 1.0,
             })
             .collect(),
@@ -2679,7 +2687,7 @@ fn first_chunk_generation_populates_catalog_from_biome_palette() {
     // Filter to placements with valid material seeds (non-zero).
     let valid_placements: Vec<_> = all_placements
         .iter()
-        .filter(|p| p.material_seed != 0)
+        .filter(|p| p.material_seed != MaterialSeed(0))
         .collect();
 
     // We expect at least some deposits were generated.
@@ -2706,7 +2714,8 @@ fn first_chunk_generation_populates_catalog_from_biome_palette() {
     );
 
     // 2. Every registered seed belongs to the biome palette.
-    let palette_seed_set: HashSet<u64> = palette_seeds.iter().copied().collect();
+    let palette_seed_set: HashSet<MaterialSeed> =
+        palette_seeds.iter().copied().map(MaterialSeed).collect();
     for seed in mat_catalog.seeds() {
         assert!(
             palette_seed_set.contains(seed),
@@ -2725,7 +2734,7 @@ fn first_chunk_generation_populates_catalog_from_biome_palette() {
 
 #[test]
 fn second_chunk_in_same_biome_reuses_catalog_entries_no_duplicates() {
-    use crate::materials::MaterialCatalog;
+    use crate::materials::{MaterialCatalog, MaterialSeed};
 
     let palette_seeds: Vec<u64> = vec![1001, 1003, 1006];
     let biome = ChunkBiome {
@@ -2736,7 +2745,7 @@ fn second_chunk_in_same_biome_reuses_catalog_entries_no_duplicates() {
         material_palette: palette_seeds
             .iter()
             .map(|&seed| PaletteMaterial {
-                material_seed: seed,
+                material_seed: MaterialSeed(seed),
                 selection_weight: 1.0,
             })
             .collect(),
@@ -2771,7 +2780,7 @@ fn second_chunk_in_same_biome_reuses_catalog_entries_no_duplicates() {
 
     let valid_first: Vec<_> = first_batch_placements
         .iter()
-        .filter(|p| p.material_seed != 0)
+        .filter(|p| p.material_seed != MaterialSeed(0))
         .collect();
     assert!(
         !valid_first.is_empty(),
@@ -2806,7 +2815,7 @@ fn second_chunk_in_same_biome_reuses_catalog_entries_no_duplicates() {
 
     let valid_second: Vec<_> = second_batch_placements
         .iter()
-        .filter(|p| p.material_seed != 0)
+        .filter(|p| p.material_seed != MaterialSeed(0))
         .collect();
     assert!(
         !valid_second.is_empty(),
@@ -2830,7 +2839,8 @@ fn second_chunk_in_same_biome_reuses_catalog_entries_no_duplicates() {
     );
 
     // Every seed in the catalog belongs to the palette.
-    let palette_seed_set: HashSet<u64> = palette_seeds.iter().copied().collect();
+    let palette_seed_set: HashSet<MaterialSeed> =
+        palette_seeds.iter().copied().map(MaterialSeed).collect();
     for seed in mat_catalog.seeds() {
         assert!(
             palette_seed_set.contains(seed),
@@ -2864,21 +2874,21 @@ fn palette_swap_does_not_change_deposit_count() {
 
     let palette_a = vec![
         PaletteMaterial {
-            material_seed: 1001,
+            material_seed: MaterialSeed(1001),
             selection_weight: 3.0,
         },
         PaletteMaterial {
-            material_seed: 1003,
+            material_seed: MaterialSeed(1003),
             selection_weight: 2.0,
         },
     ];
     let palette_b = vec![
         PaletteMaterial {
-            material_seed: 1004,
+            material_seed: MaterialSeed(1004),
             selection_weight: 1.5,
         },
         PaletteMaterial {
-            material_seed: 1010,
+            material_seed: MaterialSeed(1010),
             selection_weight: 4.0,
         },
     ];
@@ -2929,13 +2939,13 @@ fn palette_swap_does_not_change_deposit_count() {
             count_b += placements_b.len();
 
             for p in &placements_a {
-                if p.material_seed != 0 {
-                    seeds_a.insert(p.material_seed);
+                if p.material_seed != MaterialSeed(0) {
+                    seeds_a.insert(p.material_seed.0);
                 }
             }
             for p in &placements_b {
-                if p.material_seed != 0 {
-                    seeds_b.insert(p.material_seed);
+                if p.material_seed != MaterialSeed(0) {
+                    seeds_b.insert(p.material_seed.0);
                 }
             }
         }
@@ -2971,8 +2981,7 @@ fn palette_swap_does_not_change_deposit_count() {
 ///   coverage).
 #[test]
 fn smoke_test_cross_biome_chunks_all_deposits_have_valid_materials() {
-    use crate::materials::MaterialCatalog;
-    use crate::world_generation::{BiomeRegistry, derive_chunk_biome};
+    use crate::materials::{MaterialCatalog, MaterialSeed};
     use std::collections::HashSet;
 
     let config = WorldGenerationConfig {
@@ -3028,7 +3037,7 @@ fn smoke_test_cross_biome_chunks_all_deposits_have_valid_materials() {
         let palette_seeds: HashSet<u64> = biome
             .material_palette
             .iter()
-            .map(|p| p.material_seed)
+            .map(|p| p.material_seed.0)
             .collect();
 
         let placements =
@@ -3051,19 +3060,19 @@ fn smoke_test_cross_biome_chunks_all_deposits_have_valid_materials() {
 
             // Deposits from a biome with a non-empty palette must carry a
             // non-zero seed drawn from that palette.
-            if !palette_seeds.is_empty() && placement.material_seed != 0 {
+            if !palette_seeds.is_empty() && placement.material_seed != MaterialSeed(0) {
                 assert!(
-                    palette_seeds.contains(&placement.material_seed),
+                    palette_seeds.contains(&placement.material_seed.0),
                     "deposit material_seed {:#018X} not in biome '{:?}' palette \
                          (chunk {chunk:?})",
-                    placement.material_seed,
+                    placement.material_seed.0,
                     biome.biome_type,
                 );
 
                 // Material must register without panicking.
                 let registered = mat_catalog.derive_and_register(placement.material_seed);
                 assert_eq!(
-                    registered.seed, placement.material_seed,
+                    registered.seed, placement.material_seed.0,
                     "registered material seed mismatch"
                 );
             }
@@ -3106,15 +3115,15 @@ fn disjoint_biome_palettes_produce_disjoint_deposit_materials() {
         deposit_weight_modifiers: HashMap::new(),
         material_palette: vec![
             PaletteMaterial {
-                material_seed: 1001,
+                material_seed: MaterialSeed(1001),
                 selection_weight: 3.0,
             },
             PaletteMaterial {
-                material_seed: 1003,
+                material_seed: MaterialSeed(1003),
                 selection_weight: 2.5,
             },
             PaletteMaterial {
-                material_seed: 1007,
+                material_seed: MaterialSeed(1007),
                 selection_weight: 1.5,
             },
         ],
@@ -3128,15 +3137,15 @@ fn disjoint_biome_palettes_produce_disjoint_deposit_materials() {
         deposit_weight_modifiers: HashMap::new(),
         material_palette: vec![
             PaletteMaterial {
-                material_seed: 1004,
+                material_seed: MaterialSeed(1004),
                 selection_weight: 3.0,
             },
             PaletteMaterial {
-                material_seed: 1010,
+                material_seed: MaterialSeed(1010),
                 selection_weight: 2.5,
             },
             PaletteMaterial {
-                material_seed: 1008,
+                material_seed: MaterialSeed(1008),
                 selection_weight: 1.0,
             },
         ],
@@ -3145,12 +3154,12 @@ fn disjoint_biome_palettes_produce_disjoint_deposit_materials() {
     let scorched_palette_seeds: std::collections::HashSet<u64> = scorched_biome
         .material_palette
         .iter()
-        .map(|p| p.material_seed)
+        .map(|p| p.material_seed.0)
         .collect();
     let frost_palette_seeds: std::collections::HashSet<u64> = frost_biome
         .material_palette
         .iter()
-        .map(|p| p.material_seed)
+        .map(|p| p.material_seed.0)
         .collect();
 
     // Sanity: the two palettes share no seeds.
@@ -3177,8 +3186,8 @@ fn disjoint_biome_palettes_produce_disjoint_deposit_materials() {
                 coord,
                 &scorched_biome,
             ) {
-                if site.material_seed != 0 {
-                    scorched_observed.insert(site.material_seed);
+                if site.material_seed != MaterialSeed(0) {
+                    scorched_observed.insert(site.material_seed.0);
                 }
             }
 
@@ -3189,8 +3198,8 @@ fn disjoint_biome_palettes_produce_disjoint_deposit_materials() {
                 coord,
                 &frost_biome,
             ) {
-                if site.material_seed != 0 {
-                    frost_observed.insert(site.material_seed);
+                if site.material_seed != MaterialSeed(0) {
+                    frost_observed.insert(site.material_seed.0);
                 }
             }
         }
@@ -3386,15 +3395,15 @@ fn every_deposit_material_is_pickup_ready() {
         deposit_weight_modifiers: HashMap::new(),
         material_palette: vec![
             PaletteMaterial {
-                material_seed: 1001,
+                material_seed: MaterialSeed(1001),
                 selection_weight: 3.0,
             },
             PaletteMaterial {
-                material_seed: 1003,
+                material_seed: MaterialSeed(1003),
                 selection_weight: 2.0,
             },
             PaletteMaterial {
-                material_seed: 1007,
+                material_seed: MaterialSeed(1007),
                 selection_weight: 1.5,
             },
         ],
@@ -3411,7 +3420,7 @@ fn every_deposit_material_is_pickup_ready() {
             );
 
             for placement in &placements {
-                if placement.material_seed == 0 {
+                if placement.material_seed == MaterialSeed(0) {
                     continue;
                 }
 
@@ -3421,7 +3430,7 @@ fn every_deposit_material_is_pickup_ready() {
                 assert!(
                     !mat.name.is_empty(),
                     "deposit seed {} produced an empty name",
-                    placement.material_seed,
+                    placement.material_seed.0,
                 );
 
                 // Color channels must be finite and in [0, 1].
@@ -3429,7 +3438,7 @@ fn every_deposit_material_is_pickup_ready() {
                     assert!(
                         c.is_finite() && (0.0..=1.0).contains(&c),
                         "deposit seed {} color[{i}] = {c} out of range",
-                        placement.material_seed,
+                        placement.material_seed.0,
                     );
                 }
 
@@ -3443,7 +3452,7 @@ fn every_deposit_material_is_pickup_ready() {
                 assert!(
                     any_nonzero,
                     "deposit seed {} has all-zero properties",
-                    placement.material_seed,
+                    placement.material_seed.0,
                 );
 
                 checked += 1;
@@ -3490,15 +3499,15 @@ fn restart_same_seed_same_biome_yields_identical_materials() {
             deposit_weight_modifiers: HashMap::new(),
             material_palette: vec![
                 PaletteMaterial {
-                    material_seed: 1001,
+                    material_seed: MaterialSeed(1001),
                     selection_weight: 3.0,
                 },
                 PaletteMaterial {
-                    material_seed: 1003,
+                    material_seed: MaterialSeed(1003),
                     selection_weight: 2.5,
                 },
                 PaletteMaterial {
-                    material_seed: 1006,
+                    material_seed: MaterialSeed(1006),
                     selection_weight: 2.0,
                 },
             ],
@@ -3510,19 +3519,19 @@ fn restart_same_seed_same_biome_yields_identical_materials() {
             deposit_weight_modifiers: HashMap::new(),
             material_palette: vec![
                 PaletteMaterial {
-                    material_seed: 1002,
+                    material_seed: MaterialSeed(1002),
                     selection_weight: 2.0,
                 },
                 PaletteMaterial {
-                    material_seed: 1005,
+                    material_seed: MaterialSeed(1005),
                     selection_weight: 2.5,
                 },
                 PaletteMaterial {
-                    material_seed: 1008,
+                    material_seed: MaterialSeed(1008),
                     selection_weight: 2.0,
                 },
                 PaletteMaterial {
-                    material_seed: 1001,
+                    material_seed: MaterialSeed(1001),
                     selection_weight: 1.0,
                 },
             ],
@@ -3534,15 +3543,15 @@ fn restart_same_seed_same_biome_yields_identical_materials() {
             deposit_weight_modifiers: HashMap::new(),
             material_palette: vec![
                 PaletteMaterial {
-                    material_seed: 1004,
+                    material_seed: MaterialSeed(1004),
                     selection_weight: 3.0,
                 },
                 PaletteMaterial {
-                    material_seed: 1009,
+                    material_seed: MaterialSeed(1009),
                     selection_weight: 2.0,
                 },
                 PaletteMaterial {
-                    material_seed: 1010,
+                    material_seed: MaterialSeed(1010),
                     selection_weight: 2.5,
                 },
             ],
@@ -3583,7 +3592,7 @@ fn restart_same_seed_same_biome_yields_identical_materials() {
                     biome,
                 );
                 for placement in &placements {
-                    if placement.material_seed != 0 {
+                    if placement.material_seed != MaterialSeed(0) {
                         mat_catalog.derive_and_register(placement.material_seed);
                     }
                 }
@@ -3804,7 +3813,7 @@ fn restart_system_seed_chain_yields_identical_world() {
                 &biome,
             );
             for placement in &placements {
-                if placement.material_seed != 0 {
+                if placement.material_seed != MaterialSeed(0) {
                     mat_catalog.derive_and_register(placement.material_seed);
                 }
             }
@@ -4003,11 +4012,11 @@ fn sample_biome_with_palette() -> ChunkBiome {
         deposit_weight_modifiers: HashMap::new(),
         material_palette: vec![
             PaletteMaterial {
-                material_seed: 0xFE00_0000_0000_0001,
+                material_seed: MaterialSeed(0xFE00_0000_0000_0001),
                 selection_weight: 3.0,
             },
             PaletteMaterial {
-                material_seed: 0xFE00_0000_0000_0002,
+                material_seed: MaterialSeed(0xFE00_0000_0000_0002),
                 selection_weight: 1.0,
             },
         ],
@@ -4075,7 +4084,7 @@ fn both_palette_materials_appear_in_deposits_across_chunks() {
                 &biome,
             );
             for p in &placements {
-                seen_seeds.insert(p.material_seed);
+                seen_seeds.insert(p.material_seed.0);
             }
         }
     }
@@ -4083,10 +4092,10 @@ fn both_palette_materials_appear_in_deposits_across_chunks() {
     // Both palette seeds should appear.
     for pm in &biome.material_palette {
         assert!(
-            seen_seeds.contains(&pm.material_seed),
+            seen_seeds.contains(&pm.material_seed.0),
             "palette seed {:#x} never appeared in deposits \
                  across 100 chunks",
-            pm.material_seed,
+            pm.material_seed.0,
         );
     }
 }
@@ -4111,9 +4120,9 @@ fn higher_weight_palette_entry_appears_more_often() {
                 &biome,
             );
             for p in &placements {
-                if p.material_seed == 0xFE00_0000_0000_0001 {
+                if p.material_seed == MaterialSeed(0xFE00_0000_0000_0001) {
                     count_seed_1 += 1;
-                } else if p.material_seed == 0xFE00_0000_0000_0002 {
+                } else if p.material_seed == MaterialSeed(0xFE00_0000_0000_0002) {
                     count_seed_2 += 1;
                 }
             }
@@ -4133,4 +4142,24 @@ fn higher_weight_palette_entry_appears_more_often() {
                  is too low for 3:1 weighting"
         );
     }
+}
+
+// ── Serde round-trip tests ────────────────────────────────────────────────────
+
+#[test]
+fn player_added_id_counter_serde_round_trip() {
+    let mut counter = PlayerAddedIdCounter::default();
+    counter.next(); // advance to 1
+    counter.next(); // advance to 2
+
+    let json = serde_json::to_string(&counter).expect("PlayerAddedIdCounter must serialise");
+    let mut restored: PlayerAddedIdCounter =
+        serde_json::from_str(&json).expect("PlayerAddedIdCounter must deserialise");
+
+    // Counter resumes from the serialised value, not from zero.
+    assert_eq!(
+        restored.next(),
+        2,
+        "counter should resume at 2 after round-trip"
+    );
 }

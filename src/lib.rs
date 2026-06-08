@@ -9,6 +9,7 @@
 
 use bevy::prelude::*;
 
+pub mod camera;
 pub mod carry;
 pub mod carry_feedback;
 pub mod classification;
@@ -23,11 +24,13 @@ pub mod interaction;
 pub mod journal;
 pub mod knowledge_graph;
 pub mod materials;
+pub mod mod_manifest;
 pub mod naming;
 pub mod observation;
 pub mod player;
 pub mod scene;
 pub mod seed_util;
+pub mod seeds;
 pub mod solar_system;
 pub mod surface;
 pub mod world_generation;
@@ -78,5 +81,7 @@ pub fn add_game_plugins(app: &mut App) {
         // Diegetic UI: in-world information surface framework (Story 10.6).
         .add_plugins(diegetic_ui::DiegeticUiPlugin)
         // Debug: terrain diagnostic overlay (temporary — remove before shipping).
-        .add_plugins(debug_overlay::DebugOverlayPlugin);
+        .add_plugins(debug_overlay::DebugOverlayPlugin)
+        // Mod loader: scans mods/, parses mod.toml manifests, exposes InstalledMods (Epic 23).
+        .add_plugins(mod_manifest::ModManifestPlugin);
 }

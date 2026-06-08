@@ -9,6 +9,7 @@ infra/n8n/.env
 infra/orchestrator/server
 infra/orchestrator/orchestrator
 infra/orchestrator/worker
+infra/orchestrator/signaling
 infra/orchestrator/coverage-*.out
 infra/orchestrator/coverage-*.txt
 infra/orchestrator/gotest-*.log
@@ -27,3 +28,8 @@ kanban/dist/
 # Aider scratch files
 .aider*
 node_modules/
+
+# User-installed mods (not tracked in VCS).
+# The example mods under mods/ are tracked intentionally.
+# Add your own mod directories here to keep them local:
+# mods/my-name.my-mod/

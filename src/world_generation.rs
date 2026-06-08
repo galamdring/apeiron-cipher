@@ -45,6 +45,7 @@ use crate::seed_util::{
     PLACEMENT_DENSITY_CHANNEL, PLACEMENT_VARIATION_CHANNEL, PLANET_SURFACE_RADIUS_CHANNEL,
     mix_seed,
 };
+use crate::seeds::{BiomeSeed, MaterialSeed, ObjectIdentitySeed, PlacementSeed};
 use crate::solar_system::{
     OrbitalConfig, OrbitalLayout, PlanetEnvironment, PlanetEnvironmentConfig,
     SolarSystemRegistries, SolarSystemSeed, StarProfile, StarTypeRegistry, derive_orbital_layout,
@@ -236,6 +237,10 @@ pub fn surface_alignment_rotation(normal: [f32; 3]) -> [f32; 4] {
 #[derive(Clone, Debug)]
 pub struct PlanetSurface {
     /// Per-planet elevation seed (from `WorldProfile::elevation_seed`).
+    ///
+    /// Stored as a bare `u64` here because `continuous_value_field_01` (the
+    /// noise utility) operates on raw integers. The typed `ElevationSeed`
+    /// newtype does not exist yet; until it does, this boundary is explicit.
     pub elevation_seed: u64,
     /// Sea-level reference height (world units).
     pub base_y: f32,
@@ -334,7 +339,7 @@ impl PlanetSurface {
     /// with lacunarity 2, persistence 0.5). The base `continuous_value_field_01`
     /// returns values in `[0, 1]`, so we center each sample around 0.5 to get
     /// positive and negative deviations from `base_y`.
-    pub(crate) fn sample_elevation(&self, x: f32, z: f32) -> f32 {
+    pub fn sample_elevation(&self, x: f32, z: f32) -> f32 {
         let x = self.fold_elevation_coord(x);
         let z = self.fold_elevation_coord(z);
         let mut total = 0.0_f32;
@@ -1089,18 +1094,18 @@ pub struct WorldProfile {
     /// Number of chunks around the player to keep active.
     pub active_chunk_radius: i32,
     /// Seed used to determine object placement density per chunk.
-    pub placement_density_seed: u64,
+    pub placement_density_seed: PlacementSeed,
     /// Seed used to vary object positions within a chunk.
-    pub placement_variation_seed: u64,
+    pub placement_variation_seed: PlacementSeed,
     /// Seed used to deterministically assign object identities.
-    pub object_identity_seed: u64,
+    pub object_identity_seed: ObjectIdentitySeed,
     /// Per-planet biome climate seed, derived from the planet seed.
     ///
     /// This seed is mixed with temperature and moisture sub-channel constants
     /// (defined in `BiomeRegistry`) to produce two independent coherent noise
     /// fields. Each chunk samples both fields at its canonical center to
     /// determine its biome.
-    pub biome_climate_seed: u64,
+    pub biome_climate_seed: BiomeSeed,
     /// The planet surface radius in chunks, derived from the planet seed.
     ///
     /// The full surface is a square grid of `planet_surface_diameter × diameter`
@@ -1114,6 +1119,10 @@ pub struct WorldProfile {
     /// Per-planet elevation seed, derived from the planet seed via
     /// `ELEVATION_CHANNEL`. Drives the multi-octave noise field that
     /// produces terrain height variation.
+    ///
+    /// Stored as a bare `u64` because the `ElevationSeed` newtype does not
+    /// exist yet. When that newtype is introduced (Epic 5 terrain stories),
+    /// this field should be migrated to `ElevationSeed`.
     pub elevation_seed: u64,
     /// Solar system context when running in system-derived mode.
     ///
@@ -1220,10 +1229,19 @@ impl WorldProfile {
             planet_seed,
             chunk_size_world_units: config.chunk_size_world_units,
             active_chunk_radius: config.active_chunk_radius,
-            placement_density_seed: mix_seed(planet_seed.0, PLACEMENT_DENSITY_CHANNEL),
-            placement_variation_seed: mix_seed(planet_seed.0, PLACEMENT_VARIATION_CHANNEL),
-            object_identity_seed: mix_seed(planet_seed.0, OBJECT_IDENTITY_CHANNEL),
-            biome_climate_seed: mix_seed(planet_seed.0, BIOME_CLIMATE_CHANNEL),
+            placement_density_seed: PlacementSeed(mix_seed(
+                planet_seed.0,
+                PLACEMENT_DENSITY_CHANNEL,
+            )),
+            placement_variation_seed: PlacementSeed(mix_seed(
+                planet_seed.0,
+                PLACEMENT_VARIATION_CHANNEL,
+            )),
+            object_identity_seed: ObjectIdentitySeed(mix_seed(
+                planet_seed.0,
+                OBJECT_IDENTITY_CHANNEL,
+            )),
+            biome_climate_seed: BiomeSeed(mix_seed(planet_seed.0, BIOME_CLIMATE_CHANNEL)),
             planet_surface_radius,
             planet_surface_diameter,
             elevation_seed: mix_seed(planet_seed.0, ELEVATION_CHANNEL),
@@ -1256,11 +1274,11 @@ pub struct ChunkGenerationKey {
     /// The chunk these keys belong to.
     pub chunk_coord: ChunkCoord,
     /// Per-chunk key for placement density noise.
-    pub placement_density_key: u64,
+    pub placement_density_key: PlacementSeed,
     /// Per-chunk key for placement variation noise.
-    pub placement_variation_key: u64,
+    pub placement_variation_key: PlacementSeed,
     /// Per-chunk key for deterministic object identity assignment.
-    pub object_identity_key: u64,
+    pub object_identity_key: ObjectIdentitySeed,
 }
 
 /// Stable identity for one generated baseline object.
@@ -1595,9 +1613,18 @@ pub fn derive_chunk_generation_key(
 
     ChunkGenerationKey {
         chunk_coord: canonical,
-        placement_density_key: mix_seed(profile.placement_density_seed, chunk_mixer),
-        placement_variation_key: mix_seed(profile.placement_variation_seed, chunk_mixer),
-        object_identity_key: mix_seed(profile.object_identity_seed, chunk_mixer),
+        placement_density_key: PlacementSeed(mix_seed(
+            profile.placement_density_seed.0,
+            chunk_mixer,
+        )),
+        placement_variation_key: PlacementSeed(mix_seed(
+            profile.placement_variation_seed.0,
+            chunk_mixer,
+        )),
+        object_identity_key: ObjectIdentitySeed(mix_seed(
+            profile.object_identity_seed.0,
+            chunk_mixer,
+        )),
     }
 }
 
@@ -1764,31 +1791,31 @@ fn default_fallback_biome_type() -> BiomeType {
 fn default_fallback_material_palette() -> Vec<PaletteMaterial> {
     vec![
         PaletteMaterial {
-            material_seed: 1002,
+            material_seed: MaterialSeed(1002),
             selection_weight: 2.0,
         }, // Calcium
         PaletteMaterial {
-            material_seed: 1005,
+            material_seed: MaterialSeed(1005),
             selection_weight: 2.5,
         }, // Verdant
         PaletteMaterial {
-            material_seed: 1008,
+            material_seed: MaterialSeed(1008),
             selection_weight: 2.0,
         }, // Cobaltine
         PaletteMaterial {
-            material_seed: 1009,
+            material_seed: MaterialSeed(1009),
             selection_weight: 1.5,
         }, // Silite
         PaletteMaterial {
-            material_seed: 1001,
+            material_seed: MaterialSeed(1001),
             selection_weight: 1.0,
         }, // Ferrite
         PaletteMaterial {
-            material_seed: 1003,
+            material_seed: MaterialSeed(1003),
             selection_weight: 0.5,
         }, // Sulfurite
         PaletteMaterial {
-            material_seed: 1010,
+            material_seed: MaterialSeed(1010),
             selection_weight: 0.8,
         }, // Phosphite
     ]
@@ -1822,7 +1849,7 @@ pub struct PaletteMaterial {
     ///
     /// The same seed always produces the same `GameMaterial` (density, color,
     /// name, etc.) regardless of which biome references it.
-    pub material_seed: u64,
+    pub material_seed: MaterialSeed,
     /// Relative likelihood of this material being selected when placing a
     /// deposit in the biome.
     ///
@@ -1914,27 +1941,27 @@ fn default_biome_definitions() -> Vec<BiomeDefinition> {
             deposit_weight_modifiers: HashMap::new(),
             material_palette: vec![
                 PaletteMaterial {
-                    material_seed: 1001,
+                    material_seed: MaterialSeed(1001),
                     selection_weight: 3.0,
                 }, // Ferrite
                 PaletteMaterial {
-                    material_seed: 1003,
+                    material_seed: MaterialSeed(1003),
                     selection_weight: 2.5,
                 }, // Sulfurite
                 PaletteMaterial {
-                    material_seed: 1006,
+                    material_seed: MaterialSeed(1006),
                     selection_weight: 2.0,
                 }, // Osmium
                 PaletteMaterial {
-                    material_seed: 1007,
+                    material_seed: MaterialSeed(1007),
                     selection_weight: 1.5,
                 }, // Volatite
                 PaletteMaterial {
-                    material_seed: 1002,
+                    material_seed: MaterialSeed(1002),
                     selection_weight: 0.5,
                 }, // Calcium
                 PaletteMaterial {
-                    material_seed: 1009,
+                    material_seed: MaterialSeed(1009),
                     selection_weight: 0.3,
                 }, // Silite
             ],
@@ -1965,27 +1992,27 @@ fn default_biome_definitions() -> Vec<BiomeDefinition> {
             deposit_weight_modifiers: HashMap::new(),
             material_palette: vec![
                 PaletteMaterial {
-                    material_seed: 1004,
+                    material_seed: MaterialSeed(1004),
                     selection_weight: 3.0,
                 }, // Prismate
                 PaletteMaterial {
-                    material_seed: 1009,
+                    material_seed: MaterialSeed(1009),
                     selection_weight: 2.0,
                 }, // Silite
                 PaletteMaterial {
-                    material_seed: 1010,
+                    material_seed: MaterialSeed(1010),
                     selection_weight: 2.5,
                 }, // Phosphite
                 PaletteMaterial {
-                    material_seed: 1008,
+                    material_seed: MaterialSeed(1008),
                     selection_weight: 1.0,
                 }, // Cobaltine
                 PaletteMaterial {
-                    material_seed: 1005,
+                    material_seed: MaterialSeed(1005),
                     selection_weight: 0.3,
                 }, // Verdant
                 PaletteMaterial {
-                    material_seed: 1006,
+                    material_seed: MaterialSeed(1006),
                     selection_weight: 0.5,
                 }, // Osmium
             ],
@@ -2054,10 +2081,13 @@ pub fn derive_chunk_biome(
     let chunk_center = PositionXZ::new(canonical.x as f32 + 0.5, canonical.z as f32 + 0.5);
 
     let temperature_seed = mix_seed(
-        profile.biome_climate_seed,
+        profile.biome_climate_seed.0,
         registry.temperature_noise_channel,
     );
-    let moisture_seed = mix_seed(profile.biome_climate_seed, registry.moisture_noise_channel);
+    let moisture_seed = mix_seed(
+        profile.biome_climate_seed.0,
+        registry.moisture_noise_channel,
+    );
 
     let temperature = exterior::continuous_value_field_01(
         temperature_seed,

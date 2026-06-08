@@ -3,6 +3,10 @@ starting_capacity = 5.0
 starting_strength = 1.0
 growth_rate = 0.02
 
+# Minimum time (seconds) an item must be held before a weight observation is
+# recorded on stash/cycle. Fast stash sequences (< 1.5 s) produce no observation.
+min_hold_secs_for_weight_obs = 1.5
+
 # If set, carry capacity is modeled as coming from a named carry-enabling item.
 # grant_starting_device controls whether the player begins with that item already.
 carry_device_item_key = "satchel_basic"
@@ -88,3 +92,16 @@ hard_limit_enabled = false
 kind = "linear"
 min_multiplier = 1.0
 exponent = 1.0
+
+# ── Failed-pickup weight observations ────────────────────────────────────────
+# When the player tries to pick something up but can't because they're already
+# holding an item that can't be stashed, a low-confidence weight observation is
+# recorded for the target material (the player at least learned it was heavy).
+#
+# Confidence is lower than a successful pickup (0.2) because the player only
+# felt indirect resistance, not actual weight.
+failed_pickup_observation_confidence = 0.1
+
+# Seconds between failed-pickup observations for the same player.  Prevents
+# journal spam when the player button-mashes the interact key.
+failed_pickup_cooldown_secs = 3.0

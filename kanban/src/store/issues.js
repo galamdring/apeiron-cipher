@@ -2,6 +2,7 @@ import { create } from "zustand";
 
 const COLLAPSED_KEY = "gh_kanban_collapsed";
 const HIDDEN_COLUMNS_KEY = "gh_kanban_hidden_columns";
+const BACKLOG_MODE_KEY = "gh_kanban_backlog_mode";
 
 // These are populated by initColumns() before React mounts.
 // Treat as read-only after initialisation.
@@ -92,6 +93,18 @@ function saveHiddenColumns(set) {
   localStorage.setItem(HIDDEN_COLUMNS_KEY, JSON.stringify([...set]));
 }
 
+function loadBacklogMode() {
+  try {
+    return localStorage.getItem(BACKLOG_MODE_KEY) || "flat";
+  } catch {
+    return "flat";
+  }
+}
+
+function saveBacklogMode(mode) {
+  localStorage.setItem(BACKLOG_MODE_KEY, mode);
+}
+
 export const useIssueStore = create((set, get) => ({
   issues: [],
   loading: false,
@@ -101,6 +114,7 @@ export const useIssueStore = create((set, get) => ({
   columnOrder: {},
   collapsedColumns: loadCollapsed(),
   hiddenColumns: loadHiddenColumns() ?? new Set(defaultHiddenColumns),
+  backlogMode: loadBacklogMode(),
 
   setIssues(issues) {
     const persisted = loadHiddenColumns();
@@ -154,6 +168,11 @@ export const useIssueStore = create((set, get) => ({
       saveHiddenColumns(next);
       return { hiddenColumns: next };
     });
+  },
+
+  setBacklogMode(mode) {
+    saveBacklogMode(mode);
+    set({ backlogMode: mode });
   },
 
   moveIssue(issueNumber, targetColumn) {
