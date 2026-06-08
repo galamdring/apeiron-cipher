@@ -1,0 +1,31 @@
+name: pub(crate) Guard
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  pub-crate-guard:
+    name: Reject pub(crate)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check for pub(crate)
+        # Principle 7: No pub(crate). No exceptions.
+        # Any active (non-comment) pub(crate) in Rust source fails the build.
+        # See CONTRIBUTING.md § Visibility Convention for the full rule.
+        run: |
+          bash scripts/check-pub-crate.sh src/ /tmp/pub-crate-violations.txt
+
+      - name: Report violations
+        if: failure()
+        run: |
+          echo "pub(crate) is banned by Principle 7. Convert each occurrence to pub."
+          echo "See CONTRIBUTING.md § Visibility Convention."
+          echo ""
+          cat /tmp/pub-crate-violations.txt
