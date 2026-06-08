@@ -215,7 +215,7 @@ pub struct ReadableSurfaceContent {
 ///   `OutOfRange → Perceivable { proximity } → Focused`
 ///
 /// Runs in [`DiegeticUiSet::FocusUpdate`].
-pub(crate) fn update_diegetic_focus(
+fn update_diegetic_focus(
     player_query: Query<&Transform, With<Player>>,
     mut surfaces: Query<
         (&Transform, &DiegeticSurfaceKind, &mut DiegeticFocusState),
@@ -281,7 +281,7 @@ pub(crate) fn update_diegetic_focus(
 /// LOD accordingly — this system only manages show/hide.
 ///
 /// Runs in [`DiegeticUiSet::VisibilitySync`], after [`DiegeticUiSet::FocusUpdate`].
-pub(crate) fn sync_readable_surface_visibility(
+fn sync_readable_surface_visibility(
     mut surfaces: Query<(&DiegeticFocusState, &mut Visibility), With<DiegeticSurface>>,
 ) {
     for (focus_state, mut visibility) in surfaces.iter_mut() {

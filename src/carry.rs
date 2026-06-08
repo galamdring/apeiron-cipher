@@ -91,13 +91,13 @@ pub struct CycleCarryIntent;
 /// stash leaves the player confused. This event is the hook that lets future
 /// visual/audio systems translate "you can't do that" into something observable.
 #[derive(Message, Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct CarryActionRejected {
-    pub reason: CarryRejectionReason,
+struct CarryActionRejected {
+    reason: CarryRejectionReason,
 }
 
 /// Why a carry action was rejected.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum CarryRejectionReason {
+enum CarryRejectionReason {
     /// Stash attempted but nothing is held in hand.
     NothingHeld,
     /// Stash attempted but adding the item would exceed effective capacity.
@@ -330,7 +330,7 @@ impl CarryState {
     /// capacity check — [`Self::can_stash`] and [`can_stash_material`]
     /// both delegate here so all callers share the same accept/reject
     /// boundary.
-    pub(crate) fn can_accept(&self, weight: f32) -> bool {
+    fn can_accept(&self, weight: f32) -> bool {
         if !self.hard_limit_enabled {
             return true;
         }
@@ -344,7 +344,7 @@ impl CarryState {
     /// This prevents the carry from soft-locking on a dead entity while accepting
     /// that weight accounting may drift slightly. A future integrity-check system
     /// can reconcile weight by scanning remaining items.
-    pub(crate) fn evict_stale_entity(&mut self, entity: Entity) -> bool {
+    fn evict_stale_entity(&mut self, entity: Entity) -> bool {
         let Some(index) = self
             .carried_items
             .iter()
