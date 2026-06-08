@@ -387,15 +387,19 @@ function EpicTree({ issues, onSelect, repo }) {
 }
 
 export default function BacklogView({ repo }) {
-  const [mode, setMode] = useState("flat");
+  const backlogMode = useIssueStore((s) => s.backlogMode);
+  const setBacklogMode = useIssueStore((s) => s.setBacklogMode);
+  const hiddenColumns = useIssueStore((s) => s.hiddenColumns);
   const filteredIssues = useIssueStore((s) => s.filteredIssues());
   const selectIssue = useIssueStore((s) => s.selectIssue);
 
-  // Only show open issues in backlog
-  const openIssues = filteredIssues.filter((i) => i.state !== "closed");
+  // Only show open issues not in hidden columns
+  const openIssues = filteredIssues.filter(
+    (i) => i.state !== "closed" && !hiddenColumns.has(issueColumn(i))
+  );
 
   function renderContent() {
-    switch (mode) {
+    switch (backlogMode) {
       case "flat":
         return <FlatList issues={openIssues} onSelect={selectIssue} />;
       case "type":
@@ -407,7 +411,7 @@ export default function BacklogView({ repo }) {
       case "epic":
         return <EpicTree issues={openIssues} onSelect={selectIssue} repo={repo} />;
       default:
-        return <div style={s.placeholder}>mode: {mode}</div>;
+        return <div style={s.placeholder}>mode: {backlogMode}</div>;
     }
   }
 
@@ -420,9 +424,9 @@ export default function BacklogView({ repo }) {
             key={m.key}
             style={{
               ...s.modeBtn,
-              ...(mode === m.key ? s.modeBtnActive : {}),
+              ...(backlogMode === m.key ? s.modeBtnActive : {}),
             }}
-            onClick={() => setMode(m.key)}
+            onClick={() => setBacklogMode(m.key)}
           >
             {m.label}
           </button>
