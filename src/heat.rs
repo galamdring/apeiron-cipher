@@ -309,7 +309,7 @@ fn reveal_thermal_property(
 
             // Use initial confidence from ConfidenceConfig so tuning is centralized
             // in assets/config/confidence.toml rather than hardcoded here.
-            let initial_confidence = Confidence(conf_cfg.initial_observation_confidence);
+            let initial_confidence = Confidence::new(conf_cfg.initial_observation_confidence);
 
             journal_writer.write(RecordObservation {
                 key: JournalKey::MaterialInstance { seed: mat.seed },
@@ -472,6 +472,7 @@ mod tests {
         let mut app = App::new();
         app.add_message::<RecordObservation>();
         app.insert_resource(HeatSourceConfig::default());
+        app.insert_resource(crate::observation::ConfidenceConfig::default());
         // ConfidenceTracker removed - confidence is now tracked per-observation in journal
         app.insert_resource(crate::observation::DescriptorVocabulary::default());
         app.add_systems(Update, reveal_thermal_property);
@@ -538,6 +539,7 @@ mod tests {
         let mut app = App::new();
         app.add_message::<RecordObservation>();
         app.insert_resource(HeatSourceConfig::default());
+        app.insert_resource(crate::observation::ConfidenceConfig::default());
         // ConfidenceTracker removed - confidence is now tracked per-observation in journal
         app.insert_resource(crate::observation::DescriptorVocabulary::default());
         app.add_systems(Update, reveal_thermal_property);
@@ -607,6 +609,7 @@ mod tests {
         let mut app = App::new();
         app.add_message::<RecordObservation>();
         app.insert_resource(HeatSourceConfig::default());
+        app.insert_resource(crate::observation::ConfidenceConfig::default());
         // ConfidenceTracker removed - confidence is now tracked per-observation in journal
         app.insert_resource(crate::observation::DescriptorVocabulary::default());
         app.insert_resource(profile);
@@ -662,6 +665,7 @@ mod tests {
         let mut app = App::new();
         app.add_message::<RecordObservation>();
         app.insert_resource(HeatSourceConfig::default());
+        app.insert_resource(crate::observation::ConfidenceConfig::default());
         // ConfidenceTracker removed - confidence is now tracked per-observation in journal
         app.insert_resource(crate::observation::DescriptorVocabulary::default());
         // Deliberately do *not* insert WorldProfile.
