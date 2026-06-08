@@ -3,11 +3,12 @@
 // on the Conn's send channel and written by its internal writeLoop.
 //
 // The handler is responsible for:
-//   1. Upgrading the HTTP connection to WebSocket.
-//   2. Generating a session ID and joining the hub.
-//   3. Dispatching inbound messages to the hub by type.
-//   4. Sending pong responses immediately (no hub round-trip needed).
-//   5. Calling hub.Leave when the connection closes.
+//  1. Upgrading the HTTP connection to WebSocket.
+//  2. Enforcing the MAX_SESSIONS cap (optional).
+//  3. Generating a session ID and joining the hub.
+//  4. Dispatching inbound messages to the hub by type.
+//  5. Sending pong responses immediately (no hub round-trip needed).
+//  6. Calling hub.Leave when the connection closes.
 package signaling
 
 import (
@@ -16,10 +17,38 @@ import (
 	"net/http"
 )
 
+// HandlerOptions configures optional behaviour for Handler.
+type HandlerOptions struct {
+	// MaxSessions caps the number of simultaneous WebSocket sessions.
+	// Incoming connections are rejected with 503 when the limit is reached.
+	// Zero means unlimited (the default).
+	MaxSessions int
+
+	// Debug enables per-message logging.
+	Debug bool
+}
+
 // Handler returns an http.HandlerFunc that upgrades each connection to
-// WebSocket and begins the signaling session.
+// WebSocket and begins the signaling session. Equivalent to
+// HandlerWithOptions(hub, HandlerOptions{}).
 func Handler(hub *Hub) http.HandlerFunc {
+	return HandlerWithOptions(hub, HandlerOptions{})
+}
+
+// HandlerWithOptions returns a handler with configurable session limits and
+// debug logging.
+func HandlerWithOptions(hub *Hub, opts HandlerOptions) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Enforce session cap before upgrading — cheaper than upgrading
+		// and then immediately closing.
+		if opts.MaxSessions > 0 {
+			if count := hub.SessionCount(); count >= opts.MaxSessions {
+				http.Error(w, "server at capacity", http.StatusServiceUnavailable)
+				log.Printf("signaling: connection rejected — at capacity (%d/%d)", count, opts.MaxSessions)
+				return
+			}
+		}
+
 		conn, err := Upgrade(w, r)
 		if err != nil {
 			http.Error(w, "websocket upgrade failed: "+err.Error(), http.StatusBadRequest)
@@ -34,6 +63,9 @@ func Handler(hub *Hub) http.HandlerFunc {
 		defer log.Printf("signaling: session %s disconnected", sessionID)
 
 		for env := range conn.ReadLoop() {
+			if opts.Debug {
+				log.Printf("signaling: session %s → type=%s", sessionID, env.Type)
+			}
 			handleMessage(hub, sessionID, conn, env)
 		}
 	}

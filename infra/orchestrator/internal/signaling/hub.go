@@ -32,7 +32,7 @@ type session struct {
 // lobby is an in-memory matchmaking room.
 type lobby struct {
 	id       string
-	maxPeers int // 0 = unlimited
+	maxPeers int      // 0 = unlimited
 	members  []string // sessionIDs, in join order
 }
 
@@ -47,14 +47,15 @@ type cmd struct {
 type cmdKind int
 
 const (
-	cmdJoin         cmdKind = iota // new WebSocket connection
-	cmdLeave                       // WebSocket disconnected
-	cmdRegister                    // client sent "register"
-	cmdCreateLobby                 // client sent "create_lobby"
-	cmdListLobbies                 // client sent "list_lobbies"
-	cmdJoinLobby                   // client sent "join_lobby"
-	cmdLeaveLobby                  // client sent "leave"
-	cmdRelay                       // client sent offer/answer/ice
+	cmdJoin          cmdKind = iota // new WebSocket connection
+	cmdLeave                        // WebSocket disconnected
+	cmdRegister                     // client sent "register"
+	cmdCreateLobby                  // client sent "create_lobby"
+	cmdListLobbies                  // client sent "list_lobbies"
+	cmdJoinLobby                    // client sent "join_lobby"
+	cmdLeaveLobby                   // client sent "leave"
+	cmdRelay                        // client sent offer/answer/ice
+	cmdSessionCount                 // internal: request current session count
 )
 
 // joinPayload is the data for cmdJoin.
@@ -283,6 +284,12 @@ func (h *Hub) dispatch(c cmd, sessions map[string]*session, lobbies map[string]*
 			Data:          p.data,
 		}))
 
+	case cmdSessionCount:
+		// Reply with the current number of connected sessions.
+		if c.reply != nil {
+			c.reply <- len(sessions)
+		}
+
 	default:
 		log.Printf("hub: unknown command kind %d", c.kind)
 	}
@@ -372,6 +379,15 @@ func (h *Hub) Relay(fromID, toID string, kind MsgType, data []byte) {
 		kind:            kind,
 		data:            data,
 	})
+}
+
+// SessionCount returns the current number of connected WebSocket sessions.
+// It round-trips through the hub's command channel so the count is always
+// consistent with the hub's internal state. Safe to call from any goroutine.
+func (h *Hub) SessionCount() int {
+	reply := make(chan any, 1)
+	h.cmds <- cmd{kind: cmdSessionCount, reply: reply}
+	return (<-reply).(int)
 }
 
 // newID generates a random 8-byte hex session or lobby ID.
