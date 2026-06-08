@@ -25,6 +25,7 @@ pub mod knowledge_graph;
 pub mod materials;
 pub mod naming;
 pub mod observation;
+pub mod persistence;
 pub mod player;
 pub mod scene;
 pub mod seed_util;
