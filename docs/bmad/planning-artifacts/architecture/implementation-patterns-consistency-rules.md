@@ -16,6 +16,9 @@
 - System-generated / response events: `On*Event` suffix — names describe the trigger in **past tense**. The event describes something that already happened. Examples: `OnMaterialsDerivedEvent`, `OnEngineAttachedEvent`, `OnRegionGeneratedEvent`, `OnKnowledgeDiscoveredEvent`, `OnBehaviorObservedEvent`.
 - Event names are NOT invented by the implementing agent. If the event name is not in the ticket, stop and ask. Get the name into the ticket before proceeding.
 
+**Initialism Casing:**
+- Initialisms are written in all caps, not sentence case. `NPC` not `Npc`. This applies to type names, component names, event names, plugin names, and all identifiers. Follow this pattern for any future initialisms added to the codebase.
+
 ## Code Patterns
 
 **Resource Access:**
@@ -39,6 +42,18 @@
 
 **Collision Geometry Fidelity:**
 - For any world object the player can enter, traverse, or occupy as a base location, collision geometry must be generated from the visible surface mesh. No bounding boxes. No convex hull simplification. An implementing agent who cannot achieve this must stop and ask.
+
+**Entity Composition via `#[require]`:**
+- Use Bevy's `#[require(...)]` attribute on marker components to declare required components. Spawn sites should only name the marker — required components are inferred automatically. Do not use manual Bundles or list required components at spawn sites. Example:
+  ```rust
+  #[derive(Component)]
+  #[require(NPCMemory, Transform)]
+  struct NPC;
+
+  // spawn site:
+  commands.spawn(NPC);
+  ```
+- This applies to all entity type markers: `NPC`, `Vehicle`, `FloraStructure`, and any future markers. An agent who finds themselves listing multiple components at a spawn site for a known entity type should stop and check whether `#[require]` covers it instead.
 
 **Visibility Rules:**
 - `pub` — any type, function, or field that another module in the crate needs. This is a binary crate, so `pub` carries no library-export risk. Shared domain vocabulary types (`GameMaterial`, `MaterialObject`, `Player`, `InputAction`, `ConfidenceTracker`, etc.) are `pub` because multiple plugins legitimately depend on them.
