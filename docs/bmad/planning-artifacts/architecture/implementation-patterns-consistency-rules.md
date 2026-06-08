@@ -16,6 +16,21 @@
 - System-generated / response events: `On*Event` suffix — names describe the trigger in **past tense**. The event describes something that already happened. Examples: `OnMaterialsDerivedEvent`, `OnEngineAttachedEvent`, `OnRegionGeneratedEvent`, `OnKnowledgeDiscoveredEvent`, `OnBehaviorObservedEvent`.
 - Event names are NOT invented by the implementing agent. If the event name is not in the ticket, stop and ask. Get the name into the ticket before proceeding.
 
+## ECS Patterns
+
+**Entity Composition via `#[require]`:**
+- Entity composition uses Bevy's `#[require(...)]` attribute on marker components. Spawn sites name only the marker. Required components are declared on the marker definition, not at call sites.
+- Manual Bundles that list required components are an anti-pattern. If a spawn site names more than the marker for a known entity type, the marker definition is missing `#[require]`.
+- Example:
+  ```rust
+  #[derive(Component)]
+  #[require(NPCMemory, Transform)]
+  struct NPC;
+
+  commands.spawn(NPC);                                            // correct
+  commands.spawn((NPC, NPCMemory::default(), Transform::default())); // wrong — move the requires to the derive
+  ```
+
 ## Code Patterns
 
 **Resource Access:**
