@@ -1,0 +1,27 @@
+schema_version = 1
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Surface mineral deposit additions for Solite.
+#
+# Solite appears in irradiated surface layers — planets close to luminous stars
+# or exposed to prolonged radiation events. It clusters in small, shallow
+# deposits with moderate density.
+#
+# This entry is additive: it adds Solite deposits to the pool without removing
+# any base game deposit types. See docs/modding/best-practices.md —
+# "Use additive content where possible".
+#
+# Selection weights are proportional. Adding Solite with weight 0.6 reduces
+# every other type's relative frequency slightly. The total pool grows.
+# ──────────────────────────────────────────────────────────────────────────────
+
+[[deposits]]
+key               = "solite_deposit"    # snake_case identifier
+selection_weight  = 0.6                 # Less common than base types — rare find
+scale_min         = 0.7
+scale_max         = 1.0
+deposit_radius_min = 1.8
+deposit_radius_max = 2.8
+child_count_min   = 4
+child_count_max   = 7
+cluster_compactness = 0.60              # Moderately tight cluster

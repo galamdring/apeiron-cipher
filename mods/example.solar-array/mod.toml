@@ -1,0 +1,28 @@
+# mod.toml — place this at the root of your mod directory.
+# schema_version must always be the first field.
+schema_version = 1
+
+[mod]
+# Globally unique identifier. Use reverse-domain style: author.slug
+# The mod directory name must match this value exactly.
+id        = "example.solar-array"
+
+# Human-readable display name.
+name      = "Solar Array (Example Structure Mod)"
+
+# Semantic version string.
+version   = "1.0.0"
+
+# Minimum Apeiron Cipher version this mod targets.
+# The game logs a warning (but still loads) if the running version is lower.
+game_version_min = "0.1.0"
+
+[licensing]
+# SPDX license identifier. Required for workshop discoverability.
+# CC-BY-4.0 — permissive, attribution required.
+spdx_license = "CC-BY-4.0"
+
+# Monetization parity rule: if your mod is sold on any paid platform,
+# you must also provide an identical free version. Leave empty if not
+# monetized (see docs/modding/mod-structure.md for the full policy).
+free_distribution_url = ""

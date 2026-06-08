@@ -1,0 +1,169 @@
+schema_version = 1
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Solar Array Structure Definition
+#
+# The solar array is a buildable structure that harvests stellar radiation and
+# converts it to usable energy output. It is built from fabricated photovoltaic
+# panels (Solite-coated substrate), an orientation frame, and a power junction.
+#
+# This file defines the structure's properties so the construction system can
+# route it to the blueprint editor, cost estimator, and buildability checker
+# when the structure system ships (Epic 8+).
+#
+# The structure is intentionally minimal — one component type, low material
+# cost, exterior placement only — making it the canonical "hello world" for
+# structure mods.
+# ──────────────────────────────────────────────────────────────────────────────
+
+[structure]
+# Globally unique structure identifier. snake_case.
+id           = "solar_array"
+
+# Human-readable name shown in the blueprint editor and build journal.
+display_name = "Solar Array"
+
+# Description rendered in the blueprint editor detail panel.
+description  = "A photovoltaic array mounted on an orientation frame. Harvests stellar radiation and routes it to an attached power junction. Output scales with star luminosity and panel condition."
+
+# Category used to group structures in the blueprint editor.
+# Values: "power", "storage", "extraction", "habitat", "defense", "decoration"
+category     = "power"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Blueprint
+#
+# Describes the structure's 3D footprint. The blueprint editor uses this to
+# preview placement and check for terrain conflicts before confirmation.
+# ──────────────────────────────────────────────────────────────────────────────
+
+[blueprint]
+# Footprint in Bevy world units (X = east/west, Z = north/south).
+# The editor snaps the footprint to the grid before placement confirmation.
+footprint_x       = 4.0   # meters
+footprint_z       = 4.0   # meters
+
+# Height of the structure above its base plane.
+height            = 2.5   # meters
+
+# Whether the structure can be placed on the exterior surface.
+# false = interior only (room structures), true = exterior only, "both" = either.
+placement         = "exterior"
+
+# Whether to align the array's tilt axis to the star direction at placement time.
+# The game calls the orientation helper on confirmation if true.
+orient_to_star    = true
+
+# Clearance required between this structure and any other structure's footprint.
+min_clearance     = 1.0   # meters
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Build cost
+#
+# Materials consumed by the fabricator to produce each component. Components
+# are staged in order — the player builds component 1 first, then 2, etc.
+# Any component can be partially built (progress is saved).
+#
+# material_seed references the seed used to derive the material's properties.
+# See docs/modding/data-formats.md — Well-known material seeds.
+# ──────────────────────────────────────────────────────────────────────────────
+
+[[cost.components]]
+component_id    = "photovoltaic_panel"
+display_name    = "Photovoltaic Panel"
+quantity        = 4            # 4 panels per array
+
+# Each panel requires:
+[[cost.components.materials]]
+material_seed   = 9101         # Solite — see assets/materials/classifications.toml
+quantity        = 3.0          # units of Solite per panel
+
+[[cost.components.materials]]
+material_seed   = 1009         # Silite (base game — structural glass substrate)
+quantity        = 1.0
+
+[[cost.components]]
+component_id    = "orientation_frame"
+display_name    = "Orientation Frame"
+quantity        = 1
+
+[[cost.components.materials]]
+material_seed   = 1001         # Ferrite (base game — structural member)
+quantity        = 6.0
+
+[[cost.components.materials]]
+material_seed   = 1006         # Osmium (base game — high-mass pivot joints)
+quantity        = 2.0
+
+[[cost.components]]
+component_id    = "power_junction"
+display_name    = "Power Junction"
+quantity        = 1
+
+[[cost.components.materials]]
+material_seed   = 1008         # Cobaltine (base game — conductive wiring)
+quantity        = 4.0
+
+[[cost.components.materials]]
+material_seed   = 1001         # Ferrite (base game — housing)
+quantity        = 2.0
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Effects
+#
+# What the structure does once fully built and operational. Effects are
+# evaluated by the simulation layer — they are not UI numbers.
+#
+# The power system is planned for Epic 8+. These entries are forward-declared
+# here exactly as the language mod forward-declares language system hooks.
+# ──────────────────────────────────────────────────────────────────────────────
+
+[effects]
+# Power output in arbitrary energy units per game-day at baseline luminosity
+# (1.0 luminosity = a G-type main sequence star at 1 AU).
+# Scales linearly with the current star's luminosity and inversely with
+# distance from the star in AU.
+power_output_base    = 12.0
+
+# The structure degrades over time. At 0.0 condition it produces no power.
+# Condition degrades at `degradation_rate_per_day` per in-game day.
+degradation_rate_per_day = 0.005
+
+# Environmental modifiers. Each condition that applies multiplies the output.
+# "corrosive_atmosphere" — applies on planets with high-reactivity surface.
+# "low_light"           — applies when star luminosity < 0.3.
+[[effects.environmental_modifiers]]
+condition    = "corrosive_atmosphere"
+multiplier   = 0.6    # Corrosive air slowly etches the panel surface.
+
+[[effects.environmental_modifiers]]
+condition    = "low_light"
+multiplier   = 0.2    # Dim star, dim output.
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Sprites
+#
+# Sprite paths are relative to the mod's assets/ directory.
+# Resolution conventions: structures use 128×128 icon sprites and
+# 256×256 build-preview sprites. The game falls back to a generated
+# placeholder if the sprite is absent.
+# ──────────────────────────────────────────────────────────────────────────────
+
+[sprites]
+icon          = "structures/solar_array_icon.png"
+build_preview = "structures/solar_array_preview.png"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Deconstruction
+#
+# What the player recovers when they deconstruct a fully built array.
+# Recovery is reduced for degraded structures (linear scale with condition).
+# ──────────────────────────────────────────────────────────────────────────────
+
+[deconstruction]
+# Fraction of each material that is recovered at full condition.
+material_recovery_fraction = 0.75
+
+# The orientation_frame is a precision component — all screws come back.
+[[deconstruction.guaranteed_components]]
+component_id = "orientation_frame"
