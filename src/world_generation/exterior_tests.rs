@@ -2632,7 +2632,7 @@ fn deposit_site_has_no_material_key_field() {
 ///    high).
 #[test]
 fn first_chunk_generation_populates_catalog_from_biome_palette() {
-    use crate::materials::MaterialCatalog;
+    use crate::materials::{MaterialCatalog, MaterialSeed};
 
     let palette_seeds: Vec<u64> = vec![1001, 1003, 1006];
     let biome = ChunkBiome {
@@ -2696,7 +2696,7 @@ fn first_chunk_generation_populates_catalog_from_biome_palette() {
     );
 
     for placement in &valid_placements {
-        mat_catalog.derive_and_register(placement.material_seed);
+        mat_catalog.derive_and_register(MaterialSeed(placement.material_seed));
     }
 
     // 1. Catalog is no longer empty.
@@ -2706,7 +2706,8 @@ fn first_chunk_generation_populates_catalog_from_biome_palette() {
     );
 
     // 2. Every registered seed belongs to the biome palette.
-    let palette_seed_set: HashSet<u64> = palette_seeds.iter().copied().collect();
+    let palette_seed_set: HashSet<MaterialSeed> =
+        palette_seeds.iter().copied().map(MaterialSeed).collect();
     for seed in mat_catalog.seeds() {
         assert!(
             palette_seed_set.contains(seed),
@@ -2725,7 +2726,7 @@ fn first_chunk_generation_populates_catalog_from_biome_palette() {
 
 #[test]
 fn second_chunk_in_same_biome_reuses_catalog_entries_no_duplicates() {
-    use crate::materials::MaterialCatalog;
+    use crate::materials::{MaterialCatalog, MaterialSeed};
 
     let palette_seeds: Vec<u64> = vec![1001, 1003, 1006];
     let biome = ChunkBiome {
@@ -2781,7 +2782,7 @@ fn second_chunk_in_same_biome_reuses_catalog_entries_no_duplicates() {
     // Register all materials from the first batch.
     let mut mat_catalog = MaterialCatalog::default();
     for placement in &valid_first {
-        mat_catalog.derive_and_register(placement.material_seed);
+        mat_catalog.derive_and_register(MaterialSeed(placement.material_seed));
     }
 
     let catalog_size_after_first_batch = mat_catalog.len();
@@ -2815,7 +2816,7 @@ fn second_chunk_in_same_biome_reuses_catalog_entries_no_duplicates() {
 
     // Register all materials from the second batch.
     for placement in &valid_second {
-        mat_catalog.derive_and_register(placement.material_seed);
+        mat_catalog.derive_and_register(MaterialSeed(placement.material_seed));
     }
 
     // The catalog size must not have grown: all seeds from the second batch
@@ -2830,7 +2831,8 @@ fn second_chunk_in_same_biome_reuses_catalog_entries_no_duplicates() {
     );
 
     // Every seed in the catalog belongs to the palette.
-    let palette_seed_set: HashSet<u64> = palette_seeds.iter().copied().collect();
+    let palette_seed_set: HashSet<MaterialSeed> =
+        palette_seeds.iter().copied().map(MaterialSeed).collect();
     for seed in mat_catalog.seeds() {
         assert!(
             palette_seed_set.contains(seed),
@@ -2971,8 +2973,7 @@ fn palette_swap_does_not_change_deposit_count() {
 ///   coverage).
 #[test]
 fn smoke_test_cross_biome_chunks_all_deposits_have_valid_materials() {
-    use crate::materials::MaterialCatalog;
-    use crate::world_generation::{BiomeRegistry, derive_chunk_biome};
+    use crate::materials::{MaterialCatalog, MaterialSeed};
     use std::collections::HashSet;
 
     let config = WorldGenerationConfig {
@@ -3061,7 +3062,8 @@ fn smoke_test_cross_biome_chunks_all_deposits_have_valid_materials() {
                 );
 
                 // Material must register without panicking.
-                let registered = mat_catalog.derive_and_register(placement.material_seed);
+                let registered =
+                    mat_catalog.derive_and_register(MaterialSeed(placement.material_seed));
                 assert_eq!(
                     registered.seed, placement.material_seed,
                     "registered material seed mismatch"
@@ -3415,7 +3417,7 @@ fn every_deposit_material_is_pickup_ready() {
                     continue;
                 }
 
-                let mat = mat_catalog.derive_and_register(placement.material_seed);
+                let mat = mat_catalog.derive_and_register(MaterialSeed(placement.material_seed));
 
                 // Name must be non-empty (the pickup HUD displays it).
                 assert!(
@@ -3584,7 +3586,7 @@ fn restart_same_seed_same_biome_yields_identical_materials() {
                 );
                 for placement in &placements {
                     if placement.material_seed != 0 {
-                        mat_catalog.derive_and_register(placement.material_seed);
+                        mat_catalog.derive_and_register(MaterialSeed(placement.material_seed));
                     }
                 }
             }
@@ -3805,7 +3807,7 @@ fn restart_system_seed_chain_yields_identical_world() {
             );
             for placement in &placements {
                 if placement.material_seed != 0 {
-                    mat_catalog.derive_and_register(placement.material_seed);
+                    mat_catalog.derive_and_register(MaterialSeed(placement.material_seed));
                 }
             }
         }
