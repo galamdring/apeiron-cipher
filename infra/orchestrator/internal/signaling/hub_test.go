@@ -46,10 +46,21 @@ func drainConn(c *Conn) []Envelope {
 // hubWithContext starts a hub in a background goroutine and returns both the
 // hub and a cancel func. The hub is drained synchronously after each command
 // via a small sleep — good enough for unit tests.
+// It uses an empty ICEConfigProvider (no STUN/TURN configured) so existing
+// tests are unaffected; ICE-specific tests use hubWithICE.
 func hubWithContext(t *testing.T) (*Hub, context.CancelFunc) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	h := NewHub()
+	h := NewHub(NewICEConfigProvider(nil, nil, nil))
+	go h.Run(ctx)
+	return h, cancel
+}
+
+// hubWithICE starts a hub configured with the provided ICEConfigProvider.
+func hubWithICE(t *testing.T, ice *ICEConfigProvider) (*Hub, context.CancelFunc) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	h := NewHub(ice)
 	go h.Run(ctx)
 	return h, cancel
 }

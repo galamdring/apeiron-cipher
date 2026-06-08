@@ -7,6 +7,13 @@
 //	PORT            — TCP port to listen on (default: 9090)
 //	SIGNALING_ORIGIN — comma-separated allowed origins for WebSocket upgrade
 //	                   (default: * — allow all, NOT suitable for production)
+//	STUN_SERVERS    — comma-separated STUN URLs returned to clients on register
+//	                   (e.g. "stun:stun.l.google.com:19302")
+//	TURN_SERVERS    — comma-separated TURN URLs returned to clients on register
+//	                   (e.g. "turn:turn.example.com:3478")
+//	TURN_SECRET     — shared HMAC-SHA1 secret for short-lived credential
+//	                   generation (RFC 8489 §9.2 / draft-uberti-behave-turn-rest-00)
+//	                   Compatible with Coturn --use-auth-secret mode.
 //
 // The server exposes:
 //
@@ -37,7 +44,7 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
 
-	hub := signaling.NewHub()
+	hub := signaling.NewHub(signaling.NewICEConfigProviderFromEnv())
 	go hub.Run(ctx)
 
 	mux := http.NewServeMux()
