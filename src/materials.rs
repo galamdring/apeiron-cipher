@@ -32,12 +32,9 @@ use crate::world_generation::PlanetSeed;
 
 /// Typed seed for a material instance.
 ///
-/// Wraps the raw `u64` seed so that material seeds cannot be silently confused
-/// with planet seeds or other seed domains at the type level.  Bare `u64` is
-/// only permitted at serialisation / asset-loading edges; everywhere else pass
-/// `MaterialSeed`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Reflect)]
-pub struct MaterialSeed(pub u64);
+/// Re-exported from [`crate::seeds`]. Defined centrally in the seeds module so
+/// that all domain seed newtypes live in one place.
+pub use crate::seeds::MaterialSeed;
 /// Registers the material data model, catalog, and world-object spawning systems.
 pub struct MaterialPlugin;
 
