@@ -44,6 +44,7 @@ impl Plugin for CarryPlugin {
             .add_message::<CarryActionRejected>()
             .add_message::<StashHeldForPickup>()
             .add_message::<ObserveWeight>()
+            .add_message::<FailedPickupObservation>()
             .init_resource::<CarryConfig>()
             .init_resource::<ActiveCarryProfile>()
             .init_resource::<CarryMovementState>()
@@ -62,6 +63,8 @@ impl Plugin for CarryPlugin {
                     process_stash_intent,
                     process_stash_held_for_pickup,
                     process_observe_weight,
+                    tick_failed_pickup_cooldown,
+                    process_failed_pickup_observation.after(tick_failed_pickup_cooldown),
                     process_cycle_carry_intent.after(process_stash_intent),
                 ),
             );
@@ -127,6 +130,29 @@ pub struct StashHeldForPickup {
 pub struct ObserveWeight {
     /// Material to record a weight observation for.
     pub material: GameMaterial,
+}
+
+/// Emitted by interaction when the player tries to pick up a new object but
+/// cannot because they are already holding something that cannot be stashed.
+///
+/// Carry processes this message: it records a low-confidence weight observation
+/// for the target (the player learned the object was too heavy to accommodate),
+/// subject to a per-player cooldown so the journal is not spammed.
+#[derive(Message)]
+pub struct FailedPickupObservation {
+    /// The material the player failed to pick up.
+    pub material: GameMaterial,
+}
+
+/// Per-player cooldown timer that throttles failed-pickup weight observations.
+///
+/// Inserted onto the player entity at spawn. When `timer.finished()` the next
+/// failed-pickup attempt is allowed to generate a journal observation; the timer
+/// resets on each emission.
+#[derive(Component)]
+pub struct FailedPickupCooldown {
+    /// Countdown timer. When `is_finished()` the next observation is allowed.
+    pub timer: Timer,
 }
 
 /// Emitted whenever carry weight changes so movement/stamina systems can
@@ -453,6 +479,16 @@ pub struct CarryConfig {
     /// Per-difficulty-profile carry consequence configurations.
     #[serde(default = "default_profiles_config")]
     pub profiles: CarryProfilesConfig,
+    /// Confidence assigned to weight observations triggered by a failed pickup.
+    ///
+    /// Lower than the successful-pickup confidence (0.2) because the player only
+    /// learned the item is heavy from the rejection, not from actually holding it.
+    #[serde(default = "default_failed_pickup_observation_confidence")]
+    pub failed_pickup_observation_confidence: f32,
+    /// Cooldown (seconds) between failed-pickup weight observations for the same
+    /// player.  Prevents journal spam when the player is button-mashing.
+    #[serde(default = "default_failed_pickup_cooldown_secs")]
+    pub failed_pickup_cooldown_secs: f32,
 }
 
 impl Default for CarryConfig {
@@ -470,8 +506,18 @@ impl Default for CarryConfig {
             weight_descriptions: default_weight_descriptions(),
             weight_cues: CarryCueConfig::default(),
             profiles: default_profiles_config(),
+            failed_pickup_observation_confidence: default_failed_pickup_observation_confidence(),
+            failed_pickup_cooldown_secs: default_failed_pickup_cooldown_secs(),
         }
     }
+}
+
+fn default_failed_pickup_observation_confidence() -> f32 {
+    0.1
+}
+
+fn default_failed_pickup_cooldown_secs() -> f32 {
+    3.0
 }
 
 impl CarryConfig {
@@ -1082,6 +1128,15 @@ fn attach_carry_state_to_player(
             current: config.starting_strength,
         },
         device_state,
+        FailedPickupCooldown {
+            // Start finished so the first failed pickup always generates an observation.
+            timer: {
+                let mut t =
+                    Timer::from_seconds(config.failed_pickup_cooldown_secs, TimerMode::Once);
+                t.finish();
+                t
+            },
+        },
     ));
 }
 
@@ -1565,6 +1620,63 @@ fn process_observe_weight(
             &mut journal_writer,
             &descriptor_vocab,
         );
+    }
+}
+
+/// Advances the per-player failed-pickup observation cooldown every frame.
+fn tick_failed_pickup_cooldown(
+    time: Res<Time>,
+    mut player_query: Query<&mut FailedPickupCooldown, With<Player>>,
+) {
+    let Ok(mut cooldown) = player_query.single_mut() else {
+        return;
+    };
+    cooldown.timer.tick(time.delta());
+}
+
+/// Records a low-confidence weight observation when the player failed to pick
+/// something up because their carry was full.
+///
+/// Emits `RecordObservation` with a hardcoded "too heavy" description (not
+/// routed through `DescriptorVocabulary`) and a cooldown guard to prevent
+/// journal spam from repeated failed attempts.
+fn process_failed_pickup_observation(
+    mut reader: MessageReader<FailedPickupObservation>,
+    mut journal_writer: MessageWriter<RecordObservation>,
+    config: Res<CarryConfig>,
+    mut player_query: Query<&mut FailedPickupCooldown, With<Player>>,
+) {
+    for request in reader.read() {
+        let Ok(mut cooldown) = player_query.single_mut() else {
+            continue;
+        };
+
+        if !cooldown.timer.is_finished() {
+            // Cooldown active — skip observation but keep draining the message queue.
+            continue;
+        }
+
+        let confidence = Confidence::new(config.failed_pickup_observation_confidence);
+
+        journal_writer.write(RecordObservation {
+            key: JournalKey::MaterialInstance {
+                seed: request.material.seed,
+            },
+            name: request.material.name.clone(),
+            material_seed: Some(MaterialSeed(request.material.seed)),
+            planet_seed: request.material.origin_planet_seed,
+            observation: crate::journal::Observation {
+                category: ObservationCategory::Weight,
+                confidence,
+                description: "Too heavy to lift".to_string(),
+                recorded_at: 0,
+            },
+            input_seeds: Vec::new(),
+            context_location: None,
+        });
+
+        // Reset so the next observation must wait out the full cooldown.
+        cooldown.timer.reset();
     }
 }
 
@@ -2284,6 +2396,128 @@ exponent = 1.0
                 }
                 other => panic!("{label}: expected JournalKey::MaterialInstance, got {other:?}"),
             }
+        }
+    }
+
+    // ── FailedPickupObservation tests ─────────────────────────────────────
+
+    /// Helper: build a minimal app with the systems needed to test
+    /// failed-pickup observation and cooldown behaviour.
+    fn build_failed_pickup_app() -> App {
+        let mut app = App::new();
+        app.add_plugins(bevy::time::TimePlugin)
+            .add_message::<FailedPickupObservation>()
+            .add_message::<RecordObservation>()
+            .insert_resource(CarryConfig::default())
+            .add_systems(
+                Update,
+                (
+                    tick_failed_pickup_cooldown,
+                    process_failed_pickup_observation.after(tick_failed_pickup_cooldown),
+                ),
+            );
+
+        let config = CarryConfig::default();
+        let cooldown = FailedPickupCooldown {
+            timer: {
+                let mut t =
+                    Timer::from_seconds(config.failed_pickup_cooldown_secs, TimerMode::Once);
+                t.finish();
+                t
+            },
+        };
+        app.world_mut().spawn((crate::player::Player, cooldown));
+
+        app
+    }
+
+    /// One-shot system: write a `FailedPickupObservation` for `material` into the
+    /// message queue so that `process_failed_pickup_observation` can pick it up.
+    fn emit_failed_pickup(
+        material: In<GameMaterial>,
+        mut writer: MessageWriter<FailedPickupObservation>,
+    ) {
+        writer.write(FailedPickupObservation {
+            material: material.0.clone(),
+        });
+    }
+
+    #[test]
+    fn failed_pickup_observation_emits_record_observation() {
+        let mut app = build_failed_pickup_app();
+
+        let material = material_with_density(0.9);
+        app.world_mut()
+            .run_system_cached_with(emit_failed_pickup, material.clone())
+            .expect("one-shot emit should run");
+
+        app.update();
+
+        let mut messages = app
+            .world_mut()
+            .resource_mut::<Messages<RecordObservation>>();
+        let recorded: Vec<RecordObservation> = messages.drain().collect();
+
+        assert_eq!(recorded.len(), 1, "expected exactly one RecordObservation");
+        assert_eq!(
+            recorded[0].observation.category,
+            ObservationCategory::Weight
+        );
+        assert_eq!(
+            recorded[0].observation.description, "Too heavy to lift",
+            "description must be the dedicated failed-pickup text"
+        );
+        assert!(
+            recorded[0].observation.confidence.value() < 0.2,
+            "failed-pickup confidence should be lower than successful-pickup (0.2)"
+        );
+        match &recorded[0].key {
+            JournalKey::MaterialInstance { seed } => {
+                assert_eq!(
+                    *seed, material.seed,
+                    "observation key must match target material seed"
+                );
+            }
+            other => panic!("expected JournalKey::MaterialInstance, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn failed_pickup_cooldown_suppresses_second_observation() {
+        let mut app = build_failed_pickup_app();
+
+        let material = material_with_density(0.9);
+
+        // First attempt — cooldown starts finished, so observation fires.
+        app.world_mut()
+            .run_system_cached_with(emit_failed_pickup, material.clone())
+            .expect("one-shot emit should run");
+        app.update();
+
+        {
+            let mut messages = app
+                .world_mut()
+                .resource_mut::<Messages<RecordObservation>>();
+            let recorded: Vec<RecordObservation> = messages.drain().collect();
+            assert_eq!(recorded.len(), 1, "first attempt should emit observation");
+        }
+
+        // Second attempt immediately after — cooldown is active, no observation.
+        app.world_mut()
+            .run_system_cached_with(emit_failed_pickup, material.clone())
+            .expect("one-shot emit should run");
+        app.update();
+
+        {
+            let mut messages = app
+                .world_mut()
+                .resource_mut::<Messages<RecordObservation>>();
+            let suppressed: Vec<RecordObservation> = messages.drain().collect();
+            assert_eq!(
+                suppressed.len(),
+                0,
+                "second attempt within cooldown should be suppressed"
+            );
         }
     }
 }
