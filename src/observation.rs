@@ -2147,7 +2147,7 @@ mod tests {
         let benign_value = 0.1;
 
         // Tentative tier — Confidence < 0.3
-        let confidence_tentative = Confidence(0.2);
+        let confidence_tentative = Confidence::new(0.2);
         let result = vocab.describe(
             &ObservationCategory::LocationNote,
             benign_value,
@@ -2156,7 +2156,7 @@ mod tests {
         assert_eq!(result, Some("Area seemed calm and unremarkable"));
 
         // Observed tier — 0.3 <= Confidence < 0.7
-        let confidence_observed = Confidence(0.5);
+        let confidence_observed = Confidence::new(0.5);
         let result = vocab.describe(
             &ObservationCategory::LocationNote,
             benign_value,
@@ -2165,7 +2165,7 @@ mod tests {
         assert_eq!(result, Some("Calm, unremarkable area"));
 
         // Confident tier — Confidence >= 0.7
-        let confidence_confident = Confidence(0.8);
+        let confidence_confident = Confidence::new(0.8);
         let result = vocab.describe(
             &ObservationCategory::LocationNote,
             benign_value,
@@ -2205,7 +2205,7 @@ mod tests {
 
         // No None returned for any value+tier combination within the defined ranges
         for value in [0.1_f32, 0.3, 0.6, 0.9] {
-            for confidence in [Confidence(0.2), Confidence(0.5), Confidence(0.8)] {
+            for confidence in [Confidence::new(0.2), Confidence::new(0.5), Confidence::new(0.8)] {
                 let result = vocab.describe(&ObservationCategory::LocationNote, value, confidence);
                 assert!(
                     result.is_some(),

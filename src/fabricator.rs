@@ -290,7 +290,7 @@ fn tick_processing(
         material_seed: None,
         observation: Observation {
             category: ObservationCategory::FabricationResult,
-            confidence: crate::observation::Confidence(
+            confidence: crate::observation::Confidence::new(
                 confidence_config.initial_observation_confidence,
             ), // Configured in confidence.toml
             description,
