@@ -9,6 +9,7 @@
 //!
 //! | Type | Derived from | Purpose |
 //! |---|---|---|
+//! | [`SolarSystemSeed`] | Asset config (solar_system_seed field) | Root seed for a solar system |
 //! | [`PlanetSeed`] | `SolarSystemSeed` + orbital slot | Root seed for a planet; re-exported here |
 //! | [`MaterialSeed`] | `PlanetSeed` (via asset loader) | Material property generation |
 //! | [`PlacementSeed`] | `PlanetSeed` + placement channel | Object placement and spatial distribution |
@@ -18,11 +19,14 @@
 //! ## Usage
 //!
 //! ```rust
-//! use apeiron_cipher::seeds::{MaterialSeed, PlacementSeed};
+//! use apeiron_cipher::seeds::{MaterialSeed, PlacementSeed, SolarSystemSeed};
 //!
 //! let mat = MaterialSeed::from(42_u64);
 //! let (density, variation) = mat.split();
 //! // density and variation are both MaterialSeed — independent sub-seeds
+//!
+//! // SolarSystemSeed wraps a raw u64 system seed at the asset-loading edge.
+//! let sys: SolarSystemSeed = 12345_u64.into();
 //! ```
 //!
 //! ## Why newtypes, not bare `u64`?
@@ -43,6 +47,12 @@ use crate::seed_util::mix_seed;
 /// Callers that need all seed types in one place can import from `seeds::*`
 /// instead of reaching into `world_generation`.
 pub use crate::world_generation::PlanetSeed;
+
+/// Re-export [`SolarSystemSeed`] from the solar system module.
+///
+/// Callers that need all seed types in one place can import from `seeds::*`
+/// instead of reaching into `solar_system`.
+pub use crate::solar_system::SolarSystemSeed;
 
 // ── Internal split constants ─────────────────────────────────────────────────
 //
@@ -280,5 +290,23 @@ mod tests {
         // If PlanetSeed is not re-exported from this module this test won't compile.
         let ps = PlanetSeed(42);
         assert_eq!(ps.0, 42);
+    }
+
+    // ── SolarSystemSeed re-export ─────────────────────────────────────────
+
+    #[test]
+    fn solar_system_seed_reexport_is_usable() {
+        // Exercises the `pub use crate::solar_system::SolarSystemSeed;` re-export.
+        // If SolarSystemSeed is not re-exported from this module this test won't compile.
+        let s = SolarSystemSeed(999);
+        assert_eq!(s.0, 999);
+        let back: u64 = s.into();
+        assert_eq!(back, 999);
+    }
+
+    #[test]
+    fn solar_system_seed_from_u64() {
+        let s: SolarSystemSeed = 42_u64.into();
+        assert_eq!(s.0, 42);
     }
 }
