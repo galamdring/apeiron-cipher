@@ -319,11 +319,23 @@ function PriorityRow({ issue, rank, onSelect }) {
   );
 }
 
+// Returns true if the issue has an epic-N label (i.e. it belongs to an epic).
+function hasEpicLabel(issue) {
+  return (issue.labels || []).some((l) => /^epic-\d+$/i.test(l.name || ""));
+}
+
 function EpicTree({ issues, onSelect, repo }) {
   const epics = issues.filter((i) => issueType(i) === "epic").sort((a, b) => a.number - b.number);
+
+  // Orphans: non-epic issues with no epic-N label — no API call needed.
+  const orphans = issues
+    .filter((i) => issueType(i) !== "epic" && !hasEpicLabel(i))
+    .sort((a, b) => b.number - a.number);
+
   const [expanded, setExpanded] = useState(new Set());
   const [children, setChildren] = useState({}); // { epicNumber: Issue[] }
   const [loading, setLoading] = useState(new Set());
+  const [noEpicCollapsed, setNoEpicCollapsed] = useState(false);
 
   const toggleEpic = useCallback(async (epic) => {
     const num = epic.number;
@@ -351,39 +363,58 @@ function EpicTree({ issues, onSelect, repo }) {
     }
   }, [expanded, children, repo]);
 
-  return epics.map((epic) => {
-    const isExpanded = expanded.has(epic.number);
-    const epicChildren = children[epic.number];
-    const isLoading = loading.has(epic.number);
-    const hasChildren = epicChildren && epicChildren.length > 0;
-    const dimmed = epicChildren && epicChildren.length === 0 && !isLoading;
+  return (
+    <>
+      {epics.map((epic) => {
+        const isExpanded = expanded.has(epic.number);
+        const epicChildren = children[epic.number];
+        const isLoading = loading.has(epic.number);
+        const hasChildren = epicChildren && epicChildren.length > 0;
+        const dimmed = epicChildren && epicChildren.length === 0 && !isLoading;
 
-    return (
-      <div key={epic.number}>
-        <div
-          style={{ ...s.epicRow, ...(dimmed ? s.epicRowDimmed : {}) }}
-          onClick={() => toggleEpic(epic)}
-        >
-          <span style={{ ...s.chevron, transform: isExpanded ? "rotate(0deg)" : "rotate(-90deg)" }}>
-            ▼
-          </span>
-          <span style={s.issueNumber}>#{epic.number}</span>
-          <span style={s.epicTitle}>{epic.title}</span>
-          {epicChildren && (
-            <span style={s.countBadge}>{epicChildren.length}</span>
-          )}
-        </div>
-        {isExpanded && isLoading && (
-          <div style={s.loadingText}>Loading sub-issues…</div>
-        )}
-        {isExpanded && hasChildren && epicChildren.map((child) => (
-          <div key={child.number} style={s.childRow}>
-            <IssueRow issue={child} onSelect={onSelect} />
+        return (
+          <div key={epic.number}>
+            <div
+              style={{ ...s.epicRow, ...(dimmed ? s.epicRowDimmed : {}) }}
+              onClick={() => toggleEpic(epic)}
+            >
+              <span style={{ ...s.chevron, transform: isExpanded ? "rotate(0deg)" : "rotate(-90deg)" }}>
+                ▼
+              </span>
+              <span style={s.issueNumber}>#{epic.number}</span>
+              <span style={s.epicTitle}>{epic.title}</span>
+              {epicChildren && (
+                <span style={s.countBadge}>{epicChildren.length}</span>
+              )}
+            </div>
+            {isExpanded && isLoading && (
+              <div style={s.loadingText}>Loading sub-issues…</div>
+            )}
+            {isExpanded && hasChildren && epicChildren.map((child) => (
+              <div key={child.number} style={s.childRow}>
+                <IssueRow issue={child} onSelect={onSelect} />
+              </div>
+            ))}
           </div>
-        ))}
-      </div>
-    );
-  });
+        );
+      })}
+
+      {orphans.length > 0 && (
+        <div>
+          <div style={s.sectionHeader} onClick={() => setNoEpicCollapsed((c) => !c)}>
+            <span style={{ ...s.chevron, transform: noEpicCollapsed ? "rotate(-90deg)" : "rotate(0deg)" }}>
+              ▼
+            </span>
+            <span style={s.sectionTitle}>No Epic</span>
+            <span style={s.countBadge}>{orphans.length}</span>
+          </div>
+          {!noEpicCollapsed && orphans.map((issue) => (
+            <IssueRow key={issue.number} issue={issue} onSelect={onSelect} />
+          ))}
+        </div>
+      )}
+    </>
+  );
 }
 
 export default function BacklogView({ repo }) {
