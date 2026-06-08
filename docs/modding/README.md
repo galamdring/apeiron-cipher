@@ -17,7 +17,8 @@ guide covers what is available and stable today.
 
 | Document | What it covers |
 |---|---|
-| [Mod Structure](./mod-structure.md) | Directory layout, `mod.toml` manifest |
+| [Mod Structure](./mod-structure.md) | Directory layout, `mod.toml` manifest, quick start |
+| [Manifest Schema](./manifest-schema.md) | Complete `mod.toml` field reference with examples |
 | [Data File Formats](./data-formats.md) | TOML schemas for every moddable domain |
 | [Extensibility Points](./extensibility-points.md) | What each asset domain controls and how |
 | [Best Practices](./best-practices.md) | Compatibility, versioning, testing |
