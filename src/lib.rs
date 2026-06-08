@@ -29,6 +29,7 @@ pub mod materials;
 pub mod mod_asset_validator;
 pub mod mod_manifest;
 pub mod mod_registry;
+pub mod mod_validator;
 pub mod naming;
 pub mod observation;
 pub mod persistence;
