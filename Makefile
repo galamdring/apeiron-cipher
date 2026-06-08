@@ -1,4 +1,4 @@
-.PHONY: build test lint fmt-check fmt run check clean install-hooks kb-check o-check coverage coverage-html
+.PHONY: build test lint fmt-check fmt run check clean install-hooks kb-check o-check sig-check coverage coverage-html
 
 build:
 	cargo build
@@ -30,6 +30,10 @@ kb-check:
 # --- Orchestrator checks ---
 o-check:
 	cd infra/orchestrator && go vet ./... && go test ./...
+
+# --- Signaling server checks (no Docker required) ---
+sig-check:
+	cd infra/orchestrator && go vet ./internal/signaling/... ./cmd/signaling/... && go test ./internal/signaling/...
 
 install-hooks:
 	cp hooks/pre-commit .git/hooks/pre-commit
