@@ -939,64 +939,64 @@ impl Default for DescriptorVocabulary {
             vec![
                 // Tentative tier
                 DescriptorEntry {
-                    value_range: 0.0..0.25,
+                    value_range: 0.0..=0.25,
                     tier: ConfidenceTier::Tentative,
                     descriptions: &["Area seemed calm and unremarkable"],
                 },
                 DescriptorEntry {
-                    value_range: 0.25..0.50,
+                    value_range: 0.25..=0.50,
                     tier: ConfidenceTier::Tentative,
                     descriptions: &["Location appeared to present some hazard"],
                 },
                 DescriptorEntry {
-                    value_range: 0.50..0.75,
+                    value_range: 0.50..=0.75,
                     tier: ConfidenceTier::Tentative,
                     descriptions: &["Environment seemed actively dangerous"],
                 },
                 DescriptorEntry {
-                    value_range: 0.75..1.0,
+                    value_range: 0.75..=1.0,
                     tier: ConfidenceTier::Tentative,
                     descriptions: &["Area appeared extremely hostile"],
                 },
                 // Observed tier
                 DescriptorEntry {
-                    value_range: 0.0..0.25,
+                    value_range: 0.0..=0.25,
                     tier: ConfidenceTier::Observed,
                     descriptions: &["Calm, unremarkable area"],
                 },
                 DescriptorEntry {
-                    value_range: 0.25..0.50,
+                    value_range: 0.25..=0.50,
                     tier: ConfidenceTier::Observed,
                     descriptions: &["Area presents moderate hazards"],
                 },
                 DescriptorEntry {
-                    value_range: 0.50..0.75,
+                    value_range: 0.50..=0.75,
                     tier: ConfidenceTier::Observed,
                     descriptions: &["Actively dangerous environment"],
                 },
                 DescriptorEntry {
-                    value_range: 0.75..1.0,
+                    value_range: 0.75..=1.0,
                     tier: ConfidenceTier::Observed,
                     descriptions: &["Extremely hostile area"],
                 },
                 // Confident tier
                 DescriptorEntry {
-                    value_range: 0.0..0.25,
+                    value_range: 0.0..=0.25,
                     tier: ConfidenceTier::Confident,
                     descriptions: &["Reliably calm — among the safest known locations"],
                 },
                 DescriptorEntry {
-                    value_range: 0.25..0.50,
+                    value_range: 0.25..=0.50,
                     tier: ConfidenceTier::Confident,
                     descriptions: &["Reliably hazardous — presents consistent moderate risk"],
                 },
                 DescriptorEntry {
-                    value_range: 0.50..0.75,
+                    value_range: 0.50..=0.75,
                     tier: ConfidenceTier::Confident,
                     descriptions: &["Reliably dangerous — among the most hostile environments"],
                 },
                 DescriptorEntry {
-                    value_range: 0.75..1.0,
+                    value_range: 0.75..=1.0,
                     tier: ConfidenceTier::Confident,
                     descriptions: &[
                         "Reliably lethal — among the most extreme environments encountered",
@@ -1782,13 +1782,14 @@ mod tests {
             descriptions: &["seemed to soften quickly"],
         };
 
-        // Value in range, correct tier
+        // Value in range, correct tier (RangeInclusive: 0.0..=0.25 includes both endpoints)
         assert!(entry.matches(0.1, ConfidenceTier::Tentative));
         assert!(entry.matches(0.0, ConfidenceTier::Tentative));
         assert!(entry.matches(0.24, ConfidenceTier::Tentative));
+        assert!(entry.matches(0.25, ConfidenceTier::Tentative)); // Boundary included
 
         // Value out of range
-        assert!(!entry.matches(0.25, ConfidenceTier::Tentative)); // Boundary excluded
+        assert!(!entry.matches(0.26, ConfidenceTier::Tentative));
         assert!(!entry.matches(0.3, ConfidenceTier::Tentative));
         assert!(!entry.matches(-0.1, ConfidenceTier::Tentative));
 
