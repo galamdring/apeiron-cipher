@@ -1649,6 +1649,253 @@ fn merge_player_additions(
     MergedPlayerAdditions { merged, conflicts }
 }
 
+// ── Story 22.6: Core Delta Layering Engine ───────────────────────────────
+//
+// ## Purpose
+//
+// The delta layering engine is the top-level composition function for
+// multiplayer world state. It accepts a base world seed and an ordered list
+// of `WorldDeltaLayer` values — one per player (or per source) — and folds
+// them into a single `LayeredWorldState` that describes the complete world
+// as seen by any observer with access to all layers.
+//
+// ## Design invariants
+//
+// - **Pure function, no side effects.** `apply_delta_layers` takes immutable
+//   inputs and returns a new value. No ECS, no I/O, no `ResMut`. This makes
+//   it unit-testable, replayable, and safe to call from any context.
+//
+// - **Deterministic.** Same seed + same layers in the same order = same output.
+//   The function never calls `rand` or any non-deterministic source.
+//
+// - **Commutative for non-conflicting changes.** Two layers that touch
+//   different building cells (for additions) or different generated-object IDs
+//   (for removals) can be applied in any order and produce the same result.
+//   This is the key property that makes delta-based multiplayer viable: the
+//   server does not need to track arrival order for independent changes.
+//
+// - **Conflict-preserving.** When two layers place objects in the same building
+//   cell, the conflict is surfaced in `LayeredWorldState::conflicts` rather
+//   than silently resolved. No last-write-wins. The owner decides (Epic 22.4).
+//
+// ## Relationship to Story 5.6
+//
+// Story 5.6 introduced `merge_removal_deltas` (binary) and
+// `merge_player_additions` (binary). This section lifts those binary
+// operations to N-ary: `apply_delta_layers` folds an arbitrary number of
+// layers using the same underlying merge semantics. The 5.6 functions remain
+// unchanged — this is purely additive.
+//
+// ## Lifetime
+//
+// All types and `apply_delta_layers` are `#[allow(dead_code)]` until Epic 22
+// wires them into the ECS. Remove those annotations when the plumbing lands.
+
+/// A single source of world mutations — one player's (or one node's) complete
+/// delta stream.
+///
+/// A `WorldDeltaLayer` is the unit of composition in the delta layering engine.
+/// Each source that can modify world state produces one layer. The layering
+/// engine folds N layers on top of a shared seed to produce the combined world
+/// state visible to all participants.
+///
+/// ## What a layer contains
+///
+/// - **Removals** — generated objects the source has picked up or destroyed.
+///   A removal is permanent from the source's perspective: the object should
+///   not reappear when the chunk reloads.
+///
+/// - **Additions** — objects the source has placed. These are spatially
+///   located and can conflict with additions from other sources when they
+///   occupy the same building cell.
+///
+/// - **Source label** — a human-readable identifier (e.g. player name or
+///   peer ID) used in conflict reports so the base owner knows whose objects
+///   are involved in a conflict.
+///
+/// ## Why a single struct?
+///
+/// Keeping removals and additions together in one layer makes the API easier
+/// to reason about at the call site: each source provides exactly one value,
+/// and the caller does not need to zip separate slices. It also models the
+/// real-world constraint — a player's removals and additions are causally
+/// linked (you cannot drop what you have not picked up).
+#[allow(dead_code)]
+#[allow(private_interfaces)]
+pub struct WorldDeltaLayer {
+    /// The set of generated objects this source has removed from the world.
+    ///
+    /// Applied as a set-union across all layers: if any layer removes a
+    /// generated object, it is absent from the combined world state.
+    pub removals: ChunkRemovalDeltas,
+    /// The set of objects this source has placed in the world.
+    ///
+    /// Merged with building-cell conflict detection: two objects from
+    /// different sources that occupy the same cell are flagged rather than
+    /// silently merged.
+    pub additions: ChunkPlayerAdditions,
+    /// Human-readable identifier for this layer's source.
+    ///
+    /// Appears verbatim in [`DeltaMergeConflict`] records so the base owner
+    /// can identify whose objects are in conflict without inspecting IDs.
+    pub source_label: String,
+}
+
+/// The result of applying N delta layers on top of a shared world seed.
+///
+/// `LayeredWorldState` is the combined world state as seen by any observer
+/// with access to all provided layers. It is intentionally a value type —
+/// not a Bevy `Resource` — so it can be constructed, inspected, and discarded
+/// without touching the ECS.
+///
+/// ## Structure of combined state
+///
+/// The combined state preserves the three-layer model from Story 5.4/5.5:
+///
+/// ```text
+/// final_chunk_state = baseline(seed, chunk)       ← deterministic, from seed
+///                   - combined_removals[chunk]     ← union of all sources
+///                   + combined_additions[chunk]    ← merge, conflicts surfaced
+/// ```
+///
+/// `LayeredWorldState` captures the delta part (removals + additions). The
+/// baseline is not stored here — it is always re-derived from the seed on
+/// demand, which is cheaper than caching it and guarantees correctness.
+///
+/// ## Conflicts
+///
+/// `conflicts` is empty when all layers are spatially independent (different
+/// building cells). When any two sources place objects in the same cell,
+/// those objects are excluded from `combined_additions` and their conflict
+/// is reported here. The base owner must resolve conflicts before the
+/// combined state is authoritative.
+#[allow(dead_code)]
+#[allow(private_interfaces)]
+pub struct LayeredWorldState {
+    /// The base world seed. Stored here so callers can derive the chunk
+    /// baseline at any time without tracking it separately.
+    pub base_seed: u64,
+    /// Combined removal set: the union of every layer's removals.
+    ///
+    /// A generated object absent from any layer's removals but present in
+    /// `combined_removals` should not appear in the world.
+    pub combined_removals: ChunkRemovalDeltas,
+    /// Combined additions set: all non-conflicting player-placed objects.
+    ///
+    /// Conflicting additions are excluded from this set and reported in
+    /// `conflicts` instead. Once all conflicts are resolved, the resolved
+    /// objects should be inserted here.
+    pub combined_additions: ChunkPlayerAdditions,
+    /// Spatial conflicts requiring manual resolution.
+    ///
+    /// Each entry identifies a building cell where two sources placed objects
+    /// simultaneously. The base owner must choose which (if either) to keep.
+    /// An empty `conflicts` vec means the state is fully resolved and
+    /// authoritative.
+    pub conflicts: Vec<DeltaMergeConflict>,
+}
+
+/// Apply N delta layers to a shared base seed, producing the combined world state.
+///
+/// This is the primary entry point for the delta layering engine. It accepts
+/// any seed and an ordered slice of [`WorldDeltaLayer`] values and folds them
+/// left-to-right using the binary merge operations from Story 5.6.
+///
+/// ## Determinism guarantee
+///
+/// For **non-conflicting** layers (layers whose additions do not overlap in
+/// building cells and whose removals are independent sets), this function is
+/// **commutative**: reordering the layers produces the same output. This is the
+/// property that makes the system viable for multiplayer: the server does not
+/// need to enforce arrival order for independent changes.
+///
+/// When two layers *do* conflict, the conflict is surfaced in
+/// [`LayeredWorldState::conflicts`] regardless of order. Conflict detection
+/// itself is deterministic: the same pair of layers always produces the same
+/// conflict record. Order affects which label appears as `source_a` vs
+/// `source_b`, but the conflict is never silently suppressed.
+///
+/// ## Parameters
+///
+/// - `base_seed`: the world seed that underpins the deterministic baseline.
+///   Stored in the returned [`LayeredWorldState`] but not otherwise used by
+///   this function — baseline generation from the seed is the caller's
+///   responsibility (it is not performed here to keep this function pure).
+///
+/// - `cell_size`: the building cell size used for spatial quantization during
+///   addition conflict detection. Must be the same value used throughout the
+///   session; mixing cell sizes across calls would make previously-merged
+///   states incomparable.
+///
+/// - `layers`: ordered slice of delta layers to fold. An empty slice returns
+///   an empty `LayeredWorldState` with the seed recorded. A single layer
+///   is returned as-is (no merging needed). Two or more layers are folded
+///   left-to-right.
+///
+/// ## Side effects
+///
+/// None. This function is a pure transformation. It clones the first layer's
+/// data to start the accumulator and then folds in the remaining layers.
+///
+/// ## Example
+///
+/// ```rust,ignore
+/// let layers = vec![alice_delta, bob_delta, charlie_delta];
+/// let state = apply_delta_layers(world_seed, cell_size, &layers);
+/// assert!(state.conflicts.is_empty()); // all changes were independent
+/// ```
+#[allow(dead_code)]
+pub fn apply_delta_layers(
+    base_seed: u64,
+    cell_size: f32,
+    layers: &[WorldDeltaLayer],
+) -> LayeredWorldState {
+    // Start with empty accumulator — the identity element for both merge operations.
+    // Removal identity: empty set (no objects removed).
+    // Addition identity: empty set (no objects added, no conflicts).
+    let mut combined_removals = ChunkRemovalDeltas::default();
+    let mut combined_additions = ChunkPlayerAdditions::default();
+    let mut all_conflicts: Vec<DeltaMergeConflict> = Vec::new();
+
+    // Fold each layer into the accumulator using the binary merge operations.
+    //
+    // WHY FOLD LEFT-TO-RIGHT:
+    // Both merge operations are commutative for non-conflicting inputs, so the
+    // left-to-right fold order only matters when naming conflicts: the
+    // accumulated state becomes `source_a` and the incoming layer is `source_b`.
+    // For conflict-free inputs the fold is truly commutative — any order
+    // produces identical `combined_removals` and `combined_additions`.
+    for layer in layers {
+        // Removal merge: set-union across chunks. Always commutative, never conflicts.
+        combined_removals = merge_removal_deltas(&combined_removals, &layer.removals);
+
+        // Addition merge: building-cell conflict detection across all accumulated
+        // additions vs this layer's new additions.
+        //
+        // The accumulated label is synthesised as "(accumulated)" so conflict
+        // records are readable when an object in the accumulator conflicts with
+        // the incoming layer. In practice, the base owner cares about the
+        // source_b label (the new layer) more than the accumulated label, since
+        // the accumulator represents what was already known to be conflict-free.
+        let merge_result = merge_player_additions(
+            &combined_additions,
+            &layer.additions,
+            "(accumulated)",
+            &layer.source_label,
+            cell_size,
+        );
+        combined_additions = merge_result.merged;
+        all_conflicts.extend(merge_result.conflicts);
+    }
+
+    LayeredWorldState {
+        base_seed,
+        combined_removals,
+        combined_additions,
+        conflicts: all_conflicts,
+    }
+}
+
 #[cfg(test)]
 #[path = "exterior_tests.rs"]
 mod tests;
