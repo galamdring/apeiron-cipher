@@ -24,6 +24,8 @@ pub mod interaction;
 pub mod journal;
 pub mod knowledge_graph;
 pub mod materials;
+pub mod mod_asset_validator;
+pub mod mod_registry;
 pub mod naming;
 pub mod observation;
 pub mod player;
@@ -43,6 +45,9 @@ mod test_support;
 /// and the integration-test harness call through here so they can never
 /// drift apart.
 pub fn add_game_plugins(app: &mut App) {
+    // Mod registry: discovers and validates mod directories in PreStartup.
+    // Must be first so ModScanSet::Scan completes before asset-merging systems.
+    app.add_plugins(mod_registry::ModRegistryPlugin);
     // Scene setup: enclosed room, furniture markers, lighting (see scene.toml).
     app.add_plugins(scene::ScenePlugin)
         // Surface override registry: walkable surfaces layered on terrain.
