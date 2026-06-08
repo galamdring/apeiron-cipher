@@ -1,0 +1,31 @@
+{
+  "name": "@apeiron-cipher/signaling-schema",
+  "version": "1.0.0",
+  "description": "Shared signaling protocol schema and TypeScript types for Apeiron Cipher matchmaking/WebRTC relay",
+  "private": true,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "require": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "check": "tsc --noEmit",
+    "validate": "ts-node src/validate-examples.ts",
+    "test": "node --test dist/index.test.js"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "ajv": "^8.17.1",
+    "ts-node": "^10.9.2",
+    "@types/node": "^20.0.0"
+  }
+}

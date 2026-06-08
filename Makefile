@@ -1,4 +1,4 @@
-.PHONY: build test lint fmt-check fmt run check clean install-hooks kb-check o-check sig-check coverage coverage-html
+.PHONY: build test lint fmt-check fmt run check clean install-hooks kb-check o-check sig-check sig-schema-check coverage coverage-html
 
 build:
 	cargo build
@@ -34,6 +34,10 @@ o-check:
 # --- Signaling server checks (no Docker required) ---
 sig-check:
 	cd infra/orchestrator && go vet ./internal/signaling/... ./cmd/signaling/... && go test ./internal/signaling/...
+
+# --- Signaling schema checks (TypeScript types + JSON Schema validation) ---
+sig-schema-check:
+	cd infra/signaling-schema && npm install --prefer-offline && npm run check && npm run build && node dist/validate-examples.js
 
 install-hooks:
 	cp hooks/pre-commit .git/hooks/pre-commit
