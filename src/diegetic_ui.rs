@@ -96,6 +96,7 @@ pub enum DiegeticUiSet {
 /// See the module-level documentation for a step-by-step guide on adding
 /// new diegetic surfaces.
 #[derive(Component, Debug, Clone, Copy)]
+#[require(DiegeticFocusState)]
 pub struct DiegeticSurface;
 
 /// Determines how a diegetic surface is perceived and interacted with.

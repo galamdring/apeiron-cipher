@@ -814,19 +814,20 @@ fn spawn_journal_ui(mut commands: Commands) {
             // with the DiegeticUiPlugin:
             //   • DiegeticSurface  — marks it as a diegetic information surface
             //     so the CI compliance test can verify no rogue screen-space text exists.
+            //     `DiegeticFocusState` is a required component of `DiegeticSurface`; it
+            //     defaults to `OutOfRange` (journal starts closed) and is injected
+            //     automatically — no need to list it here explicitly.
             //   • DiegeticSurfaceKind::Readable — declares interaction model.
             //     The player "holds up" the datapad (Active state); physical distance
             //     does not drive focus here because the journal is always on the player.
             //     The ranges are set to 0.0 so proximity logic collapses to Focused
             //     the moment the entity exists — actual open/close is managed by
             //     toggle_journal_datapad_focus below.
-            //   • DiegeticFocusState::OutOfRange — journal starts closed.
             DiegeticSurface,
             DiegeticSurfaceKind::Readable {
                 perceivable_range: 0.0,
                 legible_range: 0.0,
             },
-            DiegeticFocusState::OutOfRange,
             // ─────────────────────────────────────────────────────────────
             Node {
                 position_type: PositionType::Absolute,

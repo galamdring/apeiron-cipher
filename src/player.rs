@@ -104,7 +104,11 @@ impl Plugin for PlayerPlugin {
 pub struct Player;
 
 /// Marker component for the player's camera (the "eyes").
+///
+/// Spawning this marker is sufficient — `CameraPitch` and `Camera3d` are
+/// required components and will be inserted automatically with their defaults.
 #[derive(Component)]
+#[require(CameraPitch, Camera3d)]
 pub struct PlayerCamera;
 
 /// Accumulated pitch angle stored alongside the camera so clamping is precise
@@ -150,7 +154,7 @@ pub fn spawn_player(
             },
         ))
         .with_children(|parent| {
-            parent.spawn((PlayerCamera, CameraPitch::default(), Camera3d::default()));
+            parent.spawn(PlayerCamera);
         });
 }
 
