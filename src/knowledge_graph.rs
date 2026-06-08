@@ -1609,6 +1609,7 @@ mod tests {
             domain_recovery_multiplier: 2.0,
             passive_recovery_multiplier: 0.7,
             similarity_threshold: 0.85,
+            initial_observation_confidence: 0.2,
         });
         // Register update_knowledge_graph itself (the private system under test).
         app.add_systems(

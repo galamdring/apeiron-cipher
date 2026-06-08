@@ -2252,7 +2252,11 @@ mod tests {
 
         // No None returned for any value+tier combination within the defined ranges
         for value in [0.1_f32, 0.3, 0.6, 0.9] {
-            for confidence in [Confidence::new(0.2), Confidence::new(0.5), Confidence::new(0.8)] {
+            for confidence in [
+                Confidence::new(0.2),
+                Confidence::new(0.5),
+                Confidence::new(0.8),
+            ] {
                 let result = vocab.describe(&ObservationCategory::LocationNote, value, confidence);
                 assert!(
                     result.is_some(),
