@@ -9,6 +9,7 @@
 
 use bevy::prelude::*;
 
+pub mod camera;
 pub mod carry;
 pub mod carry_feedback;
 pub mod classification;
