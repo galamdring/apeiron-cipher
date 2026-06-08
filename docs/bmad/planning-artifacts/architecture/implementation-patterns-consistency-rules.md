@@ -19,6 +19,21 @@
 **Initialism Casing:**
 - Initialisms are written in all caps, not sentence case. `NPC` not `Npc`. This applies to type names, component names, event names, plugin names, and all identifiers. Follow this pattern for any future initialisms added to the codebase.
 
+## ECS Patterns
+
+**Entity Composition via `#[require]`:**
+- Entity composition uses Bevy's `#[require(...)]` attribute on marker components. Spawn sites name only the marker. Required components are declared on the marker definition, not at call sites.
+- Manual Bundles that list required components are an anti-pattern. If a spawn site names more than the marker for a known entity type, the marker definition is missing `#[require]`.
+- Example:
+  ```rust
+  #[derive(Component)]
+  #[require(NPCMemory, Transform)]
+  struct NPC;
+
+  commands.spawn(NPC);                                            // correct
+  commands.spawn((NPC, NPCMemory::default(), Transform::default())); // wrong — move the requires to the derive
+  ```
+
 ## Code Patterns
 
 **Resource Access:**
