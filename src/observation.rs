@@ -1510,6 +1510,43 @@ mod tests {
         assert_eq!(Confidence::new(1.0).tier(), ConfidenceTier::Confident);
     }
 
+    // ── Confidence::new validation tests (issue #376) ───────────────────
+
+    #[test]
+    fn confidence_new_clamps_negative_to_zero() {
+        assert_eq!(Confidence::new(-0.5).value(), 0.0);
+        assert_eq!(Confidence::new(-1.0).value(), 0.0);
+        assert_eq!(Confidence::new(f32::NEG_INFINITY).value(), 0.0);
+    }
+
+    #[test]
+    fn confidence_new_clamps_above_one_to_one() {
+        assert_eq!(Confidence::new(1.5).value(), 1.0);
+        assert_eq!(Confidence::new(2.0).value(), 1.0);
+        assert_eq!(Confidence::new(f32::INFINITY).value(), 1.0);
+    }
+
+    #[test]
+    fn confidence_new_treats_nan_as_zero() {
+        let c = Confidence::new(f32::NAN);
+        assert_eq!(c.value(), 0.0);
+        // NaN must not produce undefined tier behaviour — it must map to Tentative
+        assert_eq!(c.tier(), ConfidenceTier::Tentative);
+    }
+
+    #[test]
+    fn confidence_new_accepts_valid_range() {
+        assert_eq!(Confidence::new(0.0).value(), 0.0);
+        assert_eq!(Confidence::new(0.5).value(), 0.5);
+        assert_eq!(Confidence::new(1.0).value(), 1.0);
+    }
+
+    #[test]
+    fn confidence_value_accessor_matches_inner() {
+        let c = Confidence::new(0.42);
+        assert!((c.value() - 0.42).abs() < f32::EPSILON);
+    }
+
     #[test]
     fn confidence_accumulate_basic() {
         let mut conf = Confidence::new(0.0);
@@ -2097,7 +2134,7 @@ mod tests {
         let benign_value = 0.1;
 
         // Tentative tier — Confidence < 0.3
-        let confidence_tentative = Confidence(0.2);
+        let confidence_tentative = Confidence::new(0.2);
         let result = vocab.describe(
             &ObservationCategory::LocationNote,
             benign_value,
@@ -2106,7 +2143,7 @@ mod tests {
         assert_eq!(result, Some("Area seemed calm and unremarkable"));
 
         // Observed tier — 0.3 <= Confidence < 0.7
-        let confidence_observed = Confidence(0.5);
+        let confidence_observed = Confidence::new(0.5);
         let result = vocab.describe(
             &ObservationCategory::LocationNote,
             benign_value,
@@ -2115,7 +2152,7 @@ mod tests {
         assert_eq!(result, Some("Calm, unremarkable area"));
 
         // Confident tier — Confidence >= 0.7
-        let confidence_confident = Confidence(0.8);
+        let confidence_confident = Confidence::new(0.8);
         let result = vocab.describe(
             &ObservationCategory::LocationNote,
             benign_value,
@@ -2155,7 +2192,11 @@ mod tests {
 
         // No None returned for any value+tier combination within the defined ranges
         for value in [0.1_f32, 0.3, 0.6, 0.9] {
-            for confidence in [Confidence(0.2), Confidence(0.5), Confidence(0.8)] {
+            for confidence in [
+                Confidence::new(0.2),
+                Confidence::new(0.5),
+                Confidence::new(0.8),
+            ] {
                 let result = vocab.describe(&ObservationCategory::LocationNote, value, confidence);
                 assert!(
                     result.is_some(),
