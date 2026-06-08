@@ -204,10 +204,25 @@ pub struct InCarry;
 /// - future persistence or ownership tags
 ///
 /// Starting with a struct now avoids rewriting every caller later.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CarriedItem {
     /// The ECS entity representing this carried material.
+    ///
+    /// Entity IDs are runtime-only handles — they are meaningless across
+    /// sessions and cannot be serialised faithfully. This field is skipped
+    /// during serialisation; on deserialisation it is restored to
+    /// [`Entity::PLACEHOLDER`] and must be re-linked to a live entity by the
+    /// persistence load system.
+    #[serde(skip, default = "entity_placeholder")]
     pub entity: Entity,
+}
+
+/// Returns [`Entity::PLACEHOLDER`] for use as a `serde(default)` function.
+///
+/// `serde`'s `default = "..."` attribute requires a zero-argument function path;
+/// associated constants cannot be used directly. This wrapper bridges the gap.
+fn entity_placeholder() -> Entity {
+    Entity::PLACEHOLDER
 }
 
 impl CarriedItem {
@@ -223,7 +238,7 @@ impl CarriedItem {
 /// `effective_capacity` is the presently usable capacity after applying the
 /// current carry-device rule. Later stories may change that value over time as
 /// devices are equipped or strength accretes.
-#[derive(Component, Clone, Debug, PartialEq)]
+#[derive(Component, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CarryState {
     /// Sum of density values for all items currently in carry.
     pub current_weight: f32,
@@ -363,7 +378,7 @@ impl CarryState {
 /// player starts with an explicit, configurable strength value instead of future
 /// stories inventing one ad hoc. Growth rate is owned by [`CarryConfig`], not
 /// duplicated here, since it is a tuning constant rather than mutable player state.
-#[derive(Component, Clone, Copy, Debug, PartialEq)]
+#[derive(Component, Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CarryStrength {
     /// The player's current carry strength value (grows over time while carrying weight).
     pub current: f32,
@@ -375,7 +390,7 @@ pub struct CarryStrength {
 /// This is intentionally modeled as item identity rather than a boolean because
 /// the design direction is "carry may come from a real fabricated or acquired
 /// object later," not "carry is always an innate stat."
-#[derive(Component, Clone, Debug, PartialEq, Eq, Default)]
+#[derive(Component, Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
 struct CarryDeviceState {
     pub required_item_key: Option<String>,
     pub equipped_item_key: Option<String>,
@@ -2285,5 +2300,62 @@ exponent = 1.0
                 other => panic!("{label}: expected JournalKey::MaterialInstance, got {other:?}"),
             }
         }
+    }
+
+    // ── Serde round-trip tests ────────────────────────────────────────────
+
+    #[test]
+    fn carried_item_serde_round_trip_entity_skipped() {
+        let item = CarriedItem {
+            entity: Entity::from_bits(42),
+        };
+        let json = serde_json::to_string(&item).expect("CarriedItem must serialise");
+        let restored: CarriedItem =
+            serde_json::from_str(&json).expect("CarriedItem must deserialise");
+        // The entity field is skipped — the restored value is the placeholder.
+        assert_eq!(restored.entity, Entity::PLACEHOLDER);
+    }
+
+    #[test]
+    fn carry_state_serde_round_trip() {
+        let state = CarryState {
+            current_weight: 3.5,
+            effective_capacity: 10.0,
+            hard_limit_enabled: true,
+            carried_items: vec![CarriedItem {
+                entity: Entity::from_bits(1),
+            }],
+        };
+        let json = serde_json::to_string(&state).expect("CarryState must serialise");
+        let restored: CarryState =
+            serde_json::from_str(&json).expect("CarryState must deserialise");
+        assert_eq!(restored.current_weight, state.current_weight);
+        assert_eq!(restored.effective_capacity, state.effective_capacity);
+        assert_eq!(restored.hard_limit_enabled, state.hard_limit_enabled);
+        assert_eq!(restored.carried_items.len(), state.carried_items.len());
+        // Entities are skipped, so they come back as PLACEHOLDER.
+        assert_eq!(restored.carried_items[0].entity, Entity::PLACEHOLDER);
+    }
+
+    #[test]
+    fn carry_strength_serde_round_trip() {
+        let strength = CarryStrength { current: 2.75 };
+        let json = serde_json::to_string(&strength).expect("CarryStrength must serialise");
+        let restored: CarryStrength =
+            serde_json::from_str(&json).expect("CarryStrength must deserialise");
+        assert_eq!(restored.current, strength.current);
+    }
+
+    #[test]
+    fn carry_device_state_serde_round_trip() {
+        let state = CarryDeviceState {
+            required_item_key: Some("carry-pack".to_string()),
+            equipped_item_key: Some("carry-pack".to_string()),
+        };
+        let json = serde_json::to_string(&state).expect("CarryDeviceState must serialise");
+        let restored: CarryDeviceState =
+            serde_json::from_str(&json).expect("CarryDeviceState must deserialise");
+        assert_eq!(restored.required_item_key, state.required_item_key);
+        assert_eq!(restored.equipped_item_key, state.equipped_item_key);
     }
 }

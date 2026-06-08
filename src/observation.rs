@@ -1099,6 +1099,30 @@ pub struct ConfidenceTracker {
     counts: HashMap<ObsKey, u32>,
 }
 
+// Manual Serialize/Deserialize for ConfidenceTracker.
+//
+// `HashMap<(u64, PropertyName), u32>` cannot be serialised with serde_json's default
+// HashMap serialiser because JSON object keys must be strings, not tuples.  We
+// represent the map as a flat `Vec<((u64, PropertyName), u32)>` instead, which is
+// portable across all serde formats (JSON, bincode, …).
+#[allow(deprecated)]
+impl serde::Serialize for ConfidenceTracker {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let pairs: Vec<(&ObsKey, &u32)> = self.counts.iter().collect();
+        pairs.serialize(serializer)
+    }
+}
+
+#[allow(deprecated)]
+impl<'de> serde::Deserialize<'de> for ConfidenceTracker {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let pairs: Vec<(ObsKey, u32)> = Vec::deserialize(deserializer)?;
+        Ok(ConfidenceTracker {
+            counts: pairs.into_iter().collect(),
+        })
+    }
+}
+
 // Implementing methods on a deprecated type requires suppressing the deprecation warning on
 // the impl block itself. ConfidenceTracker is deprecated in favour of journal-based
 // RecordObservation messages but the impl must remain compilable during the migration
@@ -3357,5 +3381,36 @@ mod tests {
         // weight: 0.3 + (1.0 - 0.3) * (0.2 * 0.7) = 0.3 + 0.7 * 0.14 = 0.3 + 0.098 = 0.398
         let expected_weight = 0.3 + (1.0 - 0.3) * (0.2 * 0.7);
         assert!((weight_confidence.0 - expected_weight).abs() < 0.001);
+    }
+
+    // ── Serde round-trip tests ────────────────────────────────────────────
+
+    #[test]
+    #[allow(deprecated)]
+    fn confidence_tracker_serde_round_trip() {
+        let mut tracker = ConfidenceTracker::default();
+        tracker.record(42, PropertyName::ThermalResistance);
+        tracker.record(42, PropertyName::ThermalResistance);
+        tracker.record(7, PropertyName::Density);
+
+        let json = serde_json::to_string(&tracker).expect("ConfidenceTracker must serialise");
+        let restored: ConfidenceTracker =
+            serde_json::from_str(&json).expect("ConfidenceTracker must deserialise");
+
+        assert_eq!(
+            restored.count(42, PropertyName::ThermalResistance),
+            2,
+            "ThermalResistance count must survive round-trip"
+        );
+        assert_eq!(
+            restored.count(7, PropertyName::Density),
+            1,
+            "Density count must survive round-trip"
+        );
+        assert_eq!(
+            restored.count(99, PropertyName::Density),
+            0,
+            "unseen key must return zero"
+        );
     }
 }

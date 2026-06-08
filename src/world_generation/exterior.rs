@@ -371,7 +371,7 @@ struct ChunkRemovalDeltas {
 /// Unlike [`GeneratedObjectId`], which is derived deterministically from the
 /// world seed, player-added IDs are simply sequential. They only need to be
 /// unique within a single session (and eventually within a save file).
-#[derive(Resource, Default)]
+#[derive(Resource, Default, Serialize, Deserialize)]
 struct PlayerAddedIdCounter {
     next_id: u64,
 }

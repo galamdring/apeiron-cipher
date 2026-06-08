@@ -4134,3 +4134,23 @@ fn higher_weight_palette_entry_appears_more_often() {
         );
     }
 }
+
+// ── Serde round-trip tests ────────────────────────────────────────────────────
+
+#[test]
+fn player_added_id_counter_serde_round_trip() {
+    let mut counter = PlayerAddedIdCounter::default();
+    counter.next(); // advance to 1
+    counter.next(); // advance to 2
+
+    let json = serde_json::to_string(&counter).expect("PlayerAddedIdCounter must serialise");
+    let mut restored: PlayerAddedIdCounter =
+        serde_json::from_str(&json).expect("PlayerAddedIdCounter must deserialise");
+
+    // Counter resumes from the serialised value, not from zero.
+    assert_eq!(
+        restored.next(),
+        2,
+        "counter should resume at 2 after round-trip"
+    );
+}
