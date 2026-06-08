@@ -20,8 +20,21 @@ strum = { version = "0.27", features = ["derive"] }
 # cross-reference system; serde-1 feature enables save/load serialization.
 petgraph = { version = "0.6", features = ["serde-1"] }
 
-[dev-dependencies]
-# JSON serializer — used in tests to verify serde round-tripping
+# JSON serializer — used at runtime for WebSocket signaling envelope encoding.
 serde_json = "1.0"
+# Multi-threaded async runtime — drives the WebSocket and WebRTC background thread.
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "net"] }
+# Async WebSocket client — connects to the signaling server over WS.
+tokio-tungstenite = { version = "0.29", features = ["native-tls"] }
+# WebRTC peer-connection library (Tokio-coupled stable branch, v0.17).
+webrtc = "0.17"
+# URL parsing — used to validate the signaling server endpoint at startup.
+url = "2"
+# Stream/sink combinators — required for split() on tokio-tungstenite WebSocketStream.
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+# MPSC / bounded channel for Bevy ↔ async-thread message passing.
+crossbeam-channel = "0.5"
+
+[dev-dependencies]
 # Temporary directory helper — provides hermetic test fixtures for mod_manifest tests
 tempfile = "3"

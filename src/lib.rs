@@ -23,6 +23,7 @@ pub mod input;
 pub mod interaction;
 pub mod journal;
 pub mod knowledge_graph;
+pub mod matchmaking;
 pub mod materials;
 pub mod mod_manifest;
 pub mod naming;
