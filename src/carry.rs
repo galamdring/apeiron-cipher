@@ -59,6 +59,7 @@ impl Plugin for CarryPlugin {
                     update_carry_strength,
                     emit_stash_intent,
                     emit_cycle_carry_intent,
+                    tick_hold_timer,
                     process_stash_intent,
                     process_stash_held_for_pickup,
                     process_observe_weight,
@@ -191,6 +192,37 @@ impl Default for CarryMovementState {
 /// stashed item like a world object that can still be raycast, heated, or placed.
 #[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct InCarry;
+
+/// Wall-clock hold timer for an item currently in the player's hand.
+///
+/// Inserted (or reset to zero) every time an entity gains `HeldItem` —
+/// on fresh pickup from the world or on cycle-in from carry. Incremented
+/// each frame by `tick_hold_timer`. Consumed (checked and then the flag
+/// set) when the item is stashed or cycled out.
+///
+/// Minimum hold duration is configured via
+/// [`CarryConfig::min_hold_secs_for_weight_obs`]. If an item is stashed
+/// or cycled out before that threshold, no weight observation fires.
+/// Cave Johnson approved this gate: "I'm not recording your scientific
+/// findings if you threw it on the pile before you even felt it."
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq)]
+pub struct HoldTimer {
+    /// Elapsed wall-clock seconds since this item entered the held state.
+    pub secs: f32,
+    /// True once a weight observation has been recorded for this hold
+    /// period, preventing duplicate observations on the same hold.
+    pub obs_recorded: bool,
+}
+
+impl HoldTimer {
+    /// Returns a freshly-reset timer (zero elapsed, no observation yet).
+    pub fn fresh() -> Self {
+        Self {
+            secs: 0.0,
+            obs_recorded: false,
+        }
+    }
+}
 
 // ── Runtime player state ─────────────────────────────────────────────────
 
@@ -456,6 +488,15 @@ pub struct CarryConfig {
     /// Whether to auto-equip the carry device at game start.
     #[serde(default)]
     pub grant_starting_device: bool,
+    /// Minimum wall-clock seconds an item must be held before a weight
+    /// observation is recorded on stash or cycle-out.
+    ///
+    /// This is a pure gate: if the player stashes or cycles an item before
+    /// this threshold, no [`RecordObservation`] is emitted for that item.
+    /// The timer resets to zero each time an item transitions into the held
+    /// state (new pickup or cycle-in). Default: 1.5 seconds.
+    #[serde(default = "default_min_hold_secs_for_weight_obs")]
+    pub min_hold_secs_for_weight_obs: f32,
     /// FIFO or LIFO order when cycling items out of carry.
     #[serde(default)]
     pub cycle_order: CarryCycleOrder,
@@ -481,6 +522,7 @@ impl Default for CarryConfig {
             growth_curve: CarryGrowthCurveConfig::default(),
             carry_device_item_key: None,
             grant_starting_device: false,
+            min_hold_secs_for_weight_obs: default_min_hold_secs_for_weight_obs(),
             cycle_order: CarryCycleOrder::default(),
             weight_descriptions: default_weight_descriptions(),
             weight_cues: CarryCueConfig::default(),
@@ -499,6 +541,10 @@ impl CarryConfig {
 
 fn default_hold_offset() -> [f32; 3] {
     [0.2, -0.15, -0.5]
+}
+
+fn default_min_hold_secs_for_weight_obs() -> f32 {
+    1.5
 }
 
 /// Which carry tuning profile is active.
@@ -1452,6 +1498,7 @@ fn move_entity_from_carry_to_hand(
         .entity(entity)
         .remove::<InCarry>()
         .insert(HeldItem)
+        .insert(HoldTimer::fresh())
         .insert(Visibility::Inherited)
         .set_parent_in_place(camera_entity)
         .insert(Transform::from_translation(hold_offset));
@@ -1482,10 +1529,10 @@ fn process_stash_intent(
     config: Res<CarryConfig>,
     descriptor_vocab: Res<crate::observation::DescriptorVocabulary>,
     mut player_query: Query<(&mut CarryState, &CarryStrength), With<Player>>,
-    held_query: Query<(Entity, &GameMaterial), With<HeldItem>>,
+    held_query: Query<(Entity, &GameMaterial, Option<&HoldTimer>), With<HeldItem>>,
 ) {
     for _intent in reader.read() {
-        let Some((held_entity, held_material)) = held_query.iter().next() else {
+        let Some((held_entity, held_material, hold_timer)) = held_query.iter().next() else {
             reject_writer.write(CarryActionRejected {
                 reason: CarryRejectionReason::NothingHeld,
             });
@@ -1506,13 +1553,20 @@ fn process_stash_intent(
         }
 
         stash_entity_into_carry(&mut commands, &mut carry_state, held_entity, held_material);
-        record_weight_observation(
-            held_material,
-            carry_strength.current,
-            &config,
-            &mut journal_writer,
-            &descriptor_vocab,
-        );
+        // Only record a weight observation if the item was held long enough.
+        // Fast stash (e.g. immediately after pickup) produces no new data.
+        let held_long_enough = hold_timer
+            .map(|t| t.secs >= config.min_hold_secs_for_weight_obs && !t.obs_recorded)
+            .unwrap_or(false);
+        if held_long_enough {
+            record_weight_observation(
+                held_material,
+                carry_strength.current,
+                &config,
+                &mut journal_writer,
+                &descriptor_vocab,
+            );
+        }
         emit_carry_weight_changed(&mut weight_writer, &carry_state);
     }
 }
@@ -1530,11 +1584,18 @@ fn process_stash_held_for_pickup(
     config: Res<CarryConfig>,
     descriptor_vocab: Res<crate::observation::DescriptorVocabulary>,
     mut player_query: Query<(&mut CarryState, &CarryStrength), With<Player>>,
+    hold_timer_query: Query<&HoldTimer, With<HeldItem>>,
 ) {
     for request in reader.read() {
         let Ok((mut carry_state, carry_strength)) = player_query.single_mut() else {
             continue;
         };
+
+        // Read the hold timer before stashing removes the HeldItem component.
+        let held_long_enough = hold_timer_query
+            .get(request.held_entity)
+            .map(|t| t.secs >= config.min_hold_secs_for_weight_obs && !t.obs_recorded)
+            .unwrap_or(false);
 
         stash_entity_into_carry(
             &mut commands,
@@ -1542,14 +1603,19 @@ fn process_stash_held_for_pickup(
             request.held_entity,
             &request.held_material,
         );
-        record_weight_observation(
-            &request.held_material,
-            carry_strength.current,
-            &config,
-            &mut journal_writer,
-            &descriptor_vocab,
-        );
-        // Also record weight for the newly picked material.
+        // Gate the outgoing stash observation behind the hold-duration threshold.
+        if held_long_enough {
+            record_weight_observation(
+                &request.held_material,
+                carry_strength.current,
+                &config,
+                &mut journal_writer,
+                &descriptor_vocab,
+            );
+        }
+        // The newly picked item always gets an observation — the player is actively
+        // initiating a pickup, so this counts as intentional contact regardless of
+        // prior hold time. The new item's HoldTimer starts fresh on its first frame.
         record_weight_observation(
             &request.picked_material,
             carry_strength.current,
@@ -1583,6 +1649,23 @@ fn process_observe_weight(
     }
 }
 
+/// Increment the hold timer for every currently-held item each frame.
+///
+/// This runs every Update tick and accumulates wall-clock time (via
+/// `Time::delta_secs()`) on any entity that carries the `HoldTimer`
+/// component. The timer is inserted when an item enters the held state
+/// and removed (along with `HeldItem`) when it is stashed or cycled out.
+///
+/// We intentionally do NOT stop accumulating at [`CarryConfig::min_hold_secs_for_weight_obs`].
+/// Over-accumulation beyond the threshold is harmless (the obs_recorded
+/// flag prevents duplicate observations), but clamping here would
+/// obscure diagnostics.
+fn tick_hold_timer(time: Res<Time>, mut query: Query<&mut HoldTimer, With<HeldItem>>) {
+    for mut timer in &mut query {
+        timer.secs += time.delta_secs();
+    }
+}
+
 // Bevy system signatures get wide when they touch both input-derived state and
 // ECS mutation points. Keeping the queries explicit is more readable than
 // hiding them behind wrapper resources or tuple aliases here.
@@ -1597,7 +1680,7 @@ fn process_cycle_carry_intent(
     descriptor_vocab: Res<crate::observation::DescriptorVocabulary>,
     mut player_query: Query<(&mut CarryState, &CarryStrength), With<Player>>,
     camera_query: Query<Entity, With<PlayerCamera>>,
-    held_query: Query<(Entity, &GameMaterial), With<HeldItem>>,
+    held_query: Query<(Entity, &GameMaterial, Option<&HoldTimer>), With<HeldItem>>,
     carried_material_query: Query<&GameMaterial, With<InCarry>>,
 ) {
     for _intent in reader.read() {
@@ -1630,24 +1713,30 @@ fn process_cycle_carry_intent(
         let held_info = held_query
             .iter()
             .next()
-            .map(|(entity, material)| (entity, material.clone()));
-        if let Some((held_entity, held_material)) = held_info.as_ref() {
+            .map(|(entity, material, timer)| (entity, material.clone(), timer.copied()));
+        if let Some((held_entity, held_material, hold_timer)) = held_info.as_ref() {
             if !carry_state.can_stash(held_material) {
                 continue;
             }
             // Re-acquire the material ref — entity is still alive, query is
             // still valid since we only mutated CarryState (separate component).
-            let Ok((_, held_material)) = held_query.get(*held_entity) else {
+            let Ok((_, held_material, _)) = held_query.get(*held_entity) else {
                 continue;
             };
             stash_entity_into_carry(&mut commands, &mut carry_state, *held_entity, held_material);
-            record_weight_observation(
-                held_material,
-                carry_strength.current,
-                &config,
-                &mut journal_writer,
-                &descriptor_vocab,
-            );
+            // Gate stash observation: only fire if the item was held long enough.
+            let cycle_obs_ok = hold_timer
+                .map(|t| t.secs >= config.min_hold_secs_for_weight_obs && !t.obs_recorded)
+                .unwrap_or(false);
+            if cycle_obs_ok {
+                record_weight_observation(
+                    held_material,
+                    carry_strength.current,
+                    &config,
+                    &mut journal_writer,
+                    &descriptor_vocab,
+                );
+            }
         }
 
         let Some(_removed) = carry_state.remove_material(next_entity, next_material) else {
@@ -1660,13 +1749,10 @@ fn process_cycle_carry_intent(
             next_entity,
             config.hold_offset_vec3(),
         );
-        record_weight_observation(
-            next_material,
-            carry_strength.current,
-            &config,
-            &mut journal_writer,
-            &descriptor_vocab,
-        );
+        // Do NOT record a weight observation here on cycle-in.
+        // The HoldTimer inserted by move_entity_from_carry_to_hand starts at
+        // zero — the observation will fire when the item is eventually stashed
+        // (if and only if it has been held for at least min_hold_secs_for_weight_obs).
         emit_carry_weight_changed(&mut weight_writer, &carry_state);
     }
 }

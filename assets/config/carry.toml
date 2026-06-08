@@ -3,6 +3,10 @@ starting_capacity = 5.0
 starting_strength = 1.0
 growth_rate = 0.02
 
+# Minimum time (seconds) an item must be held before a weight observation is
+# recorded on stash/cycle. Fast stash sequences (< 1.5 s) produce no observation.
+min_hold_secs_for_weight_obs = 1.5
+
 # If set, carry capacity is modeled as coming from a named carry-enabling item.
 # grant_starting_device controls whether the player begins with that item already.
 carry_device_item_key = "satchel_basic"

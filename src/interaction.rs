@@ -20,7 +20,7 @@
 use bevy::picking::mesh_picking::ray_cast::{MeshRayCast, MeshRayCastSettings, RayCastVisibility};
 use bevy::prelude::*;
 
-use crate::carry::{CarryConfig, CarryState, ObserveWeight, StashHeldForPickup};
+use crate::carry::{CarryConfig, CarryState, HoldTimer, ObserveWeight, StashHeldForPickup};
 use crate::descriptions::describe_density;
 use crate::fabricator::{ActivateIntent, InputSlot, OutputSlot};
 use crate::input::InputAction;
@@ -354,6 +354,7 @@ fn process_pickup(
             .entity(target_entity)
             .remove::<MaterialObject>()
             .insert(HeldItem)
+            .insert(HoldTimer::fresh())
             .set_parent_in_place(camera_entity)
             .insert(Transform::from_translation(carry_config.hold_offset_vec3()));
         // Density is revealed on pickup via the ObserveWeight message above,
