@@ -6,7 +6,7 @@
 
 mod scenarios;
 
-use apeiron_cipher::materials::{MaterialCatalog, derive_material_from_seed};
+use apeiron_cipher::materials::{MaterialCatalog, MaterialSeed, derive_material_from_seed};
 use apeiron_cipher::world_generation::{
     BiomeRegistry, BiomeType, ChunkCoord, PaletteMaterial, WorldGenerationConfig, WorldProfile,
     derive_chunk_biome,
@@ -152,7 +152,7 @@ fn no_duplicate_names_in_catalog_across_many_seeds() {
     // Register 500 materials — the catalog should disambiguate any
     // collisions so every entry has a unique name.
     for seed in 0..500_u64 {
-        catalog.derive_and_register(seed);
+        catalog.derive_and_register(MaterialSeed(seed));
     }
 
     assert_eq!(

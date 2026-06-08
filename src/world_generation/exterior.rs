@@ -56,7 +56,7 @@ use super::{
 };
 use crate::carry::InCarry;
 use crate::interaction::HeldItem;
-use crate::materials::{GameMaterial, MaterialCatalog, MaterialObject};
+use crate::materials::{GameMaterial, MaterialCatalog, MaterialObject, MaterialSeed};
 use crate::scene::{ExteriorGroundPatch, PositionXZ, RectXZ};
 use crate::seed_util::lerp;
 
@@ -632,7 +632,7 @@ fn sync_active_exterior_chunks(
             }
 
             let mut deposit_material = material_catalog
-                .derive_and_register(placement.material_seed)
+                .derive_and_register(MaterialSeed(placement.material_seed))
                 .clone();
             // Tag the spawn origin so observation systems can wire the FoundOn
             // KnowledgeGraph edge and the CurrentPlanet journal filter can match.
