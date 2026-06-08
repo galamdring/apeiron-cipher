@@ -1145,6 +1145,8 @@ impl ConfidenceTracker {
         since = "0.1.0",
         note = "Use Confidence in journal observations instead of ConfidenceLevel"
     )]
+    // Retained for backward compatibility during migration to journal-based confidence tracking.
+    // Remove once all call-sites have been updated to use Confidence values from journal observations.
     #[allow(dead_code)]
     pub fn level(&self, seed: u64, property: PropertyName) -> ConfidenceLevel {
         ConfidenceLevel::from_count(self.count(seed, property))
