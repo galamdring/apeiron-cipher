@@ -28,6 +28,7 @@ pub mod observation;
 pub mod player;
 pub mod scene;
 pub mod seed_util;
+pub mod seeds;
 pub mod solar_system;
 pub mod surface;
 pub mod world_generation;

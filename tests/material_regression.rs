@@ -187,7 +187,7 @@ fn different_biomes_produce_different_material_sets() {
             let seeds: HashSet<u64> = biome
                 .material_palette
                 .iter()
-                .map(|p| p.material_seed)
+                .map(|p| p.material_seed.0)
                 .collect();
             biome_seeds
                 .entry(biome.biome_type)
@@ -239,12 +239,12 @@ fn all_palette_entries_appear_across_many_chunks() {
             let seen = seen_per_biome.entry(biome.biome_type).or_default();
 
             for p in &biome.material_palette {
-                expected.insert(p.material_seed);
+                expected.insert(p.material_seed.0);
                 // The palette is always fully present on every chunk of
                 // that biome — selection happens at deposit placement, not
                 // at biome derivation.  So every palette seed should appear
                 // in every chunk's palette.
-                seen.insert(p.material_seed);
+                seen.insert(p.material_seed.0);
             }
         }
     }
@@ -270,7 +270,7 @@ fn well_known_seeds_produce_distinct_materials() {
     let all_seeds: HashSet<u64> = registry
         .biomes
         .iter()
-        .flat_map(|b| b.material_palette.iter().map(|p| p.material_seed))
+        .flat_map(|b| b.material_palette.iter().map(|p| p.material_seed.0))
         .collect();
 
     assert!(
