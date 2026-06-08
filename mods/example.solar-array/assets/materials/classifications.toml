@@ -1,0 +1,44 @@
+schema_version = 1
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Solite — Material Classification
+#
+# Solite is a photovoltaic semiconductor discovered in irradiated surface layers
+# on planets near luminous stars. Its high thermal_resistance keeps it stable
+# under direct stellar radiation, while its distinctive conductivity profile
+# makes it valuable for energy-conversion components.
+#
+# Modders adding new materials should use seeds above 9000. The base game
+# reserves seeds 1001–8999. This mod uses seed 9101.
+#
+# See docs/modding/data-formats.md — "Do not collide with base game seed space".
+# ──────────────────────────────────────────────────────────────────────────────
+
+[[classification]]
+name         = "solite"         # internal key, snake_case — used in combination rules
+display_name = "Solite"         # shown in the journal
+
+# Property ranges (all values inclusive, 0.0–1.0).
+# These ranges are intentionally distinct from all base game entries:
+#   density 0.21–0.30 × thermal_resistance 0.75–0.90
+# Density min 0.21 sits above Calcium's max (0.20), preventing any compound overlap.
+# Check docs/modding/best-practices.md — "Do not overlap classification ranges".
+[classification.density]
+min = 0.21
+max = 0.30
+
+[classification.thermal_resistance]
+min = 0.75
+max = 0.90
+
+[classification.conductivity]
+min = 0.60
+max = 0.80
+
+[classification.reactivity]
+min = 0.05
+max = 0.25
+
+[classification.toxicity]
+min = 0.00
+max = 0.10
