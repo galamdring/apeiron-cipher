@@ -1,0 +1,91 @@
+schema_version = 1
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Deep-Sign Localization Table
+#
+# This file provides Deep-Sign translations for base game terms that appear in
+# the knowledge journal, examine panel, and trade interfaces. When the player
+# has sufficient language confidence in Deep-Sign, the journal can display these
+# terms alongside their native-language equivalents — teaching the player the
+# Veth word for each concept through use.
+#
+# The localization hook system works as follows:
+#   1. The language system tracks player confidence per word_id in deep_sign.toml.
+#   2. When confidence on a word_id crosses its unlock_confidence threshold, the
+#      journal surface replaces (or annotates) the base game display name with
+#      the Deep-Sign translation.
+#   3. At full fluency, the translation IS the primary label and the base name
+#      appears as a translation note — inverting the relationship to reflect
+#      what a fluent speaker would see.
+#
+# This is additive: the base game display names remain and are never removed.
+# Deep-Sign translations are displayed in addition to or instead of them,
+# depending on the player's fluency level.
+# ──────────────────────────────────────────────────────────────────────────────
+
+[language]
+id = "deep_sign"
+
+# ── Material display name overrides ──────────────────────────────────────────
+# These map base game material classification names to their Deep-Sign equivalents.
+# The unlock_word_id must match a vocabulary entry in deep_sign.toml — the
+# translation only appears when that word is known.
+
+[[localization.materials]]
+base_key        = "Ferrite"          # base game classification name
+translated_name = "Keth-Vel"         # iron-oxide glow — the Veth see it as a glowing stone
+phonetic        = "keth-vel"
+unlock_word_id  = "vel-keth"         # requires vel-keth to be unlocked first
+partial_note    = "...keth... (stone?)"  # shown before unlock; what the player guesses
+
+[[localization.materials]]
+base_key        = "Calcium"
+translated_name = "Nyr-Keth"         # ancient stone — the Veth associate it with deep-ocean floors
+phonetic        = "nyr-keth"
+unlock_word_id  = "keth"
+partial_note    = "...keth... (stone?)"
+
+[[localization.materials]]
+base_key        = "Sulfurite"
+translated_name = "Sorh-Keth"        # heat-stone — recognizable to Veth as thermal venting substrate
+phonetic        = "sorh-keth"
+unlock_word_id  = "sorh"
+partial_note    = "...sorh... (heat?)"
+
+[[localization.materials]]
+base_key        = "Prismate"
+translated_name = "Vel-Keth"         # light-stone — the Veth's own word for glowing minerals
+phonetic        = "vel-keth"
+unlock_word_id  = "vel-keth"
+partial_note    = "...vel... (light?)"
+
+# ── Journal section label overrides ──────────────────────────────────────────
+# These map the journal's internal section labels to Deep-Sign equivalents.
+# Appears when the player is reading a journal entry about a Veth NPC or in
+# a context where the Deep-Sign cultural overlay is active.
+
+[[localization.journal_labels]]
+base_key        = "Weight"
+translated_name = "Keth-Nyr"         # stone-depth (weight felt as material density × depth)
+unlock_word_id  = "keth"
+
+[[localization.journal_labels]]
+base_key        = "ThermalBehavior"
+translated_name = "Sorh-Vel"         # heat-light (thermal behavior is visible as bioluminescence shift)
+unlock_word_id  = "sorh"
+
+# ── Trade term overrides ──────────────────────────────────────────────────────
+# Trade interface terms. Fluent players negotiating with Veth traders see these
+# labels in Deep-Sign, reinforcing the cultural context of the transaction.
+
+[[localization.trade_terms]]
+base_key        = "Trade"
+translated_name = "Thess"
+unlock_word_id  = "thess"
+partial_note    = "...thess..."
+
+[[localization.trade_terms]]
+base_key        = "Agreement"
+translated_name = "Thess-Nyr"        # long-standing trade bond
+unlock_word_id  = "thess-nyr"
+partial_note    = "...thess-nyr... (some kind of agreement?)"

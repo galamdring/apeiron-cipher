@@ -1,0 +1,268 @@
+schema_version = 1
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Deep-Sign Language Definition
+#
+# Deep-Sign is a spatial, gesture-based language developed by a species of
+# bioluminescent cephalopods (the Veth) who inhabit the permanently dark layers
+# of deep-ocean worlds. Because sound propagates poorly in the crushing pressures
+# they evolved in, all communication is visual: precise limb patterns, chromatic
+# skin flashes, and body-orientation changes compose meaning.
+#
+# From the player's perspective, Veth communication looks like silent light-dance
+# before any understanding accrues. As language knowledge builds, the patterns
+# resolve into a learnable grammar.
+#
+# This file defines the language's structural properties so the language system
+# can route it to the correct phonology engine, grammar parser, and vocabulary
+# registry when Epic 23 language support ships.
+# ──────────────────────────────────────────────────────────────────────────────
+
+[language]
+# Globally unique language identifier. snake_case.
+id          = "deep_sign"
+
+# Human-readable name shown in the language selection screen and journal.
+display_name = "Deep-Sign"
+
+# Native script name (used as a label in the knowledge journal).
+native_name = "Vel-Thar" # "light-shape" in the language itself
+
+# The racial/cultural group that uses this language natively.
+race_id     = "veth"
+
+# How this language is delivered to the player:
+#   "gestural" — visual limb / skin patterns (no audio component)
+#   "vocal"    — spoken sounds
+#   "written"  — text-only encounters
+# This controls which presentation system the game uses when a Veth NPC speaks.
+modality = "gestural"
+
+# Typological family. Languages in the same family share structural DNA —
+# learning one makes the next faster. Deep-Sign belongs to "spatial" family
+# (spatial grammar, orientation-relative syntax). Other examples in this family:
+# hypothetical "null-grav-cant", "mirror-tongue".
+family = "spatial"
+
+# Where this language sits on the strangeness gradient (0.0 = near home, 1.0 = maximally alien).
+# Deep-Sign is highly alien: no sound, no word order in the human sense, spatial grammar.
+strangeness = 0.82
+
+# Base rate at which the player gains word confidence per encounter (multiplier on
+# base_observation_weight from assets/config/confidence.toml).
+# 1.0 = default rate. Deep-Sign is harder to parse: 0.65.
+acquisition_rate = 0.65
+
+# Whether encounters with this language yield knowledge even without active study.
+# true = passive exposure contributes to confidence (always-on ambient learning).
+passive_acquisition = true
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Phonology
+#
+# "Phonology" for a gestural language describes the set of primitive signals —
+# the atoms of expression. For Deep-Sign these are:
+#   - chromatic pulses (skin-flash colors and durations)
+#   - limb configurations (12 primary postures × 4 orientations)
+#   - body-axis orientation relative to the observer
+#
+# The phonology block is consumed by the audio/visual generation system to
+# produce a coherent perceptual stream when a Veth NPC communicates.
+# ──────────────────────────────────────────────────────────────────────────────
+[phonology]
+# Phonology type: "gestural" | "vocal" | "tonal_vocal" | "pictographic"
+type = "gestural"
+
+# Number of distinct limb postures (gesture atoms).
+# A higher count means more expressive but harder to parse.
+gesture_posture_count = 12
+
+# Number of orientation states per posture (body facing relative to observer).
+orientation_states = 4
+
+# Chromatic signal: palette of meaningful colors. These are the color "phonemes."
+# Values are [R, G, B] in 0..1 range.
+[[phonology.chroma_palette]]
+id    = "deep_blue"
+color = [0.05, 0.18, 0.72]
+role  = "declarative" # statement-making flash
+
+[[phonology.chroma_palette]]
+id    = "amber_pulse"
+color = [0.88, 0.55, 0.08]
+role  = "interrogative" # question-framing flash
+
+[[phonology.chroma_palette]]
+id    = "white_flare"
+color = [0.95, 0.97, 1.0]
+role  = "emphatic" # intensity / urgency marker
+
+[[phonology.chroma_palette]]
+id    = "dim_violet"
+color = [0.38, 0.08, 0.55]
+role  = "negation" # negates the immediately following unit
+
+[[phonology.chroma_palette]]
+id    = "null"
+color = [0.0, 0.0, 0.0]
+role  = "silence" # deliberate pause / sentence boundary
+
+# Duration categories for pulses (in beats, where 1 beat ≈ 400 ms).
+# Short = 1 beat, medium = 2-3 beats, long = 4+ beats.
+pulse_duration_short_beats  = 1
+pulse_duration_medium_beats = 2
+pulse_duration_long_beats   = 4
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Grammar
+#
+# Deep-Sign grammar is spatial and observer-relative. Meaning is constructed by
+# combining:
+#   1. A topic (the entity being discussed) — established by pointing or
+#      shared reference
+#   2. A predicate unit (what is true about the topic) — expressed as a
+#      limb configuration
+#   3. A spatial qualifier (where, when, how intensely) — expressed as body
+#      orientation and distance from the observer
+#
+# There is no word order in the linear sense. Sentence structure is:
+#   [TOPIC gesture] + [PREDICATE pulse-color] + [SPATIAL orientation]
+#
+# This is a Topic-Predicate-Space (TPS) grammar.
+# ──────────────────────────────────────────────────────────────────────────────
+[grammar]
+# Type: "TPS" (Topic-Predicate-Space), "SVO", "SOV", "VSO", etc.
+order_type = "TPS"
+
+# Whether the language uses agglutination (stacking suffixes/prefixes on a root).
+# Deep-Sign stacks chromatic modifiers onto a base gesture.
+agglutinative = true
+
+# Whether the language encodes tense.
+# Deep-Sign encodes temporal proximity via pulse duration, not separate markers.
+temporal_encoding = "duration" # "none" | "explicit_markers" | "duration" | "positional"
+
+# Whether the language encodes speaker-listener relationship in grammar.
+# Veth grammar requires marking who initiated a topic (social deixis).
+social_deixis = true
+
+# Complexity tier: 1 (simple) – 5 (maximally alien). Informs the UI about
+# how many grammar rules the player needs to internalize before fluency.
+complexity_tier = 4
+
+# Grammar rules (player-facing rule descriptions, populated as the player
+# accrues confidence). The game reveals these progressively — the player
+# doesn't see rule_id 2 until confidence on rule_id 1 is above 0.4.
+[[grammar.rules]]
+rule_id     = 1
+display_name = "Topic First"
+description = "The subject or object of discussion is always established with a gesture before any predicate is given. Without a topic gesture, the statement has no referent."
+unlock_confidence = 0.0   # visible from first encounter
+
+[[grammar.rules]]
+rule_id     = 2
+display_name = "Color Marks Mood"
+description = "The chromatic pulse immediately following the topic gesture encodes the speaker's intention: blue = statement, amber = question, violet = negation. White amplifies any of them."
+unlock_confidence = 0.15
+
+[[grammar.rules]]
+rule_id     = 3
+display_name = "Orientation Is Emphasis"
+description = "Body axis toward the listener means the statement is directed personally. Body axis perpendicular is impersonal/general. Facing away is reflexive (talking about oneself)."
+unlock_confidence = 0.3
+
+[[grammar.rules]]
+rule_id     = 4
+display_name = "Duration Is Time"
+description = "Short pulses mean 'now' or 'immediate.' Medium pulses mean 'near future / recent past.' Long pulses mean 'distant or habitual.' There are no tense words."
+unlock_confidence = 0.5
+
+[[grammar.rules]]
+rule_id     = 5
+display_name = "Stacked Chroma = Compound Meaning"
+description = "Two chromatic pulses without a gesture between them form a compound: blue+amber together means 'rhetorical assertion' (not a real question). Learning the compounds takes time."
+unlock_confidence = 0.7
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Vocabulary
+#
+# Core vocabulary entries. Each entry maps a word_id (the player's internal
+# reference key) to:
+#   - display_name: what the player sees in their journal once the word is known
+#   - gestural_description: how it looks (useful for in-world display / subtitles)
+#   - domain: which knowledge domain this vocabulary belongs to
+#   - unlock_confidence: how much exposure is needed before the player's journal
+#     records this as a known word
+#
+# The language system generates the actual visual performance from the phonology
+# block; this vocabulary table is the semantic layer the player learns.
+# ──────────────────────────────────────────────────────────────────────────────
+[[vocabulary]]
+word_id              = "vel"
+display_name         = "vel — light / visible"
+gestural_description = "Both upper limbs extended forward, steady blue pulse"
+domain               = "core"
+unlock_confidence    = 0.1
+
+[[vocabulary]]
+word_id              = "thar"
+display_name         = "thar — shape / form"
+gestural_description = "Upper limbs curved inward, medium amber pulse"
+domain               = "core"
+unlock_confidence    = 0.1
+
+[[vocabulary]]
+word_id              = "vel-thar"
+display_name         = "vel-thar — the language itself (\"light-shape\")"
+gestural_description = "vel sequence immediately followed by thar, white flare at junction"
+domain               = "core"
+unlock_confidence    = 0.2
+
+[[vocabulary]]
+word_id              = "keth"
+display_name         = "keth — stone / solid material"
+gestural_description = "All limbs pressed to body, long blue pulse"
+domain               = "materials"
+unlock_confidence    = 0.15
+
+[[vocabulary]]
+word_id              = "sorh"
+display_name         = "sorh — heat source"
+gestural_description = "Upper limbs fanned outward, rapid amber flashes"
+domain               = "materials"
+unlock_confidence    = 0.2
+
+[[vocabulary]]
+word_id              = "thess"
+display_name         = "thess — trade / exchange"
+gestural_description = "Both limbs extended toward listener then retracted, blue-amber compound"
+domain               = "trade"
+unlock_confidence    = 0.25
+
+[[vocabulary]]
+word_id              = "zev"
+display_name         = "zev — danger / caution"
+gestural_description = "Limbs spread wide, rapid violet pulses"
+domain               = "survival"
+unlock_confidence    = 0.1
+
+[[vocabulary]]
+word_id              = "nyr"
+display_name         = "nyr — deep / far away / long ago"
+gestural_description = "All limbs pointed down-and-away, single long dim pulse"
+domain               = "spatial"
+unlock_confidence    = 0.3
+
+[[vocabulary]]
+word_id              = "vel-keth"
+display_name         = "vel-keth — ore / mineral that glows (lit: light-stone)"
+gestural_description = "keth sequence, then rapid white flare"
+domain               = "materials"
+unlock_confidence    = 0.35
+
+[[vocabulary]]
+word_id              = "thess-nyr"
+display_name         = "thess-nyr — ancient trade agreement / longstanding debt"
+gestural_description = "thess sequence with body turned 45 degrees away, long pulse"
+domain               = "trade"
+unlock_confidence    = 0.55
