@@ -262,7 +262,7 @@ struct GeneratedSurfaceMineralPlacement {
     generated_id: GeneratedObjectId,
     deposit_site_id: GeneratedDepositSiteId,
     definition_key: String,
-    material_seed: u64,
+    material_seed: MaterialSeed,
     position_xz: PositionXZ,
     surface_y: f32,
     /// Surface normal at the placement point, used for object alignment.
@@ -280,7 +280,7 @@ struct GeneratedSurfaceMineralPlacement {
 struct GeneratedSurfaceMineralDepositSite {
     site_id: GeneratedDepositSiteId,
     definition_key: String,
-    material_seed: u64,
+    material_seed: MaterialSeed,
     center_xz: PositionXZ,
     radius_world_units: f32,
     child_count: u32,
@@ -627,12 +627,12 @@ fn sync_active_exterior_chunks(
 
         for placement in placements {
             // Skip deposits with no material (biome had an empty palette).
-            if placement.material_seed == 0 {
+            if placement.material_seed == MaterialSeed(0) {
                 continue;
             }
 
             let mut deposit_material = material_catalog
-                .derive_and_register(MaterialSeed(placement.material_seed))
+                .derive_and_register(placement.material_seed)
                 .clone();
             // Tag the spawn origin so observation systems can wire the FoundOn
             // KnowledgeGraph edge and the CurrentPlanet journal filter can match.
@@ -1029,7 +1029,7 @@ fn generate_surface_mineral_deposit_sites(
             }
 
             let density = continuous_value_field_01(
-                generation_key.placement_density_key,
+                generation_key.placement_density_key.0,
                 cell_center_xz,
                 catalog.site_density_field_scale_world_units,
             );
@@ -1043,7 +1043,7 @@ fn generate_surface_mineral_deposit_sites(
             // different biomes favor different materials.
             let Some(definition) = choose_deposit_definition(
                 &catalog.deposits,
-                generation_key.placement_variation_key,
+                generation_key.placement_variation_key.0,
                 chunk_coord,
                 local_site_index,
                 &biome.deposit_weight_modifiers,
@@ -1053,7 +1053,7 @@ fn generate_surface_mineral_deposit_sites(
             };
 
             let jitter_offset = jitter_offset_xz(
-                generation_key.placement_variation_key,
+                generation_key.placement_variation_key.0,
                 chunk_coord,
                 local_site_index,
                 spacing * catalog.site_jitter_fraction,
@@ -1073,7 +1073,7 @@ fn generate_surface_mineral_deposit_sites(
             }
 
             let radius_mix = unit_interval_01(mix_candidate_input(
-                generation_key.placement_variation_key,
+                generation_key.placement_variation_key.0,
                 chunk_coord,
                 local_site_index,
                 0x6600_0000_0000_0001,
@@ -1085,7 +1085,7 @@ fn generate_surface_mineral_deposit_sites(
             );
 
             let child_count_mix = unit_interval_01(mix_candidate_input(
-                generation_key.placement_variation_key,
+                generation_key.placement_variation_key.0,
                 chunk_coord,
                 local_site_index,
                 0x6600_0000_0000_0002,
@@ -1124,7 +1124,7 @@ fn generate_surface_mineral_deposit_sites(
                 definition_key: definition.key.clone(),
                 material_seed: choose_material_seed_from_palette(
                     &biome.material_palette,
-                    generation_key.placement_variation_key,
+                    generation_key.placement_variation_key.0,
                     chunk_coord,
                     local_site_index,
                 ),
@@ -1282,9 +1282,9 @@ fn choose_material_seed_from_palette(
     variation_key: u64,
     chunk_coord: ChunkCoord,
     local_candidate_index: u32,
-) -> u64 {
+) -> MaterialSeed {
     if palette.is_empty() {
-        return 0;
+        return MaterialSeed(0);
     }
 
     let total_weight: f32 = palette
@@ -1292,7 +1292,7 @@ fn choose_material_seed_from_palette(
         .map(|entry| entry.selection_weight.max(0.0))
         .sum();
     if total_weight <= f32::EPSILON {
-        return 0;
+        return MaterialSeed(0);
     }
 
     let roll = unit_interval_01(mix_candidate_input(
@@ -1311,7 +1311,10 @@ fn choose_material_seed_from_palette(
     }
 
     // Fallback to last entry (float rounding edge case).
-    palette.last().map(|e| e.material_seed).unwrap_or(0)
+    palette
+        .last()
+        .map(|e| e.material_seed)
+        .unwrap_or(MaterialSeed(0))
 }
 
 fn jitter_offset_xz(

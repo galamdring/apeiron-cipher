@@ -256,8 +256,24 @@ const PLANET_ENVIRONMENT_CONFIG_PATH: &str = "assets/config/planet_environment.t
 /// Analogous to `PlanetSeed` — a thin wrapper that prevents accidental
 /// mixing of unrelated `u64` values in function signatures. The inner
 /// value is the root of all deterministic derivation for a solar system.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+///
+/// Re-exported from `crate::seeds` for one-stop seed imports.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Reflect)]
 pub struct SolarSystemSeed(pub u64);
+
+impl From<u64> for SolarSystemSeed {
+    #[inline]
+    fn from(v: u64) -> Self {
+        Self(v)
+    }
+}
+
+impl From<SolarSystemSeed> for u64 {
+    #[inline]
+    fn from(s: SolarSystemSeed) -> u64 {
+        s.0
+    }
+}
 
 /// Enumeration of star spectral classes.
 ///

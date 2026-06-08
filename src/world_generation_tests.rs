@@ -1,4 +1,5 @@
 use super::*;
+use crate::seeds::{BiomeSeed, MaterialSeed, ObjectIdentitySeed, PlacementSeed};
 use crate::test_support::{FlatSurface, SteppedSurface, TiltedSurface};
 
 #[test]
@@ -116,10 +117,13 @@ fn world_profile_derives_distinct_sub_seeds() {
         profile.placement_density_seed,
         profile.placement_variation_seed
     );
-    assert_ne!(profile.placement_density_seed, profile.object_identity_seed);
     assert_ne!(
-        profile.placement_variation_seed,
-        profile.object_identity_seed
+        profile.placement_density_seed.0,
+        profile.object_identity_seed.0
+    );
+    assert_ne!(
+        profile.placement_variation_seed.0,
+        profile.object_identity_seed.0
     );
 }
 
@@ -757,9 +761,15 @@ fn biome_climate_seed_is_distinct_from_other_seeds() {
     // in WorldProfile to avoid correlated noise fields.
     let profile = WorldProfile::from_config(&sample_config()).unwrap();
 
-    assert_ne!(profile.biome_climate_seed, profile.placement_density_seed);
-    assert_ne!(profile.biome_climate_seed, profile.placement_variation_seed);
-    assert_ne!(profile.biome_climate_seed, profile.planet_seed.0);
+    assert_ne!(
+        profile.biome_climate_seed.0,
+        profile.placement_density_seed.0
+    );
+    assert_ne!(
+        profile.biome_climate_seed.0,
+        profile.placement_variation_seed.0
+    );
+    assert_ne!(profile.biome_climate_seed.0, profile.planet_seed.0);
 }
 
 #[test]
@@ -768,10 +778,10 @@ fn elevation_seed_is_distinct_from_other_seeds() {
     // in WorldProfile to avoid correlated noise fields.
     let profile = WorldProfile::from_config(&sample_config()).unwrap();
 
-    assert_ne!(profile.elevation_seed, profile.placement_density_seed);
-    assert_ne!(profile.elevation_seed, profile.placement_variation_seed);
-    assert_ne!(profile.elevation_seed, profile.object_identity_seed);
-    assert_ne!(profile.elevation_seed, profile.biome_climate_seed);
+    assert_ne!(profile.elevation_seed, profile.placement_density_seed.0);
+    assert_ne!(profile.elevation_seed, profile.placement_variation_seed.0);
+    assert_ne!(profile.elevation_seed, profile.object_identity_seed.0);
+    assert_ne!(profile.elevation_seed, profile.biome_climate_seed.0);
     assert_ne!(profile.elevation_seed, profile.planet_seed.0);
 }
 
@@ -825,15 +835,15 @@ fn biome_registry_toml_round_trip_with_palette_entries() {
     let palette = &mut registry.biomes[0].material_palette;
     palette.clear();
     palette.push(PaletteMaterial {
-        material_seed: 0xFE00_0000_0000_0001,
+        material_seed: MaterialSeed(0xFE00_0000_0000_0001),
         selection_weight: 3.0,
     });
     palette.push(PaletteMaterial {
-        material_seed: 0xFE00_0000_0000_0002,
+        material_seed: MaterialSeed(0xFE00_0000_0000_0002),
         selection_weight: 0.5,
     });
     palette.push(PaletteMaterial {
-        material_seed: 42,
+        material_seed: MaterialSeed(42),
         selection_weight: 1.0,
     });
 
@@ -882,7 +892,7 @@ fn biome_toml_round_trip_empty_palette() {
 #[test]
 fn biome_toml_round_trip_shared_seed_across_biomes() {
     // The same material seed can appear in multiple biomes with different weights.
-    let shared_seed: u64 = 0xABCD_0000_0000_0099;
+    let shared_seed: MaterialSeed = MaterialSeed(0xABCD_0000_0000_0099);
     let mut registry = BiomeRegistry::default();
 
     // Ensure at least two biomes exist.
@@ -1067,7 +1077,7 @@ fn chunk_biome_includes_correct_palette_for_each_biome_type() {
             let palette = b
                 .material_palette
                 .iter()
-                .map(|p| (p.material_seed, p.selection_weight))
+                .map(|p| (p.material_seed.0, p.selection_weight))
                 .collect::<Vec<_>>();
             (b.biome_type, palette)
         })
@@ -1090,7 +1100,7 @@ fn chunk_biome_includes_correct_palette_for_each_biome_type() {
             let actual: Vec<(u64, f32)> = biome
                 .material_palette
                 .iter()
-                .map(|p| (p.material_seed, p.selection_weight))
+                .map(|p| (p.material_seed.0, p.selection_weight))
                 .collect();
 
             assert_eq!(
@@ -1125,11 +1135,11 @@ fn chunk_biome_fallback_carries_fallback_palette() {
     let profile = WorldProfile::from_config(&sample_config()).unwrap();
     let fallback_palette = vec![
         PaletteMaterial {
-            material_seed: 0xAAAA,
+            material_seed: MaterialSeed(0xAAAA),
             selection_weight: 1.0,
         },
         PaletteMaterial {
-            material_seed: 0xBBBB,
+            material_seed: MaterialSeed(0xBBBB),
             selection_weight: 2.0,
         },
     ];
@@ -1217,7 +1227,7 @@ fn chunk_biome_hardcoded_default_has_reasonable_palette() {
         assert!(
             entry.selection_weight > 0.0,
             "palette entry seed {} has non-positive weight {}",
-            entry.material_seed,
+            entry.material_seed.0,
             entry.selection_weight
         );
     }
@@ -2319,10 +2329,10 @@ fn system_mode_is_system_derived_and_all_fields_populated() {
     // guaranteed by the mixing function, but for seed 42 they are
     // empirically distinct and non-zero — if any were zero it would
     // indicate the derivation chain is broken).
-    assert_ne!(profile.placement_density_seed, 0);
-    assert_ne!(profile.placement_variation_seed, 0);
-    assert_ne!(profile.object_identity_seed, 0);
-    assert_ne!(profile.biome_climate_seed, 0);
+    assert_ne!(profile.placement_density_seed, PlacementSeed(0));
+    assert_ne!(profile.placement_variation_seed, PlacementSeed(0));
+    assert_ne!(profile.object_identity_seed, ObjectIdentitySeed(0));
+    assert_ne!(profile.biome_climate_seed, BiomeSeed(0));
     assert_ne!(profile.elevation_seed, 0);
     assert!(profile.planet_surface_radius > 0);
     assert!(profile.planet_surface_diameter > 0);
@@ -2599,10 +2609,10 @@ fn planet_index_last_planet_succeeds() {
     );
 
     // Sub-seeds are populated (derivation chain is intact).
-    assert_ne!(profile.placement_density_seed, 0);
-    assert_ne!(profile.placement_variation_seed, 0);
-    assert_ne!(profile.object_identity_seed, 0);
-    assert_ne!(profile.biome_climate_seed, 0);
+    assert_ne!(profile.placement_density_seed, PlacementSeed(0));
+    assert_ne!(profile.placement_variation_seed, PlacementSeed(0));
+    assert_ne!(profile.object_identity_seed, ObjectIdentitySeed(0));
+    assert_ne!(profile.biome_climate_seed, BiomeSeed(0));
     assert_ne!(profile.elevation_seed, 0);
     assert!(profile.planet_surface_radius > 0);
     assert_eq!(
@@ -2684,10 +2694,10 @@ fn planet_index_one_valid_in_two_planet_system() {
     );
 
     // Sub-seeds are populated (derivation chain is intact).
-    assert_ne!(profile.placement_density_seed, 0);
-    assert_ne!(profile.placement_variation_seed, 0);
-    assert_ne!(profile.object_identity_seed, 0);
-    assert_ne!(profile.biome_climate_seed, 0);
+    assert_ne!(profile.placement_density_seed, PlacementSeed(0));
+    assert_ne!(profile.placement_variation_seed, PlacementSeed(0));
+    assert_ne!(profile.object_identity_seed, ObjectIdentitySeed(0));
+    assert_ne!(profile.biome_climate_seed, BiomeSeed(0));
     assert_ne!(profile.elevation_seed, 0);
     assert!(profile.planet_surface_radius > 0);
     assert_eq!(

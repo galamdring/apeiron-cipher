@@ -26,6 +26,7 @@ use petgraph::visit::EdgeRef;
 use serde::{Deserialize, Serialize};
 
 use crate::journal::JournalKey;
+use crate::materials::MaterialSeed;
 use crate::observation::{Confidence, ConfidenceConfig};
 use crate::world_generation::PlanetSeed;
 
@@ -1160,7 +1161,7 @@ fn property_value_for_category(
 ///   (loaded from config, typically ~0.85).
 /// - `tick` — Current game-time tick for edge timestamps.
 pub fn detect_and_wire_similar_materials(
-    new_seed: u64,
+    new_seed: MaterialSeed,
     new_material: &crate::materials::GameMaterial,
     catalog: &crate::materials::MaterialCatalog,
     graph_read: &KnowledgeGraph,
@@ -1171,7 +1172,7 @@ pub fn detect_and_wire_similar_materials(
     let new_vec = new_material.property_vector();
 
     for existing in catalog.values() {
-        if existing.seed == new_seed {
+        if existing.seed == new_seed.0 {
             continue;
         }
 
@@ -1180,7 +1181,7 @@ pub fn detect_and_wire_similar_materials(
             continue;
         }
 
-        let new_key = crate::journal::JournalKey::MaterialInstance { seed: new_seed };
+        let new_key = crate::journal::JournalKey::MaterialInstance { seed: new_seed.0 };
         let existing_key = crate::journal::JournalKey::MaterialInstance {
             seed: existing.seed,
         };
@@ -1281,7 +1282,7 @@ fn detect_similar_on_observation(
             continue;
         };
         detect_and_wire_similar_materials(
-            seed,
+            MaterialSeed(seed),
             material,
             &catalog,
             &graph.as_ref().clone(),

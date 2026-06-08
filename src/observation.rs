@@ -3410,26 +3410,26 @@ mod tests {
     #[allow(deprecated)]
     fn confidence_tracker_serde_round_trip() {
         let mut tracker = ConfidenceTracker::default();
-        tracker.record(42, PropertyName::ThermalResistance);
-        tracker.record(42, PropertyName::ThermalResistance);
-        tracker.record(7, PropertyName::Density);
+        tracker.record(MaterialSeed(42), PropertyName::ThermalResistance);
+        tracker.record(MaterialSeed(42), PropertyName::ThermalResistance);
+        tracker.record(MaterialSeed(7), PropertyName::Density);
 
         let json = serde_json::to_string(&tracker).expect("ConfidenceTracker must serialise");
         let restored: ConfidenceTracker =
             serde_json::from_str(&json).expect("ConfidenceTracker must deserialise");
 
         assert_eq!(
-            restored.count(42, PropertyName::ThermalResistance),
+            restored.count(MaterialSeed(42), PropertyName::ThermalResistance),
             2,
             "ThermalResistance count must survive round-trip"
         );
         assert_eq!(
-            restored.count(7, PropertyName::Density),
+            restored.count(MaterialSeed(7), PropertyName::Density),
             1,
             "Density count must survive round-trip"
         );
         assert_eq!(
-            restored.count(99, PropertyName::Density),
+            restored.count(MaterialSeed(99), PropertyName::Density),
             0,
             "unseen key must return zero"
         );
