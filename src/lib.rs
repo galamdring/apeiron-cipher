@@ -23,6 +23,7 @@ pub mod interaction;
 pub mod journal;
 pub mod knowledge_graph;
 pub mod materials;
+pub mod mod_manifest;
 pub mod naming;
 pub mod observation;
 pub mod player;
@@ -41,8 +42,11 @@ mod test_support;
 /// and the integration-test harness call through here so they can never
 /// drift apart.
 pub fn add_game_plugins(app: &mut App) {
-    // Scene setup: enclosed room, furniture markers, lighting (see scene.toml).
-    app.add_plugins(scene::ScenePlugin)
+    // Mod manifest: scans mods/, parses mod.toml, topological sort (Story 23.1).
+    // Runs in PreStartup so InstalledMods is available to all later plugins.
+    app.add_plugins(mod_manifest::ModManifestPlugin)
+        // Scene setup: enclosed room, furniture markers, lighting (see scene.toml).
+        .add_plugins(scene::ScenePlugin)
         // Surface override registry: walkable surfaces layered on terrain.
         .init_resource::<surface::SurfaceOverrideRegistry>()
         // Player: entity hierarchy with camera, movement, stamina.

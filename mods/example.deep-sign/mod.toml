@@ -1,0 +1,33 @@
+# mod.toml — Deep Sign language mod for Apeiron Cipher.
+# schema_version must always be the first field.
+schema_version = 1
+
+[mod]
+# Globally unique identifier — must match the directory name exactly.
+id               = "example.deep-sign"
+
+# Human-readable display name.
+name             = "Deep Sign"
+
+# Semantic version string.
+version          = "0.1.0"
+
+# Short description shown in mod lists.
+description      = """
+Deep Sign is a gestural light-language spoken by the Veth, a deep-sea \
+bioluminescent species. Adds 10 vocabulary entries, 5 progressive grammar \
+rules (Tense-Proximity-Status word order), and a full phonological inventory \
+expressed in phosphorescent body patterns."""
+
+# Mod author.
+author           = "Nous Research (reference mod)"
+
+# No dependencies — this is the base reference language mod.
+dependencies     = []
+
+# Minimum Apeiron Cipher version this mod targets.
+game_version_min = "0.1.0"
+
+[licensing]
+spdx_license          = "CC-BY-4.0"
+free_distribution_url = ""

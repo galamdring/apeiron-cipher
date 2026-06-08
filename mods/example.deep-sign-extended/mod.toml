@@ -1,0 +1,31 @@
+# mod.toml — Deep Sign Extended: adds 20 additional vocabulary entries that
+# build on the base Deep Sign language mod.
+#
+# schema_version must always be the first field.
+schema_version = 1
+
+[mod]
+# Globally unique identifier — must match the directory name exactly.
+id               = "example.deep-sign-extended"
+
+# Human-readable display name.
+name             = "Deep Sign: Extended Vocabulary"
+
+# Semantic version string.
+version          = "0.1.0"
+
+# Short description shown in mod lists.
+description      = "Adds 20 advanced vocabulary entries to the Deep Sign language mod. Requires the base Deep Sign mod."
+
+# Mod author.
+author           = "Nous Research (reference mod)"
+
+# This mod requires the base Deep Sign language mod to be present and loaded first.
+dependencies     = ["example.deep-sign"]
+
+# Minimum Apeiron Cipher version this mod targets.
+game_version_min = "0.1.0"
+
+[licensing]
+spdx_license          = "CC-BY-4.0"
+free_distribution_url = ""
