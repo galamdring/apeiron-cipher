@@ -18,6 +18,8 @@ use std::{fs, path::Path};
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 
+use crate::mod_registry::ModRegistry;
+
 // ── Asset schema ─────────────────────────────────────────────────────────
 
 /// A min/max range for a single material property.
@@ -184,8 +186,10 @@ pub struct MaterialClassificationsPlugin;
 
 impl Plugin for MaterialClassificationsPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<MaterialClassifications>()
-            .add_systems(Startup, load_material_classifications);
+        app.init_resource::<MaterialClassifications>().add_systems(
+            Startup,
+            load_material_classifications.after(crate::mod_registry::ModScanSet::Scan),
+        );
     }
 }
 
@@ -196,7 +200,10 @@ const CLASSIFICATIONS_PATH: &str = "assets/materials/classifications.toml";
 /// Runs at `Startup`. If the file is missing or malformed the resource stays
 /// empty — materials will all appear as "Unknown" in the Journal rather than
 /// crashing.
-fn load_material_classifications(mut classifications: ResMut<MaterialClassifications>) {
+fn load_material_classifications(
+    mut classifications: ResMut<MaterialClassifications>,
+    mod_registry: Res<ModRegistry>,
+) {
     let path = Path::new(CLASSIFICATIONS_PATH);
     if !path.exists() {
         warn!(
@@ -223,6 +230,73 @@ fn load_material_classifications(mut classifications: ResMut<MaterialClassificat
         "Loaded {} material classifications",
         classifications.entries.len()
     );
+
+    // Merge mod classifications (later-mod-wins for duplicate `name` keys;
+    // new names are appended).
+    for loaded_mod in mod_registry.mods() {
+        let mod_class_path = loaded_mod
+            .asset_root()
+            .join("materials")
+            .join("classifications.toml");
+        if !mod_class_path.exists() {
+            continue;
+        }
+        match fs::read_to_string(&mod_class_path) {
+            Ok(contents) => match toml::from_str::<ClassificationsFile>(&contents) {
+                Ok(mod_file) => {
+                    merge_mod_classifications(
+                        &mut classifications,
+                        loaded_mod.id(),
+                        mod_file.classification,
+                    );
+                }
+                Err(e) => {
+                    warn!(
+                        "Mod '{}': could not parse {}: {e} — skipping",
+                        loaded_mod.id(),
+                        mod_class_path.display()
+                    );
+                }
+            },
+            Err(e) => {
+                warn!(
+                    "Mod '{}': could not read {}: {e} — skipping",
+                    loaded_mod.id(),
+                    mod_class_path.display()
+                );
+            }
+        }
+    }
+}
+
+/// Merge a list of `ClassificationEntry` items from a mod into `classifications`.
+///
+/// Duplicate `name` keys are overridden (later wins). New names are appended.
+/// Used both by the live Bevy system and by unit tests.
+pub(crate) fn merge_mod_classifications(
+    classifications: &mut MaterialClassifications,
+    mod_id: &str,
+    entries: Vec<ClassificationEntry>,
+) {
+    for entry in entries {
+        if let Some(existing) = classifications
+            .entries
+            .iter_mut()
+            .find(|e| e.name == entry.name)
+        {
+            warn!(
+                "Mod '{}': classification '{}' overrides an existing entry",
+                mod_id, entry.name
+            );
+            *existing = entry;
+        } else {
+            info!(
+                "Mod '{}': added new classification '{}'",
+                mod_id, entry.name
+            );
+            classifications.entries.push(entry);
+        }
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────
@@ -471,6 +545,192 @@ mod tests {
                 result.map(|e| e.name.as_str())
             );
         }
+    }
+
+    // ── Mod overlay tests ─────────────────────────────────────────────────
+
+    /// Build a minimal `ClassificationEntry` for testing.
+    fn make_entry(name: &str, density_min: f32, density_max: f32) -> ClassificationEntry {
+        ClassificationEntry {
+            name: name.to_string(),
+            display_name: name.to_string(),
+            density: Some(PropertyRange {
+                min: density_min,
+                max: density_max,
+            }),
+            thermal_resistance: None,
+            reactivity: None,
+            conductivity: None,
+            toxicity: None,
+        }
+    }
+
+    #[test]
+    fn mod_new_entry_is_appended() {
+        let mut classifications = MaterialClassifications {
+            entries: vec![make_entry("base_rock", 0.5, 0.8)],
+        };
+
+        // A mod adds a new classification not in the base game.
+        merge_mod_classifications(
+            &mut classifications,
+            "test.mod",
+            vec![make_entry("glimmersteel", 0.81, 0.88)],
+        );
+
+        assert_eq!(classifications.entries.len(), 2);
+        assert_eq!(classifications.entries[1].name, "glimmersteel");
+    }
+
+    #[test]
+    fn mod_duplicate_entry_overrides_base() {
+        let mut classifications = MaterialClassifications {
+            entries: vec![make_entry("ferrite", 0.70, 0.80)],
+        };
+
+        // A mod ships an updated density range for "ferrite".
+        merge_mod_classifications(
+            &mut classifications,
+            "test.override-mod",
+            vec![make_entry("ferrite", 0.72, 0.85)],
+        );
+
+        // Still only one entry — the mod replaced the base one.
+        assert_eq!(classifications.entries.len(), 1);
+        let entry = &classifications.entries[0];
+        assert_eq!(entry.name, "ferrite");
+        let range = entry.density.as_ref().unwrap();
+        assert!((range.min - 0.72).abs() < 1e-6, "min should be mod value");
+        assert!((range.max - 0.85).abs() < 1e-6, "max should be mod value");
+    }
+
+    #[test]
+    fn later_mod_wins_over_earlier_mod() {
+        let mut classifications = MaterialClassifications {
+            entries: vec![make_entry("ferrite", 0.70, 0.80)],
+        };
+
+        // Mod A overrides with a wider range.
+        merge_mod_classifications(
+            &mut classifications,
+            "mod-a",
+            vec![make_entry("ferrite", 0.60, 0.90)],
+        );
+        // Mod B (loaded later) overrides again with a narrow range.
+        merge_mod_classifications(
+            &mut classifications,
+            "mod-b",
+            vec![make_entry("ferrite", 0.75, 0.77)],
+        );
+
+        assert_eq!(classifications.entries.len(), 1);
+        let range = classifications.entries[0].density.as_ref().unwrap();
+        // Mod B's values should win.
+        assert!((range.min - 0.75).abs() < 1e-6, "mod-b min should win");
+        assert!((range.max - 0.77).abs() < 1e-6, "mod-b max should win");
+    }
+
+    #[test]
+    fn mod_assets_in_filesystem_are_loaded_and_override_base() {
+        use crate::mod_registry::discover_mods;
+        use std::fs;
+
+        // Build a temporary mods directory with one mod that overrides
+        // a "test_mineral" classification.
+        let tmp = std::env::temp_dir().join("apeiron_classif_mod_test");
+        let mod_dir = tmp.join("test.classif-mod");
+        let assets_dir = mod_dir.join("assets").join("materials");
+        fs::create_dir_all(&assets_dir).expect("create mod assets dir");
+
+        // Write mod.toml manifest.
+        fs::write(
+            mod_dir.join("mod.toml"),
+            r#"schema_version = 1
+
+[mod]
+id               = "test.classif-mod"
+name             = "Classification Override Mod"
+version          = "1.0.0"
+game_version_min = "0.1.0"
+
+[licensing]
+spdx_license          = "CC-BY-4.0"
+free_distribution_url = ""
+"#,
+        )
+        .expect("write mod.toml");
+
+        // Write a classifications.toml that overrides "test_mineral" and adds "new_gem".
+        fs::write(
+            assets_dir.join("classifications.toml"),
+            r#"[[classification]]
+name         = "test_mineral"
+display_name = "Test Mineral"
+[classification.density]
+min = 0.90
+max = 0.99
+
+[[classification]]
+name         = "new_gem"
+display_name = "New Gem"
+[classification.density]
+min = 0.40
+max = 0.55
+"#,
+        )
+        .expect("write mod classifications.toml");
+
+        // Discover the mod via the pure `discover_mods` function.
+        let mods = discover_mods(&tmp);
+        assert_eq!(mods.len(), 1, "expected exactly one discovered mod");
+
+        // Base classifications contain "test_mineral" with different ranges.
+        let mut classifications = MaterialClassifications {
+            entries: vec![make_entry("test_mineral", 0.50, 0.60)],
+        };
+
+        // Read and apply the mod's asset file.
+        let mod_class_path = mods[0]
+            .asset_root()
+            .join("materials")
+            .join("classifications.toml");
+        assert!(
+            mod_class_path.exists(),
+            "mod classifications.toml must exist"
+        );
+        let contents = fs::read_to_string(&mod_class_path).expect("read mod classifications");
+        let mod_file: ClassificationsFile =
+            toml::from_str(&contents).expect("parse mod classifications");
+        merge_mod_classifications(&mut classifications, mods[0].id(), mod_file.classification);
+
+        // Verify override: test_mineral's range is now the mod's values.
+        assert_eq!(classifications.entries.len(), 2, "base + new_gem");
+        let test_mineral = classifications
+            .entries
+            .iter()
+            .find(|e| e.name == "test_mineral")
+            .expect("test_mineral must exist after merge");
+        let range = test_mineral.density.as_ref().unwrap();
+        assert!(
+            (range.min - 0.90).abs() < 1e-6,
+            "override min should be 0.90"
+        );
+        assert!(
+            (range.max - 0.99).abs() < 1e-6,
+            "override max should be 0.99"
+        );
+
+        // Verify new entry: new_gem was added.
+        let new_gem = classifications
+            .entries
+            .iter()
+            .find(|e| e.name == "new_gem")
+            .expect("new_gem must be appended");
+        let gem_range = new_gem.density.as_ref().unwrap();
+        assert!((gem_range.min - 0.40).abs() < 1e-6);
+        assert!((gem_range.max - 0.55).abs() < 1e-6);
+
+        fs::remove_dir_all(&tmp).ok();
     }
 }
 

@@ -8,7 +8,7 @@ mod scenarios;
 
 use apeiron_cipher::materials::{MaterialCatalog, MaterialSeed, derive_material_from_seed};
 use apeiron_cipher::world_generation::{
-    BiomeRegistry, BiomeType, ChunkCoord, PaletteMaterial, WorldGenerationConfig, WorldProfile,
+    BiomeRegistry, ChunkCoord, PaletteMaterial, WorldGenerationConfig, WorldProfile,
     derive_chunk_biome,
 };
 use std::collections::{HashMap, HashSet};
@@ -179,7 +179,7 @@ fn different_biomes_produce_different_material_sets() {
     let registry = BiomeRegistry::default();
 
     // Sample many chunks and collect material palettes per biome.
-    let mut biome_seeds: HashMap<BiomeType, HashSet<u64>> = HashMap::new();
+    let mut biome_seeds: HashMap<String, HashSet<u64>> = HashMap::new();
 
     for x in -50..50 {
         for z in -50..50 {
@@ -229,13 +229,15 @@ fn all_palette_entries_appear_across_many_chunks() {
     let registry = BiomeRegistry::default();
 
     // For each biome, track which palette seeds we actually see.
-    let mut seen_per_biome: HashMap<BiomeType, HashSet<u64>> = HashMap::new();
-    let mut expected_per_biome: HashMap<BiomeType, HashSet<u64>> = HashMap::new();
+    let mut seen_per_biome: HashMap<String, HashSet<u64>> = HashMap::new();
+    let mut expected_per_biome: HashMap<String, HashSet<u64>> = HashMap::new();
 
     for x in -50..50 {
         for z in -50..50 {
             let biome = derive_chunk_biome(&profile, &registry, ChunkCoord::new(x, z), None);
-            let expected = expected_per_biome.entry(biome.biome_type).or_default();
+            let expected = expected_per_biome
+                .entry(biome.biome_type.clone())
+                .or_default();
             let seen = seen_per_biome.entry(biome.biome_type).or_default();
 
             for p in &biome.material_palette {
@@ -374,7 +376,7 @@ fn biome_ground_colors_are_valid_and_distinct_across_biome_types() {
     let registry = BiomeRegistry::default();
 
     // Sample a large grid of chunks to collect biome→color mappings.
-    let mut biome_colors: HashMap<BiomeType, Vec<[f32; 3]>> = HashMap::new();
+    let mut biome_colors: HashMap<String, Vec<[f32; 3]>> = HashMap::new();
 
     for x in -50..50 {
         for z in -50..50 {

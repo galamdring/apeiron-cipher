@@ -1,7 +1,7 @@
 use super::*;
 use crate::seeds::MaterialSeed;
 use crate::test_support::{FlatSurface, SteppedSurface, TiltedSurface};
-use crate::world_generation::{BiomeType, PlanetSeed, WorldGenerationConfig};
+use crate::world_generation::{PlanetSeed, WorldGenerationConfig};
 
 fn sample_profile() -> WorldProfile {
     WorldProfile::from_config(&WorldGenerationConfig {
@@ -30,7 +30,7 @@ fn sample_catalog() -> SurfaceMineralDepositCatalog {
 /// exercise the same generation logic without biome influence.
 fn sample_biome() -> ChunkBiome {
     ChunkBiome {
-        biome_type: BiomeType::MineralSteppe,
+        biome_type: "mineral_steppe".to_string(),
         ground_color: [0.42, 0.45, 0.30],
         density_modifier: 1.0,
         deposit_weight_modifiers: HashMap::new(),
@@ -1806,14 +1806,14 @@ fn density_modifier_increases_deposit_count() {
     let chunk = ChunkCoord::new(0, -1);
 
     let neutral_biome = ChunkBiome {
-        biome_type: BiomeType::MineralSteppe,
+        biome_type: "mineral_steppe".to_string(),
         ground_color: [0.5, 0.5, 0.5],
         density_modifier: 1.0,
         deposit_weight_modifiers: HashMap::new(),
         material_palette: Vec::new(),
     };
     let dense_biome = ChunkBiome {
-        biome_type: BiomeType::ScorchedFlats,
+        biome_type: "scorched_flats".to_string(),
         ground_color: [0.5, 0.5, 0.5],
         density_modifier: 3.0,
         deposit_weight_modifiers: HashMap::new(),
@@ -1883,7 +1883,7 @@ fn density_modifier_zero_does_not_panic() {
     };
     let surface = sample_flat_surface();
     let biome = ChunkBiome {
-        biome_type: BiomeType::MineralSteppe,
+        biome_type: "mineral_steppe".to_string(),
         ground_color: [0.5, 0.5, 0.5],
         density_modifier: 0.0,
         deposit_weight_modifiers: HashMap::new(),
@@ -2026,7 +2026,7 @@ fn all_deposits_zeroed_in_generation_produces_no_placements() {
     }
 
     let biome = ChunkBiome {
-        biome_type: BiomeType::MineralSteppe,
+        biome_type: "mineral_steppe".to_string(),
         ground_color: [0.1, 0.1, 0.1],
         density_modifier: 1.0,
         deposit_weight_modifiers: modifiers,
@@ -2297,7 +2297,7 @@ fn deposit_sites_carry_material_seed_from_palette() {
     let seed_a: MaterialSeed = MaterialSeed(0xFE00_0000_0000_0001);
     let seed_b: MaterialSeed = MaterialSeed(0xFE00_0000_0000_0002);
     let biome = ChunkBiome {
-        biome_type: BiomeType::MineralSteppe,
+        biome_type: "mineral_steppe".to_string(),
         ground_color: [0.5, 0.5, 0.5],
         density_modifier: 1.0,
         deposit_weight_modifiers: HashMap::new(),
@@ -2346,7 +2346,7 @@ fn deposit_placements_inherit_material_seed_from_site() {
 
     let seed: MaterialSeed = MaterialSeed(0xAB00_0000_0000_0099);
     let biome = ChunkBiome {
-        biome_type: BiomeType::MineralSteppe,
+        biome_type: "mineral_steppe".to_string(),
         ground_color: [0.3, 0.3, 0.3],
         density_modifier: 1.0,
         deposit_weight_modifiers: HashMap::new(),
@@ -2390,7 +2390,7 @@ fn empty_palette_produces_zero_material_seed() {
 
     // Biome with no material palette entries.
     let biome = ChunkBiome {
-        biome_type: BiomeType::MineralSteppe,
+        biome_type: "mineral_steppe".to_string(),
         ground_color: [0.2, 0.2, 0.2],
         density_modifier: 1.0,
         deposit_weight_modifiers: HashMap::new(),
@@ -2433,7 +2433,7 @@ fn empty_palette_baseline_placements_exist_but_all_have_zero_seed() {
     let surface = sample_flat_surface();
 
     let biome = ChunkBiome {
-        biome_type: BiomeType::MineralSteppe,
+        biome_type: "mineral_steppe".to_string(),
         ground_color: [0.2, 0.2, 0.2],
         density_modifier: 1.0,
         deposit_weight_modifiers: HashMap::new(),
@@ -2479,7 +2479,7 @@ fn all_zero_weight_palette_produces_zero_material_seed() {
     let surface = sample_flat_surface();
 
     let biome = ChunkBiome {
-        biome_type: BiomeType::MineralSteppe,
+        biome_type: "mineral_steppe".to_string(),
         ground_color: [0.3, 0.3, 0.3],
         density_modifier: 1.0,
         deposit_weight_modifiers: HashMap::new(),
@@ -2540,7 +2540,7 @@ fn single_palette_entry_always_selected() {
 
     let sole_seed: MaterialSeed = MaterialSeed(0xAA00_0000_0000_0042);
     let biome = ChunkBiome {
-        biome_type: BiomeType::MineralSteppe,
+        biome_type: "mineral_steppe".to_string(),
         ground_color: [0.4, 0.4, 0.4],
         density_modifier: 1.0,
         deposit_weight_modifiers: HashMap::new(),
@@ -2644,7 +2644,7 @@ fn first_chunk_generation_populates_catalog_from_biome_palette() {
 
     let palette_seeds: Vec<u64> = vec![1001, 1003, 1006];
     let biome = ChunkBiome {
-        biome_type: BiomeType::MineralSteppe,
+        biome_type: "mineral_steppe".to_string(),
         ground_color: [0.5, 0.5, 0.5],
         density_modifier: 1.0,
         deposit_weight_modifiers: HashMap::new(),
@@ -2738,7 +2738,7 @@ fn second_chunk_in_same_biome_reuses_catalog_entries_no_duplicates() {
 
     let palette_seeds: Vec<u64> = vec![1001, 1003, 1006];
     let biome = ChunkBiome {
-        biome_type: BiomeType::MineralSteppe,
+        biome_type: "mineral_steppe".to_string(),
         ground_color: [0.5, 0.5, 0.5],
         density_modifier: 1.0,
         deposit_weight_modifiers: HashMap::new(),
@@ -2894,14 +2894,14 @@ fn palette_swap_does_not_change_deposit_count() {
     ];
 
     let biome_a = ChunkBiome {
-        biome_type: BiomeType::ScorchedFlats,
+        biome_type: "scorched_flats".to_string(),
         ground_color: [0.5, 0.5, 0.5],
         density_modifier: 1.0,
         deposit_weight_modifiers: HashMap::new(),
         material_palette: palette_a,
     };
     let biome_b = ChunkBiome {
-        biome_type: BiomeType::FrostShelf,
+        biome_type: "frost_shelf".to_string(),
         ground_color: [0.5, 0.5, 0.5],
         density_modifier: 1.0,
         deposit_weight_modifiers: HashMap::new(),
@@ -3027,12 +3027,12 @@ fn smoke_test_cross_biome_chunks_all_deposits_have_valid_materials() {
         ChunkCoord::new(diameter / 4, diameter / 6),
     ];
 
-    let mut observed_biome_types: HashSet<BiomeType> = HashSet::new();
+    let mut observed_biome_types: HashSet<String> = HashSet::new();
     let mut total_deposits = 0_usize;
 
     for &chunk in &chunks {
         let biome = derive_chunk_biome(&profile, &biome_registry, chunk, None);
-        observed_biome_types.insert(biome.biome_type);
+        observed_biome_types.insert(biome.biome_type.clone());
 
         let palette_seeds: HashSet<u64> = biome
             .material_palette
@@ -3109,7 +3109,7 @@ fn disjoint_biome_palettes_produce_disjoint_deposit_materials() {
 
     // Scorched-style biome: only seeds 1001, 1003, 1007.
     let scorched_biome = ChunkBiome {
-        biome_type: BiomeType::ScorchedFlats,
+        biome_type: "scorched_flats".to_string(),
         ground_color: [0.55, 0.38, 0.22],
         density_modifier: 1.15,
         deposit_weight_modifiers: HashMap::new(),
@@ -3131,7 +3131,7 @@ fn disjoint_biome_palettes_produce_disjoint_deposit_materials() {
 
     // Frost-style biome: only seeds 1004, 1010, 1008 — completely disjoint.
     let frost_biome = ChunkBiome {
-        biome_type: BiomeType::FrostShelf,
+        biome_type: "frost_shelf".to_string(),
         ground_color: [0.42, 0.48, 0.56],
         density_modifier: 0.7,
         deposit_weight_modifiers: HashMap::new(),
@@ -3389,7 +3389,7 @@ fn every_deposit_material_is_pickup_ready() {
     let surface = PlanetSurface::new_from_profile(&profile, &config);
 
     let biome = ChunkBiome {
-        biome_type: BiomeType::ScorchedFlats,
+        biome_type: "scorched_flats".to_string(),
         ground_color: [0.55, 0.38, 0.22],
         density_modifier: 1.15,
         deposit_weight_modifiers: HashMap::new(),
@@ -3493,7 +3493,7 @@ fn restart_same_seed_same_biome_yields_identical_materials() {
     // Three distinct biomes with overlapping and unique palette entries.
     let biomes = [
         ChunkBiome {
-            biome_type: BiomeType::ScorchedFlats,
+            biome_type: "scorched_flats".to_string(),
             ground_color: [0.6, 0.3, 0.1],
             density_modifier: 0.8,
             deposit_weight_modifiers: HashMap::new(),
@@ -3513,7 +3513,7 @@ fn restart_same_seed_same_biome_yields_identical_materials() {
             ],
         },
         ChunkBiome {
-            biome_type: BiomeType::MineralSteppe,
+            biome_type: "mineral_steppe".to_string(),
             ground_color: [0.42, 0.45, 0.30],
             density_modifier: 1.0,
             deposit_weight_modifiers: HashMap::new(),
@@ -3537,7 +3537,7 @@ fn restart_same_seed_same_biome_yields_identical_materials() {
             ],
         },
         ChunkBiome {
-            biome_type: BiomeType::FrostShelf,
+            biome_type: "frost_shelf".to_string(),
             ground_color: [0.7, 0.75, 0.85],
             density_modifier: 1.2,
             deposit_weight_modifiers: HashMap::new(),
@@ -3761,7 +3761,7 @@ fn restart_system_seed_chain_yields_identical_world() {
     struct SessionResult {
         profile: WorldProfile,
         /// (chunk, biome_type) pairs in insertion order.
-        biome_types: Vec<(ChunkCoord, BiomeType)>,
+        biome_types: Vec<(ChunkCoord, String)>,
         /// (chunk, elevation_at_origin) pairs for terrain comparison.
         elevations: Vec<(ChunkCoord, f32)>,
         materials: MaterialCatalog,
@@ -3797,7 +3797,7 @@ fn restart_system_seed_chain_yields_identical_world() {
         for &chunk in chunks {
             // Derive biome using planet environment from the system context.
             let biome = derive_chunk_biome(&profile, biome_registry, chunk, planet_env);
-            biome_types.push((chunk, biome.biome_type));
+            biome_types.push((chunk, biome.biome_type.clone()));
 
             // Sample elevation at chunk origin to verify terrain identity.
             let origin = chunk_origin_xz(chunk, profile.chunk_size_world_units);
@@ -4006,7 +4006,7 @@ fn restart_system_seed_chain_yields_identical_world() {
 /// Build a biome with a real material palette for deposit tests.
 fn sample_biome_with_palette() -> ChunkBiome {
     ChunkBiome {
-        biome_type: BiomeType::MineralSteppe,
+        biome_type: "mineral_steppe".to_string(),
         ground_color: [0.5, 0.5, 0.5],
         density_modifier: 1.0,
         deposit_weight_modifiers: HashMap::new(),
