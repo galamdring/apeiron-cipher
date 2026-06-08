@@ -53,9 +53,13 @@ type RegisterPayload struct {
 }
 
 // RegisteredPayload is the server's acknowledgement.
+// ICEServers carries the full ICE configuration the client should pass to its
+// RTCPeerConnection constructor. This avoids a separate round-trip and means
+// the client always uses fresh TURN credentials (short-lived HMAC-signed).
 type RegisteredPayload struct {
-	SessionID   string `json:"session_id"`
-	DisplayName string `json:"display_name"`
+	SessionID   string      `json:"session_id"`
+	DisplayName string      `json:"display_name"`
+	ICEServers  []ICEServer `json:"ice_servers"` // may be empty if no ICE servers configured
 }
 
 // --- Lobbies ---

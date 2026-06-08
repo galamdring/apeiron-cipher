@@ -92,11 +92,15 @@ type relayPayload struct {
 // Hub manages all signaling state and message dispatch.
 type Hub struct {
 	cmds chan cmd
+	ice  *ICEConfigProvider
 }
 
 // NewHub creates an uninitialised Hub. Call Run to start it.
-func NewHub() *Hub {
-	return &Hub{cmds: make(chan cmd, 256)}
+// ice configures ICE server list and TURN credential rotation; use
+// NewICEConfigProviderFromEnv() for production or NewICEConfigProvider() in
+// tests.
+func NewHub(ice *ICEConfigProvider) *Hub {
+	return &Hub{cmds: make(chan cmd, 256), ice: ice}
 }
 
 // Run starts the hub's event loop. It returns when ctx is cancelled.
@@ -143,9 +147,11 @@ func (h *Hub) dispatch(c cmd, sessions map[string]*session, lobbies map[string]*
 			name = "player-" + p.sessionID[:6]
 		}
 		s.displayName = name
+		iceConfig := h.ice.ConfigForSession(s.id)
 		s.conn.Send(MakeEnvelope(MsgRegistered, RegisteredPayload{
 			SessionID:   s.id,
 			DisplayName: s.displayName,
+			ICEServers:  iceConfig.ICEServers,
 		}))
 
 	case cmdCreateLobby:
