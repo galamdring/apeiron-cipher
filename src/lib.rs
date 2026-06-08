@@ -25,6 +25,7 @@ pub mod journal;
 pub mod knowledge_graph;
 pub mod materials;
 pub mod mod_manifest;
+pub mod mod_validator;
 pub mod naming;
 pub mod observation;
 pub mod player;
