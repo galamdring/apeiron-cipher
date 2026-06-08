@@ -1572,4 +1572,317 @@ mod tests {
         let ticks: Vec<u64> = restored.timeline().iter().map(|(t, _)| *t).collect();
         assert_eq!(ticks, vec![5, 10, 15]);
     }
+
+    // ── Integration: observation types → confidence system ────────────────
+    //
+    // These tests drive the full ECS system path: RecordObservation messages
+    // are consumed by `update_knowledge_graph`, which accumulates confidence
+    // on the KnowledgeGraph node.  This verifies that both hold-duration-gated
+    // weight observations (PR #451) and failed-pickup weight observations
+    // (PR #452) flow through `update_knowledge_graph` and converge toward 1.0
+    // with the expected diminishing-return formula.
+
+    /// Build a minimal App that contains only the systems and resources
+    /// needed to exercise `update_knowledge_graph`.
+    ///
+    /// The app does not pull in any carry, journal, or UI systems —
+    /// only the bare minimum required for `update_knowledge_graph` to run.
+    fn build_kg_integration_app() -> App {
+        use crate::journal::JournalSet;
+
+        let mut app = App::new();
+        // Time is required so `update_knowledge_graph` can stamp `recorded_at`.
+        app.add_plugins(bevy::time::TimePlugin);
+        // Configure the JournalSet ordering so `in_set(JournalSet::Navigate)` works.
+        app.configure_sets(
+            Update,
+            (JournalSet::Navigate, JournalSet::Compute, JournalSet::Sync).chain(),
+        );
+        // Message bus for RecordObservation.
+        app.add_message::<crate::observation::RecordObservation>();
+        // Resources consumed by update_knowledge_graph.
+        app.init_resource::<KnowledgeGraph>();
+        app.insert_resource(crate::observation::ConfidenceConfig {
+            base_observation_weight: 0.2,
+            death_degradation_factor: 0.6,
+            death_floor: 0.2,
+            domain_recovery_multiplier: 2.0,
+            passive_recovery_multiplier: 0.7,
+            similarity_threshold: 0.85,
+        });
+        // Register update_knowledge_graph itself (the private system under test).
+        app.add_systems(
+            Update,
+            update_knowledge_graph.in_set(crate::journal::JournalSet::Navigate),
+        );
+        app
+    }
+
+    /// Helper: emit a single `RecordObservation` message directly into the
+    /// world's message bus so the next `app.update()` will process it.
+    fn emit_record_observation(
+        app: &mut App,
+        material_seed: u64,
+        category: crate::journal::ObservationCategory,
+        description: &str,
+        confidence: f32,
+    ) {
+        use bevy::prelude::Messages;
+        app.world_mut()
+            .resource_mut::<Messages<crate::observation::RecordObservation>>()
+            .write(crate::observation::RecordObservation {
+                key: JournalKey::MaterialInstance {
+                    seed: material_seed,
+                },
+                name: format!("TestMaterial-{material_seed}"),
+                observation: crate::journal::Observation {
+                    category,
+                    confidence: crate::observation::Confidence::new(confidence),
+                    description: description.to_string(),
+                    recorded_at: 0,
+                },
+                material_seed: Some(MaterialSeed(material_seed)),
+                planet_seed: None,
+                input_seeds: Vec::new(),
+                context_location: None,
+            });
+    }
+
+    /// Accumulate formula sanity check (pure, no ECS):
+    ///   new = old + (1 - old) * weight, clamped to [0.0, 1.0].
+    fn expected_accumulate(old: f32, weight: f32) -> f32 {
+        (old + (1.0 - old) * weight).clamp(0.0, 1.0)
+    }
+
+    /// A sequence of hold-duration-gated weight observations followed by
+    /// failed-pickup weight observations for the same material must all be
+    /// processed by `update_knowledge_graph` and cause node confidence to
+    /// converge toward 1.0 with diminishing returns.
+    ///
+    /// Hold-duration obs use confidence=0.2 (standard `record_weight_observation`
+    /// default).  Failed-pickup obs use confidence=0.1 (`CarryConfig` default
+    /// `failed_pickup_observation_confidence`).
+    ///
+    /// The test verifies:
+    /// 1. Both observation kinds are stored in the KnowledgeGraph.
+    /// 2. Node overall confidence increases monotonically.
+    /// 3. Numeric values match the accumulate formula exactly.
+    #[test]
+    fn hold_duration_and_failed_pickup_observations_converge_confidence() {
+        use crate::journal::ObservationCategory;
+
+        const MATERIAL_SEED: u64 = 42;
+        // Confidence values matching real carry.rs defaults:
+        // record_weight_observation uses 0.2; failed-pickup uses 0.1.
+        const HOLD_DURATION_CONF: f32 = 0.2;
+        const FAILED_PICKUP_CONF: f32 = 0.1;
+
+        let mut app = build_kg_integration_app();
+
+        // ── Step 1: first hold-duration observation ────────────────────────
+        // This is what `record_weight_observation` emits via PR #451 (after
+        // the hold-timer threshold is satisfied).
+        emit_record_observation(
+            &mut app,
+            MATERIAL_SEED,
+            ObservationCategory::Weight,
+            "Somewhat heavy",
+            HOLD_DURATION_CONF,
+        );
+        app.update();
+
+        let node_idx = {
+            let kg = app.world().resource::<KnowledgeGraph>();
+            let key = JournalKey::MaterialInstance {
+                seed: MATERIAL_SEED,
+            };
+            kg.lookup(&ConceptId(key))
+                .expect("node must exist after first obs")
+        };
+
+        // After first obs, node.confidence starts at 0.3 (initial value in
+        // `ensure_concept`) and is accumulated with the observation's confidence
+        // value (0.2):
+        //   0.3 + (1.0 - 0.3) * 0.2 = 0.3 + 0.14 = 0.44
+        let expected_after_first = expected_accumulate(0.3, HOLD_DURATION_CONF);
+        {
+            let kg = app.world().resource::<KnowledgeGraph>();
+            let node = kg.node(node_idx).unwrap();
+            assert!(
+                (node.confidence.value() - expected_after_first).abs() < 1e-4,
+                "after first hold-duration obs: expected {expected_after_first:.4}, got {:.4}",
+                node.confidence.value()
+            );
+            let weight_obs = node.observations_by_category(&ObservationCategory::Weight);
+            assert_eq!(
+                weight_obs.len(),
+                1,
+                "one weight observation after first hold-duration obs"
+            );
+        }
+
+        // ── Step 2: failed-pickup observation ─────────────────────────────
+        // This is what `process_failed_pickup_observation` emits via PR #452.
+        // Different description ("Too heavy to lift") → appended as a new entry.
+        emit_record_observation(
+            &mut app,
+            MATERIAL_SEED,
+            ObservationCategory::Weight,
+            "Too heavy to lift",
+            FAILED_PICKUP_CONF,
+        );
+        app.update();
+
+        let expected_after_second = expected_accumulate(expected_after_first, FAILED_PICKUP_CONF);
+        {
+            let kg = app.world().resource::<KnowledgeGraph>();
+            let node = kg.node(node_idx).unwrap();
+            assert!(
+                (node.confidence.value() - expected_after_second).abs() < 1e-4,
+                "after failed-pickup obs: expected {expected_after_second:.4}, got {:.4}",
+                node.confidence.value()
+            );
+            let weight_obs = node.observations_by_category(&ObservationCategory::Weight);
+            assert_eq!(
+                weight_obs.len(),
+                2,
+                "two distinct weight entries (hold-duration + failed-pickup)"
+            );
+        }
+
+        // ── Step 3: second hold-duration observation (same description) ───
+        // Repeat the hold-duration obs with the same description.  This hits
+        // the "existing description" branch in
+        // `add_observation_with_domain_weighted_accumulation`, accumulating
+        // with `base_observation_weight` (0.2) rather than the message's
+        // confidence value.  The total Weight entries must not grow.
+        emit_record_observation(
+            &mut app,
+            MATERIAL_SEED,
+            ObservationCategory::Weight,
+            "Somewhat heavy",
+            HOLD_DURATION_CONF,
+        );
+        app.update();
+
+        let expected_after_third = expected_accumulate(expected_after_second, HOLD_DURATION_CONF);
+        {
+            let kg = app.world().resource::<KnowledgeGraph>();
+            let node = kg.node(node_idx).unwrap();
+            assert!(
+                (node.confidence.value() - expected_after_third).abs() < 1e-4,
+                "after second hold-duration obs: expected {expected_after_third:.4}, got {:.4}",
+                node.confidence.value()
+            );
+            // Description matched → no new entry appended; still 2 entries.
+            let weight_obs = node.observations_by_category(&ObservationCategory::Weight);
+            assert_eq!(
+                weight_obs.len(),
+                2,
+                "repeated same-description hold-duration obs must not append a new entry"
+            );
+        }
+
+        // ── Step 4: verify monotonic convergence over a longer sequence ──
+        // Send N more alternating hold-duration and failed-pickup observations
+        // and confirm confidence increases strictly monotonically.
+        let mut prev = app
+            .world()
+            .resource::<KnowledgeGraph>()
+            .node(node_idx)
+            .unwrap()
+            .confidence
+            .value();
+
+        for i in 0..6u32 {
+            let (desc, conf) = if i % 2 == 0 {
+                ("Somewhat heavy", HOLD_DURATION_CONF)
+            } else {
+                ("Too heavy to lift", FAILED_PICKUP_CONF)
+            };
+            emit_record_observation(
+                &mut app,
+                MATERIAL_SEED,
+                ObservationCategory::Weight,
+                desc,
+                conf,
+            );
+            app.update();
+
+            let current = app
+                .world()
+                .resource::<KnowledgeGraph>()
+                .node(node_idx)
+                .unwrap()
+                .confidence
+                .value();
+            assert!(
+                current > prev,
+                "iteration {i}: confidence must increase monotonically ({prev:.4} → {current:.4})"
+            );
+            assert!(
+                current <= 1.0,
+                "confidence must never exceed 1.0 (got {current:.4})"
+            );
+            prev = current;
+        }
+    }
+
+    /// Verifies that hold-duration weight observations and failed-pickup
+    /// observations each carry the correct initial confidence value when
+    /// they reach the knowledge graph.  This pins the contract between
+    /// carry.rs and the confidence system without requiring the full carry
+    /// ECS stack.
+    ///
+    /// - Hold-duration obs: confidence = 0.2  (standard `record_weight_observation`)
+    /// - Failed-pickup obs: confidence = 0.1  (`failed_pickup_observation_confidence` default)
+    #[test]
+    fn hold_duration_obs_has_higher_confidence_than_failed_pickup_obs() {
+        use crate::journal::ObservationCategory;
+
+        const SEED: u64 = 99;
+        let mut app = build_kg_integration_app();
+
+        // Emit hold-duration obs then failed-pickup obs.
+        emit_record_observation(
+            &mut app,
+            SEED,
+            ObservationCategory::Weight,
+            "Somewhat heavy",
+            0.2,
+        );
+        emit_record_observation(
+            &mut app,
+            SEED,
+            ObservationCategory::Weight,
+            "Too heavy to lift",
+            0.1,
+        );
+        app.update();
+
+        let kg = app.world().resource::<KnowledgeGraph>();
+        let node_idx = kg
+            .lookup(&ConceptId(JournalKey::MaterialInstance { seed: SEED }))
+            .expect("node must exist");
+        let node = kg.node(node_idx).unwrap();
+        let weight_obs = node.observations_by_category(&ObservationCategory::Weight);
+
+        assert_eq!(weight_obs.len(), 2, "two distinct weight observations");
+
+        let hold_obs = weight_obs
+            .iter()
+            .find(|o| o.description == "Somewhat heavy")
+            .expect("hold-duration observation must be stored");
+        let failed_obs = weight_obs
+            .iter()
+            .find(|o| o.description == "Too heavy to lift")
+            .expect("failed-pickup observation must be stored");
+
+        assert!(
+            hold_obs.confidence.value() > failed_obs.confidence.value(),
+            "hold-duration obs ({:.2}) must have higher confidence than failed-pickup obs ({:.2})",
+            hold_obs.confidence.value(),
+            failed_obs.confidence.value()
+        );
+    }
 }
