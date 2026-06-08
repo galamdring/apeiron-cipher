@@ -339,7 +339,7 @@ impl PlanetSurface {
     /// with lacunarity 2, persistence 0.5). The base `continuous_value_field_01`
     /// returns values in `[0, 1]`, so we center each sample around 0.5 to get
     /// positive and negative deviations from `base_y`.
-    pub(crate) fn sample_elevation(&self, x: f32, z: f32) -> f32 {
+    pub fn sample_elevation(&self, x: f32, z: f32) -> f32 {
         let x = self.fold_elevation_coord(x);
         let z = self.fold_elevation_coord(z);
         let mut total = 0.0_f32;
