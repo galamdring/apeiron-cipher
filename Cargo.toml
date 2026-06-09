@@ -28,6 +28,9 @@ bincode = { version = "2", features = ["serde"] }
 
 # JSON serializer — used at runtime for WebSocket signaling envelope encoding.
 serde_json = "1.0"
+# CRC-32 checksum — used to detect torn/corrupted WAL entries on recovery.
+# Already a transitive dep via bevy; pinned explicitly for direct use in wal.rs.
+crc32fast = "1"
 # Multi-threaded async runtime — drives the WebSocket and WebRTC background thread.
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "net"] }
 # Async WebSocket client — connects to the signaling server over WS.
@@ -42,3 +45,5 @@ futures-util = { version = "0.3", default-features = false, features = ["sink", 
 [dev-dependencies]
 # Temporary directory helper — provides hermetic test fixtures for mod_manifest tests
 tempfile = "3"
+# libc — used by wal_crash.rs integration test to send SIGKILL to the helper process
+libc = "0.2"
