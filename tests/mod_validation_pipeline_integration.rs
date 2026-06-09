@@ -13,7 +13,9 @@ use std::fs;
 use tempfile::TempDir;
 
 use apeiron_cipher::{
-    mod_manifest::{InstalledMods, ModInfo, ModLicensing, ModManifest, load_mods_from_dir},
+    mod_manifest::{
+        InstalledMods, ModInfo, ModIntegrity, ModLicensing, ModManifest, load_mods_from_dir,
+    },
     mod_validator::ModValidator,
 };
 
@@ -73,6 +75,7 @@ fn manifest(id: &str, deps: &[&str]) -> ModManifest {
             spdx_license: "CC-BY-4.0".to_owned(),
             free_distribution_url: String::new(),
         },
+        integrity: ModIntegrity::default(),
     }
 }
 

@@ -45,6 +45,8 @@
 
 use std::{fmt, path::Path};
 
+use sha2::{Digest, Sha256};
+
 use crate::mod_manifest::ModManifest;
 
 // ── Public result types ───────────────────────────────────────────────────────
@@ -168,6 +170,7 @@ impl<'a> ModValidator<'a> {
         self.check_id_format(manifest, &mut result);
         self.check_version_format(manifest, &mut result);
         self.check_game_version_compatibility(manifest, &mut result);
+        self.check_file_checksums(manifest, mod_root, &mut result);
         self.check_entry_point(manifest, mod_root, &mut result);
         self.check_dependencies(manifest, &mut result);
 
@@ -267,6 +270,56 @@ impl<'a> ModValidator<'a> {
         }
     }
 
+    /// (AC #2) File checksum verification: for each entry in `manifest.integrity.files`,
+    /// read the file from disk (relative to `mod_root`) and verify its SHA-256
+    /// matches the declared hex digest.
+    ///
+    /// Skipped when `mod_root` is `None` (unit-test / in-memory path).
+    /// Missing files and hash mismatches are hard errors.
+    fn check_file_checksums(
+        &self,
+        manifest: &ModManifest,
+        mod_root: Option<&Path>,
+        result: &mut ValidationResult,
+    ) {
+        let Some(root) = mod_root else { return };
+
+        for entry in &manifest.integrity.files {
+            // Reject path traversal attempts before touching the filesystem.
+            if entry.path.contains("..") || std::path::Path::new(&entry.path).is_absolute() {
+                result.push_error(format!(
+                    "integrity entry `{}` uses an invalid path (no `..` or absolute paths allowed)",
+                    entry.path
+                ));
+                continue;
+            }
+
+            let file_path = root.join(&entry.path);
+
+            let bytes = match std::fs::read(&file_path) {
+                Ok(b) => b,
+                Err(err) => {
+                    result.push_error(format!(
+                        "integrity check failed: cannot read `{}` — {err}",
+                        entry.path
+                    ));
+                    continue;
+                }
+            };
+
+            let actual_hex = format!("{:x}", Sha256::digest(&bytes));
+            let declared = entry.sha256.to_ascii_lowercase();
+
+            if actual_hex != declared {
+                result.push_error(format!(
+                    "integrity check failed for `{}`: \
+                     declared sha256 `{declared}` does not match actual `{actual_hex}`",
+                    entry.path
+                ));
+            }
+        }
+    }
+
     /// (6) Entry-point existence: if a mod_root path is supplied, check that
     ///     the directory and its `mod.toml` exist on disk.
     fn check_entry_point(
@@ -340,7 +393,7 @@ fn parse_semver(s: &str) -> Option<(u64, u64, u64)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mod_manifest::{ModInfo, ModLicensing, ModManifest};
+    use crate::mod_manifest::{ModFileHash, ModInfo, ModIntegrity, ModLicensing, ModManifest};
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -364,6 +417,7 @@ mod tests {
                 spdx_license: "CC-BY-4.0".to_owned(),
                 free_distribution_url: String::new(),
             },
+            integrity: ModIntegrity::default(),
         }
     }
 
@@ -666,5 +720,194 @@ mod tests {
         let mut bad = ValidationResult::default();
         bad.push_error("something broke");
         assert!(!bad.is_valid());
+    }
+
+    // ── File checksum verification (AC #2) ────────────────────────────────────
+
+    /// Helper: compute sha256 hex of a byte slice (mirrors the validator's internal logic).
+    fn sha256_hex(data: &[u8]) -> String {
+        use sha2::{Digest, Sha256};
+        format!("{:x}", Sha256::digest(data))
+    }
+
+    /// A manifest with no integrity entries passes checksum validation with
+    /// or without a mod_root.
+    #[test]
+    fn no_integrity_entries_always_passes() {
+        let m = valid_manifest("author.mod");
+        let result = validator_no_installed().validate(&m, None);
+        assert!(result.is_valid(), "errors: {:?}", result.errors);
+    }
+
+    /// Correct hash for a real file on disk passes.
+    #[test]
+    fn correct_checksum_passes() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mod_dir = tmp.path().join("author.mod");
+        std::fs::create_dir_all(&mod_dir).unwrap();
+        std::fs::write(mod_dir.join("mod.toml"), "# stub").unwrap();
+
+        let asset_bytes = b"hello world";
+        std::fs::create_dir_all(mod_dir.join("assets")).unwrap();
+        std::fs::write(mod_dir.join("assets/config.toml"), asset_bytes).unwrap();
+
+        let mut m = valid_manifest("author.mod");
+        m.integrity.files.push(ModFileHash {
+            path: "assets/config.toml".to_owned(),
+            sha256: sha256_hex(asset_bytes),
+        });
+
+        let result = validator_no_installed().validate(&m, Some(&mod_dir));
+        assert!(result.is_valid(), "errors: {:?}", result.errors);
+    }
+
+    /// Wrong hash for a real file produces a hard error.
+    #[test]
+    fn wrong_checksum_is_error() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mod_dir = tmp.path().join("author.mod");
+        std::fs::create_dir_all(&mod_dir).unwrap();
+        std::fs::write(mod_dir.join("mod.toml"), "# stub").unwrap();
+        std::fs::write(mod_dir.join("data.toml"), b"actual content").unwrap();
+
+        let mut m = valid_manifest("author.mod");
+        m.integrity.files.push(ModFileHash {
+            path: "data.toml".to_owned(),
+            sha256: "0000000000000000000000000000000000000000000000000000000000000000".to_owned(),
+        });
+
+        let result = validator_no_installed().validate(&m, Some(&mod_dir));
+        assert!(!result.is_valid());
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.message.contains("integrity check failed for")
+                    && e.message.contains("data.toml")),
+            "expected checksum mismatch error, got: {:?}",
+            result.errors
+        );
+    }
+
+    /// A declared file that does not exist on disk is a hard error.
+    #[test]
+    fn missing_integrity_file_is_error() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mod_dir = tmp.path().join("author.mod");
+        std::fs::create_dir_all(&mod_dir).unwrap();
+        std::fs::write(mod_dir.join("mod.toml"), "# stub").unwrap();
+        // Deliberately do NOT write the file referenced in integrity.
+
+        let mut m = valid_manifest("author.mod");
+        m.integrity.files.push(ModFileHash {
+            path: "ghost.toml".to_owned(),
+            sha256: "0000000000000000000000000000000000000000000000000000000000000000".to_owned(),
+        });
+
+        let result = validator_no_installed().validate(&m, Some(&mod_dir));
+        assert!(!result.is_valid());
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.message.contains("ghost.toml")),
+            "expected missing-file error, got: {:?}",
+            result.errors
+        );
+    }
+
+    /// Path traversal attempts (`..`) are rejected outright.
+    #[test]
+    fn path_traversal_in_integrity_entry_is_error() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mod_dir = tmp.path().join("author.mod");
+        std::fs::create_dir_all(&mod_dir).unwrap();
+        std::fs::write(mod_dir.join("mod.toml"), "# stub").unwrap();
+
+        let mut m = valid_manifest("author.mod");
+        m.integrity.files.push(ModFileHash {
+            path: "../../../etc/passwd".to_owned(),
+            sha256: "aabbcc".to_owned(),
+        });
+
+        let result = validator_no_installed().validate(&m, Some(&mod_dir));
+        assert!(!result.is_valid());
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.message.contains("invalid path")),
+            "expected path traversal error, got: {:?}",
+            result.errors
+        );
+    }
+
+    /// Declared sha256 is case-insensitive (uppercase hex is normalised).
+    #[test]
+    fn checksum_comparison_is_case_insensitive() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mod_dir = tmp.path().join("author.mod");
+        std::fs::create_dir_all(&mod_dir).unwrap();
+        std::fs::write(mod_dir.join("mod.toml"), "# stub").unwrap();
+
+        let asset_bytes = b"case test";
+        std::fs::write(mod_dir.join("file.toml"), asset_bytes).unwrap();
+
+        let lowercase_hex = sha256_hex(asset_bytes);
+        let uppercase_hex = lowercase_hex.to_uppercase();
+
+        let mut m = valid_manifest("author.mod");
+        m.integrity.files.push(ModFileHash {
+            path: "file.toml".to_owned(),
+            sha256: uppercase_hex, // declared in upper, actual in lower
+        });
+
+        let result = validator_no_installed().validate(&m, Some(&mod_dir));
+        assert!(result.is_valid(), "errors: {:?}", result.errors);
+    }
+
+    /// Multiple integrity failures accumulate as separate errors.
+    #[test]
+    fn multiple_checksum_failures_accumulate() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mod_dir = tmp.path().join("author.mod");
+        std::fs::create_dir_all(&mod_dir).unwrap();
+        std::fs::write(mod_dir.join("mod.toml"), "# stub").unwrap();
+        std::fs::write(mod_dir.join("a.toml"), b"aaa").unwrap();
+        std::fs::write(mod_dir.join("b.toml"), b"bbb").unwrap();
+
+        let bad_hash = "0000000000000000000000000000000000000000000000000000000000000000";
+        let mut m = valid_manifest("author.mod");
+        m.integrity.files.push(ModFileHash {
+            path: "a.toml".to_owned(),
+            sha256: bad_hash.to_owned(),
+        });
+        m.integrity.files.push(ModFileHash {
+            path: "b.toml".to_owned(),
+            sha256: bad_hash.to_owned(),
+        });
+
+        let result = validator_no_installed().validate(&m, Some(&mod_dir));
+        assert!(!result.is_valid());
+        assert!(
+            result.errors.len() >= 2,
+            "expected at least 2 checksum errors, got: {:?}",
+            result.errors
+        );
+    }
+
+    /// Checksum check is skipped when no mod_root is provided (in-memory path).
+    #[test]
+    fn checksum_skipped_without_mod_root() {
+        let bad_hash = "0000000000000000000000000000000000000000000000000000000000000000";
+        let mut m = valid_manifest("author.mod");
+        m.integrity.files.push(ModFileHash {
+            path: "file.toml".to_owned(),
+            sha256: bad_hash.to_owned(),
+        });
+
+        // No mod_root → skips filesystem checks → no error.
+        let result = validator_no_installed().validate(&m, None);
+        assert!(result.is_valid(), "errors: {:?}", result.errors);
     }
 }

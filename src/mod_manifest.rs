@@ -98,6 +98,10 @@ pub type SchemaVersion = u32;
 /// [licensing]
 /// spdx_license          = "CC-BY-4.0"
 /// free_distribution_url = ""
+///
+/// [[integrity.files]]
+/// path   = "assets/materials/iron.toml"
+/// sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 /// ```
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ModManifest {
@@ -110,6 +114,15 @@ pub struct ModManifest {
 
     /// Licensing metadata required for workshop discoverability.
     pub licensing: ModLicensing,
+
+    /// Optional integrity block — lists files whose SHA-256 must match
+    /// the declared hash before the mod may be activated.
+    ///
+    /// Defaults to an empty list when the `[integrity]` section is absent
+    /// from `mod.toml`.  Mods without declared hashes pass checksum
+    /// validation unconditionally.
+    #[serde(default)]
+    pub integrity: ModIntegrity,
 }
 
 /// Core identity and metadata block (`[mod]` table in `mod.toml`).
@@ -163,6 +176,48 @@ pub struct ModLicensing {
     /// deferred to Epic 23.
     #[serde(default)]
     pub free_distribution_url: String,
+}
+
+/// A single file hash entry in the `[[integrity.files]]` array.
+///
+/// ```toml
+/// [[integrity.files]]
+/// path   = "assets/materials/iron.toml"
+/// sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+/// ```
+///
+/// `path` is relative to the mod's root directory (i.e. relative to the
+/// directory that contains `mod.toml`).  The loader verifies each file's
+/// actual SHA-256 against the declared value; a mismatch or missing file is a
+/// hard validation error.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct ModFileHash {
+    /// Path to the file, relative to the mod root directory.
+    pub path: String,
+
+    /// Lowercase hex-encoded SHA-256 digest of the file's raw bytes.
+    pub sha256: String,
+}
+
+/// Integrity block (`[integrity]` table + `[[integrity.files]]` array in `mod.toml`).
+///
+/// Optional at the top level: if the section is absent the file is deserialized
+/// as `ModIntegrity::default()` (no declared hashes, no checksum checks).
+///
+/// ```toml
+/// [integrity]
+/// [[integrity.files]]
+/// path   = "assets/materials/iron.toml"
+/// sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+/// ```
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct ModIntegrity {
+    /// Declared file hashes.  The validator checks each entry against the
+    /// actual file on disk when a `mod_root` path is supplied.
+    ///
+    /// An empty list is valid and means "no checksum verification needed."
+    #[serde(default)]
+    pub files: Vec<ModFileHash>,
 }
 
 // ── Resource ─────────────────────────────────────────────────────────────────
@@ -647,6 +702,7 @@ mod tests {
                 spdx_license: "CC-BY-4.0".to_owned(),
                 free_distribution_url: String::new(),
             },
+            integrity: ModIntegrity::default(),
         }
     }
 
