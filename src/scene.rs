@@ -443,6 +443,13 @@ pub struct ShelfConfig {
 // ── Fabricator config ────────────────────────────────────────────────────
 
 /// Configuration for fabricator input slots and output tray on the workbench.
+///
+/// Input chambers are hollow box volumes (floor + four walls, open top) that visually
+/// communicate containment — materials are placed *inside* them, not resting on flat pads.
+/// `slot_radius` drives the interior half-extent of the square chamber footprint.
+/// `slot_height` is the floor panel thickness (structural, not the cavity depth).
+/// `chamber_wall_height` is the interior cavity depth — how tall the walls rise above the floor.
+/// `chamber_wall_thickness` is the thickness of each wall panel.
 #[derive(Clone, Debug, Serialize, Deserialize, Resource)]
 pub struct FabricatorSceneConfig {
     /// X offset of input slots from the workbench center.
@@ -451,12 +458,20 @@ pub struct FabricatorSceneConfig {
     /// Z spacing between adjacent input slots.
     #[serde(default = "default_fab_slot_spacing_z")]
     pub slot_spacing_z: f32,
-    /// Radius of each input slot circle.
+    /// Half-extent of the square chamber interior footprint (replaces the old cylinder radius).
+    /// The outer footprint is `slot_radius + chamber_wall_thickness` on each side.
     #[serde(default = "default_fab_slot_radius")]
     pub slot_radius: f32,
-    /// Visual height of each input slot disc.
+    /// Thickness of the chamber floor panel.
     #[serde(default = "default_fab_slot_height")]
     pub slot_height: f32,
+    /// Height of the chamber walls above the floor surface — this is the interior cavity depth.
+    /// Materials rest on the floor and should be shorter than this value to sit inside the chamber.
+    #[serde(default = "default_fab_chamber_wall_height")]
+    pub chamber_wall_height: f32,
+    /// Thickness of each chamber wall panel.
+    #[serde(default = "default_fab_chamber_wall_thickness")]
+    pub chamber_wall_thickness: f32,
     /// X offset of the output tray from the workbench center.
     #[serde(default = "default_fab_output_offset_x")]
     pub output_offset_x: f32,
@@ -486,6 +501,14 @@ fn default_fab_slot_radius() -> f32 {
 fn default_fab_slot_height() -> f32 {
     0.02
 }
+fn default_fab_chamber_wall_height() -> f32 {
+    // Tall enough that a typical material object (~0.06 m) sits visually inside the chamber.
+    0.10
+}
+fn default_fab_chamber_wall_thickness() -> f32 {
+    // Thin enough to not eat into the interior, thick enough to read as solid walls.
+    0.015
+}
 fn default_fab_output_offset_x() -> f32 {
     0.0
 }
@@ -509,6 +532,8 @@ impl Default for FabricatorSceneConfig {
             slot_spacing_z: default_fab_slot_spacing_z(),
             slot_radius: default_fab_slot_radius(),
             slot_height: default_fab_slot_height(),
+            chamber_wall_height: default_fab_chamber_wall_height(),
+            chamber_wall_thickness: default_fab_chamber_wall_thickness(),
             output_offset_x: default_fab_output_offset_x(),
             output_offset_z: default_fab_output_offset_z(),
             output_radius: default_fab_output_radius(),

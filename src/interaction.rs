@@ -20,7 +20,9 @@
 use bevy::picking::mesh_picking::ray_cast::{MeshRayCast, MeshRayCastSettings, RayCastVisibility};
 use bevy::prelude::*;
 
-use crate::carry::{CarryConfig, CarryState, ObserveWeight, StashHeldForPickup};
+use crate::carry::{
+    CarryConfig, CarryState, FailedPickupObservation, HoldTimer, ObserveWeight, StashHeldForPickup,
+};
 use crate::descriptions::describe_density;
 use crate::fabricator::{ActivateIntent, InputSlot, OutputSlot};
 use crate::input::InputAction;
@@ -302,6 +304,7 @@ fn process_pickup(
     carry_config: Res<CarryConfig>,
     mut stash_writer: MessageWriter<StashHeldForPickup>,
     mut observe_writer: MessageWriter<ObserveWeight>,
+    mut failed_writer: MessageWriter<FailedPickupObservation>,
     player_query: Query<&CarryState, With<Player>>,
     held_query: Query<(Entity, &GameMaterial), With<HeldItem>>,
     material_query: Query<&GameMaterial, With<MaterialObject>>,
@@ -327,6 +330,12 @@ fn process_pickup(
 
         if let Some((held_entity, held_material)) = held_query.iter().next() {
             if !carry_state.can_stash(held_material) {
+                // Can't stash what we're holding — the target is unreachable for now.
+                // Emit a failed-pickup observation so the player still learns something
+                // about the target's weight even from a failed attempt.
+                failed_writer.write(FailedPickupObservation {
+                    material: target_material.clone(),
+                });
                 continue;
             }
             // Carry module handles stash mutation + weight observations for both items.
@@ -354,6 +363,7 @@ fn process_pickup(
             .entity(target_entity)
             .remove::<MaterialObject>()
             .insert(HeldItem)
+            .insert(HoldTimer::fresh())
             .set_parent_in_place(camera_entity)
             .insert(Transform::from_translation(carry_config.hold_offset_vec3()));
         // Density is revealed on pickup via the ObserveWeight message above,
@@ -1060,6 +1070,7 @@ mod tests {
             .add_message::<PlaceIntent>()
             .add_message::<StashHeldForPickup>()
             .add_message::<ObserveWeight>()
+            .add_message::<FailedPickupObservation>()
             .insert_resource(InteractionTarget::default())
             .insert_resource(SlotTarget::default())
             .insert_resource(SceneConfig::default())

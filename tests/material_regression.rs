@@ -6,7 +6,7 @@
 
 mod scenarios;
 
-use apeiron_cipher::materials::{MaterialCatalog, derive_material_from_seed};
+use apeiron_cipher::materials::{MaterialCatalog, MaterialSeed, derive_material_from_seed};
 use apeiron_cipher::world_generation::{
     BiomeRegistry, BiomeType, ChunkCoord, PaletteMaterial, WorldGenerationConfig, WorldProfile,
     derive_chunk_biome,
@@ -152,7 +152,7 @@ fn no_duplicate_names_in_catalog_across_many_seeds() {
     // Register 500 materials — the catalog should disambiguate any
     // collisions so every entry has a unique name.
     for seed in 0..500_u64 {
-        catalog.derive_and_register(seed);
+        catalog.derive_and_register(MaterialSeed(seed));
     }
 
     assert_eq!(
@@ -187,7 +187,7 @@ fn different_biomes_produce_different_material_sets() {
             let seeds: HashSet<u64> = biome
                 .material_palette
                 .iter()
-                .map(|p| p.material_seed)
+                .map(|p| p.material_seed.0)
                 .collect();
             biome_seeds
                 .entry(biome.biome_type)
@@ -239,12 +239,12 @@ fn all_palette_entries_appear_across_many_chunks() {
             let seen = seen_per_biome.entry(biome.biome_type).or_default();
 
             for p in &biome.material_palette {
-                expected.insert(p.material_seed);
+                expected.insert(p.material_seed.0);
                 // The palette is always fully present on every chunk of
                 // that biome — selection happens at deposit placement, not
                 // at biome derivation.  So every palette seed should appear
                 // in every chunk's palette.
-                seen.insert(p.material_seed);
+                seen.insert(p.material_seed.0);
             }
         }
     }
@@ -270,7 +270,7 @@ fn well_known_seeds_produce_distinct_materials() {
     let all_seeds: HashSet<u64> = registry
         .biomes
         .iter()
-        .flat_map(|b| b.material_palette.iter().map(|p| p.material_seed))
+        .flat_map(|b| b.material_palette.iter().map(|p| p.material_seed.0))
         .collect();
 
     assert!(

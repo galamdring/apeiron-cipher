@@ -18,7 +18,7 @@ use crate::materials::{
     GameMaterial, MATERIAL_SURFACE_GAP, MaterialCatalog, MaterialObject, MaterialProperty,
     PropertyVisibility,
 };
-use crate::observation::RecordObservation;
+use crate::observation::{ConfidenceConfig, RecordObservation};
 use crate::scene::{FabricatorSceneConfig, FurnitureConfig, Workbench};
 
 /// Registers the fabricator workbench systems for combining materials.
@@ -59,8 +59,12 @@ enum FabricatorState {
 
 // ── Components ──────────────────────────────────────────────────────────
 
-/// Marks a fabricator input receptacle. `index` distinguishes slot 0 from slot 1.
+/// Marks a fabricator input receptacle. `index` distinguishes slot 0 from slot 1.\
 /// `material` holds the entity of the material currently seated in this slot.
+///
+/// The `InputSlot` entity is a logical parent with no mesh of its own.
+/// The visual geometry (floor panel + 4 wall panels) lives on child entities,
+/// each tagged with [`ChamberPanel`] so the emissive glow system can find them.
 #[derive(Component, Debug)]
 pub struct InputSlot {
     /// Numeric identifier distinguishing slot 0 from slot 1.
@@ -69,9 +73,20 @@ pub struct InputSlot {
     pub index: usize,
     /// Entity of the material currently placed in this slot, if any.
     pub material: Option<Entity>,
-    /// World-space Y coordinate of the top surface of this slot.
+    /// World-space Y coordinate of the floor interior surface of this slot.
+    ///
+    /// Interaction systems use this to position material objects on the chamber floor
+    /// rather than floating in mid-air or clipping through walls.
     pub top_y: f32,
 }
+
+/// Marks a mesh panel that is part of an input chamber's visual geometry.
+///
+/// Each [`InputSlot`] entity has 5 child entities tagged with this component:
+/// one floor panel and four wall panels. The emissive glow system queries
+/// `With<ChamberPanel>` to apply activation feedback to all chamber surfaces.
+#[derive(Component)]
+struct ChamberPanel;
 
 /// Marks the fabricator output receptacle where the combined material appears.
 #[derive(Component, Debug)]
@@ -100,6 +115,7 @@ fn spawn_fabricator_slots(
     let wb_top_y = wb_tf.translation.y + fur.workbench_height * 0.5;
     let wb_center = wb_tf.translation;
 
+    // Shared material for input chamber walls and floor — dark metallic.
     let slot_mat = materials.add(StandardMaterial {
         base_color: Color::srgb(0.25, 0.28, 0.35),
         perceptual_roughness: 0.3,
@@ -114,31 +130,136 @@ fn spawn_fabricator_slots(
         ..default()
     });
 
+    // Chamber geometry dimensions.
+    //
+    // The chamber is a hollow box with an open top:
+    //   - `ext` is the half-extent of the INTERIOR footprint (square cross-section).
+    //   - `wt`  is the wall-panel thickness.
+    //   - `wh`  is the wall height above the floor surface — the cavity depth.
+    //   - `ft`  is the floor-panel thickness.
+    //
+    // Materials rest on the floor interior surface. `top_y` is set to the floor
+    // interior surface Y so interaction.rs positions materials correctly inside
+    // the chamber rather than on top of the outer shell.
+    let ext = fab.slot_radius; // interior half-extent (X and Z)
+    let wt = fab.chamber_wall_thickness; // wall thickness
+    let wh = fab.chamber_wall_height; // wall height = cavity depth
+    let ft = fab.slot_height; // floor thickness
+
+    // Full outer half-extents of the chamber assembly:
+    let outer_ext = ext + wt;
+
     for i in 0..2 {
         let z_sign = if i == 0 { 1.0 } else { -1.0 };
+
+        // Parent entity origin sits at the bottom of the floor panel.
+        // The floor panel occupies [origin_y, origin_y + ft].
+        // The floor interior surface (where materials rest) is at origin_y + ft.
+        // The walls extend from origin_y + ft up to origin_y + ft + wh.
+        let origin_y = wb_top_y;
         let pos = Vec3::new(
             wb_center.x + fab.slot_offset_x,
-            wb_top_y + fab.slot_height * 0.5,
+            origin_y,
             wb_center.z + fab.slot_spacing_z * z_sign,
         );
 
-        commands.spawn((
-            InputSlot {
-                index: i,
-                material: None,
-                top_y: pos.y + fab.slot_height * 0.5,
-            },
-            Mesh3d(meshes.add(Cylinder::new(fab.slot_radius, fab.slot_height))),
-            MeshMaterial3d(slot_mat.clone()),
-            Transform::from_translation(pos),
-        ));
+        // `top_y`: the Y position of the floor interior surface where materials sit.
+        // This is what interaction.rs uses to place material objects inside the chamber.
+        let floor_interior_y = origin_y + ft;
+
+        // ── Floor panel ────────────────────────────────────────────────────
+        // A full-width cuboid that seals the bottom of the chamber.
+        // Width/depth covers the full outer footprint so walls have solid footing.
+        let floor_mesh = meshes.add(Cuboid::new(outer_ext * 2.0, ft, outer_ext * 2.0));
+        // The floor panel's center is at ft * 0.5 above the parent origin.
+        let floor_child_y = ft * 0.5;
+
+        // ── Wall panels ────────────────────────────────────────────────────
+        // Four walls, each a thin cuboid. The walls sit on top of the floor surface.
+        // Wall center Y (local) = ft + wh * 0.5  (floor thickness + half wall height)
+        let wall_center_local_y = ft + wh * 0.5;
+
+        // +X wall (right side of chamber interior)
+        // Spans the full outer Z extent, thickness wt on the +X side.
+        let wall_px_mesh = meshes.add(Cuboid::new(wt, wh, outer_ext * 2.0));
+        // -X wall
+        let wall_nx_mesh = meshes.add(Cuboid::new(wt, wh, outer_ext * 2.0));
+        // +Z wall — spans only the INTERIOR X extent to avoid corner overlap with X walls.
+        // Inner Z walls fit between the outer X walls so there are no doubled corners.
+        let wall_pz_mesh = meshes.add(Cuboid::new(ext * 2.0, wh, wt));
+        // -Z wall
+        let wall_nz_mesh = meshes.add(Cuboid::new(ext * 2.0, wh, wt));
+
+        // X-wall center X offset = outer_ext - wt * 0.5  (inner face flush with interior)
+        let wall_x_offset = outer_ext - wt * 0.5;
+        // Z-wall center Z offset = the interior half-extent ext (inner face flush)
+        let wall_z_offset = ext + wt * 0.5;
+
+        let slot_entity = commands
+            .spawn((
+                InputSlot {
+                    index: i,
+                    material: None,
+                    // Materials rest on the floor interior surface.
+                    top_y: floor_interior_y,
+                },
+                // The parent entity carries the logical slot identity; mesh panels are children.
+                // No `Mesh3d` here — the emissive glow system targets `MeshMaterial3d` children.
+                Transform::from_translation(pos),
+                Visibility::Inherited,
+            ))
+            .id();
+
+        // Spawn the five chamber panels as children of the slot entity.
+        // Each child uses a local Transform relative to the parent origin.
+        // `ChamberPanel` is the query anchor for the emissive glow system.
+        commands.entity(slot_entity).with_children(|parent| {
+            // Floor panel — center at (0, ft*0.5, 0) local
+            parent.spawn((
+                ChamberPanel,
+                Mesh3d(floor_mesh),
+                MeshMaterial3d(slot_mat.clone()),
+                Transform::from_xyz(0.0, floor_child_y, 0.0),
+            ));
+            // +X wall
+            parent.spawn((
+                ChamberPanel,
+                Mesh3d(wall_px_mesh),
+                MeshMaterial3d(slot_mat.clone()),
+                Transform::from_xyz(wall_x_offset, wall_center_local_y, 0.0),
+            ));
+            // -X wall
+            parent.spawn((
+                ChamberPanel,
+                Mesh3d(wall_nx_mesh),
+                MeshMaterial3d(slot_mat.clone()),
+                Transform::from_xyz(-wall_x_offset, wall_center_local_y, 0.0),
+            ));
+            // +Z wall
+            parent.spawn((
+                ChamberPanel,
+                Mesh3d(wall_pz_mesh),
+                MeshMaterial3d(slot_mat.clone()),
+                Transform::from_xyz(0.0, wall_center_local_y, wall_z_offset),
+            ));
+            // -Z wall
+            parent.spawn((
+                ChamberPanel,
+                Mesh3d(wall_nz_mesh),
+                MeshMaterial3d(slot_mat.clone()),
+                Transform::from_xyz(0.0, wall_center_local_y, -wall_z_offset),
+            ));
+        });
 
         info!(
-            "Spawned input slot {i} at ({}, {}, {})",
+            "Spawned input chamber {i} at ({}, {}, {}) — interior floor Y: {floor_interior_y:.4}",
             pos.x, pos.y, pos.z
         );
     }
 
+    // ── Output slot ────────────────────────────────────────────────────────
+    // The output slot keeps its flat cylinder shape — output is presented on a
+    // tray-like surface, not consumed into a chamber.
     let output_pos = Vec3::new(
         wb_center.x + fab.output_offset_x,
         wb_top_y + fab.output_height * 0.5,
@@ -190,6 +311,7 @@ fn tick_processing(
     mut commands: Commands,
     time: Res<Time>,
     cfg: Res<FabricatorSceneConfig>,
+    confidence_config: Res<ConfidenceConfig>,
     mut journal_writer: MessageWriter<RecordObservation>,
     mut state: ResMut<FabricatorState>,
     mut catalog: ResMut<MaterialCatalog>,
@@ -289,7 +411,9 @@ fn tick_processing(
         material_seed: None,
         observation: Observation {
             category: ObservationCategory::FabricationResult,
-            confidence: crate::observation::Confidence::new(0.8), // High confidence for fabrication results
+            confidence: crate::observation::Confidence::new(
+                confidence_config.initial_observation_confidence,
+            ), // Configured in confidence.toml
             description,
             recorded_at: 0,
         },
@@ -309,10 +433,17 @@ fn tick_processing(
 
 // ── Processing visual feedback ──────────────────────────────────────────
 
+/// Apply the violet pulse emissive to all chamber panel surfaces during fabrication.
+///
+/// Runs in `Update`, after `tick_processing`. Queries `ChamberPanel` children (not the
+/// logical `InputSlot` parent, which carries no mesh) to drive emissive intensity on
+/// the material handles. During `Processing` the pulse is a sine-wave modulated violet;
+/// during `Idle` the emissive is zeroed so the chambers return to their base color.
 fn apply_processing_visuals(
     state: Res<FabricatorState>,
     cfg: Res<FabricatorSceneConfig>,
-    slot_query: Query<&MeshMaterial3d<StandardMaterial>, With<InputSlot>>,
+    // Query the chamber panel children — they carry MeshMaterial3d, not the InputSlot parent.
+    panel_query: Query<&MeshMaterial3d<StandardMaterial>, With<ChamberPanel>>,
     mut std_materials: ResMut<Assets<StandardMaterial>>,
 ) {
     let glow = match *state {
@@ -324,7 +455,7 @@ fn apply_processing_visuals(
         FabricatorState::Idle => LinearRgba::BLACK,
     };
 
-    for mat_handle in &slot_query {
+    for mat_handle in &panel_query {
         if let Some(std_mat) = std_materials.get_mut(mat_handle) {
             std_mat.emissive = glow;
         }

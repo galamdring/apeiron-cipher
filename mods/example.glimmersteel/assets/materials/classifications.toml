@@ -1,0 +1,46 @@
+# assets/materials/classifications.toml (mod addition)
+# schema_version must be the first field in every asset file.
+schema_version = 1
+
+# ── Glimmersteel ──────────────────────────────────────────────────────────
+#
+# Glimmersteel is a dense, moderately heat-resistant material with an
+# iridescent metallic sheen. It occupies the high-density band above Osmium,
+# making it the heaviest classifiable material in the registry.
+#
+# Property derivation (seed 9001, computed via derive_material_from_seed):
+#   density:           0.8158
+#   thermal_resistance: 0.4732
+#   reactivity:        0.0618  (low — stable under most conditions)
+#   conductivity:      0.3061
+#   toxicity:          0.5298
+#
+# Range choice rationale:
+#   density min/max: 0.80 – 0.88
+#     - Osmium's max is 0.80 (base game classifications.toml).
+#       Our min of 0.80 is exclusive of overlapping that entry because
+#       Osmium's max is 0.80 and we start at 0.80 as well — but Osmium uses
+#       the range 0.68–0.80 and our midpoint is 0.8158 so in practice the
+#       player's journal will not see both entries match simultaneously.
+#       To be safe, set density min = 0.81 so there is zero overlap.
+#   thermal min/max: 0.42 – 0.53
+#     - Verified no base game material sits at (density > 0.80, thermal 0.42–0.53).
+#       Osmium (seed 1006) has thermal=0.5620 which is outside our band.
+#
+# Warning: modders adding further materials in the high-density band must
+# choose density ranges that do not overlap with 0.81–0.88. The journal
+# classifier uses first-match on load order — overlapping ranges produce
+# non-deterministic output.
+
+[[classification]]
+name         = "glimmersteel"
+display_name = "Glimmersteel"
+# Seed 9001: density=0.8158, thermal_resistance=0.4732
+
+[classification.density]
+min = 0.81
+max = 0.88
+
+[classification.thermal_resistance]
+min = 0.42
+max = 0.53

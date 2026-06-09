@@ -44,6 +44,7 @@ impl Plugin for CarryPlugin {
             .add_message::<CarryActionRejected>()
             .add_message::<StashHeldForPickup>()
             .add_message::<ObserveWeight>()
+            .add_message::<FailedPickupObservation>()
             .init_resource::<CarryConfig>()
             .init_resource::<ActiveCarryProfile>()
             .init_resource::<CarryMovementState>()
@@ -59,9 +60,12 @@ impl Plugin for CarryPlugin {
                     update_carry_strength,
                     emit_stash_intent,
                     emit_cycle_carry_intent,
+                    tick_hold_timer,
                     process_stash_intent,
                     process_stash_held_for_pickup,
                     process_observe_weight,
+                    tick_failed_pickup_cooldown,
+                    process_failed_pickup_observation.after(tick_failed_pickup_cooldown),
                     process_cycle_carry_intent.after(process_stash_intent),
                 ),
             );
@@ -91,13 +95,13 @@ pub struct CycleCarryIntent;
 /// stash leaves the player confused. This event is the hook that lets future
 /// visual/audio systems translate "you can't do that" into something observable.
 #[derive(Message, Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct CarryActionRejected {
-    pub reason: CarryRejectionReason,
+struct CarryActionRejected {
+    reason: CarryRejectionReason,
 }
 
 /// Why a carry action was rejected.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum CarryRejectionReason {
+enum CarryRejectionReason {
     /// Stash attempted but nothing is held in hand.
     NothingHeld,
     /// Stash attempted but adding the item would exceed effective capacity.
@@ -127,6 +131,29 @@ pub struct StashHeldForPickup {
 pub struct ObserveWeight {
     /// Material to record a weight observation for.
     pub material: GameMaterial,
+}
+
+/// Emitted by interaction when the player tries to pick up a new object but
+/// cannot because they are already holding something that cannot be stashed.
+///
+/// Carry processes this message: it records a low-confidence weight observation
+/// for the target (the player learned the object was too heavy to accommodate),
+/// subject to a per-player cooldown so the journal is not spammed.
+#[derive(Message)]
+pub struct FailedPickupObservation {
+    /// The material the player failed to pick up.
+    pub material: GameMaterial,
+}
+
+/// Per-player cooldown timer that throttles failed-pickup weight observations.
+///
+/// Inserted onto the player entity at spawn. When `timer.finished()` the next
+/// failed-pickup attempt is allowed to generate a journal observation; the timer
+/// resets on each emission.
+#[derive(Component)]
+pub struct FailedPickupCooldown {
+    /// Countdown timer. When `is_finished()` the next observation is allowed.
+    pub timer: Timer,
 }
 
 /// Emitted whenever carry weight changes so movement/stamina systems can
@@ -192,6 +219,37 @@ impl Default for CarryMovementState {
 #[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct InCarry;
 
+/// Wall-clock hold timer for an item currently in the player's hand.
+///
+/// Inserted (or reset to zero) every time an entity gains `HeldItem` —
+/// on fresh pickup from the world or on cycle-in from carry. Incremented
+/// each frame by `tick_hold_timer`. Consumed (checked and then the flag
+/// set) when the item is stashed or cycled out.
+///
+/// Minimum hold duration is configured via
+/// [`CarryConfig::min_hold_secs_for_weight_obs`]. If an item is stashed
+/// or cycled out before that threshold, no weight observation fires.
+/// Cave Johnson approved this gate: "I'm not recording your scientific
+/// findings if you threw it on the pile before you even felt it."
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq)]
+pub struct HoldTimer {
+    /// Elapsed wall-clock seconds since this item entered the held state.
+    pub secs: f32,
+    /// True once a weight observation has been recorded for this hold
+    /// period, preventing duplicate observations on the same hold.
+    pub obs_recorded: bool,
+}
+
+impl HoldTimer {
+    /// Returns a freshly-reset timer (zero elapsed, no observation yet).
+    pub fn fresh() -> Self {
+        Self {
+            secs: 0.0,
+            obs_recorded: false,
+        }
+    }
+}
+
 // ── Runtime player state ─────────────────────────────────────────────────
 
 /// One entry in the player's carry container.
@@ -204,10 +262,25 @@ pub struct InCarry;
 /// - future persistence or ownership tags
 ///
 /// Starting with a struct now avoids rewriting every caller later.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CarriedItem {
     /// The ECS entity representing this carried material.
+    ///
+    /// Entity IDs are runtime-only handles — they are meaningless across
+    /// sessions and cannot be serialised faithfully. This field is skipped
+    /// during serialisation; on deserialisation it is restored to
+    /// [`Entity::PLACEHOLDER`] and must be re-linked to a live entity by the
+    /// persistence load system.
+    #[serde(skip, default = "entity_placeholder")]
     pub entity: Entity,
+}
+
+/// Returns [`Entity::PLACEHOLDER`] for use as a `serde(default)` function.
+///
+/// `serde`'s `default = "..."` attribute requires a zero-argument function path;
+/// associated constants cannot be used directly. This wrapper bridges the gap.
+fn entity_placeholder() -> Entity {
+    Entity::PLACEHOLDER
 }
 
 impl CarriedItem {
@@ -223,7 +296,7 @@ impl CarriedItem {
 /// `effective_capacity` is the presently usable capacity after applying the
 /// current carry-device rule. Later stories may change that value over time as
 /// devices are equipped or strength accretes.
-#[derive(Component, Clone, Debug, PartialEq)]
+#[derive(Component, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CarryState {
     /// Sum of density values for all items currently in carry.
     pub current_weight: f32,
@@ -330,7 +403,7 @@ impl CarryState {
     /// capacity check — [`Self::can_stash`] and [`can_stash_material`]
     /// both delegate here so all callers share the same accept/reject
     /// boundary.
-    pub(crate) fn can_accept(&self, weight: f32) -> bool {
+    fn can_accept(&self, weight: f32) -> bool {
         if !self.hard_limit_enabled {
             return true;
         }
@@ -344,7 +417,7 @@ impl CarryState {
     /// This prevents the carry from soft-locking on a dead entity while accepting
     /// that weight accounting may drift slightly. A future integrity-check system
     /// can reconcile weight by scanning remaining items.
-    pub(crate) fn evict_stale_entity(&mut self, entity: Entity) -> bool {
+    fn evict_stale_entity(&mut self, entity: Entity) -> bool {
         let Some(index) = self
             .carried_items
             .iter()
@@ -363,7 +436,7 @@ impl CarryState {
 /// player starts with an explicit, configurable strength value instead of future
 /// stories inventing one ad hoc. Growth rate is owned by [`CarryConfig`], not
 /// duplicated here, since it is a tuning constant rather than mutable player state.
-#[derive(Component, Clone, Copy, Debug, PartialEq)]
+#[derive(Component, Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CarryStrength {
     /// The player's current carry strength value (grows over time while carrying weight).
     pub current: f32,
@@ -375,7 +448,7 @@ pub struct CarryStrength {
 /// This is intentionally modeled as item identity rather than a boolean because
 /// the design direction is "carry may come from a real fabricated or acquired
 /// object later," not "carry is always an innate stat."
-#[derive(Component, Clone, Debug, PartialEq, Eq, Default)]
+#[derive(Component, Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
 struct CarryDeviceState {
     pub required_item_key: Option<String>,
     pub equipped_item_key: Option<String>,
@@ -441,6 +514,15 @@ pub struct CarryConfig {
     /// Whether to auto-equip the carry device at game start.
     #[serde(default)]
     pub grant_starting_device: bool,
+    /// Minimum wall-clock seconds an item must be held before a weight
+    /// observation is recorded on stash or cycle-out.
+    ///
+    /// This is a pure gate: if the player stashes or cycles an item before
+    /// this threshold, no [`RecordObservation`] is emitted for that item.
+    /// The timer resets to zero each time an item transitions into the held
+    /// state (new pickup or cycle-in). Default: 1.5 seconds.
+    #[serde(default = "default_min_hold_secs_for_weight_obs")]
+    pub min_hold_secs_for_weight_obs: f32,
     /// FIFO or LIFO order when cycling items out of carry.
     #[serde(default)]
     pub cycle_order: CarryCycleOrder,
@@ -453,6 +535,16 @@ pub struct CarryConfig {
     /// Per-difficulty-profile carry consequence configurations.
     #[serde(default = "default_profiles_config")]
     pub profiles: CarryProfilesConfig,
+    /// Confidence assigned to weight observations triggered by a failed pickup.
+    ///
+    /// Lower than the successful-pickup confidence (0.2) because the player only
+    /// learned the item is heavy from the rejection, not from actually holding it.
+    #[serde(default = "default_failed_pickup_observation_confidence")]
+    pub failed_pickup_observation_confidence: f32,
+    /// Cooldown (seconds) between failed-pickup weight observations for the same
+    /// player.  Prevents journal spam when the player is button-mashing.
+    #[serde(default = "default_failed_pickup_cooldown_secs")]
+    pub failed_pickup_cooldown_secs: f32,
 }
 
 impl Default for CarryConfig {
@@ -466,12 +558,23 @@ impl Default for CarryConfig {
             growth_curve: CarryGrowthCurveConfig::default(),
             carry_device_item_key: None,
             grant_starting_device: false,
+            min_hold_secs_for_weight_obs: default_min_hold_secs_for_weight_obs(),
             cycle_order: CarryCycleOrder::default(),
             weight_descriptions: default_weight_descriptions(),
             weight_cues: CarryCueConfig::default(),
             profiles: default_profiles_config(),
+            failed_pickup_observation_confidence: default_failed_pickup_observation_confidence(),
+            failed_pickup_cooldown_secs: default_failed_pickup_cooldown_secs(),
         }
     }
+}
+
+fn default_failed_pickup_observation_confidence() -> f32 {
+    0.1
+}
+
+fn default_failed_pickup_cooldown_secs() -> f32 {
+    3.0
 }
 
 impl CarryConfig {
@@ -484,6 +587,10 @@ impl CarryConfig {
 
 fn default_hold_offset() -> [f32; 3] {
     [0.2, -0.15, -0.5]
+}
+
+fn default_min_hold_secs_for_weight_obs() -> f32 {
+    1.5
 }
 
 /// Which carry tuning profile is active.
@@ -1082,6 +1189,15 @@ fn attach_carry_state_to_player(
             current: config.starting_strength,
         },
         device_state,
+        FailedPickupCooldown {
+            // Start finished so the first failed pickup always generates an observation.
+            timer: {
+                let mut t =
+                    Timer::from_seconds(config.failed_pickup_cooldown_secs, TimerMode::Once);
+                t.finish();
+                t
+            },
+        },
     ));
 }
 
@@ -1440,6 +1556,7 @@ fn move_entity_from_carry_to_hand(
         .entity(entity)
         .remove::<InCarry>()
         .insert(HeldItem)
+        .insert(HoldTimer::fresh())
         .insert(Visibility::Inherited)
         .set_parent_in_place(camera_entity)
         .insert(Transform::from_translation(hold_offset));
@@ -1471,10 +1588,10 @@ fn process_stash_intent(
     confidence_config: Res<crate::observation::ConfidenceConfig>,
     descriptor_vocab: Res<crate::observation::DescriptorVocabulary>,
     mut player_query: Query<(&mut CarryState, &CarryStrength), With<Player>>,
-    held_query: Query<(Entity, &GameMaterial), With<HeldItem>>,
+    held_query: Query<(Entity, &GameMaterial, Option<&HoldTimer>), With<HeldItem>>,
 ) {
     for _intent in reader.read() {
-        let Some((held_entity, held_material)) = held_query.iter().next() else {
+        let Some((held_entity, held_material, hold_timer)) = held_query.iter().next() else {
             reject_writer.write(CarryActionRejected {
                 reason: CarryRejectionReason::NothingHeld,
             });
@@ -1495,14 +1612,21 @@ fn process_stash_intent(
         }
 
         stash_entity_into_carry(&mut commands, &mut carry_state, held_entity, held_material);
-        record_weight_observation(
-            held_material,
-            carry_strength.current,
-            &config,
-            &confidence_config,
-            &mut journal_writer,
-            &descriptor_vocab,
-        );
+        // Only record a weight observation if the item was held long enough.
+        // Fast stash (e.g. immediately after pickup) produces no new data.
+        let held_long_enough = hold_timer
+            .map(|t| t.secs >= config.min_hold_secs_for_weight_obs && !t.obs_recorded)
+            .unwrap_or(false);
+        if held_long_enough {
+            record_weight_observation(
+                held_material,
+                carry_strength.current,
+                &config,
+                &confidence_config,
+                &mut journal_writer,
+                &descriptor_vocab,
+            );
+        }
         emit_carry_weight_changed(&mut weight_writer, &carry_state);
     }
 }
@@ -1521,11 +1645,18 @@ fn process_stash_held_for_pickup(
     confidence_config: Res<crate::observation::ConfidenceConfig>,
     descriptor_vocab: Res<crate::observation::DescriptorVocabulary>,
     mut player_query: Query<(&mut CarryState, &CarryStrength), With<Player>>,
+    hold_timer_query: Query<&HoldTimer, With<HeldItem>>,
 ) {
     for request in reader.read() {
         let Ok((mut carry_state, carry_strength)) = player_query.single_mut() else {
             continue;
         };
+
+        // Read the hold timer before stashing removes the HeldItem component.
+        let held_long_enough = hold_timer_query
+            .get(request.held_entity)
+            .map(|t| t.secs >= config.min_hold_secs_for_weight_obs && !t.obs_recorded)
+            .unwrap_or(false);
 
         stash_entity_into_carry(
             &mut commands,
@@ -1533,15 +1664,20 @@ fn process_stash_held_for_pickup(
             request.held_entity,
             &request.held_material,
         );
-        record_weight_observation(
-            &request.held_material,
-            carry_strength.current,
-            &config,
-            &confidence_config,
-            &mut journal_writer,
-            &descriptor_vocab,
-        );
-        // Also record weight for the newly picked material.
+        // Gate the outgoing stash observation behind the hold-duration threshold.
+        if held_long_enough {
+            record_weight_observation(
+                &request.held_material,
+                carry_strength.current,
+                &config,
+                &confidence_config,
+                &mut journal_writer,
+                &descriptor_vocab,
+            );
+        }
+        // The newly picked item always gets an observation — the player is actively
+        // initiating a pickup, so this counts as intentional contact regardless of
+        // prior hold time. The new item's HoldTimer starts fresh on its first frame.
         record_weight_observation(
             &request.picked_material,
             carry_strength.current,
@@ -1578,6 +1714,80 @@ fn process_observe_weight(
     }
 }
 
+/// Increment the hold timer for every currently-held item each frame.
+///
+/// This runs every Update tick and accumulates wall-clock time (via
+/// `Time::delta_secs()`) on any entity that carries the `HoldTimer`
+/// component. The timer is inserted when an item enters the held state
+/// and removed (along with `HeldItem`) when it is stashed or cycled out.
+///
+/// We intentionally do NOT stop accumulating at [`CarryConfig::min_hold_secs_for_weight_obs`].
+/// Over-accumulation beyond the threshold is harmless (the obs_recorded
+/// flag prevents duplicate observations), but clamping here would
+/// obscure diagnostics.
+fn tick_hold_timer(time: Res<Time>, mut query: Query<&mut HoldTimer, With<HeldItem>>) {
+    for mut timer in &mut query {
+        timer.secs += time.delta_secs();
+    }
+}
+
+/// Advances the per-player failed-pickup observation cooldown every frame.
+fn tick_failed_pickup_cooldown(
+    time: Res<Time>,
+    mut player_query: Query<&mut FailedPickupCooldown, With<Player>>,
+) {
+    let Ok(mut cooldown) = player_query.single_mut() else {
+        return;
+    };
+    cooldown.timer.tick(time.delta());
+}
+
+/// Records a low-confidence weight observation when the player failed to pick
+/// something up because their carry was full.
+///
+/// Emits `RecordObservation` with a hardcoded "too heavy" description (not
+/// routed through `DescriptorVocabulary`) and a cooldown guard to prevent
+/// journal spam from repeated failed attempts.
+fn process_failed_pickup_observation(
+    mut reader: MessageReader<FailedPickupObservation>,
+    mut journal_writer: MessageWriter<RecordObservation>,
+    config: Res<CarryConfig>,
+    mut player_query: Query<&mut FailedPickupCooldown, With<Player>>,
+) {
+    for request in reader.read() {
+        let Ok(mut cooldown) = player_query.single_mut() else {
+            continue;
+        };
+
+        if !cooldown.timer.is_finished() {
+            // Cooldown active — skip observation but keep draining the message queue.
+            continue;
+        }
+
+        let confidence = Confidence::new(config.failed_pickup_observation_confidence);
+
+        journal_writer.write(RecordObservation {
+            key: JournalKey::MaterialInstance {
+                seed: request.material.seed,
+            },
+            name: request.material.name.clone(),
+            material_seed: Some(MaterialSeed(request.material.seed)),
+            planet_seed: request.material.origin_planet_seed,
+            observation: crate::journal::Observation {
+                category: ObservationCategory::Weight,
+                confidence,
+                description: "Too heavy to lift".to_string(),
+                recorded_at: 0,
+            },
+            input_seeds: Vec::new(),
+            context_location: None,
+        });
+
+        // Reset so the next observation must wait out the full cooldown.
+        cooldown.timer.reset();
+    }
+}
+
 // Bevy system signatures get wide when they touch both input-derived state and
 // ECS mutation points. Keeping the queries explicit is more readable than
 // hiding them behind wrapper resources or tuple aliases here.
@@ -1593,7 +1803,7 @@ fn process_cycle_carry_intent(
     descriptor_vocab: Res<crate::observation::DescriptorVocabulary>,
     mut player_query: Query<(&mut CarryState, &CarryStrength), With<Player>>,
     camera_query: Query<Entity, With<PlayerCamera>>,
-    held_query: Query<(Entity, &GameMaterial), With<HeldItem>>,
+    held_query: Query<(Entity, &GameMaterial, Option<&HoldTimer>), With<HeldItem>>,
     carried_material_query: Query<&GameMaterial, With<InCarry>>,
 ) {
     for _intent in reader.read() {
@@ -1626,25 +1836,31 @@ fn process_cycle_carry_intent(
         let held_info = held_query
             .iter()
             .next()
-            .map(|(entity, material)| (entity, material.clone()));
-        if let Some((held_entity, held_material)) = held_info.as_ref() {
+            .map(|(entity, material, timer)| (entity, material.clone(), timer.copied()));
+        if let Some((held_entity, held_material, hold_timer)) = held_info.as_ref() {
             if !carry_state.can_stash(held_material) {
                 continue;
             }
             // Re-acquire the material ref — entity is still alive, query is
             // still valid since we only mutated CarryState (separate component).
-            let Ok((_, held_material)) = held_query.get(*held_entity) else {
+            let Ok((_, held_material, _)) = held_query.get(*held_entity) else {
                 continue;
             };
             stash_entity_into_carry(&mut commands, &mut carry_state, *held_entity, held_material);
-            record_weight_observation(
-                held_material,
-                carry_strength.current,
-                &config,
-                &confidence_config,
-                &mut journal_writer,
-                &descriptor_vocab,
-            );
+            // Gate stash observation: only fire if the item was held long enough.
+            let cycle_obs_ok = hold_timer
+                .map(|t| t.secs >= config.min_hold_secs_for_weight_obs && !t.obs_recorded)
+                .unwrap_or(false);
+            if cycle_obs_ok {
+                record_weight_observation(
+                    held_material,
+                    carry_strength.current,
+                    &config,
+                    &confidence_config,
+                    &mut journal_writer,
+                    &descriptor_vocab,
+                );
+            }
         }
 
         let Some(_removed) = carry_state.remove_material(next_entity, next_material) else {
@@ -1657,14 +1873,10 @@ fn process_cycle_carry_intent(
             next_entity,
             config.hold_offset_vec3(),
         );
-        record_weight_observation(
-            next_material,
-            carry_strength.current,
-            &config,
-            &confidence_config,
-            &mut journal_writer,
-            &descriptor_vocab,
-        );
+        // Do NOT record a weight observation here on cycle-in.
+        // The HoldTimer inserted by move_entity_from_carry_to_hand starts at
+        // zero — the observation will fire when the item is eventually stashed
+        // (if and only if it has been held for at least min_hold_secs_for_weight_obs).
         emit_carry_weight_changed(&mut weight_writer, &carry_state);
     }
 }
@@ -2306,6 +2518,185 @@ exponent = 1.0
                 }
                 other => panic!("{label}: expected JournalKey::MaterialInstance, got {other:?}"),
             }
+        }
+    }
+
+    // ── Serde round-trip tests ────────────────────────────────────────────
+
+    #[test]
+    fn carried_item_serde_round_trip_entity_skipped() {
+        let item = CarriedItem {
+            entity: Entity::from_bits(42),
+        };
+        let json = serde_json::to_string(&item).expect("CarriedItem must serialise");
+        let restored: CarriedItem =
+            serde_json::from_str(&json).expect("CarriedItem must deserialise");
+        // The entity field is skipped — the restored value is the placeholder.
+        assert_eq!(restored.entity, Entity::PLACEHOLDER);
+    }
+
+    #[test]
+    fn carry_state_serde_round_trip() {
+        let state = CarryState {
+            current_weight: 3.5,
+            effective_capacity: 10.0,
+            hard_limit_enabled: true,
+            carried_items: vec![CarriedItem {
+                entity: Entity::from_bits(1),
+            }],
+        };
+        let json = serde_json::to_string(&state).expect("CarryState must serialise");
+        let restored: CarryState =
+            serde_json::from_str(&json).expect("CarryState must deserialise");
+        assert_eq!(restored.current_weight, state.current_weight);
+        assert_eq!(restored.effective_capacity, state.effective_capacity);
+        assert_eq!(restored.hard_limit_enabled, state.hard_limit_enabled);
+        assert_eq!(restored.carried_items.len(), state.carried_items.len());
+        // Entities are skipped, so they come back as PLACEHOLDER.
+        assert_eq!(restored.carried_items[0].entity, Entity::PLACEHOLDER);
+    }
+
+    #[test]
+    fn carry_strength_serde_round_trip() {
+        let strength = CarryStrength { current: 2.75 };
+        let json = serde_json::to_string(&strength).expect("CarryStrength must serialise");
+        let restored: CarryStrength =
+            serde_json::from_str(&json).expect("CarryStrength must deserialise");
+        assert_eq!(restored.current, strength.current);
+    }
+
+    #[test]
+    fn carry_device_state_serde_round_trip() {
+        let state = CarryDeviceState {
+            required_item_key: Some("carry-pack".to_string()),
+            equipped_item_key: Some("carry-pack".to_string()),
+        };
+        let json = serde_json::to_string(&state).expect("CarryDeviceState must serialise");
+        let restored: CarryDeviceState =
+            serde_json::from_str(&json).expect("CarryDeviceState must deserialise");
+        assert_eq!(restored.required_item_key, state.required_item_key);
+        assert_eq!(restored.equipped_item_key, state.equipped_item_key);
+    }
+
+    // ── FailedPickupObservation tests ─────────────────────────────────────
+
+    /// Helper: build a minimal app with the systems needed to test
+    /// failed-pickup observation and cooldown behaviour.
+    fn build_failed_pickup_app() -> App {
+        let mut app = App::new();
+        app.add_plugins(bevy::time::TimePlugin)
+            .add_message::<FailedPickupObservation>()
+            .add_message::<RecordObservation>()
+            .insert_resource(CarryConfig::default())
+            .add_systems(
+                Update,
+                (
+                    tick_failed_pickup_cooldown,
+                    process_failed_pickup_observation.after(tick_failed_pickup_cooldown),
+                ),
+            );
+
+        let config = CarryConfig::default();
+        let cooldown = FailedPickupCooldown {
+            timer: {
+                let mut t =
+                    Timer::from_seconds(config.failed_pickup_cooldown_secs, TimerMode::Once);
+                t.finish();
+                t
+            },
+        };
+        app.world_mut().spawn((crate::player::Player, cooldown));
+
+        app
+    }
+
+    /// One-shot system: write a `FailedPickupObservation` for `material` into the
+    /// message queue so that `process_failed_pickup_observation` can pick it up.
+    fn emit_failed_pickup(
+        material: In<GameMaterial>,
+        mut writer: MessageWriter<FailedPickupObservation>,
+    ) {
+        writer.write(FailedPickupObservation {
+            material: material.0.clone(),
+        });
+    }
+
+    #[test]
+    fn failed_pickup_observation_emits_record_observation() {
+        let mut app = build_failed_pickup_app();
+
+        let material = material_with_density(0.9);
+        app.world_mut()
+            .run_system_cached_with(emit_failed_pickup, material.clone())
+            .expect("one-shot emit should run");
+
+        app.update();
+
+        let mut messages = app
+            .world_mut()
+            .resource_mut::<Messages<RecordObservation>>();
+        let recorded: Vec<RecordObservation> = messages.drain().collect();
+
+        assert_eq!(recorded.len(), 1, "expected exactly one RecordObservation");
+        assert_eq!(
+            recorded[0].observation.category,
+            ObservationCategory::Weight
+        );
+        assert_eq!(
+            recorded[0].observation.description, "Too heavy to lift",
+            "description must be the dedicated failed-pickup text"
+        );
+        assert!(
+            recorded[0].observation.confidence.value() < 0.2,
+            "failed-pickup confidence should be lower than successful-pickup (0.2)"
+        );
+        match &recorded[0].key {
+            JournalKey::MaterialInstance { seed } => {
+                assert_eq!(
+                    *seed, material.seed,
+                    "observation key must match target material seed"
+                );
+            }
+            other => panic!("expected JournalKey::MaterialInstance, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn failed_pickup_cooldown_suppresses_second_observation() {
+        let mut app = build_failed_pickup_app();
+
+        let material = material_with_density(0.9);
+
+        // First attempt — cooldown starts finished, so observation fires.
+        app.world_mut()
+            .run_system_cached_with(emit_failed_pickup, material.clone())
+            .expect("one-shot emit should run");
+        app.update();
+
+        {
+            let mut messages = app
+                .world_mut()
+                .resource_mut::<Messages<RecordObservation>>();
+            let recorded: Vec<RecordObservation> = messages.drain().collect();
+            assert_eq!(recorded.len(), 1, "first attempt should emit observation");
+        }
+
+        // Second attempt immediately after — cooldown is active, no observation.
+        app.world_mut()
+            .run_system_cached_with(emit_failed_pickup, material.clone())
+            .expect("one-shot emit should run");
+        app.update();
+
+        {
+            let mut messages = app
+                .world_mut()
+                .resource_mut::<Messages<RecordObservation>>();
+            let suppressed: Vec<RecordObservation> = messages.drain().collect();
+            assert_eq!(
+                suppressed.len(),
+                0,
+                "second attempt within cooldown should be suppressed"
+            );
         }
     }
 }

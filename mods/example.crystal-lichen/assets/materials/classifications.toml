@@ -1,0 +1,45 @@
+# assets/materials/classifications.toml (mod addition)
+# schema_version must be the first field in every asset file.
+schema_version = 1
+
+# ── Crystal-Lichen Substrate ───────────────────────────────────────────────
+#
+# Crystal-Lichen Substrate is a low-density, moderately heat-resistant
+# biological material. Under the right atmospheric conditions it forms a
+# glassy crystalline crust over rock faces, visually iridescent blue-green.
+#
+# Property derivation (seed 9002, computed via derive_material_from_seed):
+#   density:            0.3183  — lightweight, porous cellular structure
+#   thermal_resistance: 0.4121  — moderate tolerance; thrives in temperate zones
+#   reactivity:         0.6054  — chemically active; metabolic substrate reactions
+#   conductivity:       0.9418  — exceptional — the crystalline matrix conducts heat
+#   toxicity:           0.3551  — mildly toxic; a new material to approach carefully
+#
+# Color: [0.4081, 0.7259, 0.8499] — cool blue-green with teal highlights
+#
+# Range choice rationale:
+#   density min/max: 0.28 – 0.37
+#     - The gap between Prismate's max (0.27) and Silite's min (0.38) is clean.
+#       Crystal-Lichen Substrate's true value (0.3183) sits comfortably here.
+#   thermal min/max: 0.34 – 0.48
+#     - No base game material with density in 0.28–0.37 can match this thermal
+#       range. Prismate's thermal (0.32–0.48) overlaps numerically, but Prismate's
+#       density band (0.15–0.27) is disjoint from ours, so the classifier never
+#       sees both match simultaneously.
+#
+# Warning: modders adding further materials in this density band (0.28–0.37)
+# must choose thermal ranges that do not overlap with 0.34–0.48 to avoid
+# non-deterministic classification ordering.
+
+[[classification]]
+name         = "crystal_lichen_substrate"
+display_name = "Crystal-Lichen Substrate"
+# Seed 9002: density=0.3183, thermal_resistance=0.4121
+
+[classification.density]
+min = 0.28
+max = 0.37
+
+[classification.thermal_resistance]
+min = 0.34
+max = 0.48

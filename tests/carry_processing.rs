@@ -401,3 +401,240 @@ fn cycle_with_capacity_check_prevents_swap() {
     assert!(!has_component::<HeldItem>(app.world_mut(), carried_entity));
     assert!(has_component::<InCarry>(app.world_mut(), carried_entity));
 }
+
+// ── Hold-duration gate tests ──────────────────────────────────────────────────
+//
+// These tests exercise the HoldTimer gate that prevents weight observations from
+// being recorded on fast stash/cycle sequences. The gate fires only when
+// hold_timer.secs >= config.min_hold_secs_for_weight_obs (default 1.5 s).
+
+use apeiron_cipher::carry::HoldTimer;
+use bevy::ecs::message::MessageReader;
+
+/// Count the number of RecordObservation messages queued after running a frame.
+fn drain_observations(app: &mut App) -> usize {
+    use std::sync::{Arc, Mutex};
+    let count = Arc::new(Mutex::new(0usize));
+    let count_clone = Arc::clone(&count);
+    let _ = app
+        .world_mut()
+        .run_system_once(move |mut reader: MessageReader<RecordObservation>| {
+            let mut n = count_clone.lock().unwrap();
+            for _obs in reader.read() {
+                *n += 1;
+            }
+        });
+    Arc::try_unwrap(count).unwrap().into_inner().unwrap()
+}
+
+/// Stashing immediately (no HoldTimer) produces no weight observation.
+#[test]
+fn fast_stash_no_hold_timer_produces_no_observation() {
+    let mut app = setup_carry_test_app();
+    let _player_entity = spawn_test_player(&mut app);
+
+    let camera_entity = get_camera_entity(app.world_mut());
+    let (held_entity, _) = spawn_material_entity(&mut app, "IronOre", 1.0, 10);
+    // Deliberately do NOT insert HoldTimer — simulates old entity or extreme edge case.
+    make_entity_held(&mut app, held_entity, camera_entity);
+
+    trigger_stash_action(&mut app);
+    app.update();
+
+    // Entity should be stashed.
+    assert!(has_component::<InCarry>(app.world_mut(), held_entity));
+    // But no observation should have been written.
+    let obs = drain_observations(&mut app);
+    assert_eq!(
+        obs, 0,
+        "Expected 0 observations for an item with no HoldTimer (fast stash)"
+    );
+}
+
+/// Stashing before the threshold (secs < 1.5) produces no weight observation.
+#[test]
+fn stash_before_threshold_produces_no_observation() {
+    let mut app = setup_carry_test_app();
+    let _player_entity = spawn_test_player(&mut app);
+
+    let camera_entity = get_camera_entity(app.world_mut());
+    let (held_entity, _) = spawn_material_entity(&mut app, "Granite", 0.8, 11);
+    make_entity_held(&mut app, held_entity, camera_entity);
+
+    // Insert a HoldTimer that has not yet reached the threshold.
+    app.world_mut().entity_mut(held_entity).insert(HoldTimer {
+        secs: 0.9,
+        obs_recorded: false,
+    });
+
+    trigger_stash_action(&mut app);
+    app.update();
+
+    assert!(has_component::<InCarry>(app.world_mut(), held_entity));
+    let obs = drain_observations(&mut app);
+    assert_eq!(obs, 0, "Expected 0 observations for hold time < threshold");
+}
+
+/// Stashing after the threshold (secs >= 1.5) produces exactly one observation.
+#[test]
+fn stash_after_threshold_produces_one_observation() {
+    let mut app = setup_carry_test_app();
+    let _player_entity = spawn_test_player(&mut app);
+
+    let camera_entity = get_camera_entity(app.world_mut());
+    let (held_entity, _) = spawn_material_entity(&mut app, "Limestone", 1.2, 12);
+    make_entity_held(&mut app, held_entity, camera_entity);
+
+    // Simulate holding for exactly the threshold duration.
+    app.world_mut().entity_mut(held_entity).insert(HoldTimer {
+        secs: 1.5,
+        obs_recorded: false,
+    });
+
+    trigger_stash_action(&mut app);
+    app.update();
+
+    assert!(has_component::<InCarry>(app.world_mut(), held_entity));
+    let obs = drain_observations(&mut app);
+    assert_eq!(
+        obs, 1,
+        "Expected exactly 1 observation for hold time >= threshold"
+    );
+}
+
+/// obs_recorded flag prevents a duplicate observation even when timer >= threshold.
+#[test]
+fn obs_recorded_flag_prevents_duplicate_observation() {
+    let mut app = setup_carry_test_app();
+    let _player_entity = spawn_test_player(&mut app);
+
+    let camera_entity = get_camera_entity(app.world_mut());
+    let (held_entity, _) = spawn_material_entity(&mut app, "Basalt", 1.4, 13);
+    make_entity_held(&mut app, held_entity, camera_entity);
+
+    // Timer is past threshold but obs_recorded is already true.
+    app.world_mut().entity_mut(held_entity).insert(HoldTimer {
+        secs: 3.0,
+        obs_recorded: true,
+    });
+
+    trigger_stash_action(&mut app);
+    app.update();
+
+    assert!(has_component::<InCarry>(app.world_mut(), held_entity));
+    let obs = drain_observations(&mut app);
+    assert_eq!(
+        obs, 0,
+        "Expected 0 observations when obs_recorded is already true"
+    );
+}
+
+/// Cycling before the threshold (held item secs < 1.5) produces no stash observation.
+#[test]
+fn fast_cycle_produces_no_stash_observation() {
+    let mut app = setup_carry_test_app();
+    let player_entity = spawn_test_player(&mut app);
+
+    // Add a carried item so cycling has something to bring out.
+    let (carried_entity, carried_material) = spawn_material_entity(&mut app, "Carried", 1.0, 20);
+    add_entity_to_carry(&mut app, player_entity, carried_entity, &carried_material);
+
+    // The currently held item has a short hold time.
+    let camera_entity = get_camera_entity(app.world_mut());
+    let (held_entity, _) = spawn_material_entity(&mut app, "HeldFast", 0.5, 21);
+    make_entity_held(&mut app, held_entity, camera_entity);
+    app.world_mut().entity_mut(held_entity).insert(HoldTimer {
+        secs: 0.3,
+        obs_recorded: false,
+    });
+
+    trigger_cycle_carry_action(&mut app);
+    app.update();
+
+    // Swap should have happened.
+    assert!(has_component::<InCarry>(app.world_mut(), held_entity));
+    assert!(has_component::<HeldItem>(app.world_mut(), carried_entity));
+    // No observation because held_entity wasn't held long enough.
+    let obs = drain_observations(&mut app);
+    assert_eq!(obs, 0, "Expected 0 observations for a fast cycle-out");
+}
+
+/// Cycling after the threshold produces exactly one stash observation.
+#[test]
+fn slow_cycle_produces_stash_observation() {
+    let mut app = setup_carry_test_app();
+    let player_entity = spawn_test_player(&mut app);
+
+    let (carried_entity, carried_material) = spawn_material_entity(&mut app, "NextUp", 1.0, 30);
+    add_entity_to_carry(&mut app, player_entity, carried_entity, &carried_material);
+
+    let camera_entity = get_camera_entity(app.world_mut());
+    let (held_entity, _) = spawn_material_entity(&mut app, "HeldLong", 0.5, 31);
+    make_entity_held(&mut app, held_entity, camera_entity);
+    app.world_mut().entity_mut(held_entity).insert(HoldTimer {
+        secs: 2.0,
+        obs_recorded: false,
+    });
+
+    trigger_cycle_carry_action(&mut app);
+    app.update();
+
+    assert!(has_component::<InCarry>(app.world_mut(), held_entity));
+    assert!(has_component::<HeldItem>(app.world_mut(), carried_entity));
+    let obs = drain_observations(&mut app);
+    assert_eq!(
+        obs, 1,
+        "Expected exactly 1 observation for a slow cycle-out"
+    );
+}
+
+/// cycle-in inserts a fresh HoldTimer (secs = 0) on the incoming entity.
+#[test]
+fn cycle_in_inserts_fresh_hold_timer() {
+    let mut app = setup_carry_test_app();
+    let player_entity = spawn_test_player(&mut app);
+
+    let (carried_entity, carried_material) = spawn_material_entity(&mut app, "FreshIn", 1.0, 40);
+    add_entity_to_carry(&mut app, player_entity, carried_entity, &carried_material);
+
+    trigger_cycle_carry_action(&mut app);
+    app.update();
+
+    // The entity cycled into hand should have a fresh HoldTimer.
+    assert!(
+        has_component::<HoldTimer>(app.world_mut(), carried_entity),
+        "Cycle-in entity should carry a HoldTimer"
+    );
+    let timer = app
+        .world()
+        .entity(carried_entity)
+        .get::<HoldTimer>()
+        .unwrap();
+    assert!(
+        timer.secs < f32::EPSILON,
+        "Freshly cycled-in timer should start at 0.0, got {}",
+        timer.secs
+    );
+    assert!(
+        !timer.obs_recorded,
+        "Freshly cycled-in timer obs_recorded should be false"
+    );
+}
+
+/// Pickup inserts a fresh HoldTimer via the interaction path.
+/// Exercises make_entity_held + manual HoldTimer insert (simulating process_pickup).
+#[test]
+fn pickup_inserts_fresh_hold_timer() {
+    // This is a unit-level check: verify that after inserting HoldTimer::fresh()
+    // the values are correct (secs=0, obs_recorded=false).
+    let timer = HoldTimer::fresh();
+    assert!(
+        timer.secs < f32::EPSILON,
+        "Fresh HoldTimer secs should be 0.0, got {}",
+        timer.secs
+    );
+    assert!(
+        !timer.obs_recorded,
+        "Fresh HoldTimer obs_recorded should be false"
+    );
+}

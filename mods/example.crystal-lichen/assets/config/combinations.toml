@@ -1,0 +1,45 @@
+# assets/config/combinations.toml (mod addition)
+# schema_version must be the first field in every asset file.
+schema_version = 1
+
+# ── Crystal-Lichen Substrate combination rules ────────────────────────────
+#
+# Crystal-Lichen Substrate (seed 9002) is chemically active (reactivity=0.60)
+# and highly conductive (conductivity=0.94). At the fabricator, it behaves
+# like a biological catalyst: it amplifies heat-related properties in partner
+# materials and transfers its own exceptional conductivity.
+#
+# Rules defined here:
+#   9002 + 1001 (Ferrite)  — biologically etched iron; density amplified, heat
+#                            resistance catalyzed by the reactive matrix
+#   9002 + 1009 (Silite)   — the natural pairing (lichen over rock); conductivity
+#                            dominates the output; density blends evenly
+#   9002 + 1004 (Prismate) — crystalline resonance: the two crystal structures
+#                            reinforce each other; thermal resistance spikes
+
+[[rules]]
+material_seed_a = 9002   # Crystal-Lichen Substrate (this mod)
+material_seed_b = 1001   # Ferrite (base game)
+density            = { type = "Catalyze", multiplier = 1.2 }
+thermal_resistance = { type = "Catalyze", multiplier = 1.3 }
+reactivity         = { type = "Max" }
+conductivity       = { type = "Max" }
+toxicity           = { type = "Blend", weight_a = 0.7, weight_b = 0.3 }
+
+[[rules]]
+material_seed_a = 9002   # Crystal-Lichen Substrate (this mod)
+material_seed_b = 1009   # Silite (base game)
+density            = { type = "Blend", weight_a = 0.5, weight_b = 0.5 }
+thermal_resistance = { type = "Blend", weight_a = 0.4, weight_b = 0.6 }
+reactivity         = { type = "Min" }
+conductivity       = { type = "Max" }
+toxicity           = { type = "Min" }
+
+[[rules]]
+material_seed_a = 9002   # Crystal-Lichen Substrate (this mod)
+material_seed_b = 1004   # Prismate (base game)
+density            = { type = "Min" }
+thermal_resistance = { type = "Catalyze", multiplier = 1.5 }
+reactivity         = { type = "Blend", weight_a = 0.6, weight_b = 0.4 }
+conductivity       = { type = "Max" }
+toxicity           = { type = "Blend", weight_a = 0.5, weight_b = 0.5 }
