@@ -23,6 +23,7 @@ fn carry_shared_setup(app: &mut App) {
     app.add_message::<RecordObservation>();
     // ConfidenceTracker removed - confidence is now tracked per-observation in journal
     app.insert_resource(apeiron_cipher::observation::DescriptorVocabulary::default());
+    app.insert_resource(apeiron_cipher::observation::ConfidenceConfig::default());
     app.add_plugins(CarryPlugin);
 }
 
