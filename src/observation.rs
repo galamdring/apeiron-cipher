@@ -3082,7 +3082,7 @@ mod tests {
                 (0.5_f32, "Observed"),
                 (0.8_f32, "Confident"),
             ] {
-                let result = vocab.describe(&category, 1.0, Confidence(confidence_val));
+                let result = vocab.describe(&category, 1.0, Confidence::new(confidence_val));
                 assert!(
                     result.is_some(),
                     "describe({:?}, 1.0, Confidence({})) ({}) must not return None",
