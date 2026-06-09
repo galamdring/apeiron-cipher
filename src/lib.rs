@@ -52,6 +52,8 @@ pub fn add_game_plugins(app: &mut App) {
         .init_resource::<surface::SurfaceOverrideRegistry>()
         // Player: entity hierarchy with camera, movement, stamina.
         .add_plugins(player::PlayerPlugin)
+        // Camera: offset composition system that sums CameraBobOffset etc. in PostUpdate.
+        .add_plugins(camera::CameraPlugin)
         // Carry: config + player carry state foundation for Epic 4.
         .add_plugins(carry::CarryPlugin)
         // Carry feedback: subtle bob / audio cues driven by current encumbrance.
