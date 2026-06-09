@@ -127,6 +127,12 @@ pub enum SeedChannel {
     PlanetAtmosphere = 0xE1E7_0001_0000_0002,
     /// Channel for deriving planet surface gravity from planet seed.
     PlanetGravity = 0xE1E7_0001_0000_0003,
+
+    // ── Vehicle Placement Channels (prefix 0xB7E1_C001) ─────────────────────
+    /// Channel for deriving the vehicle's initial X position from the planet seed.
+    VehicleSpawnX = 0xB7E1_C001_0000_0001,
+    /// Channel for deriving the vehicle's initial Z position from the planet seed.
+    VehicleSpawnZ = 0xB7E1_C001_0000_0002,
 }
 
 impl SeedChannel {

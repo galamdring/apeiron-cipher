@@ -104,6 +104,14 @@ pub enum ObservationCategory {
     FabricationResult,
     /// A note about a specific location (landmark, hazard, resource).
     LocationNote,
+    /// Observations arising from actively using a tool, vehicle, or resource
+    /// extraction process to extract value from the environment.
+    ///
+    /// Examples: driving a rover to a mineral deposit, loading fuel and
+    /// watching the engine consume it, noting how speed changes on slopes.
+    /// Exploitation observations record *what happened when the player used
+    /// something* rather than what the player merely noticed about it.
+    Exploitation,
     // Future: LanguageFragment, CulturalBehavior, TradePrice, etc.
 }
 
@@ -128,6 +136,7 @@ impl ObservationCategory {
             ObservationCategory::Weight => "Weight",
             ObservationCategory::FabricationResult => "Fabrication",
             ObservationCategory::LocationNote => "Location",
+            ObservationCategory::Exploitation => "Exploitation",
         }
     }
 
@@ -1097,11 +1106,15 @@ fn journal_navigation(
                 Some(ObservationCategory::FabricationResult)
             }
             Some(ObservationCategory::FabricationResult) => {
-                // FabricationResult → All
-                None
+                // FabricationResult → LocationNote
+                Some(ObservationCategory::LocationNote)
             }
             Some(ObservationCategory::LocationNote) => {
-                // LocationNote → All (for future expansion)
+                // LocationNote → Exploitation
+                Some(ObservationCategory::Exploitation)
+            }
+            Some(ObservationCategory::Exploitation) => {
+                // Exploitation → All
                 None
             }
         };

@@ -1135,6 +1135,9 @@ fn property_value_for_category(
         ObservationCategory::SurfaceAppearance => mat.reactivity.value(),
         ObservationCategory::FabricationResult => 0.0,
         ObservationCategory::LocationNote => 0.0,
+        // Exploitation observations are about vehicle/tool usage events — no
+        // direct float property from GameMaterial applies.
+        ObservationCategory::Exploitation => 0.0,
     }
 }
 

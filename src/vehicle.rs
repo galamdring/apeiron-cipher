@@ -33,7 +33,7 @@ use std::{f32::consts::PI, fs, path::Path};
 use crate::{
     input::InputAction,
     journal::{JournalKey, Observation, ObservationCategory},
-    materials::{GameMaterial, MaterialSeed, derive_material_from_seed},
+    materials::{GameMaterial, MaterialSeed},
     observation::{Confidence, RecordObservation},
     player::Player,
     seed_util::SeedChannel,
@@ -42,6 +42,24 @@ use crate::{
 
 // Re-export PlanetSurface from world_generation for internal use.
 use crate::world_generation::PlanetSurface;
+
+// ── Query type aliases (suppress clippy::type_complexity) ────────────────
+
+/// Player query used by `process_board_intent`: finds on-foot players in range.
+type OnFootPlayerQ<'w, 's> = Query<
+    'w,
+    's,
+    (Entity, &'static ActionState<InputAction>),
+    (With<Player>, Without<VehicleOccupant>),
+>;
+
+/// Vehicle drive query: mutable transform + state, not the player entity.
+type VehicleDriveQ<'w, 's> = Query<
+    'w,
+    's,
+    (&'static mut Transform, &'static mut VehicleState),
+    (With<Vehicle>, Without<Player>),
+>;
 
 const CONFIG_PATH: &str = "assets/config/vehicle.toml";
 
@@ -52,7 +70,8 @@ pub struct VehiclePlugin;
 
 impl Plugin for VehiclePlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, load_vehicle_config)
+        app.init_resource::<VehicleInteractionTarget>()
+            .add_systems(Startup, load_vehicle_config)
             .add_systems(PostStartup, spawn_derelict_vehicle)
             .add_systems(
                 Update,
@@ -265,6 +284,7 @@ pub struct VehicleOccupant {
 /// interaction range and could be boarded.
 #[derive(Resource, Default, Debug)]
 pub struct VehicleInteractionTarget {
+    /// The vehicle entity currently in interaction range, if any.
     pub entity: Option<Entity>,
 }
 
@@ -277,7 +297,7 @@ pub struct VehicleInteractionTarget {
 ///
 /// Returns `(world_x, world_z)` as an offset from the player's origin (0, 0).
 fn derive_derelict_spawn_xz(planet_seed: PlanetSeed, spawn_radius: f32) -> (f32, f32) {
-    let mixed = SeedChannel::VehicleSpawnHint.mix_seed(planet_seed.0);
+    let mixed = SeedChannel::VehicleSpawnX.mix_seed(planet_seed.0);
     // Use upper 32 bits for angle, lower 32 bits for radius fraction.
     let angle_fraction = (mixed >> 32) as u32 as f64 / (u32::MAX as f64 + 1.0);
     let radius_fraction = (mixed as u32) as f64 / (u32::MAX as f64 + 1.0);
@@ -368,10 +388,7 @@ fn update_vehicle_interaction_target(
 fn process_board_intent(
     mut commands: Commands,
     target: Res<VehicleInteractionTarget>,
-    player_query: Query<
-        (Entity, &ActionState<InputAction>),
-        (With<Player>, Without<VehicleOccupant>),
-    >,
+    player_query: OnFootPlayerQ,
     mut vehicle_query: Query<&mut VehicleState, With<Vehicle>>,
 ) {
     let Some(vehicle_entity) = target.entity else {
@@ -433,7 +450,7 @@ fn drive_vehicle(
         (&ActionState<InputAction>, &mut Transform, &VehicleOccupant),
         With<Player>,
     >,
-    mut vehicle_query: Query<(&mut Transform, &mut VehicleState), (With<Vehicle>, Without<Player>)>,
+    mut vehicle_query: VehicleDriveQ,
 ) {
     let Ok((action_state, mut player_tf, occupant)) = player_query.single_mut() else {
         return;
@@ -640,6 +657,7 @@ fn emit_vehicle_observations(
 ///
 /// This is a free function rather than a system — it is called by the
 /// interaction plugin when the player uses `Place` on the vehicle's fuel slot.
+#[allow(clippy::collapsible_if)]
 pub fn try_load_fuel(
     vehicle_state: &mut VehicleState,
     fuel_slot: &mut FuelSlot,
@@ -690,6 +708,7 @@ pub fn player_is_in_vehicle(occupant: Option<&VehicleOccupant>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::materials::derive_material_from_seed;
 
     #[test]
     fn derelict_spawn_position_is_deterministic() {

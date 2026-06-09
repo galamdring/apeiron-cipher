@@ -1,0 +1,52 @@
+# Surface vehicle configuration — Scout Rover
+#
+# Tuning values for the derelict ground vehicle discovered near the player's
+# starting area.  All movement and fuel parameters live here so level designers
+# can adjust the feel without touching Rust code.
+
+# ── Movement ───────────────────────────────────────────────────────────────
+
+# Base movement speed in world units per second on flat terrain.
+base_speed = 8.0
+
+# Slope thresholds (in degrees).  When terrain slope exceeds flat_slope_limit
+# the vehicle enters "moderate" mode (reduced speed, increased drain).
+# When slope exceeds steep_slope_limit the vehicle cannot move at all.
+flat_slope_limit_degrees = 15.0
+moderate_slope_limit_degrees = 30.0
+steep_slope_limit_degrees = 30.0
+
+# Speed multiplier applied when traversing moderate-slope terrain.
+# 1.0 = no penalty; 0.4 = 40% of flat speed.
+slope_speed_factor = 0.4
+
+# ── Fuel ───────────────────────────────────────────────────────────────────
+
+# Fuel units consumed per world-unit traveled on flat terrain.
+fuel_drain_per_meter = 0.1
+
+# Fuel drain multiplier applied on moderate slopes (stacked on top of the
+# flat drain rate).
+slope_drain_multiplier = 2.5
+
+# Maximum fuel the vehicle's slot can hold.  One material entity = 1 unit.
+fuel_capacity = 100.0
+
+# When fuel drops below this fraction of capacity, the engine note changes
+# (diegetic low-fuel cue — no HUD indicator).
+low_fuel_fraction = 0.25
+
+# ── Discovery / Interaction ────────────────────────────────────────────────
+
+# Distance (world units) within which the player can interact with the rover
+# to board or load fuel.
+interaction_range = 3.0
+
+# Distance traveled (world units) between drive-milestone observation entries
+# in the player journal.  Set to 0 to disable milestones entirely.
+milestone_distance = 50.0
+
+# Spawn placement radius (world units) around the player's starting position.
+# The derelict is always placed between 40% and 100% of this distance from
+# origin, ensuring it is discoverable on foot without being trivially close.
+spawn_radius = 30.0

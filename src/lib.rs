@@ -35,6 +35,7 @@ pub mod seed_util;
 pub mod seeds;
 pub mod solar_system;
 pub mod surface;
+pub mod vehicle;
 pub mod world_generation;
 
 #[cfg(test)]
@@ -87,5 +88,7 @@ pub fn add_game_plugins(app: &mut App) {
         // Debug: terrain diagnostic overlay (temporary — remove before shipping).
         .add_plugins(debug_overlay::DebugOverlayPlugin)
         // Mod loader: scans mods/, parses mod.toml manifests, exposes InstalledMods (Epic 23).
-        .add_plugins(mod_manifest::ModManifestPlugin);
+        .add_plugins(mod_manifest::ModManifestPlugin)
+        // Vehicle: derelict scout rover — board, drive, fuel (Story X.1).
+        .add_plugins(vehicle::VehiclePlugin);
 }
