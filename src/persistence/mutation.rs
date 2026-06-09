@@ -22,7 +22,7 @@
 //! they can be encoded with `bincode::serde` helpers and also round-tripped
 //! through JSON in tests.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -68,17 +68,22 @@ impl PlayerTransformSnapshot {
 /// newtypes are not needed once we are outside the domain boundary — the WAL
 /// format is a serialisation edge, which is one of the two places where bare
 /// `u64` is legitimate.
+///
+/// `BTreeMap` is used instead of `HashMap` so that bincode serialises the
+/// entries in a deterministic, key-sorted order.  `HashMap` has non-deterministic
+/// iteration order; at a serialisation edge the byte representation must be
+/// stable across platforms and runs (Principle 4 — Deterministic).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ConfidenceSnapshot {
     /// Observation counts keyed by `(material_seed_u64, property_name)`.
-    pub counts: HashMap<(u64, PropertyName), u32>,
+    pub counts: BTreeMap<(u64, PropertyName), u32>,
 }
 
 impl ConfidenceSnapshot {
     /// Constructs a new confidence snapshot with an empty counts map.
     pub fn empty() -> Self {
         Self {
-            counts: HashMap::new(),
+            counts: BTreeMap::new(),
         }
     }
 }
@@ -435,7 +440,7 @@ mod tests {
 
     #[test]
     fn roundtrip_confidence_with_entries() {
-        let mut counts = HashMap::new();
+        let mut counts = BTreeMap::new();
         counts.insert((42_u64, PropertyName::Density), 3_u32);
         counts.insert((99_u64, PropertyName::ThermalResistance), 7_u32);
         assert_bincode_roundtrip(WorldMutation::Confidence(ConfidenceSnapshot { counts }));

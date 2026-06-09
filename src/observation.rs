@@ -1057,7 +1057,7 @@ impl ConfidenceLevel {
 /// This enum replaces string literals to provide compile-time safety.
 /// A typo in property names would create silently separate trackers;
 /// the enum prevents this by making invalid property names a compile error.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PropertyName {
     /// Material density — how much mass per unit volume.
