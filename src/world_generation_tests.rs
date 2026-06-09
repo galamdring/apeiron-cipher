@@ -2923,3 +2923,14 @@ fn override_mode_biome_generation_no_regression() {
         "FrostShelf must be reachable in override mode, found: {found_biomes:?}"
     );
 }
+
+#[test]
+fn generation_version_is_nonzero() {
+    // This test exists to guarantee the constant is accessible and initialized
+    // to a non-zero sentinel. A value of 0 would be indistinguishable from
+    // "version not set" in save data, which would silently mask version mismatches.
+    assert!(
+        GENERATION_VERSION > 0,
+        "GENERATION_VERSION must be non-zero; increment it whenever deterministic generation logic changes"
+    );
+}

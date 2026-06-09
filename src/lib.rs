@@ -28,6 +28,7 @@ pub mod materials;
 pub mod mod_manifest;
 pub mod naming;
 pub mod observation;
+pub mod persistence;
 pub mod player;
 pub mod scene;
 pub mod seed_util;
