@@ -18,7 +18,7 @@ use bevy::prelude::*;
 
 use crate::descriptions::describe_thermal_observation;
 use crate::journal::{JournalKey, Observation, ObservationCategory};
-use crate::materials::{GameMaterial, MaterialObject, MaterialSeed, PropertyVisibility};
+use crate::materials::{GameMaterial, MaterialObject, PropertyVisibility};
 use crate::observation::Confidence;
 use crate::observation::RecordObservation;
 use crate::scene::{FurnitureConfig, HeatSourceConfig, Workbench};
@@ -312,9 +312,9 @@ fn reveal_thermal_property(
             let initial_confidence = Confidence::new(conf_cfg.initial_observation_confidence);
 
             journal_writer.write(RecordObservation {
-                key: JournalKey::MaterialInstance { seed: mat.seed },
+                key: JournalKey::MaterialInstance { seed: mat.seed.0 },
                 name: mat.name.clone(),
-                material_seed: Some(MaterialSeed(mat.seed)),
+                material_seed: Some(mat.seed),
                 planet_seed: mat.origin_planet_seed,
                 observation: Observation {
                     category: ObservationCategory::ThermalBehavior,
@@ -364,12 +364,12 @@ fn reveal_thermal_property(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::materials::MaterialProperty;
+    use crate::materials::{MaterialProperty, MaterialSeed};
 
     fn test_material(seed: u64) -> GameMaterial {
         GameMaterial {
             name: format!("TestMat-{seed}"),
-            seed,
+            seed: MaterialSeed(seed),
             color: [0.5, 0.5, 0.5],
             origin_planet_seed: None,
             density: MaterialProperty::new(0.5, PropertyVisibility::Observable),

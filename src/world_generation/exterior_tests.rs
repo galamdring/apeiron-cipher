@@ -801,7 +801,7 @@ fn sample_game_material(name: &str) -> GameMaterial {
     use crate::materials::{MaterialProperty, PropertyVisibility};
     GameMaterial {
         name: name.to_string(),
-        seed: 42,
+        seed: crate::materials::MaterialSeed(42),
         color: [0.5, 0.5, 0.5],
         origin_planet_seed: None,
         density: MaterialProperty::new(0.5, PropertyVisibility::Observable),
@@ -3072,7 +3072,7 @@ fn smoke_test_cross_biome_chunks_all_deposits_have_valid_materials() {
                 // Material must register without panicking.
                 let registered = mat_catalog.derive_and_register(placement.material_seed);
                 assert_eq!(
-                    registered.seed, placement.material_seed.0,
+                    registered.seed.0, placement.material_seed.0,
                     "registered material seed mismatch"
                 );
             }
@@ -3626,14 +3626,12 @@ fn restart_same_seed_same_biome_yields_identical_materials() {
     // Every material in catalog A must exist in catalog B with identical
     // name, color, and all scalar properties.
     for mat_a in catalog_a.values() {
-        let mat_b = catalog_b
-            .get_by_seed(crate::materials::MaterialSeed(mat_a.seed))
-            .unwrap_or_else(|| {
-                panic!(
-                    "seed {} ({}) present in run 1 but missing in run 2",
-                    mat_a.seed, mat_a.name
-                )
-            });
+        let mat_b = catalog_b.get_by_seed(mat_a.seed).unwrap_or_else(|| {
+            panic!(
+                "seed {} ({}) present in run 1 but missing in run 2",
+                mat_a.seed, mat_a.name
+            )
+        });
 
         assert_eq!(
             mat_a.name, mat_b.name,
@@ -3686,8 +3684,8 @@ fn restart_same_seed_same_biome_yields_identical_materials() {
     // deterministic for every seed we encountered (belt-and-suspenders
     // check independent of catalog registration order).
     for mat_a in catalog_a.values() {
-        let raw_1 = derive_material_from_seed(mat_a.seed);
-        let raw_2 = derive_material_from_seed(mat_a.seed);
+        let raw_1 = derive_material_from_seed(mat_a.seed.0);
+        let raw_2 = derive_material_from_seed(mat_a.seed.0);
         assert_eq!(
             raw_1.name, raw_2.name,
             "raw derivation name mismatch for seed {}",
@@ -3922,7 +3920,7 @@ fn restart_system_seed_chain_yields_identical_world() {
     for mat_a in session_a.materials.values() {
         let mat_b = session_b
             .materials
-            .get_by_seed(crate::materials::MaterialSeed(mat_a.seed))
+            .get_by_seed(mat_a.seed)
             .unwrap_or_else(|| {
                 panic!(
                     "seed {} ({}) present in run 1 but missing in run 2",
@@ -3980,8 +3978,8 @@ fn restart_system_seed_chain_yields_identical_world() {
     // Belt-and-suspenders: verify raw material derivation is deterministic
     // for every seed encountered through the system chain.
     for mat_a in session_a.materials.values() {
-        let raw_1 = derive_material_from_seed(mat_a.seed);
-        let raw_2 = derive_material_from_seed(mat_a.seed);
+        let raw_1 = derive_material_from_seed(mat_a.seed.0);
+        let raw_2 = derive_material_from_seed(mat_a.seed.0);
         assert_eq!(
             raw_1.name, raw_2.name,
             "raw derivation name mismatch for seed {}",

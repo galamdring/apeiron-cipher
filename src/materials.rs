@@ -307,7 +307,7 @@ pub struct GameMaterial {
     /// Human-readable display name (procedurally generated or disambiguated).
     pub name: String,
     /// Deterministic seed used for generation and catalog identity.
-    pub seed: u64,
+    pub seed: MaterialSeed,
     /// Display colour as \[R, G, B\] in sRGB 0.0–1.0.
     pub color: [f32; 3],
     /// The planet seed this material instance was generated on.
@@ -433,7 +433,7 @@ pub fn derive_material_from_seed(seed: u64) -> GameMaterial {
 
     GameMaterial {
         name,
-        seed,
+        seed: MaterialSeed(seed),
         color,
         origin_planet_seed: None, // set at spawn time by world generation
         density: MaterialProperty::new(
@@ -501,7 +501,7 @@ impl MaterialCatalog {
     /// material is inserted after applying name disambiguation, and a reference
     /// to the newly-inserted entry is returned.
     pub fn register_fabricated(&mut self, mut mat: GameMaterial) -> &GameMaterial {
-        let key = MaterialSeed(mat.seed);
+        let key = mat.seed;
         if self.by_seed.contains_key(&key) {
             return &self.by_seed[&key];
         }
@@ -629,7 +629,7 @@ mod tests {
     fn sample_material() -> GameMaterial {
         GameMaterial {
             name: "Ferrite".into(),
-            seed: 1001,
+            seed: MaterialSeed(1001),
             color: [0.58, 0.55, 0.52],
             origin_planet_seed: None,
             density: prop(0.78, PropertyVisibility::Observable),
@@ -818,7 +818,7 @@ visibility = "Hidden"
     fn derive_material_preserves_seed() {
         let seed = 0xFE00_0000_0000_0001;
         let mat = derive_material_from_seed(seed);
-        assert_eq!(mat.seed, seed);
+        assert_eq!(mat.seed, MaterialSeed(seed));
     }
 
     #[test]
@@ -964,7 +964,7 @@ visibility = "Hidden"
 
         let mut imposter = derive_material_from_seed(0xBEEF);
         imposter.name = base_name.clone();
-        imposter.seed = 0xBEEF; // different seed, same name
+        imposter.seed = MaterialSeed(0xBEEF); // different seed, same name
         catalog
             .by_name
             .insert(base_name.clone(), MaterialSeed(0xBEEF));
@@ -1108,7 +1108,8 @@ visibility = "Hidden"
 
             // Seed round-trips.
             assert_eq!(
-                mat.seed, seed,
+                mat.seed,
+                MaterialSeed(seed),
                 "{label}: seed not preserved (expected {seed}, got {})",
                 mat.seed
             );

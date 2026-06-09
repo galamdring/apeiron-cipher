@@ -1172,7 +1172,7 @@ pub fn detect_and_wire_similar_materials(
     let new_vec = new_material.property_vector();
 
     for existing in catalog.values() {
-        if existing.seed == new_seed.0 {
+        if existing.seed == new_seed {
             continue;
         }
 
@@ -1183,7 +1183,7 @@ pub fn detect_and_wire_similar_materials(
 
         let new_key = crate::journal::JournalKey::MaterialInstance { seed: new_seed.0 };
         let existing_key = crate::journal::JournalKey::MaterialInstance {
-            seed: existing.seed,
+            seed: existing.seed.0,
         };
 
         let new_confident = is_at_least_observed(graph_read, &new_key);

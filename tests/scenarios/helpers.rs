@@ -4,7 +4,7 @@
 //! assertion utilities so individual scenario files stay concise.
 
 use apeiron_cipher::carry::{CarryMovementState, CarryState};
-use apeiron_cipher::materials::{GameMaterial, MaterialProperty, PropertyVisibility};
+use apeiron_cipher::materials::{GameMaterial, MaterialProperty, MaterialSeed, PropertyVisibility};
 use bevy::prelude::*;
 
 // ── Factories ────────────────────────────────────────────────────────────
@@ -16,7 +16,7 @@ pub fn test_material(name: &str, density: f32, seed: u64) -> GameMaterial {
     let prop = |v| MaterialProperty::new(v, PropertyVisibility::Observable);
     GameMaterial {
         name: name.into(),
-        seed,
+        seed: MaterialSeed(seed),
         color: [0.5, 0.5, 0.5],
         origin_planet_seed: None,
         density: prop(density),
