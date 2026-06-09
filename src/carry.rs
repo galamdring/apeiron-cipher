@@ -1386,7 +1386,7 @@ pub fn record_weight_observation(
     // will handle accumulation automatically for repeated observations.
     // The value lives in assets/config/confidence.toml so it can be tuned without
     // recompiling (core-principle 6: data-driven, no hardcoded tuning values).
-    let initial_confidence = Confidence(confidence_config.initial_observation_confidence);
+    let initial_confidence = Confidence::new(confidence_config.initial_observation_confidence);
 
     // Generate description using the DescriptorVocabulary system
     let description = descriptor_vocab
