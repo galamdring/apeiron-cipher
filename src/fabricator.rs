@@ -16,7 +16,7 @@ use bevy::prelude::*;
 use crate::journal::{JournalKey, Observation, ObservationCategory};
 use crate::materials::{
     GameMaterial, MATERIAL_SURFACE_GAP, MaterialCatalog, MaterialObject, MaterialProperty,
-    PropertyVisibility,
+    MaterialSeed, PropertyVisibility,
 };
 use crate::observation::{ConfidenceConfig, RecordObservation};
 use crate::scene::{FabricatorSceneConfig, FurnitureConfig, Workbench};
@@ -405,7 +405,7 @@ fn tick_processing(
     );
     journal_writer.write(RecordObservation {
         key: JournalKey::Fabrication {
-            output_seed: output_mat.seed,
+            output_seed: output_mat.seed.0,
         },
         name: output_mat.name.clone(),
         material_seed: None,
@@ -420,10 +420,7 @@ fn tick_processing(
         // Pass input material seeds so the knowledge graph can wire DerivedFrom
         // edges from the output concept to each input material (Story 10.5).
         planet_seed: None,
-        input_seeds: input_mats
-            .iter()
-            .map(|m| crate::materials::MaterialSeed(m.seed))
-            .collect(),
+        input_seeds: input_mats.iter().map(|m| m.seed).collect(),
         context_location: None,
     });
 
@@ -544,7 +541,7 @@ fn combined_material_seed(seed_a: u64, seed_b: u64) -> u64 {
 /// All outputs receive a small deterministic perturbation from the combined
 /// seed so results are reproducible but not perfectly clean averages.
 pub fn property_combine(a: &GameMaterial, b: &GameMaterial) -> GameMaterial {
-    let combined_seed = combined_material_seed(a.seed, b.seed);
+    let combined_seed = combined_material_seed(a.seed.0, b.seed.0);
     let name = crate::naming::compositional_name(&a.name, &b.name);
 
     // ── Density: weighted by each input's density (denser dominates) ──
@@ -586,7 +583,7 @@ pub fn property_combine(a: &GameMaterial, b: &GameMaterial) -> GameMaterial {
 
     GameMaterial {
         name,
-        seed: combined_seed,
+        seed: MaterialSeed(combined_seed),
         color,
         // Fabricated materials have no planet origin.
         origin_planet_seed: None,
@@ -608,7 +605,7 @@ mod tests {
         let prop = |v: f32| MaterialProperty::new(v, PropertyVisibility::Hidden);
         GameMaterial {
             name: name.into(),
-            seed,
+            seed: MaterialSeed(seed),
             color: [0.5, 0.5, 0.5],
             origin_planet_seed: None,
             density: MaterialProperty::new(density, PropertyVisibility::Observable),

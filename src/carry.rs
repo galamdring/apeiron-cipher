@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 use crate::input::InputAction;
 use crate::interaction::HeldItem;
 use crate::journal::{JournalKey, Observation, ObservationCategory};
-use crate::materials::{GameMaterial, MaterialObject, MaterialSeed};
+use crate::materials::{GameMaterial, MaterialObject};
 use crate::observation::Confidence;
 use crate::observation::RecordObservation;
 use crate::player::{Player, PlayerCamera, cursor_is_captured};
@@ -1524,10 +1524,10 @@ pub fn record_weight_observation(
 
     journal_writer.write(RecordObservation {
         key: JournalKey::MaterialInstance {
-            seed: material.seed,
+            seed: material.seed.0,
         },
         name: material.name.clone(),
-        material_seed: Some(MaterialSeed(material.seed)),
+        material_seed: Some(material.seed),
         planet_seed: material.origin_planet_seed,
         observation: Observation {
             category: ObservationCategory::Weight,
@@ -1768,10 +1768,10 @@ fn process_failed_pickup_observation(
 
         journal_writer.write(RecordObservation {
             key: JournalKey::MaterialInstance {
-                seed: request.material.seed,
+                seed: request.material.seed.0,
             },
             name: request.material.name.clone(),
-            material_seed: Some(MaterialSeed(request.material.seed)),
+            material_seed: Some(request.material.seed),
             planet_seed: request.material.origin_planet_seed,
             observation: crate::journal::Observation {
                 category: ObservationCategory::Weight,
@@ -1903,7 +1903,7 @@ fn process_cycle_carry_intent(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::materials::{GameMaterial, MaterialProperty, PropertyVisibility};
+    use crate::materials::{GameMaterial, MaterialProperty, MaterialSeed, PropertyVisibility};
 
     fn material_with_density(value: f32) -> GameMaterial {
         let property =
@@ -1911,7 +1911,7 @@ mod tests {
 
         GameMaterial {
             name: "Testite".into(),
-            seed: 7,
+            seed: MaterialSeed(7),
             color: [0.1, 0.2, 0.3],
             origin_planet_seed: None,
             density: property(value),
@@ -2510,7 +2510,7 @@ exponent = 1.0
             assert_eq!(recorded.len(), 1, "{label}: expected one observation");
             match &recorded[0].key {
                 JournalKey::MaterialInstance { seed } => {
-                    assert_eq!(*seed, material.seed, "{label}: material seed must match");
+                    assert_eq!(*seed, material.seed.0, "{label}: material seed must match");
                     assert_eq!(
                         recorded[0].planet_seed, expected,
                         "{label}: planet_seed must come from material.origin_planet_seed"
@@ -2653,7 +2653,7 @@ exponent = 1.0
         match &recorded[0].key {
             JournalKey::MaterialInstance { seed } => {
                 assert_eq!(
-                    *seed, material.seed,
+                    *seed, material.seed.0,
                     "observation key must match target material seed"
                 );
             }

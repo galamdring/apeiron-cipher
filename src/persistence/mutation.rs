@@ -460,11 +460,11 @@ mod tests {
 
     #[test]
     fn roundtrip_carry_state_with_items() {
-        use crate::materials::{MaterialProperty, PropertyVisibility};
+        use crate::materials::{MaterialProperty, MaterialSeed, PropertyVisibility};
         let item = CarriedItemSnapshot {
             material: GameMaterial {
                 name: "Iron".into(),
-                seed: 1234,
+                seed: MaterialSeed(1234),
                 color: [0.5, 0.5, 0.5],
                 origin_planet_seed: None,
                 density: MaterialProperty::new(0.8, PropertyVisibility::Observable),
@@ -532,14 +532,14 @@ mod tests {
 
     #[test]
     fn roundtrip_chunk_additions_with_items() {
-        use crate::materials::{MaterialProperty, PropertyVisibility};
+        use crate::materials::{MaterialProperty, MaterialSeed, PropertyVisibility};
 
         let coord = ChunkCoord { x: 0, z: 1 };
         let record = PlayerAddedObjectSnapshot {
             id: 7,
             material: GameMaterial {
                 name: "Fabricated".into(),
-                seed: 9999,
+                seed: MaterialSeed(9999),
                 color: [1.0, 0.0, 0.0],
                 origin_planet_seed: None,
                 density: MaterialProperty::new(0.5, PropertyVisibility::Observable),

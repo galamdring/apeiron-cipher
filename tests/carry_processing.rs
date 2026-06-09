@@ -11,7 +11,7 @@ use apeiron_cipher::carry::{
 use apeiron_cipher::interaction::HeldItem;
 use apeiron_cipher::journal::RecordObservation;
 use apeiron_cipher::materials::{
-    GameMaterial, MaterialObject, MaterialProperty, PropertyVisibility,
+    GameMaterial, MaterialObject, MaterialProperty, MaterialSeed, PropertyVisibility,
 };
 use apeiron_cipher::observation::{ConfidenceConfig, DescriptorVocabulary};
 use apeiron_cipher::player::{Player, PlayerCamera, PlayerPlugin};
@@ -24,7 +24,7 @@ fn test_material(name: &str, density: f32, seed: u64) -> GameMaterial {
     let prop = |v| MaterialProperty::new(v, PropertyVisibility::Observable);
     GameMaterial {
         name: name.into(),
-        seed,
+        seed: MaterialSeed(seed),
         color: [0.5, 0.5, 0.5],
         origin_planet_seed: None,
         density: prop(density),
