@@ -493,17 +493,24 @@ fn default_fab_slot_offset_x() -> f32 {
     -0.45
 }
 fn default_fab_slot_spacing_z() -> f32 {
-    0.3
+    // Wide enough that two chambers (outer half-extent = slot_radius + wall_thickness = 0.155)
+    // have a small visible gap between them when placed on the workbench.
+    0.35
 }
 fn default_fab_slot_radius() -> f32 {
-    0.07
+    // Interior half-extent must be >= the largest material footprint_radius (heavy cube: 0.13).
+    // Using 0.14 gives a small margin so materials don't touch the interior wall face.
+    0.14
 }
 fn default_fab_slot_height() -> f32 {
     0.02
 }
 fn default_fab_chamber_wall_height() -> f32 {
-    // Tall enough that a typical material object (~0.06 m) sits visually inside the chamber.
-    0.10
+    // Tall enough to enclose the lower portion of any seated material mesh.
+    // Heavy (cube, half-height 0.09) is fully enclosed; light (sphere, radius 0.12)
+    // and medium (capsule, radius+half-height 0.17) extend above the rim — the
+    // open-top design intentionally lets the player see what is seated inside.
+    0.20
 }
 fn default_fab_chamber_wall_thickness() -> f32 {
     // Thin enough to not eat into the interior, thick enough to read as solid walls.
