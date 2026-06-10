@@ -24,6 +24,7 @@ pub mod interaction;
 pub mod journal;
 pub mod knowledge_graph;
 pub mod materials;
+pub mod mod_registry;
 pub mod naming;
 pub mod observation;
 pub mod player;
@@ -80,5 +81,7 @@ pub fn add_game_plugins(app: &mut App) {
         // Diegetic UI: in-world information surface framework (Story 10.6).
         .add_plugins(diegetic_ui::DiegeticUiPlugin)
         // Debug: terrain diagnostic overlay (temporary — remove before shipping).
-        .add_plugins(debug_overlay::DebugOverlayPlugin);
+        .add_plugins(debug_overlay::DebugOverlayPlugin)
+        // Mod registry: discovers valid mod directories and exposes ModRegistry (Epic 23 Story 23.2).
+        .add_plugins(mod_registry::ModRegistryPlugin);
 }
