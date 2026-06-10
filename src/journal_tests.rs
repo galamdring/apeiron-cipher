@@ -4836,7 +4836,51 @@ fn tab_cycles_category_filter() {
         assert_eq!(state.scroll_offset, 0);
     }
 
-    // Fifth Tab: FabricationResult → All
+    // Fifth Tab: FabricationResult → LocationNote
+    {
+        let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+        keys.press(KeyCode::Tab);
+    }
+    app.update();
+    {
+        let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+        keys.release(KeyCode::Tab);
+    }
+
+    {
+        let state = app.world().resource::<JournalUiState>();
+        assert_eq!(
+            state.filter().category,
+            Some(ObservationCategory::LocationNote)
+        );
+        assert!(state.filter().context.is_none());
+        assert_eq!(state.selected_index, 0);
+        assert_eq!(state.scroll_offset, 0);
+    }
+
+    // Sixth Tab: LocationNote → Exploitation
+    {
+        let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+        keys.press(KeyCode::Tab);
+    }
+    app.update();
+    {
+        let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+        keys.release(KeyCode::Tab);
+    }
+
+    {
+        let state = app.world().resource::<JournalUiState>();
+        assert_eq!(
+            state.filter().category,
+            Some(ObservationCategory::Exploitation)
+        );
+        assert!(state.filter().context.is_none());
+        assert_eq!(state.selected_index, 0);
+        assert_eq!(state.scroll_offset, 0);
+    }
+
+    // Seventh Tab: Exploitation → All
     {
         let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
         keys.press(KeyCode::Tab);
