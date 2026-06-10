@@ -273,7 +273,7 @@ fn load_material_classifications(
 ///
 /// Duplicate `name` keys are overridden (later wins). New names are appended.
 /// Used both by the live Bevy system and by unit tests.
-pub(crate) fn merge_mod_classifications(
+pub fn merge_mod_classifications(
     classifications: &mut MaterialClassifications,
     mod_id: &str,
     entries: Vec<ClassificationEntry>,

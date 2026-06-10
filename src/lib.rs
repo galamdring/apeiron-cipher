@@ -27,6 +27,7 @@ pub mod knowledge_graph;
 pub mod matchmaking;
 pub mod materials;
 pub mod mod_manifest;
+pub mod mod_registry;
 pub mod naming;
 pub mod observation;
 pub mod persistence;
@@ -90,6 +91,8 @@ pub fn add_game_plugins(app: &mut App) {
         .add_plugins(debug_overlay::DebugOverlayPlugin)
         // Mod loader: scans mods/, parses mod.toml manifests, exposes InstalledMods (Epic 23).
         .add_plugins(mod_manifest::ModManifestPlugin)
+        // Mod registry: discovers valid mod directories and exposes ModRegistry (Epic 23 Story 23.2).
+        .add_plugins(mod_registry::ModRegistryPlugin)
         // Vehicle: derelict scout rover — board, drive, fuel (Story X.1).
         .add_plugins(vehicle::VehiclePlugin);
 }
