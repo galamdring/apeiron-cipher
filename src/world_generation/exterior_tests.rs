@@ -1702,6 +1702,458 @@ fn two_independent_delta_sources_merged_end_to_end() {
     assert_eq!(addition_recs.len(), 2);
 }
 
+// ── Story 22.6: Core delta layering engine tests ──────────────────────
+//
+// These tests validate `apply_delta_layers` — the N-ary composition
+// function that folds an arbitrary number of `WorldDeltaLayer` values on
+// top of a shared base seed.
+//
+// Key invariants under test:
+//
+// 1. **Zero layers** — returns empty state with the seed recorded.
+// 2. **One layer** — passthrough; output equals input.
+// 3. **Three non-conflicting layers** — all removals and additions present,
+//    no conflicts, and result is commutative (any order → same output).
+// 4. **Three layers with one conflict** — conflict surfaced, non-conflicting
+//    objects from all layers still present.
+// 5. **Commutativity — 6 permutations** — for three fully independent layers,
+//    every ordering of apply_delta_layers produces identical combined state.
+// 6. **Seed passthrough** — base_seed in LayeredWorldState matches input.
+
+/// Build a `WorldDeltaLayer` from individual removals and additions for testing.
+///
+/// Keeps the heavy builder boilerplate out of each individual test.
+fn make_layer(
+    label: &str,
+    removals: ChunkRemovalDeltas,
+    additions: ChunkPlayerAdditions,
+) -> WorldDeltaLayer {
+    WorldDeltaLayer {
+        removals,
+        additions,
+        source_label: label.to_string(),
+    }
+}
+
+/// Build a `ChunkRemovalDeltas` with a single removed ID in the given chunk.
+fn single_removal(chunk: ChunkCoord, id: GeneratedObjectId) -> ChunkRemovalDeltas {
+    let mut r = ChunkRemovalDeltas::default();
+    r.removed_by_chunk.entry(chunk).or_default().insert(id);
+    r
+}
+
+#[test]
+fn apply_delta_layers_zero_layers_returns_empty_state() {
+    // An empty layer slice should return a LayeredWorldState with:
+    // - the seed stored verbatim
+    // - empty combined_removals and combined_additions
+    // - no conflicts
+    let state = apply_delta_layers(PlanetSeed(42), 1.0, &[]);
+    assert_eq!(
+        state.base_seed,
+        PlanetSeed(42),
+        "seed must be stored verbatim"
+    );
+    assert!(
+        state.combined_removals.removed_by_chunk.is_empty(),
+        "no removals from empty layer set"
+    );
+    assert!(
+        state.combined_additions.added_by_chunk.is_empty(),
+        "no additions from empty layer set"
+    );
+    assert!(
+        state.conflicts.is_empty(),
+        "no conflicts from empty layer set"
+    );
+}
+
+#[test]
+fn apply_delta_layers_single_layer_passthrough() {
+    // A single layer should produce exactly the same removals and additions
+    // as the input, with no conflicts.
+    let chunk = ChunkCoord::new(0, 0);
+    let gen_id = sample_generated_id(1);
+    let removals = single_removal(chunk, gen_id.clone());
+    let additions =
+        sample_additions_with(chunk, vec![sample_record_at(10, "iron", [1.0, 0.0, 1.0])]);
+
+    let layer = make_layer("alice", removals, additions);
+    let state = apply_delta_layers(PlanetSeed(99), 1.0, &[layer]);
+
+    assert_eq!(state.base_seed, PlanetSeed(99));
+    assert!(state.conflicts.is_empty());
+    let removal_set = state
+        .combined_removals
+        .removed_by_chunk
+        .get(&chunk)
+        .expect("chunk must exist in removals");
+    assert!(
+        removal_set.contains(&gen_id),
+        "alice's removal must be present"
+    );
+    let addition_recs = state
+        .combined_additions
+        .added_by_chunk
+        .get(&chunk)
+        .expect("chunk must exist in additions");
+    assert_eq!(addition_recs.len(), 1, "alice's addition must be present");
+}
+
+#[test]
+fn apply_delta_layers_three_non_conflicting_layers_all_present() {
+    // Three players each remove a different generated object and place a new
+    // object in a different building cell. The combined state must contain all
+    // three removals and all three additions with no conflicts.
+    let chunk = ChunkCoord::new(0, 0);
+    let cell_size = 1.0;
+
+    let gen_a = sample_generated_id(100);
+    let gen_b = sample_generated_id(200);
+    let gen_c = sample_generated_id(300);
+
+    // Each player removes a distinct generated object.
+    let layer_a = make_layer(
+        "alice",
+        single_removal(chunk, gen_a.clone()),
+        sample_additions_with(chunk, vec![sample_record_at(1, "alloy", [10.0, 0.0, 10.0])]),
+    );
+    let layer_b = make_layer(
+        "bob",
+        single_removal(chunk, gen_b.clone()),
+        sample_additions_with(chunk, vec![sample_record_at(2, "glass", [20.0, 0.0, 20.0])]),
+    );
+    let layer_c = make_layer(
+        "charlie",
+        single_removal(chunk, gen_c.clone()),
+        sample_additions_with(
+            chunk,
+            vec![sample_record_at(3, "carbon", [30.0, 0.0, 30.0])],
+        ),
+    );
+
+    let state = apply_delta_layers(PlanetSeed(1234), cell_size, &[layer_a, layer_b, layer_c]);
+
+    // No conflicts expected — all additions are in distinct cells.
+    assert!(
+        state.conflicts.is_empty(),
+        "no conflicts for independent layers"
+    );
+
+    // All three removals must be present.
+    let removal_set = state
+        .combined_removals
+        .removed_by_chunk
+        .get(&chunk)
+        .expect("chunk must have removals");
+    assert!(
+        removal_set.contains(&gen_a),
+        "alice's removal must be present"
+    );
+    assert!(
+        removal_set.contains(&gen_b),
+        "bob's removal must be present"
+    );
+    assert!(
+        removal_set.contains(&gen_c),
+        "charlie's removal must be present"
+    );
+
+    // All three additions must be present.
+    let addition_recs = state
+        .combined_additions
+        .added_by_chunk
+        .get(&chunk)
+        .expect("chunk must have additions");
+    assert_eq!(
+        addition_recs.len(),
+        3,
+        "all three additions must be present"
+    );
+}
+
+#[test]
+fn apply_delta_layers_three_layers_with_conflict_surfaced() {
+    // Alice and Bob both place objects in the same building cell. Charlie
+    // places in a different cell. The combined state must:
+    // - contain Charlie's addition (no conflict)
+    // - contain the single conflict between Alice and Bob
+    // - contain all three removals
+    let chunk = ChunkCoord::new(0, 0);
+    let cell_size = 1.0;
+
+    let gen_a = sample_generated_id(10);
+    let gen_b = sample_generated_id(20);
+    let gen_c = sample_generated_id(30);
+
+    // Alice and Bob both target [5.0, 0.0, 5.0] — same building cell.
+    let layer_a = make_layer(
+        "alice",
+        single_removal(chunk, gen_a),
+        sample_additions_with(chunk, vec![sample_record_at(1, "alloy", [5.0, 0.0, 5.0])]),
+    );
+    let layer_b = make_layer(
+        "bob",
+        single_removal(chunk, gen_b),
+        sample_additions_with(chunk, vec![sample_record_at(2, "glass", [5.0, 0.0, 5.0])]),
+    );
+    // Charlie is safely separate.
+    let layer_c = make_layer(
+        "charlie",
+        single_removal(chunk, gen_c.clone()),
+        sample_additions_with(
+            chunk,
+            vec![sample_record_at(3, "carbon", [99.0, 0.0, 99.0])],
+        ),
+    );
+
+    let state = apply_delta_layers(PlanetSeed(5678), cell_size, &[layer_a, layer_b, layer_c]);
+
+    // Exactly one conflict expected (Alice vs Bob).
+    assert_eq!(state.conflicts.len(), 1, "one conflict expected");
+    let conflict = &state.conflicts[0];
+    // The conflict must involve bob (the second layer to arrive in the cell).
+    assert_eq!(conflict.source_b, "bob", "bob is the conflicting source_b");
+
+    // Charlie's removal still present.
+    let removal_set = state
+        .combined_removals
+        .removed_by_chunk
+        .get(&chunk)
+        .expect("chunk must have removals");
+    assert!(
+        removal_set.contains(&gen_c),
+        "charlie's removal must be present even when others conflict"
+    );
+
+    // Charlie's addition still present (only the conflicting pair is excluded).
+    let addition_recs = state
+        .combined_additions
+        .added_by_chunk
+        .get(&chunk)
+        .expect("chunk must have additions");
+    assert_eq!(
+        addition_recs.len(),
+        1,
+        "only charlie's addition survives (alice+bob are conflicted out)"
+    );
+    assert_eq!(
+        addition_recs[0].id, 3,
+        "the surviving addition is charlie's"
+    );
+}
+
+#[test]
+fn apply_delta_layers_three_independent_layers_are_commutative() {
+    // The key multiplayer invariant: for non-conflicting layers, order does
+    // not matter. We test all 6 permutations of 3 layers and assert that
+    // combined_removals and combined_additions are identical in every case.
+    //
+    // This is the property that makes delta-based multiplayer viable: the
+    // server does not need to enforce arrival order for independent changes.
+    let chunk = ChunkCoord::new(2, 3);
+    let cell_size = 1.0;
+
+    let gen_a = sample_generated_id(400);
+    let gen_b = sample_generated_id(500);
+    let gen_c = sample_generated_id(600);
+
+    // Each layer uses a distinct building cell so there are no conflicts.
+    let make_layers = || -> Vec<WorldDeltaLayer> {
+        vec![
+            make_layer(
+                "alice",
+                single_removal(chunk, gen_a.clone()),
+                sample_additions_with(chunk, vec![sample_record_at(10, "iron", [1.0, 0.0, 1.0])]),
+            ),
+            make_layer(
+                "bob",
+                single_removal(chunk, gen_b.clone()),
+                sample_additions_with(chunk, vec![sample_record_at(20, "copper", [2.0, 0.0, 2.0])]),
+            ),
+            make_layer(
+                "charlie",
+                single_removal(chunk, gen_c.clone()),
+                sample_additions_with(chunk, vec![sample_record_at(30, "zinc", [3.0, 0.0, 3.0])]),
+            ),
+        ]
+    };
+
+    // Helper: sort removed IDs for comparison (HashSet is unordered).
+    let removed_ids = |state: &LayeredWorldState| -> Vec<u64> {
+        let mut ids: Vec<u64> = state
+            .combined_removals
+            .removed_by_chunk
+            .get(&chunk)
+            .map(|s| {
+                s.iter()
+                    .map(|id| {
+                        // GeneratedObjectId has planet_seed, chunk, and index — flatten
+                        // to a scalar for ordering in this test by using the unique
+                        // local_candidate_index which distinguishes our test IDs.
+                        id.local_candidate_index as u64
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        ids.sort_unstable();
+        ids
+    };
+
+    // Helper: sort addition IDs for comparison.
+    let addition_ids = |state: &LayeredWorldState| -> Vec<u64> {
+        let mut ids: Vec<u64> = state
+            .combined_additions
+            .added_by_chunk
+            .get(&chunk)
+            .map(|recs| recs.iter().map(|r| r.id).collect())
+            .unwrap_or_default();
+        ids.sort_unstable();
+        ids
+    };
+
+    let reference = {
+        let mut layers = make_layers();
+        // Order [A, B, C]
+        apply_delta_layers(PlanetSeed(9999), cell_size, &layers)
+    };
+
+    // Gather reference values.
+    let ref_removed = removed_ids(&reference);
+    let ref_added = addition_ids(&reference);
+    assert!(reference.conflicts.is_empty(), "reference has no conflicts");
+
+    // All 6 permutations: [A,B,C], [A,C,B], [B,A,C], [B,C,A], [C,A,B], [C,B,A]
+    let permutations: &[&[usize]] = &[
+        &[0, 1, 2],
+        &[0, 2, 1],
+        &[1, 0, 2],
+        &[1, 2, 0],
+        &[2, 0, 1],
+        &[2, 1, 0],
+    ];
+
+    for perm in permutations {
+        // Build layers fresh for each permutation, then reorder by index.
+        let mut all = make_layers();
+        let permuted: Vec<WorldDeltaLayer> = perm
+            .iter()
+            .map(|&i| WorldDeltaLayer {
+                removals: all[i].removals.clone(),
+                additions: all[i].additions.clone(),
+                source_label: all[i].source_label.clone(),
+            })
+            .collect();
+
+        let state = apply_delta_layers(PlanetSeed(9999), cell_size, &permuted);
+
+        assert!(
+            state.conflicts.is_empty(),
+            "permutation {:?} must have no conflicts",
+            perm
+        );
+        assert_eq!(
+            removed_ids(&state),
+            ref_removed,
+            "permutation {:?}: removals must be identical regardless of order",
+            perm
+        );
+        assert_eq!(
+            addition_ids(&state),
+            ref_added,
+            "permutation {:?}: additions must be identical regardless of order",
+            perm
+        );
+    }
+}
+
+#[test]
+fn apply_delta_layers_base_seed_stored_verbatim() {
+    // The base seed is passed through to LayeredWorldState unchanged.
+    // This is not computed from the layers — it is the caller's authoritative
+    // seed for the deterministic baseline.
+    let seed = PlanetSeed(0xDEAD_BEEF_1234_5678);
+    let state = apply_delta_layers(seed, 1.0, &[]);
+    assert_eq!(
+        state.base_seed, seed,
+        "base_seed must be stored exactly as provided"
+    );
+}
+
+#[test]
+fn apply_delta_layers_empty_layer_is_identity() {
+    // An empty layer (no removals, no additions) should not change the
+    // combined state relative to the non-empty layers.
+    let chunk = ChunkCoord::new(0, 0);
+    let gen_id = sample_generated_id(77);
+
+    // Layer order: non-empty then empty.
+    let state_a = apply_delta_layers(
+        PlanetSeed(1),
+        1.0,
+        &[
+            make_layer(
+                "alice",
+                single_removal(chunk, gen_id.clone()),
+                sample_additions_with(chunk, vec![sample_record_at(1, "iron", [1.0, 0.0, 1.0])]),
+            ),
+            make_layer(
+                "empty-source",
+                ChunkRemovalDeltas::default(),
+                ChunkPlayerAdditions::default(),
+            ),
+        ],
+    );
+    // Layer order: empty then non-empty.
+    let state_b = apply_delta_layers(
+        PlanetSeed(1),
+        1.0,
+        &[
+            make_layer(
+                "empty-source",
+                ChunkRemovalDeltas::default(),
+                ChunkPlayerAdditions::default(),
+            ),
+            make_layer(
+                "alice",
+                single_removal(chunk, gen_id.clone()),
+                sample_additions_with(chunk, vec![sample_record_at(1, "iron", [1.0, 0.0, 1.0])]),
+            ),
+        ],
+    );
+
+    assert!(state_a.conflicts.is_empty());
+    assert!(state_b.conflicts.is_empty());
+
+    let ids_a: std::collections::HashSet<GeneratedObjectId> = state_a
+        .combined_removals
+        .removed_by_chunk
+        .get(&chunk)
+        .cloned()
+        .unwrap_or_default();
+    let ids_b: std::collections::HashSet<GeneratedObjectId> = state_b
+        .combined_removals
+        .removed_by_chunk
+        .get(&chunk)
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(ids_a, ids_b, "empty layer must not change removals");
+
+    let adds_a = state_a
+        .combined_additions
+        .added_by_chunk
+        .get(&chunk)
+        .map(|v| v.len())
+        .unwrap_or(0);
+    let adds_b = state_b
+        .combined_additions
+        .added_by_chunk
+        .get(&chunk)
+        .map(|v| v.len())
+        .unwrap_or(0);
+    assert_eq!(adds_a, adds_b, "empty layer must not change additions");
+}
+
 // ── Story 5a.2: Biome weight and density modifier tests ──────────────
 
 #[test]
