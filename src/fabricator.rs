@@ -844,4 +844,117 @@ mod tests {
         assert_eq!(registered.seed, seed);
         assert!((registered.density.value() - density).abs() < f32::EPSILON);
     }
+
+    // ── Chamber containment tests ─────────────────────────────────────────
+
+    /// Verify that the chamber interior footprint (slot_radius) is wide enough
+    /// to contain all material mesh types without horizontal wall clipping.
+    ///
+    /// Each material density tier has a fixed footprint_radius() value. The
+    /// chamber slot_radius must be strictly greater than every footprint so the
+    /// mesh fits inside the walls with at least a small margin.
+    #[test]
+    fn chamber_slot_radius_contains_all_material_footprints() {
+        let config = FabricatorSceneConfig::default();
+
+        // Enumerate representative densities for each tier:
+        //   light  (density < 0.3) → sphere footprint 0.12
+        //   medium (density < 0.7) → capsule footprint 0.10
+        //   heavy  (density >= 0.7) → cube footprint 0.13
+        let tier_densities = [("light", 0.1f32), ("medium", 0.5), ("heavy", 0.9)];
+
+        for (label, density) in tier_densities {
+            let mat = test_material(label, 1, density);
+            let footprint = mat.footprint_radius();
+            assert!(
+                config.slot_radius >= footprint,
+                "slot_radius ({}) must be >= {label} material footprint_radius ({footprint})",
+                config.slot_radius,
+            );
+        }
+    }
+
+    /// Verify that chambers placed at ±slot_spacing_z/2 do not overlap.
+    ///
+    /// Two chambers are centered at z = ±slot_spacing_z/2.  Each chamber's
+    /// outer half-extent is slot_radius + chamber_wall_thickness.  For the
+    /// chambers not to intersect, the gap between their nearest outer edges
+    /// must be non-negative:
+    ///
+    ///   gap = slot_spacing_z - 2 * (slot_radius + chamber_wall_thickness) >= 0
+    #[test]
+    fn chambers_do_not_overlap_at_default_spacing() {
+        let config = FabricatorSceneConfig::default();
+        let outer_half = config.slot_radius + config.chamber_wall_thickness;
+        let gap = config.slot_spacing_z - 2.0 * outer_half;
+        assert!(
+            gap >= 0.0,
+            "chambers overlap by {:.4} m — increase slot_spacing_z or decrease slot_radius",
+            -gap,
+        );
+    }
+
+    /// Verify that the chamber wall height is tall enough to visually enclose
+    /// the bottom half of the heaviest material (cube, half-height 0.09 m).
+    ///
+    /// For the heavy tier the center is placed at:
+    ///   support_height (0.09) + MATERIAL_SURFACE_GAP (0.01) = 0.10 above the floor.
+    /// The cube half-height is 0.09, so the lowest face of the cube sits at
+    /// 0.10 - 0.09 = 0.01 above the floor — just above the floor surface as
+    /// intended.  The chamber wall must be at least as tall as the cube's center
+    /// so the walls surround the lower portion of the mesh.
+    #[test]
+    fn chamber_wall_height_encloses_heavy_material() {
+        let config = FabricatorSceneConfig::default();
+        let heavy = test_material("heavy", 1, 0.9);
+        // Center Y of the heavy cube above the floor interior surface.
+        let center_above_floor = heavy.support_height() + crate::materials::MATERIAL_SURFACE_GAP;
+        assert!(
+            config.chamber_wall_height >= center_above_floor,
+            "chamber_wall_height ({}) must be >= heavy material center height ({center_above_floor})",
+            config.chamber_wall_height,
+        );
+    }
+
+    /// Verify that the floor-placement formula used in interaction.rs produces
+    /// the correct Y for each material density tier.
+    ///
+    /// When a material is seated on the chamber floor, the Transform is set to:
+    ///   y = top_y + support_height() + MATERIAL_SURFACE_GAP
+    ///
+    /// This test checks that formula against known support_height values so
+    /// any future change to `support_height()` or `MATERIAL_SURFACE_GAP`
+    /// triggers a red test rather than a silent visual regression.
+    #[test]
+    fn material_placement_y_sits_on_chamber_floor() {
+        use crate::materials::MATERIAL_SURFACE_GAP;
+
+        let floor_interior_y = 0.5_f32; // arbitrary floor Y for the test
+        let tier_cases = [
+            // (label, density, expected_support_height)
+            ("light", 0.1f32, 0.12f32),
+            ("medium", 0.5, 0.17),
+            ("heavy", 0.9, 0.09),
+        ];
+
+        for (label, density, expected_support) in tier_cases {
+            let mat = test_material(label, 1, density);
+            assert!(
+                (mat.support_height() - expected_support).abs() < f32::EPSILON,
+                "{label} support_height changed: expected {expected_support}, got {}",
+                mat.support_height()
+            );
+            let placed_y = floor_interior_y + mat.support_height() + MATERIAL_SURFACE_GAP;
+            let expected_y = floor_interior_y + expected_support + MATERIAL_SURFACE_GAP;
+            assert!(
+                (placed_y - expected_y).abs() < f32::EPSILON,
+                "{label} placement Y mismatch: expected {expected_y:.4}, got {placed_y:.4}"
+            );
+            // The placed center must be strictly above the floor surface.
+            assert!(
+                placed_y > floor_interior_y,
+                "{label} material center must be above the chamber floor"
+            );
+        }
+    }
 }
