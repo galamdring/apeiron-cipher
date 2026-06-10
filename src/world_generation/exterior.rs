@@ -49,10 +49,11 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     ActiveChunkNeighborhood, BiomeRegistry, ChunkBiome, ChunkCoord,
-    DEFAULT_MAX_PLACEMENT_SLOPE_RADIANS, GeneratedObjectId, PaletteMaterial, PlanetSurface,
-    SurfaceProvider, WorldGenerationConfig, WorldProfile, chunk_origin_xz, derive_chunk_biome,
-    derive_chunk_generation_key, derive_generated_object_id, generate_chunk_heightmap_mesh,
-    is_placement_valid, surface_alignment_rotation, world_position_to_chunk_coord,
+    DEFAULT_MAX_PLACEMENT_SLOPE_RADIANS, GeneratedObjectId, PaletteMaterial, PlanetSeed,
+    PlanetSurface, SurfaceProvider, WorldGenerationConfig, WorldProfile, chunk_origin_xz,
+    derive_chunk_biome, derive_chunk_generation_key, derive_generated_object_id,
+    generate_chunk_heightmap_mesh, is_placement_valid, surface_alignment_rotation,
+    world_position_to_chunk_coord,
 };
 use crate::carry::InCarry;
 use crate::interaction::HeldItem;
@@ -1774,7 +1775,7 @@ pub struct WorldDeltaLayer {
 pub struct LayeredWorldState {
     /// The base world seed. Stored here so callers can derive the chunk
     /// baseline at any time without tracking it separately.
-    pub base_seed: u64,
+    pub base_seed: PlanetSeed,
     /// Combined removal set: the union of every layer's removals.
     ///
     /// A generated object absent from any layer's removals but present in
@@ -1846,7 +1847,7 @@ pub struct LayeredWorldState {
 /// ```
 #[allow(dead_code)]
 pub fn apply_delta_layers(
-    base_seed: u64,
+    base_seed: PlanetSeed,
     cell_size: f32,
     layers: &[WorldDeltaLayer],
 ) -> LayeredWorldState {

@@ -1747,8 +1747,12 @@ fn apply_delta_layers_zero_layers_returns_empty_state() {
     // - the seed stored verbatim
     // - empty combined_removals and combined_additions
     // - no conflicts
-    let state = apply_delta_layers(42, 1.0, &[]);
-    assert_eq!(state.base_seed, 42, "seed must be stored verbatim");
+    let state = apply_delta_layers(PlanetSeed(42), 1.0, &[]);
+    assert_eq!(
+        state.base_seed,
+        PlanetSeed(42),
+        "seed must be stored verbatim"
+    );
     assert!(
         state.combined_removals.removed_by_chunk.is_empty(),
         "no removals from empty layer set"
@@ -1774,9 +1778,9 @@ fn apply_delta_layers_single_layer_passthrough() {
         sample_additions_with(chunk, vec![sample_record_at(10, "iron", [1.0, 0.0, 1.0])]);
 
     let layer = make_layer("alice", removals, additions);
-    let state = apply_delta_layers(99, 1.0, &[layer]);
+    let state = apply_delta_layers(PlanetSeed(99), 1.0, &[layer]);
 
-    assert_eq!(state.base_seed, 99);
+    assert_eq!(state.base_seed, PlanetSeed(99));
     assert!(state.conflicts.is_empty());
     let removal_set = state
         .combined_removals
@@ -1827,7 +1831,7 @@ fn apply_delta_layers_three_non_conflicting_layers_all_present() {
         ),
     );
 
-    let state = apply_delta_layers(1234, cell_size, &[layer_a, layer_b, layer_c]);
+    let state = apply_delta_layers(PlanetSeed(1234), cell_size, &[layer_a, layer_b, layer_c]);
 
     // No conflicts expected — all additions are in distinct cells.
     assert!(
@@ -1902,7 +1906,7 @@ fn apply_delta_layers_three_layers_with_conflict_surfaced() {
         ),
     );
 
-    let state = apply_delta_layers(5678, cell_size, &[layer_a, layer_b, layer_c]);
+    let state = apply_delta_layers(PlanetSeed(5678), cell_size, &[layer_a, layer_b, layer_c]);
 
     // Exactly one conflict expected (Alice vs Bob).
     assert_eq!(state.conflicts.len(), 1, "one conflict expected");
@@ -2010,7 +2014,7 @@ fn apply_delta_layers_three_independent_layers_are_commutative() {
     let reference = {
         let mut layers = make_layers();
         // Order [A, B, C]
-        apply_delta_layers(9999, cell_size, &layers)
+        apply_delta_layers(PlanetSeed(9999), cell_size, &layers)
     };
 
     // Gather reference values.
@@ -2040,7 +2044,7 @@ fn apply_delta_layers_three_independent_layers_are_commutative() {
             })
             .collect();
 
-        let state = apply_delta_layers(9999, cell_size, &permuted);
+        let state = apply_delta_layers(PlanetSeed(9999), cell_size, &permuted);
 
         assert!(
             state.conflicts.is_empty(),
@@ -2067,7 +2071,7 @@ fn apply_delta_layers_base_seed_stored_verbatim() {
     // The base seed is passed through to LayeredWorldState unchanged.
     // This is not computed from the layers — it is the caller's authoritative
     // seed for the deterministic baseline.
-    let seed: u64 = 0xDEAD_BEEF_1234_5678;
+    let seed = PlanetSeed(0xDEAD_BEEF_1234_5678);
     let state = apply_delta_layers(seed, 1.0, &[]);
     assert_eq!(
         state.base_seed, seed,
@@ -2084,7 +2088,7 @@ fn apply_delta_layers_empty_layer_is_identity() {
 
     // Layer order: non-empty then empty.
     let state_a = apply_delta_layers(
-        1,
+        PlanetSeed(1),
         1.0,
         &[
             make_layer(
@@ -2101,7 +2105,7 @@ fn apply_delta_layers_empty_layer_is_identity() {
     );
     // Layer order: empty then non-empty.
     let state_b = apply_delta_layers(
-        1,
+        PlanetSeed(1),
         1.0,
         &[
             make_layer(
