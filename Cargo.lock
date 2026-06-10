@@ -218,9 +218,11 @@ version = "0.1.0"
 dependencies = [
  "bevy",
  "bincode",
+ "crc32fast",
  "crossbeam-channel",
  "futures-util",
  "leafwing-input-manager",
+ "libc",
  "petgraph 0.6.5",
  "serde",
  "serde_json",

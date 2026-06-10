@@ -24,8 +24,10 @@
 //! The WAL writer and compaction logic are **not** implemented here; this story
 //! only delivers the enum, the bus resource, and their serialisation tests.
 
+pub mod error;
 pub mod mutation;
 pub mod schema;
+pub mod wal;
 
 use bevy::prelude::*;
 
