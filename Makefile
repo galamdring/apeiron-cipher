@@ -30,7 +30,7 @@ kb-check:
 # --- Orchestrator checks (Python crewai-orchestrator + Go infra/orchestrator) ---
 o-check:
 	cd infra/orchestrator && go vet ./... && go test ./...
-	cd crewai-orchestrator && $(MAKE) o-check
+	$(MAKE) -f crewai-orchestrator/Makefile o-check
 
 # --- Signaling server checks (no Docker required) ---
 sig-check:
