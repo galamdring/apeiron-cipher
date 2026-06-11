@@ -333,6 +333,34 @@ def _find_pr(branch: str) -> int:
     return prs[0]["number"] if prs else 0
 
 
+def _get_issue_for_pr(pr_number: int) -> int:
+    """Return the issue number linked to a PR, or 0 if not determinable.
+
+    Extracts the issue number from the PR's head branch name, which follows
+    the convention 'feat/issue-{N}' set by ApeironFlow.prepare().
+    Falls back to parsing 'Related to #N' in the PR body.
+    """
+    result = subprocess.run(
+        ["gh", "pr", "view", str(pr_number), "--repo", REPO, "--json", "headRefName,body"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return 0
+    data = json.loads(result.stdout)
+    branch = data.get("headRefName", "")
+    # Primary: extract from branch name 'feat/issue-N' or 'issue-N'
+    m = re.search(r"issue-(\d+)", branch)
+    if m:
+        return int(m.group(1))
+    # Fallback: parse 'Related to #N' from PR body
+    body = data.get("body", "") or ""
+    m = re.search(r"[Rr]elated\s+to\s+#(\d+)", body)
+    if m:
+        return int(m.group(1))
+    return 0
+
+
 def _build_task_description(state: IssueState) -> str:
     resume = _resume_context(state.worktree_path, state.branch) if state.resuming else ""
     arch_principles = _load_arch_principles()
@@ -385,6 +413,15 @@ class ApeironFlow(Flow[IssueState]):
 
         print(f"\nIssue #{self.state.issue_number}: {self.state.issue_title}")
         print("-" * 60)
+
+        try:
+            _labels.transition(
+                self.state.issue_number,
+                _labels.LABEL_IN_PROGRESS,
+                from_label=_labels.LABEL_READY,
+            )
+        except Exception as label_err:
+            print(f"[WARN] Could not transition label to in-progress: {label_err}")
 
     @listen(prepare)
     def implement(self):
@@ -481,6 +518,14 @@ class ApeironFlow(Flow[IssueState]):
     def trigger_review(self):
         """Hand off to the review flow."""
         print(f"\nPR #{self.state.pr_number} opened — starting review...")
+        try:
+            _labels.transition(
+                self.state.issue_number,
+                _labels.LABEL_AGENT_REVIEW,
+                from_label=_labels.LABEL_IN_PROGRESS,
+            )
+        except Exception as label_err:
+            print(f"[WARN] Could not transition label to agent-review: {label_err}")
         review_flow = ReviewFlow()
         review_flow.state.pr_number = self.state.pr_number
         review_flow.kickoff()
@@ -493,6 +538,10 @@ class ApeironFlow(Flow[IssueState]):
         print("BLOCKED — no PR opened. Agent report:")
         print("=" * 60)
         print(self.state.blocker or self.state.result)
+        try:
+            _labels.transition(self.state.issue_number, _labels.LABEL_BLOCKED)
+        except Exception as label_err:
+            print(f"[WARN] Could not transition label to blocked: {label_err}")
 
     @listen("dry_run")
     def report_dry_run(self):
@@ -574,6 +623,18 @@ class ReviewFlow(Flow[ReviewState]):
     def on_code_changes_required(self):
         print(f"\nREVIEW: Code changes required — {self.state.review_url}")
         print(self.state.summary)
+        issue_number = _get_issue_for_pr(self.state.pr_number)
+        if issue_number:
+            try:
+                _labels.transition(
+                    issue_number,
+                    _labels.LABEL_IN_PROGRESS,
+                    from_label=_labels.LABEL_AGENT_REVIEW,
+                )
+            except Exception as label_err:
+                print(f"[WARN] Could not transition label to in-progress: {label_err}")
+        else:
+            print(f"[WARN] Could not determine issue number for PR #{self.state.pr_number} — skipping label transition")
 
     @listen("human_feedback_required")
     def on_human_feedback_required(self):
@@ -584,6 +645,18 @@ class ReviewFlow(Flow[ReviewState]):
     def on_ready_for_merge(self):
         print(f"\nREVIEW: Ready for merge — {self.state.review_url}")
         print(self.state.summary)
+        issue_number = _get_issue_for_pr(self.state.pr_number)
+        if issue_number:
+            try:
+                _labels.transition(
+                    issue_number,
+                    _labels.LABEL_REVIEW,
+                    from_label=_labels.LABEL_AGENT_REVIEW,
+                )
+            except Exception as label_err:
+                print(f"[WARN] Could not transition label to review: {label_err}")
+        else:
+            print(f"[WARN] Could not determine issue number for PR #{self.state.pr_number} — skipping label transition")
 
 
 # ---------------------------------------------------------------------------
@@ -721,6 +794,19 @@ class RespondFlow(Flow[RespondState]):
                 prepare_worktree_for_pr(state.target_number)
             except Exception as e:
                 print(f"[WARN] Could not prepare worktree: {e}")
+            # Transition issue label: status:review → status:in-progress
+            issue_number = _get_issue_for_pr(state.target_number)
+            if issue_number:
+                try:
+                    _labels.transition(
+                        issue_number,
+                        _labels.LABEL_IN_PROGRESS,
+                        from_label=_labels.LABEL_REVIEW,
+                    )
+                except Exception as label_err:
+                    print(f"[WARN] Could not transition label to in-progress: {label_err}")
+            else:
+                print(f"[WARN] Could not determine issue number for PR #{state.target_number} — skipping label transition")
 
         description = (
             f"A commenter (@{author}) has requested a code change on "
