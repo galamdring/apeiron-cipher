@@ -9,6 +9,7 @@ Run:
   apeiron_flow --issue N --fresh
   apeiron_flow --issue N --dry-run
   apeiron_flow --list-ready
+  apeiron_flow --triage N
 """
 
 import argparse
@@ -51,6 +52,7 @@ from apeiron_flow.config import (
 from apeiron_flow.crews.dev_crew.dev_crew import DevCrew
 from apeiron_flow.crews.review_crew.review_crew import ReviewCrew, ReviewVerdict
 from apeiron_flow.crews.respond_crew.respond_crew import RespondCrew, RespondResult
+from apeiron_flow.crews.triage_crew.triage_crew import TriageCrew, TriageResult
 from apeiron_flow.tools.respond_tools import (
     cleanup_pr_worktree,
     get_issue_comments,
@@ -865,6 +867,31 @@ def _scan_for_mentions() -> list[dict]:
     return mentions
 
 
+# ---------------------------------------------------------------------------
+# TriageFlow — classify and decompose a status:triage issue
+# ---------------------------------------------------------------------------
+
+class TriageState(BaseModel):
+    issue_number: int = 0
+
+
+class TriageFlow(Flow[TriageState]):
+    """Run the TriageCrew against a single issue marked status:triage."""
+
+    @start()
+    def run_triage(self) -> TriageResult:
+        print(f"[TriageFlow] Triaging issue #{self.state.issue_number}...")
+        crew = TriageCrew()
+        result: TriageResult = crew.crew().kickoff(
+            inputs={"issue_number": self.state.issue_number}
+        )
+        print(f"[TriageFlow] classification={result.classification}")
+        if result.child_issues:
+            print(f"[TriageFlow] child issues created: {result.child_issues}")
+        print(f"[TriageFlow] {result.comment}")
+        return result
+
+
 def kickoff():
     parser = argparse.ArgumentParser(description="Apeiron Cipher CrewAI Flow")
     parser.add_argument("--issue", type=int, help="GitHub issue number to implement")
@@ -879,6 +906,8 @@ def kickoff():
                         help="Print task description without running the agent")
     parser.add_argument("--list-ready", action="store_true",
                         help="List issues with status:ready and exit")
+    parser.add_argument("--triage", type=int, metavar="N",
+                        help="Triage a status:triage issue: classify and decompose it")
     args = parser.parse_args()
 
     if args.list_ready:
@@ -970,6 +999,12 @@ def kickoff():
         else:  # up_to_date
             print(f"  All @{BOT_HANDLE} mentions have been replied to — nothing to do.")
 
+        return
+
+    if args.triage:
+        flow = TriageFlow()
+        flow.state.issue_number = args.triage
+        flow.kickoff()
         return
 
     if not args.issue:

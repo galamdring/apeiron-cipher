@@ -1,115 +1,80 @@
-# Apeiron Cipher - Agent Guidelines (AGENTS.md)
+# Apeiron Cipher Orchestrator — Agent Guidelines (AGENTS.md)
 
-Welcome to the **Apeiron Cipher** repository! This document serves as the primary entry point and routing guide for any AI agent interacting with this codebase.
+## What This Repo Is
 
-## 1. Project Overview
+A production system that autonomously implements GitHub Issues, reviews PRs, and
+responds to @mentions for the Apeiron Cipher game repo. It is not a POC.
 
-- **Name:** Apeiron Cipher
-- **Type:** Procedurally generated open universe sandbox game
-- **Engine:** Bevy (Rust)
+## Before Touching Anything
 
-## 2. What to Read
+1. Read `ARCHITECTURE.md` — the 10 core principles and the module map.
+2. Read the file you are about to change, in full, before changing it.
+3. Run `pip install -e apeiron_flow/` and verify imports pass before any change.
+4. Run `pip install -e apeiron_flow/ && python -m pytest tests/ -x` after any change.
 
-Agents MUST load documentation in this order. Do not skip steps.
+## The Rules That Matter Most
 
-### Always Load (every task)
+**No shell=True with any dynamic value.** Branch names, issue titles, and PR bodies
+come from GitHub — treat them as attacker-controlled. Always use list-form subprocess.
 
-1. **Architecture core principles:** `docs/bmad/planning-artifacts/architecture/core-principles.md` — 10 non-negotiable rules
-2. **Architecture routing:** `docs/bmad/planning-artifacts/architecture/agent-context-routing.md` — tells you which additional architecture files to load based on your task type
-3. **Implementation patterns:** `docs/bmad/planning-artifacts/architecture/implementation-patterns-consistency-rules.md` — naming, code patterns, visibility, documentation standard, and the **authoritative agent autonomy rules** (when to stop vs proceed)
+**All API calls go through github_http.** Do not import `requests` in any other module
+and talk to the GitHub API. Use `_gh_get`, `_gh_post`, `_gh_get_all` from `github_http`.
 
-### For Coding Tasks
+**All file paths go through repo.sandbox().** `_abs()` in dev_tools.py calls it.
+Do not resolve paths yourself. Do not bypass sandbox for "convenience".
 
-4. **Tech stack & process:** `docs/bmad/project-context.md` — Rust/Bevy versions, language rules, ECS patterns, development workflow (branches, commits, CI)
-5. **Story workflow:** `docs/bmad/agent-workflow.md` — step-by-step story implementation, PR process
-6. **Workflow reference (when running pipeline):** `docs/bmad/agent-workflow-reference.md` — label taxonomy, health checks, commands
+**No swallowed errors.** If something fails, raise or log and handle explicitly.
+`except: pass` is never acceptable.
 
-### Finding Epics & Stories
+**The game repo has its own architecture rules.** Any code written for the game
+repo (by the dev crew) must follow `docs/bmad/planning-artifacts/architecture/
+core-principles.md` in the game repo. The task description must include those
+principles. This is not optional.
 
-**GitHub Issues are the source of truth for all epics and stories.** To look up an epic or story, query GitHub:
+## Module Ownership
 
-```bash
-gh issue list --label "epic" --json number,title --repo galamdring/apeiron-cipher
-gh issue view <N> --repo galamdring/apeiron-cipher
+- `config.py` — all constants live here, nowhere else
+- `repo.py` — the only place that tracks the active worktree path
+- `github_http.py` — the only place that makes GitHub API calls
+- `github_app.py` — the only place that fetches installation tokens
+- `tools/dev_tools.py` — all file/shell tools for the dev crew
+- `tools/review_tools.py` — PR read + review post tools
+- `tools/respond_tools.py` — comment read + reply post + PR worktree lifecycle
+
+If a function doesn't belong in one of these by ownership, ask before adding it.
+
+## Adding a New Tool
+
+1. It goes in the appropriate tools module based on which crew uses it.
+2. It must use `_abs()` for any file path (dev_tools) or `_gh_*` for any HTTP call.
+3. Add it to the `ALL_TOOLS` / `REVIEW_TOOLS` / `RESPOND_TOOLS` list at the bottom.
+4. Write a test for it in `tests/`.
+
+## Subprocess Rules
+
+All subprocess calls must use list form:
+
+```python
+# RIGHT
+subprocess.run(["git", "fetch", "origin", "develop"], ...)
+
+# WRONG — shell injection if branch name is attacker-controlled
+subprocess.run(f"git fetch origin {branch}", shell=True, ...)
 ```
 
-Do NOT use `docs/bmad/planning-artifacts/epics.md` to look up epics — that file is a design-time planning artifact from before stories were created as issues. It does not contain the full set of epics and is not kept in sync.
+## Working on This Repo
 
-### For Design / Planning Tasks
+Branch from main, open a PR. The `make check` target runs the test suite.
+Never commit directly to main.
 
-- **Game Design Document:** `docs/bmad/gdd.md`
-- **Game Brief:** `docs/bmad/game-brief.md`
+## What "Done" Means
 
-### Per-Role Skills
+A task is done when:
+1. `pip install -e apeiron_flow/` exits 0
+2. `python -m pytest tests/ -x` exits 0 with all tests passing
+3. The specific behavior the task described has been exercised by a test
 
-Depending on your assigned role (e.g., `bmad-dev`, `bmad-architect`, `bmad-pm`, `bmad-qa`), consult your specific `SKILL.md` within `.opencode/skills/`.
-
-## 3. Agent Autonomy Contract
-
-The **authoritative source** for when to stop and ask vs when to proceed is `docs/bmad/planning-artifacts/architecture/implementation-patterns-consistency-rules.md` § Agent Autonomy Boundaries. The summary:
-
-- **Default posture: stop and ask.** If the story doesn't specify a name, type, field, event, or architectural choice — stop and ask.
-- **Proceed autonomously** when: implementing explicit acceptance criteria, adding private helpers, or documenting.
-- **Escalate once** when a decision changes reusable architecture or meaningfully broadens scope.
-- **Finish the full workflow** when feasible — code, verify, commit, PR, issue linkage.
-- **Prefer explicit, tutorial-style comments** in tricky systems. Document like Cave Johnson is reading.
-- **Do not make the user restate stable preferences.** Reuse established repo conventions.
-
-## 4. Development Workflow
-
-Agents manage their own issue label state using the `gh` CLI. **Status is tracked via `status:*` labels on GitHub Issues, not a project board.**
-
-The full workflow (pick story → implement → PR → review) is documented in `docs/bmad/agent-workflow.md`. Key constraints:
-
-- Only one story in progress at a time
-- Agents must **never** close an issue or transition it to Done (automation handles this)
-- If blocked: move to `status:blocked`, cascade to dependents, pick next ready story. **Collaborate, don't decide.**
-- **Before committing or opening a PR:** re-read `docs/bmad/planning-artifacts/architecture/core-principles.md` and verify your changes do not violate any of the 10 principles. This is not optional. The principles are short — read them in full, not just the ones that seem relevant. An agent that skips this step and ships a violation has failed the task.
-
-### Branch Workflow
-
-Normal development work happens on `develop`.
-
-- Agents work on `develop` unless the user explicitly instructs otherwise.
-- When a story or task is complete, commit the completed work to `develop`.
-- To release or PR completed work to `main`, create a short-lived branch from the current `develop` state and open the PR from that branch to `main`.
-- `develop` is expected to be ahead of `main`.
-- PRs to `main` are squash-merged, so `main` and `develop` histories may diverge normally.
-- Do not merge `main` back into `develop` as part of normal workflow.
-- Do not branch from `main` unless the user explicitly instructs it.
-
-Hotfix exception:
-
-- Hotfixes are only done when explicitly requested by the user.
-- Hotfix branches should be created from the tagged release being hotfixed, not from `main`.
-- After the hotfix is completed, the change must be applied back to both `main` and `develop`.
-
-If `main` contains work that is not present on `develop`:
-
-- Stop and inform the user.
-- Attempt to identify the origin of the workflow break.
-- Do not automatically merge, reset, rebase, or cherry-pick without explicit user direction.
-
-### Branch & PR Naming
-
-- **Game code (Bevy/Rust):** `feat/{work-description}` or `epic-N/story-N.N-short-description` — no subsystem prefix.
-- **Kanban board frontend:** `feat/kanban/{work-description}` — always prefix with `kanban/`.
-- **Orchestrator (Go backend):** `feat/orchestrator/{work-description}` — always prefix with `orchestrator/`.
-- **PR titles drive semantic-release.** Every PR title **must** use a Conventional Commits prefix (`feat:`, `fix:`, etc.) or it will not trigger a release on merge. The `epic-N/story-N.N` pattern is for branch names only. For single-commit PRs, GitHub uses the commit message as the squash title — ensure it also follows this convention.
-  - **Game code:** `feat: N.N - short description` (e.g. `feat: 4.1 - add terrain generation`)
-  - **Kanban:** `feat(kanban): short description`
-  - **Orchestrator:** `feat(orchestrator): short description`
-- `make check` applies to game code only. Kanban and orchestrator have their own check targets (`kb-check`, `o-check`).
-  - **Game code:** `make check` (fmt, clippy, test, build)
-  - **Kanban:** `make kb-check` (eslint, vitest, vite build)
-  - **Orchestrator:** `make o-check` (go vet, go test)
-- The pre-commit hook runs these automatically based on staged files.
-
-## 5. Coding Golden Rules
-
-- **Rust & ECS:** Follow Rust 2024 idioms. Strict Bevy ECS (Data in Components, Behavior in Systems, Plugin-per-feature).
-- **No UI Spoilers:** The game reveals mechanics through consequence and visual feedback only. Never add UI that explains internal state.
-- **Data-Driven:** All game tuning and material properties in `assets/`, never hardcoded in Rust source. Assert deterministic outcomes.
-- **Testing:** Minimal `App` integration tests. No mock `Query` or `Commands`. Separate pure logic from ECS wiring.
-
-*For the full rule set: architecture shards for principles and patterns, `project-context.md` for tech stack and process.*
+A task is NOT done because:
+- The imports work
+- It "looks right"
+- The same logic worked somewhere else

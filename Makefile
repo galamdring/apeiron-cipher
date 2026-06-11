@@ -27,9 +27,10 @@ clean:
 kb-check:
 	cd kanban && npm run lint && npm test && npm run build
 
-# --- Orchestrator checks ---
+# --- Orchestrator checks (Python crewai-orchestrator + Go infra/orchestrator) ---
 o-check:
 	cd infra/orchestrator && go vet ./... && go test ./...
+	cd crewai-orchestrator && $(MAKE) o-check
 
 # --- Signaling server checks (no Docker required) ---
 sig-check:
