@@ -1,0 +1,13 @@
+respond_to_mention:
+  description: >
+    {description}
+  expected_output: >
+    A JSON object with exactly these fields:
+      intent       — one of: "change_request", "question", "approval", "out_of_scope"
+      reply        — the text of the comment posted to GitHub (must tag the requester)
+      comment_url  — the URL of the posted comment confirming it was submitted
+
+    For change_request: reply must summarise what was changed and tag the requester.
+    For all others: reply must be a direct, helpful response tagging the requester.
+    comment_url must come from the actual tool response, not be fabricated.
+  agent: responder
