@@ -34,39 +34,113 @@ os.environ.setdefault(
 import re
 import shlex
 
-from pydantic import BaseModel, Field
+from crewai.experimental.conversational import ConversationConfig, ConversationState, RouterConfig
 from crewai.flow import Flow, listen, persist, router, start
 from crewai.flow.persistence.sqlite import SQLiteFlowPersistence
-from crewai.experimental.conversational import ConversationConfig, ConversationState, RouterConfig
+from pydantic import BaseModel, Field
 
 import apeiron_flow.repo as repo
+from apeiron_flow import labels as _labels
 from apeiron_flow.config import (
     BOT_HANDLE,
     BOT_LOGIN,
     DEFAULT_LLM,
+    MAX_CHECK_RETRIES,
     REPO,
     REPO_PATH,
     RESPOND_DB,
     WORKTREE_BASE,
 )
 from apeiron_flow.crews.dev_crew.dev_crew import DevCrew
-from apeiron_flow.crews.review_crew.review_crew import ReviewCrew, ReviewVerdict
 from apeiron_flow.crews.respond_crew.respond_crew import RespondCrew, RespondResult
+from apeiron_flow.crews.review_crew.review_crew import ReviewCrew, ReviewVerdict
 from apeiron_flow.crews.triage_crew.triage_crew import TriageCrew, TriageResult
 from apeiron_flow.tools.respond_tools import (
     cleanup_pr_worktree,
-    get_issue_comments,
-    get_pr_comments,
-    get_pr_review_comments,
     post_issue_comment,
     post_pr_comment,
     prepare_worktree_for_pr,
 )
 
+# ---------------------------------------------------------------------------
+# Architecture principles cache
+# ---------------------------------------------------------------------------
+
+# Lazily loaded on first call to _build_task_description().
+# Caches both files concatenated so we read them at most once per process.
+_ARCH_PRINCIPLES_CACHE: str | None = None
+
+_CORE_PRINCIPLES_PATH = (
+    os.path.join(
+        REPO_PATH,
+        "docs/bmad/planning-artifacts/architecture/core-principles.md",
+    )
+    if REPO_PATH
+    else ""
+)
+
+_IMPL_PATTERNS_PATH = (
+    os.path.join(
+        REPO_PATH,
+        "docs/bmad/planning-artifacts/architecture/implementation-patterns-consistency-rules.md",
+    )
+    if REPO_PATH
+    else ""
+)
+
+
+def _load_arch_principles() -> str:
+    """Return the concatenated game architecture docs, cached after first read.
+
+    Returns an empty string if either file is missing — caller handles gracefully.
+    """
+    global _ARCH_PRINCIPLES_CACHE
+    if _ARCH_PRINCIPLES_CACHE is not None:
+        return _ARCH_PRINCIPLES_CACHE
+
+    parts: list[str] = []
+    for path, label in (
+        (_CORE_PRINCIPLES_PATH, "core-principles.md"),
+        (_IMPL_PATTERNS_PATH, "implementation-patterns-consistency-rules.md"),
+    ):
+        if not path:
+            continue
+        try:
+            with open(path, encoding="utf-8") as fh:
+                parts.append(f"# {label}\n\n{fh.read()}")
+        except OSError as exc:
+            print(f"[WARN] Could not read {label}: {exc}")
+
+    _ARCH_PRINCIPLES_CACHE = "\n\n---\n\n".join(parts)
+    return _ARCH_PRINCIPLES_CACHE
+
+
+# ---------------------------------------------------------------------------
+# make check gate
+# ---------------------------------------------------------------------------
+
+
+def _run_make_check(worktree_path: str) -> tuple[bool, str]:
+    """Run `make check` in *worktree_path*.
+
+    Returns (passed: bool, stderr: str).  Uses list-form subprocess — no shell=True.
+    """
+    result = subprocess.run(
+        ["make", "check"],
+        cwd=worktree_path,
+        capture_output=True,
+        text=True,
+    )
+    passed = result.returncode == 0
+    # Combine stdout+stderr so callers get the full picture on failure
+    output = (result.stdout + result.stderr).strip()
+    return passed, output
+
 
 # ---------------------------------------------------------------------------
 # Flow state
 # ---------------------------------------------------------------------------
+
 
 class IssueState(BaseModel):
     issue_number: int = 0
@@ -78,8 +152,8 @@ class IssueState(BaseModel):
     dry_run: bool = False
     fresh: bool = False
     result: str = ""
-    pr_number: int = 0   # set after implement if a PR was opened
-    blocker: str = ""    # set after implement if the agent reported a blocker
+    pr_number: int = 0  # set after implement if a PR was opened
+    blocker: str = ""  # set after implement if the agent reported a blocker
 
 
 # ---------------------------------------------------------------------------
@@ -88,14 +162,11 @@ class IssueState(BaseModel):
 def _fetch_issue(issue_number: int) -> dict:
     """Fetch issue metadata from GitHub. Raises RuntimeError on failure."""
     if not REPO_PATH:
-        raise RuntimeError(
-            "APEIRON_REPO_PATH is not set. "
-            "Export it in your .env or shell before running."
-        )
+        raise RuntimeError("APEIRON_REPO_PATH is not set. Export it in your .env or shell before running.")
     result = subprocess.run(
-        ["gh", "issue", "view", str(issue_number),
-         "--repo", REPO, "--json", "number,title,body,labels"],
-        capture_output=True, text=True,
+        ["gh", "issue", "view", str(issue_number), "--repo", REPO, "--json", "number,title,body,labels"],
+        capture_output=True,
+        text=True,
     )
     if result.returncode != 0:
         raise RuntimeError(f"gh issue view failed: {result.stderr}")
@@ -115,9 +186,7 @@ def _remove_worktree(wt_path: str) -> None:
         text=True,
     )
     if result.returncode != 0:
-        raise RuntimeError(
-            f"Failed to remove worktree '{wt_path}': {result.stderr.strip()}"
-        )
+        raise RuntimeError(f"Failed to remove worktree '{wt_path}': {result.stderr.strip()}")
 
 
 def _cleanup_stale_issue_worktrees(max_age_days: int = 7) -> None:
@@ -134,6 +203,7 @@ def _cleanup_stale_issue_worktrees(max_age_days: int = 7) -> None:
         return
 
     import time
+
     now = time.time()
     max_age_secs = max_age_days * 86400
 
@@ -149,9 +219,10 @@ def _cleanup_stale_issue_worktrees(max_age_days: int = 7) -> None:
         try:
             # Check if the GitHub issue is closed
             r = subprocess.run(
-                ["gh", "issue", "view", str(issue_number),
-                 "--repo", REPO, "--json", "state", "-q", ".state"],
-                capture_output=True, text=True, timeout=10,
+                ["gh", "issue", "view", str(issue_number), "--repo", REPO, "--json", "state", "-q", ".state"],
+                capture_output=True,
+                text=True,
+                timeout=10,
             )
             if r.returncode == 0 and r.stdout.strip().lower() in ("closed", "merged"):
                 print(f"[cleanup] Removing worktree for closed issue #{issue_number}: {wt_path}")
@@ -165,7 +236,9 @@ def _cleanup_stale_issue_worktrees(max_age_days: int = 7) -> None:
 
             branch_r = subprocess.run(
                 ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-                cwd=wt_path, capture_output=True, text=True,
+                cwd=wt_path,
+                capture_output=True,
+                text=True,
             )
             if branch_r.returncode != 0:
                 continue  # Can't determine branch — leave it alone
@@ -173,7 +246,9 @@ def _cleanup_stale_issue_worktrees(max_age_days: int = 7) -> None:
             branch = branch_r.stdout.strip()
             ahead_r = subprocess.run(
                 ["git", "log", f"origin/develop..{branch}", "--oneline"],
-                cwd=wt_path, capture_output=True, text=True,
+                cwd=wt_path,
+                capture_output=True,
+                text=True,
             )
             has_commits = bool(ahead_r.stdout.strip())
             if not has_commits:
@@ -201,19 +276,24 @@ def _create_worktree(issue_number: int, branch: str, fresh: bool) -> tuple[str, 
         _remove_worktree(wt_path)
     subprocess.run(
         ["git", "branch", "-D", branch],
-        cwd=REPO_PATH, capture_output=True,
+        cwd=REPO_PATH,
+        capture_output=True,
     )
 
     result = subprocess.run(
         ["git", "fetch", "origin", "develop"],
-        cwd=REPO_PATH, capture_output=True, text=True,
+        cwd=REPO_PATH,
+        capture_output=True,
+        text=True,
     )
     if result.returncode != 0:
         raise RuntimeError(f"git fetch failed: {result.stderr}")
 
     result = subprocess.run(
         ["git", "worktree", "add", wt_path, "-b", branch, "origin/develop"],
-        cwd=REPO_PATH, capture_output=True, text=True,
+        cwd=REPO_PATH,
+        capture_output=True,
+        text=True,
     )
     if result.returncode != 0:
         raise RuntimeError(f"git worktree add failed: {result.stderr}")
@@ -226,7 +306,9 @@ def _resume_context(worktree_path: str, branch: str) -> str:
     """Return a resume blurb listing commits already on the branch."""
     result = subprocess.run(
         ["git", "log", f"origin/develop..{branch}", "--oneline"],
-        cwd=worktree_path, capture_output=True, text=True,
+        cwd=worktree_path,
+        capture_output=True,
+        text=True,
     )
     commits = result.stdout.strip()
     if commits:
@@ -243,9 +325,9 @@ def _resume_context(worktree_path: str, branch: str) -> str:
 def _find_pr(branch: str) -> int:
     """Return the PR number for a branch, or 0 if none exists."""
     result = subprocess.run(
-        ["gh", "pr", "list", "--repo", REPO, "--head", branch,
-         "--json", "number", "--limit", "1"],
-        capture_output=True, text=True,
+        ["gh", "pr", "list", "--repo", REPO, "--head", branch, "--json", "number", "--limit", "1"],
+        capture_output=True,
+        text=True,
     )
     prs = json.loads(result.stdout or "[]")
     return prs[0]["number"] if prs else 0
@@ -253,7 +335,11 @@ def _find_pr(branch: str) -> int:
 
 def _build_task_description(state: IssueState) -> str:
     resume = _resume_context(state.worktree_path, state.branch) if state.resuming else ""
-    return dedent(f"""
+    arch_principles = _load_arch_principles()
+    preamble = f"{arch_principles}\n\n---\n\n" if arch_principles else ""
+    return (
+        preamble
+        + dedent(f"""
         GitHub Issue #{state.issue_number}: {state.issue_title}
 
         {state.issue_body}
@@ -269,14 +355,15 @@ def _build_task_description(state: IssueState) -> str:
         - Do NOT reference any kanban task IDs (t_xxxxxxxx) anywhere in the PR title or body.
         - Do NOT add any closing keywords (Closes, Fixes, Resolves) — this PR may only partially address the issue.
     """).strip()
+    )
 
 
 # ---------------------------------------------------------------------------
 # Flow
 # ---------------------------------------------------------------------------
 
-class ApeironFlow(Flow[IssueState]):
 
+class ApeironFlow(Flow[IssueState]):
     @start()
     def prepare(self):
         """Fetch the issue and set up the worktree."""
@@ -313,11 +400,7 @@ class ApeironFlow(Flow[IssueState]):
         description = _build_task_description(self.state)
 
         try:
-            result = (
-                DevCrew()
-                .crew()
-                .kickoff(inputs={"description": description})
-            )
+            result = DevCrew().crew().kickoff(inputs={"description": description})
             self.state.result = result.raw
         except Exception as e:
             cause = e
@@ -327,6 +410,55 @@ class ApeironFlow(Flow[IssueState]):
             if cause is not e:
                 print(f"  Root cause: {type(cause).__name__}: {cause}")
             sys.exit(1)
+
+        # --- make check gate ---------------------------------------------------
+        for attempt in range(1, MAX_CHECK_RETRIES + 1):
+            passed, check_output = _run_make_check(self.state.worktree_path)
+            if passed:
+                break
+
+            print(f"\n[CHECK] make check failed (attempt {attempt}/{MAX_CHECK_RETRIES}):\n{check_output}\n")
+
+            if attempt == MAX_CHECK_RETRIES:
+                # All retries exhausted — transition issue to blocked and exit
+                print(
+                    f"\n[CHECK] make check still failing after {MAX_CHECK_RETRIES} retries. "
+                    f"Transitioning issue #{self.state.issue_number} to status:blocked."
+                )
+                try:
+                    _labels.transition(self.state.issue_number, _labels.LABEL_BLOCKED)
+                except Exception as label_err:
+                    print(f"[WARN] Could not transition label: {label_err}")
+                error_body = (
+                    f"Automated check failed after {MAX_CHECK_RETRIES} retries.\n\n"
+                    f"Last `make check` output:\n```\n{check_output}\n```"
+                )
+                try:
+                    post_issue_comment(self.state.issue_number, error_body)
+                except Exception as comment_err:
+                    print(f"[WARN] Could not post blocker comment: {comment_err}")
+                self.state.blocker = check_output
+                return
+            else:
+                # Feed errors back to the dev crew for a retry pass
+                retry_description = (
+                    f"`make check` failed. Fix the errors below, then re-run "
+                    f"`make check` to confirm it passes before opening the PR.\n\n"
+                    f"```\n{check_output}\n```\n\n"
+                    f"Original task:\n\n{description}"
+                )
+                try:
+                    retry_result = DevCrew().crew().kickoff(inputs={"description": retry_description})
+                    self.state.result = retry_result.raw
+                except Exception as retry_err:
+                    cause = retry_err
+                    while cause.__cause__:
+                        cause = cause.__cause__
+                    print(f"\n[ERROR] retry {attempt} failed: {type(retry_err).__name__}: {retry_err}")
+                    if cause is not retry_err:
+                        print(f"  Root cause: {type(cause).__name__}: {cause}")
+                    # Continue to next attempt rather than aborting the whole flow
+        # --- end make check gate -----------------------------------------------
 
         # Detect whether a PR was opened — don't trust text parsing, ask gh
         self.state.pr_number = _find_pr(self.state.branch)
@@ -378,19 +510,20 @@ class ApeironFlow(Flow[IssueState]):
 # Review Flow
 # ---------------------------------------------------------------------------
 
+
 class ReviewState(BaseModel):
     pr_number: int = 0
-    verdict: str = ""   # code_changes_required | human_feedback_required | ready_for_merge
+    verdict: str = ""  # code_changes_required | human_feedback_required | ready_for_merge
     summary: str = ""
     review_url: str = ""
 
 
 class ReviewFlow(Flow[ReviewState]):
-
     @start()
     def review(self):
         """Set up the PR worktree, run the review crew, then clean up."""
         from apeiron_flow.tools.respond_tools import prepare_worktree_for_pr
+
         # Save the caller's worktree path so we can restore it after review.
         # ApeironFlow → ReviewFlow nesting would otherwise clobber the active path.
         _saved_worktree = repo.current_worktree_path
@@ -405,11 +538,7 @@ class ReviewFlow(Flow[ReviewState]):
             "before forming any opinion. Post a single review with your verdict."
         )
         try:
-            result = (
-                ReviewCrew()
-                .crew()
-                .kickoff(inputs={"description": description})
-            )
+            result = ReviewCrew().crew().kickoff(inputs={"description": description})
             verdict: ReviewVerdict | None = result.pydantic
             if verdict is None:
                 # Crew returned raw text instead of structured output — treat as error
@@ -461,11 +590,12 @@ class ReviewFlow(Flow[ReviewState]):
 # Entry points
 # ---------------------------------------------------------------------------
 
+
 def _list_ready() -> None:
     result = subprocess.run(
-        ["gh", "issue", "list", "--repo", REPO,
-         "--label", "status:ready", "--json", "number,title", "--limit", "20"],
-        capture_output=True, text=True,
+        ["gh", "issue", "list", "--repo", REPO, "--label", "status:ready", "--json", "number,title", "--limit", "20"],
+        capture_output=True,
+        text=True,
     )
     issues = json.loads(result.stdout or "[]")
     if not issues:
@@ -486,10 +616,10 @@ def _list_ready() -> None:
 # These are intentionally different — see config.py for details.
 
 _INTENT_MAP = {
-    "change_request":  "change_request",
-    "question":        "question",
-    "approval":        "approval",
-    "out_of_scope":    "out_of_scope",
+    "change_request": "change_request",
+    "question": "question",
+    "approval": "approval",
+    "out_of_scope": "out_of_scope",
 }
 
 # Hidden HTML tag we append to every bot reply so _classify_pr_state can
@@ -497,9 +627,11 @@ _INTENT_MAP = {
 # timestamp-based heuristic that drops unhandled earlier mentions.
 _REPLY_TAG = "<!-- automation-replied-to: {comment_id} -->"
 
+
 def _tag_reply(body: str, comment_id: int) -> str:
     """Append the reply-tracking tag to a comment body."""
     return f"{body}\n{_REPLY_TAG.format(comment_id=comment_id)}"
+
 
 def _parse_replied_ids(body: str) -> list[int]:
     """Extract all comment IDs from reply-tracking tags in a comment body."""
@@ -513,7 +645,7 @@ def _parse_author(message: str) -> tuple[str, str]:
     """
     m = re.match(r"^\[author:@([^\]]+)\]\n?", message)
     if m:
-        return m.group(1), message[m.end():]
+        return m.group(1), message[m.end() :]
     return "unknown", message
 
 
@@ -523,13 +655,14 @@ class RespondState(ConversationState):
     session_id convention: "issue-{N}" or "pr-{N}"
     handled_comment_ids persists across scan runs so we never double-process.
     """
-    target_type: str = ""           # "issue" or "pr"
+
+    target_type: str = ""  # "issue" or "pr"
     target_number: int = 0
-    current_author: str = ""        # GitHub username of the current comment's author
-    current_comment_id: int = 0     # ID of the comment being processed
+    current_author: str = ""  # GitHub username of the current comment's author
+    current_comment_id: int = 0  # ID of the comment being processed
     handled_comment_ids: list[int] = Field(default_factory=list)
     last_reply_url: str = ""
-    last_intent: str = ""           # most recent classified intent
+    last_intent: str = ""  # most recent classified intent
 
 
 @ConversationConfig(
@@ -540,9 +673,9 @@ class RespondState(ConversationState):
         routes=list(_INTENT_MAP.keys()),
         route_descriptions={
             "change_request": "Commenter wants code changes on the branch",
-            "question":       "Commenter is asking a question about code or design",
-            "approval":       "Commenter is approving / saying LGTM",
-            "out_of_scope":   "Comment is not actionable by the bot",
+            "question": "Commenter is asking a question about code or design",
+            "approval": "Commenter is approving / saying LGTM",
+            "out_of_scope": "Comment is not actionable by the bot",
         },
         default_intent="out_of_scope",
         fallback_intent="out_of_scope",
@@ -555,6 +688,7 @@ class RespondFlow(Flow[RespondState]):
     Each issue/PR has its own persistent session. Call handle_turn() with the
     comment text as the message and the session_id ("issue-N" or "pr-N").
     """
+
     conversational = True
 
     def route_turn(self, context) -> str | None:
@@ -659,10 +793,7 @@ class RespondFlow(Flow[RespondState]):
         author, _ = _parse_author(state.current_user_message or "")
         if not author or author == "unknown":
             author = state.current_author or "unknown"
-        msg = (
-            f"Thanks for the review, @{author}! "
-            f"Flagging this PR for a human to merge."
-        )
+        msg = f"Thanks for the review, @{author}! Flagging this PR for a human to merge."
         # Append tracking tag so _classify_pr_state knows this comment was handled
         if state.current_comment_id:
             msg = _tag_reply(msg, state.current_comment_id)
@@ -705,6 +836,7 @@ class RespondFlow(Flow[RespondState]):
 # Scan helper — finds unhandled @mentions across all open issues + PRs
 # ---------------------------------------------------------------------------
 
+
 def _fetch_mentions_for(target_type: str, number: int, handled_ids: set) -> list[dict]:
     """Fetch unhandled @mention comments for a single issue or PR.
     Uses --paginate to collect all comments regardless of count."""
@@ -715,7 +847,8 @@ def _fetch_mentions_for(target_type: str, number: int, handled_ids: set) -> list
 
     r = subprocess.run(
         ["gh", "api", "--paginate", f"/repos/{REPO}/issues/{number}/comments"],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
     issue_comments = json.loads(r.stdout or "[]")
     raw_comments.extend((c, "issue_comment") for c in issue_comments)
@@ -723,7 +856,8 @@ def _fetch_mentions_for(target_type: str, number: int, handled_ids: set) -> list
     if target_type == "pr":
         r = subprocess.run(
             ["gh", "api", "--paginate", f"/repos/{REPO}/pulls/{number}/comments"],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         )
         review_comments = json.loads(r.stdout or "[]")
         raw_comments.extend((c, "review_comment") for c in review_comments)
@@ -737,15 +871,17 @@ def _fetch_mentions_for(target_type: str, number: int, handled_ids: set) -> list
         if mention_re.search(body):
             # GitHub returns null for user when the account is deleted (ghost users)
             author = (comment.get("user") or {}).get("login", "unknown")
-            mentions.append({
-                "target_type": target_type,
-                "target_number": number,
-                "comment_id": cid,
-                "comment_type": comment_type,
-                "author": author,
-                "body": body,
-                "session_id": session_id,
-            })
+            mentions.append(
+                {
+                    "target_type": target_type,
+                    "target_number": number,
+                    "comment_id": cid,
+                    "comment_type": comment_type,
+                    "author": author,
+                    "body": body,
+                    "session_id": session_id,
+                }
+            )
     return mentions
 
 
@@ -763,6 +899,7 @@ def _classify_pr_state(pr_number: int) -> tuple[str, list[dict]]:
          tag system was introduced.
     """
     from apeiron_flow.github_http import _gh_get_all as gh_get_all
+
     # 1. Has the bot posted a review on this PR?
     reviews = gh_get_all(f"/repos/{REPO}/pulls/{pr_number}/reviews")
     bot_reviews = [r for r in reviews if (r.get("user") or {}).get("login") == BOT_LOGIN]
@@ -789,12 +926,26 @@ def _classify_pr_state(pr_number: int) -> tuple[str, list[dict]]:
 
     # 5. Combined timeline sorted chronologically
     all_comments = sorted(
-        [{"id": c["id"], "author": (c.get("user") or {}).get("login", "unknown"),
-          "body": c["body"], "created_at": c["created_at"], "kind": "issue"}
-         for c in comments] +
-        [{"id": c["id"], "author": (c.get("user") or {}).get("login", "unknown"),
-          "body": c["body"], "created_at": c["created_at"], "kind": "review"}
-         for c in review_comments],
+        [
+            {
+                "id": c["id"],
+                "author": (c.get("user") or {}).get("login", "unknown"),
+                "body": c["body"],
+                "created_at": c["created_at"],
+                "kind": "issue",
+            }
+            for c in comments
+        ]
+        + [
+            {
+                "id": c["id"],
+                "author": (c.get("user") or {}).get("login", "unknown"),
+                "body": c["body"],
+                "created_at": c["created_at"],
+                "kind": "review",
+            }
+            for c in review_comments
+        ],
         key=lambda c: c["created_at"],
     )
 
@@ -807,14 +958,16 @@ def _classify_pr_state(pr_number: int) -> tuple[str, list[dict]]:
             continue
         if comment["id"] in handled_ids:
             continue
-        pending.append({
-            "comment_id": comment["id"],
-            "author": comment["author"],
-            "body": comment["body"],
-            "target_type": "pr",
-            "target_number": pr_number,
-            "session_id": session_id,
-        })
+        pending.append(
+            {
+                "comment_id": comment["id"],
+                "author": comment["author"],
+                "body": comment["body"],
+                "target_type": "pr",
+                "target_number": pr_number,
+                "session_id": session_id,
+            }
+        )
 
     if pending:
         return "pending_response", pending
@@ -828,9 +981,9 @@ def _scan_for_mentions() -> list[dict]:
 
     # Fetch open issues (excludes PRs)
     issues_result = subprocess.run(
-        ["gh", "issue", "list", "--repo", REPO,
-         "--state", "open", "--limit", "200", "--json", "number"],
-        capture_output=True, text=True,
+        ["gh", "issue", "list", "--repo", REPO, "--state", "open", "--limit", "200", "--json", "number"],
+        capture_output=True,
+        text=True,
     )
     if issues_result.returncode != 0:
         print(f"[WARN] Could not list issues: {issues_result.stderr}")
@@ -847,9 +1000,9 @@ def _scan_for_mentions() -> list[dict]:
 
     # Fetch open PRs separately
     prs_result = subprocess.run(
-        ["gh", "pr", "list", "--repo", REPO,
-         "--state", "open", "--limit", "200", "--json", "number"],
-        capture_output=True, text=True,
+        ["gh", "pr", "list", "--repo", REPO, "--state", "open", "--limit", "200", "--json", "number"],
+        capture_output=True,
+        text=True,
     )
     if prs_result.returncode != 0:
         print(f"[WARN] Could not list PRs: {prs_result.stderr}")
@@ -871,6 +1024,7 @@ def _scan_for_mentions() -> list[dict]:
 # TriageFlow — classify and decompose a status:triage issue
 # ---------------------------------------------------------------------------
 
+
 class TriageState(BaseModel):
     issue_number: int = 0
 
@@ -882,9 +1036,7 @@ class TriageFlow(Flow[TriageState]):
     def run_triage(self) -> TriageResult:
         print(f"[TriageFlow] Triaging issue #{self.state.issue_number}...")
         crew = TriageCrew()
-        result: TriageResult = crew.crew().kickoff(
-            inputs={"issue_number": self.state.issue_number}
-        )
+        result: TriageResult = crew.crew().kickoff(inputs={"issue_number": self.state.issue_number})
         print(f"[TriageFlow] classification={result.classification}")
         if result.child_issues:
             print(f"[TriageFlow] child issues created: {result.child_issues}")
@@ -896,18 +1048,21 @@ def kickoff():
     parser = argparse.ArgumentParser(description="Apeiron Cipher CrewAI Flow")
     parser.add_argument("--issue", type=int, help="GitHub issue number to implement")
     parser.add_argument("--pr", type=int, help="Classify and act on a PR (review, respond, or nothing)")
-    parser.add_argument("--reprocess-comment", type=int, metavar="COMMENT_ID",
-                        help="Remove a comment ID from a PR's handled state (use with --pr N)")
-    parser.add_argument("--scan", action="store_true",
-                        help="Scan all open issues/PRs for unhandled @mentions and respond")
-    parser.add_argument("--fresh", action="store_true",
-                        help="Discard existing worktree/branch and start from scratch")
-    parser.add_argument("--dry-run", action="store_true",
-                        help="Print task description without running the agent")
-    parser.add_argument("--list-ready", action="store_true",
-                        help="List issues with status:ready and exit")
-    parser.add_argument("--triage", type=int, metavar="N",
-                        help="Triage a status:triage issue: classify and decompose it")
+    parser.add_argument(
+        "--reprocess-comment",
+        type=int,
+        metavar="COMMENT_ID",
+        help="Remove a comment ID from a PR's handled state (use with --pr N)",
+    )
+    parser.add_argument(
+        "--scan", action="store_true", help="Scan all open issues/PRs for unhandled @mentions and respond"
+    )
+    parser.add_argument("--fresh", action="store_true", help="Discard existing worktree/branch and start from scratch")
+    parser.add_argument("--dry-run", action="store_true", help="Print task description without running the agent")
+    parser.add_argument("--list-ready", action="store_true", help="List issues with status:ready and exit")
+    parser.add_argument(
+        "--triage", type=int, metavar="N", help="Triage a status:triage issue: classify and decompose it"
+    )
     args = parser.parse_args()
 
     if args.list_ready:
@@ -928,16 +1083,16 @@ def kickoff():
             print(f"No session state found for {session_id} — nothing to update.")
             return
         before = len(raw.get("handled_comment_ids", []))
-        raw["handled_comment_ids"] = [
-            c for c in raw.get("handled_comment_ids", []) if c != args.reprocess_comment
-        ]
+        raw["handled_comment_ids"] = [c for c in raw.get("handled_comment_ids", []) if c != args.reprocess_comment]
         after = len(raw["handled_comment_ids"])
         if before == after:
             print(f"Comment {args.reprocess_comment} was not in handled list for {session_id}.")
         else:
             persistence.save_state(session_id, "manual_reprocess", raw)
-            print(f"Removed comment {args.reprocess_comment} from {session_id} — "
-                  f"it will be reprocessed on the next --pr run.")
+            print(
+                f"Removed comment {args.reprocess_comment} from {session_id} — "
+                f"it will be reprocessed on the next --pr run."
+            )
         return
 
     if args.scan:
@@ -947,8 +1102,10 @@ def kickoff():
             return
         print(f"Found {len(mentions)} unhandled mention(s).")
         for m in mentions:
-            print(f"\n  Processing @mention on {m['target_type']} #{m['target_number']} "
-                  f"by @{m['author']} (comment #{m['comment_id']})")
+            print(
+                f"\n  Processing @mention on {m['target_type']} #{m['target_number']} "
+                f"by @{m['author']} (comment #{m['comment_id']})"
+            )
             # Fresh flow per mention — avoids stale state contamination across sessions
             flow = RespondFlow()
             flow.state.target_type = m["target_type"]
@@ -971,7 +1128,7 @@ def kickoff():
         print(f"  State: {pr_state}")
 
         if pr_state == "new_review":
-            print(f"  No bot review found — running ReviewFlow.")
+            print("  No bot review found — running ReviewFlow.")
             flow = ReviewFlow()
             flow.state.pr_number = args.pr
             flow.kickoff()

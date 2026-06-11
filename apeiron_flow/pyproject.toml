@@ -29,5 +29,10 @@ line-length = 120
 select = ["E", "F", "W", "I"]
 ignore = ["E501"]
 
+[tool.ruff.lint.per-file-ignores]
+# main.py intentionally sets env vars (litellm noise suppression) before
+# pulling in crewai/pydantic — E402 is expected here.
+"src/apeiron_flow/main.py" = ["E402"]
+
 [tool.ruff.lint.isort]
 known-first-party = ["apeiron_flow"]
