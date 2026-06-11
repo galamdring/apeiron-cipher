@@ -105,6 +105,21 @@ def _gh_post(path: str, body: dict) -> dict:
     return resp.json()
 
 
+def _gh_delete(path: str) -> None:
+    """DELETE a GitHub API resource.
+
+    GitHub returns 204 No Content on success for most DELETE endpoints
+    (e.g. removing a label from an issue). Raises requests.HTTPError on
+    non-2xx responses.
+    """
+    resp = requests.delete(
+        f"https://api.github.com{path}",
+        headers=_gh_headers(),
+        timeout=15,
+    )
+    resp.raise_for_status()
+
+
 def safe_login(obj: dict | None) -> str:
     """Extract user.login from a GitHub API object.
 
