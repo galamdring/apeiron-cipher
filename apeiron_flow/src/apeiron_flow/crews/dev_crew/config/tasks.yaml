@@ -1,0 +1,11 @@
+implement_issue:
+  description: >
+    {description}
+  expected_output: >
+    - Code changes committed to the feature branch
+    - make check passes (fmt + clippy + tests + build)
+    - PR opened linking to the issue
+    - Summary of what was done and why
+    - If blocked by an environmental issue: a clear blocker report instead
+      of repeated fix attempts. Do not retry environmental failures.
+  agent: rust_developer

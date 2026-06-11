@@ -1,0 +1,23 @@
+[project]
+name = "apeiron_flow"
+version = "0.1.0"
+description = "Apeiron Cipher CrewAI Flow — implements GitHub issues via a Rust/Bevy dev crew"
+authors = [{ name = "NullOperator" }]
+requires-python = ">=3.10,<3.14"
+dependencies = [
+    "crewai[tools]>=1.14.7a2",
+    "litellm",
+    "PyJWT",
+    "requests",
+]
+
+[project.scripts]
+apeiron_flow = "apeiron_flow.main:kickoff"
+plot = "apeiron_flow.main:plot"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.crewai]
+type = "flow"
