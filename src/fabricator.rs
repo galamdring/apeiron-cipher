@@ -957,4 +957,168 @@ mod tests {
             );
         }
     }
+
+    // ── Violet pulse visual feedback tests ───────────────────────────────
+
+    /// Helper: build a minimal headless App wired up for apply_processing_visuals.
+    ///
+    /// The app gets:
+    ///   - Assets<StandardMaterial>  (inserted directly — no AssetPlugin needed)
+    ///   - FabricatorSceneConfig     (default values, including process_seconds = 2.5)
+    ///   - FabricatorState           (caller sets this to Processing or Idle)
+    ///   - apply_processing_visuals  registered in Update
+    fn make_pulse_test_app(state: FabricatorState) -> (App, Entity, Handle<StandardMaterial>) {
+        let mut app = App::new();
+
+        // Insert the resource dependencies the system reads.
+        app.insert_resource(state);
+        app.insert_resource(FabricatorSceneConfig::default());
+        app.insert_resource(Assets::<StandardMaterial>::default());
+
+        // Register the system under test.
+        app.add_systems(Update, apply_processing_visuals);
+
+        // Spawn a ChamberPanel entity backed by a real material handle so the
+        // system can look up and mutate the StandardMaterial.
+        let mat_handle = {
+            let mut std_assets = app.world_mut().resource_mut::<Assets<StandardMaterial>>();
+            std_assets.add(StandardMaterial {
+                emissive: LinearRgba::BLACK,
+                ..Default::default()
+            })
+        };
+
+        let panel_entity = app
+            .world_mut()
+            .spawn((ChamberPanel, MeshMaterial3d(mat_handle.clone())))
+            .id();
+
+        (app, panel_entity, mat_handle)
+    }
+
+    /// During Processing the emissive must be non-zero and violet-tinted on every
+    /// ChamberPanel.
+    ///
+    /// We sample at elapsed = process_seconds / 12 so frac = 1/12 and the pulse
+    /// formula evaluates to sin(pi/2) = 1.0 — the absolute peak brightness.
+    /// At peak, expected emissive channels are (60, 40, 80) — clearly violet
+    /// (blue channel strictly greater than both red and green).
+    #[test]
+    fn violet_pulse_emissive_is_nonzero_during_processing() {
+        let process_seconds = FabricatorSceneConfig::default().process_seconds;
+        let elapsed = process_seconds / 12.0;
+        let (mut app, _, mat_handle) = make_pulse_test_app(FabricatorState::Processing { elapsed });
+
+        app.update();
+
+        let emissive = app
+            .world()
+            .resource::<Assets<StandardMaterial>>()
+            .get(&mat_handle)
+            .expect("material must exist after update")
+            .emissive;
+
+        assert!(
+            emissive.red > 0.0 || emissive.green > 0.0 || emissive.blue > 0.0,
+            "ChamberPanel emissive must be non-zero during Processing; got {emissive:?}"
+        );
+        assert!(
+            emissive.blue > emissive.red,
+            "violet pulse must be blue-dominant (blue={} > red={})",
+            emissive.blue,
+            emissive.red,
+        );
+        assert!(
+            emissive.blue > emissive.green,
+            "violet pulse must be blue-dominant (blue={} > green={})",
+            emissive.blue,
+            emissive.green,
+        );
+    }
+
+    /// At peak pulse the emissive blue channel must be high enough (> 1.0) to
+    /// bloom through HDR post-processing.
+    #[test]
+    fn violet_pulse_peak_emissive_exceeds_hdr_bloom_threshold() {
+        let process_seconds = FabricatorSceneConfig::default().process_seconds;
+        let elapsed = process_seconds / 12.0;
+        let (mut app, _, mat_handle) = make_pulse_test_app(FabricatorState::Processing { elapsed });
+
+        app.update();
+
+        let emissive = app
+            .world()
+            .resource::<Assets<StandardMaterial>>()
+            .get(&mat_handle)
+            .expect("material must exist after update")
+            .emissive;
+
+        assert!(
+            emissive.blue > 1.0,
+            "peak emissive blue ({}) must exceed HDR bloom threshold (1.0)",
+            emissive.blue,
+        );
+    }
+
+    /// When Idle, ChamberPanel emissive must be exactly zero.
+    #[test]
+    fn chamber_panel_emissive_is_zero_when_idle() {
+        let (mut app, _, mat_handle) = make_pulse_test_app(FabricatorState::Idle);
+
+        app.update();
+
+        let emissive = app
+            .world()
+            .resource::<Assets<StandardMaterial>>()
+            .get(&mat_handle)
+            .expect("material must exist after update")
+            .emissive;
+
+        assert!(
+            emissive.red == 0.0 && emissive.green == 0.0 && emissive.blue == 0.0,
+            "ChamberPanel emissive must be zero when Idle; got {emissive:?}"
+        );
+    }
+
+    /// All 5 panels of a single slot must receive the violet pulse uniformly.
+    #[test]
+    fn all_chamber_panels_receive_pulse_uniformly() {
+        let process_seconds = FabricatorSceneConfig::default().process_seconds;
+        let elapsed = process_seconds / 12.0;
+
+        let mut app = App::new();
+        app.insert_resource(FabricatorState::Processing { elapsed });
+        app.insert_resource(FabricatorSceneConfig::default());
+        app.insert_resource(Assets::<StandardMaterial>::default());
+        app.add_systems(Update, apply_processing_visuals);
+
+        let handles: Vec<Handle<StandardMaterial>> = {
+            let mut std_assets = app.world_mut().resource_mut::<Assets<StandardMaterial>>();
+            (0..5)
+                .map(|_| {
+                    std_assets.add(StandardMaterial {
+                        emissive: LinearRgba::BLACK,
+                        ..Default::default()
+                    })
+                })
+                .collect()
+        };
+
+        for h in &handles {
+            app.world_mut()
+                .spawn((ChamberPanel, MeshMaterial3d(h.clone())));
+        }
+
+        app.update();
+
+        let std_assets = app.world().resource::<Assets<StandardMaterial>>();
+        for (i, h) in handles.iter().enumerate() {
+            let emissive = std_assets.get(h).expect("material must exist").emissive;
+            assert!(
+                emissive.blue > 1.0,
+                "panel {i}: emissive blue ({}) must be > 1.0 — all 5 surfaces must receive the pulse",
+                emissive.blue,
+            );
+        }
+    }
 }
