@@ -19,15 +19,12 @@ Transitions under test:
 
 import json
 import os
-from unittest.mock import MagicMock, call, patch
-
-import pytest
+from unittest.mock import MagicMock, patch
 
 # Ensure imports succeed in test environment
 os.environ.setdefault("RESPOND_DB", "/tmp/test_label_wiring.db")
 os.environ.setdefault("APEIRON_REPO_PATH", "/fake/repo")
 
-import apeiron_flow.main as _main
 from apeiron_flow.main import (
     ApeironFlow,
     IssueState,
@@ -35,7 +32,6 @@ from apeiron_flow.main import (
     ReviewState,
     _get_issue_for_pr,
 )
-
 
 # ---------------------------------------------------------------------------
 # helpers

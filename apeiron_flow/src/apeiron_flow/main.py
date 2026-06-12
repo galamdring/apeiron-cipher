@@ -806,7 +806,9 @@ class RespondFlow(Flow[RespondState]):
                 except Exception as label_err:
                     print(f"[WARN] Could not transition label to in-progress: {label_err}")
             else:
-                print(f"[WARN] Could not determine issue number for PR #{state.target_number} — skipping label transition")
+                print(
+                    f"[WARN] Could not determine issue number for PR #{state.target_number} — skipping label transition"
+                )
 
         description = (
             f"A commenter (@{author}) has requested a code change on "
