@@ -1,9 +1,9 @@
 # crewai-orchestrator/Makefile — Python orchestrator developer targets
 #
-# check: run pytest
-# fmt:   ruff format (auto-fix)
-# lint:  ruff check
-# o-check: combined lint + test gate (called from root Makefile's o-check target)
+# o-check: ruff lint+format + pytest
+#          Run this before committing Python orchestrator changes.
+#
+# Called from the root Makefile's o-check target.
 
 VENV      := apeiron_flow/.venv
 PYTHON    := $(VENV)/bin/python3
@@ -21,29 +21,42 @@ endif
 SRC       := apeiron_flow/src
 TESTS     := apeiron_flow/tests
 
-# Modules that are lint-clean. Extend this list as each module is brought up to standard.
-LINT_TARGETS := \
-  apeiron_flow/src/apeiron_flow/__init__.py \
-  apeiron_flow/src/apeiron_flow/github_http.py \
-  apeiron_flow/tests/
+.PHONY: o-check lint fmt check install
 
-.PHONY: o-check check lint fmt install
-
-# Default target — full gate
+# Default target
 o-check: lint check
 
 install:
 	cd apeiron_flow && uv sync --dev
 
 lint:
-	@echo "==> ruff check"
-	$(RUFF) check $(LINT_TARGETS) --select E,F,W,I --ignore E501
+	@echo "==> ruff check (triage modules + tests)"
+	$(RUFF) check \
+	  apeiron_flow/src/apeiron_flow/config.py \
+	  apeiron_flow/src/apeiron_flow/labels.py \
+	  apeiron_flow/src/apeiron_flow/main.py \
+	  apeiron_flow/src/apeiron_flow/tools/triage_tools.py \
+	  apeiron_flow/src/apeiron_flow/crews/triage_crew/ \
+	  apeiron_flow/tests/ \
+	  --select E,F,W,I --ignore E501
 	@echo "==> ruff format check"
-	$(RUFF) format --check $(LINT_TARGETS)
+	$(RUFF) format --check \
+	  apeiron_flow/src/apeiron_flow/config.py \
+	  apeiron_flow/src/apeiron_flow/labels.py \
+	  apeiron_flow/src/apeiron_flow/main.py \
+	  apeiron_flow/src/apeiron_flow/tools/triage_tools.py \
+	  apeiron_flow/src/apeiron_flow/crews/triage_crew/ \
+	  apeiron_flow/tests/
 
 fmt:
 	@echo "==> ruff format"
-	$(RUFF) format $(LINT_TARGETS)
+	$(RUFF) format \
+	  apeiron_flow/src/apeiron_flow/config.py \
+	  apeiron_flow/src/apeiron_flow/labels.py \
+	  apeiron_flow/src/apeiron_flow/main.py \
+	  apeiron_flow/src/apeiron_flow/tools/triage_tools.py \
+	  apeiron_flow/src/apeiron_flow/crews/triage_crew/ \
+	  apeiron_flow/tests/
 
 check:
 	@echo "==> pytest"

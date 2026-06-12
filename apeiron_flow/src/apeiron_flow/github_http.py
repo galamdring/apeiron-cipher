@@ -51,7 +51,6 @@ def _gh_headers() -> dict:
 # HTTP helpers
 # ---------------------------------------------------------------------------
 
-
 def _gh_get(path: str, params: dict | None = None) -> dict | list:
     """Single-page GET. Use _gh_get_all for paginated collections."""
     resp = requests.get(

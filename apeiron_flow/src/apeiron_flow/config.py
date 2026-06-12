@@ -23,7 +23,7 @@ Optional environment variables (sensible defaults):
 """
 
 import os
-from pathlib import Path
+
 from crewai import LLM
 
 # ---------------------------------------------------------------------------
@@ -37,13 +37,11 @@ REPO_OWNER, REPO_NAME = REPO.split("/")
 # Filesystem paths (all env-var-backed)
 # ---------------------------------------------------------------------------
 
+
 def _require_env(name: str) -> str:
     val = os.environ.get(name, "").strip()
     if not val:
-        raise RuntimeError(
-            f"Required environment variable {name} is not set. "
-            f"Add it to your .env file."
-        )
+        raise RuntimeError(f"Required environment variable {name} is not set. Add it to your .env file.")
     return val
 
 
@@ -77,7 +75,7 @@ RESPOND_DB: str = os.environ.get(
 # BOT_HANDLE — the @mention name users type to request bot action.
 #              These are intentionally different: the app posts as its install
 #              identity, but users address it by a shorter, memorable handle.
-BOT_LOGIN  = os.environ.get("GITHUB_BOT_LOGIN",  "apeiron-cipher-manager[bot]")
+BOT_LOGIN = os.environ.get("GITHUB_BOT_LOGIN", "apeiron-cipher-manager[bot]")
 BOT_HANDLE = os.environ.get("GITHUB_BOT_HANDLE", "automation")
 
 # ---------------------------------------------------------------------------
@@ -93,3 +91,10 @@ DEFAULT_LLM = LLM(
     # CrewAI summarizes history when this limit is approached.
     context_window=25_000,
 )
+
+# ---------------------------------------------------------------------------
+# Dev crew quality gate
+# ---------------------------------------------------------------------------
+
+# Maximum number of times to retry the dev crew after a failed `make check`.
+MAX_CHECK_RETRIES: int = int(os.environ.get("APEIRON_MAX_CHECK_RETRIES", "3"))
