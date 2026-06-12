@@ -35,7 +35,8 @@ def test_triage_flow_calls_crew_with_issue_number(mock_crew_cls, capsys):
 
     flow = TriageFlow()
     flow.state.issue_number = 99
-    result = flow.run_triage()
+    with patch("apeiron_flow.main._labels.transition"):
+        result = flow.run_triage()
 
     mock_crew_instance.crew.return_value.kickoff.assert_called_once_with(inputs={"issue_number": 99})
     assert result.classification == "epic"
@@ -52,7 +53,8 @@ def test_triage_flow_prints_child_issues(mock_crew_cls, capsys):
 
     flow = TriageFlow()
     flow.state.issue_number = 55
-    flow.run_triage()
+    with patch("apeiron_flow.main._labels.transition"):
+        flow.run_triage()
 
     captured = capsys.readouterr()
     assert "201" in captured.out
@@ -68,8 +70,49 @@ def test_triage_flow_atomic_story_no_child_issues(mock_crew_cls, capsys):
 
     flow = TriageFlow()
     flow.state.issue_number = 7
-    flow.run_triage()
+    with patch("apeiron_flow.main._labels.transition") as mock_transition:
+        flow.run_triage()
+        # Suppress unused-variable lint — transition is asserted below
+        _ = mock_transition
 
     captured = capsys.readouterr()
     assert "child issues created" not in captured.out
     assert "story_atomic" in captured.out
+
+
+@patch("apeiron_flow.main.TriageCrew")
+def test_triage_flow_calls_label_transition_on_classified_issue(mock_crew_cls):
+    """run_triage must call labels.transition with the correct issue number and
+    status:todo after the crew returns a non-blocked classification."""
+    expected_result = _make_result("epic", [301, 302], "Created 2 child stories.")
+    mock_crew_instance = MagicMock()
+    mock_crew_instance.crew.return_value.kickoff.return_value = expected_result
+    mock_crew_cls.return_value = mock_crew_instance
+
+    flow = TriageFlow()
+    flow.state.issue_number = 42
+
+    with patch("apeiron_flow.main._labels.transition") as mock_transition:
+        result = flow.run_triage()
+
+    mock_transition.assert_called_once_with(42, "status:todo", "status:triage")
+    assert result.classification == "epic"
+
+
+@patch("apeiron_flow.main.TriageCrew")
+def test_triage_flow_skips_label_transition_on_blocked_ambiguous(mock_crew_cls):
+    """run_triage must NOT call labels.transition when the crew returns
+    blocked_ambiguous — the issue must stay in status:triage."""
+    expected_result = _make_result("blocked_ambiguous", [], "Issue body is ambiguous.")
+    mock_crew_instance = MagicMock()
+    mock_crew_instance.crew.return_value.kickoff.return_value = expected_result
+    mock_crew_cls.return_value = mock_crew_instance
+
+    flow = TriageFlow()
+    flow.state.issue_number = 99
+
+    with patch("apeiron_flow.main._labels.transition") as mock_transition:
+        result = flow.run_triage()
+
+    mock_transition.assert_not_called()
+    assert result.classification == "blocked_ambiguous"

@@ -1041,6 +1041,15 @@ class TriageFlow(Flow[TriageState]):
         if result.child_issues:
             print(f"[TriageFlow] child issues created: {result.child_issues}")
         print(f"[TriageFlow] {result.comment}")
+        # Explicit post-crew label transition: move parent to status:todo unless the crew
+        # left the issue in triage (blocked_ambiguous means crew posted a clarifying comment
+        # and did NOT classify the issue — label must stay as status:triage).
+        if result.classification != "blocked_ambiguous":
+            try:
+                _labels.transition(self.state.issue_number, _labels.LABEL_TODO, _labels.LABEL_TRIAGE)
+                print(f"[TriageFlow] Transitioned #{self.state.issue_number} to {_labels.LABEL_TODO}")
+            except Exception as label_err:
+                print(f"[WARN] Could not transition label for #{self.state.issue_number}: {label_err}")
         return result
 
 
