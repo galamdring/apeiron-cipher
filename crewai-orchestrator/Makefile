@@ -1,25 +1,32 @@
 # crewai-orchestrator/Makefile — Python orchestrator developer targets
 #
-# o-check: ruff lint+format + pytest
-#          Run this before committing Python orchestrator changes.
+# check: run pytest
+# fmt:   ruff format (auto-fix)
+# lint:  ruff check
+# o-check: combined lint + test gate (called from root Makefile's o-check target)
 #
-# Called from the root Makefile's o-check target.
+# Works from two invocation contexts:
+#   From opensky/ (repo root): make -C crewai-orchestrator o-check
+#   From crewai-orchestrator/: make o-check
+# Detects which context by checking for ../apeiron_flow/.venv (crewai-orchestrator/ cwd)
+# vs apeiron_flow/.venv (repo root cwd).
 
+# Default: invoked from repo root (opensky/)
 VENV      := apeiron_flow/.venv
+SRC       := apeiron_flow/src
+TESTS     := apeiron_flow/tests
+
+# If running directly from crewai-orchestrator/, adjust paths to parent
+ifneq ($(wildcard ../apeiron_flow/.venv),)
+VENV      := ../apeiron_flow/.venv
+SRC       := ../apeiron_flow/src
+TESTS     := ../apeiron_flow/tests
+endif
+
 PYTHON    := $(VENV)/bin/python3
 PIP       := $(PYTHON) -m pip
 RUFF      := $(VENV)/bin/ruff
 PYTEST    := $(VENV)/bin/pytest
-
-# If running directly from this directory, venv is at .venv
-ifneq ($(wildcard .venv),)
-VENV      := .venv
-RUFF      := .venv/bin/ruff
-PYTEST    := .venv/bin/pytest
-endif
-
-SRC       := apeiron_flow/src
-TESTS     := apeiron_flow/tests
 
 .PHONY: o-check lint fmt check install
 
@@ -27,36 +34,42 @@ TESTS     := apeiron_flow/tests
 o-check: lint check
 
 install:
-	cd apeiron_flow && uv sync --dev
+	cd $(dir $(VENV)) && uv sync --dev
 
 lint:
-	@echo "==> ruff check (triage modules + tests)"
+	@echo "==> ruff check"
 	$(RUFF) check \
-	  apeiron_flow/src/apeiron_flow/config.py \
-	  apeiron_flow/src/apeiron_flow/labels.py \
-	  apeiron_flow/src/apeiron_flow/main.py \
-	  apeiron_flow/src/apeiron_flow/tools/triage_tools.py \
-	  apeiron_flow/src/apeiron_flow/crews/triage_crew/ \
-	  apeiron_flow/tests/ \
+	  $(SRC)/apeiron_flow/__init__.py \
+	  $(SRC)/apeiron_flow/github_http.py \
+	  $(SRC)/apeiron_flow/config.py \
+	  $(SRC)/apeiron_flow/labels.py \
+	  $(SRC)/apeiron_flow/main.py \
+	  $(SRC)/apeiron_flow/tools/triage_tools.py \
+	  $(SRC)/apeiron_flow/crews/triage_crew/ \
+	  $(TESTS)/ \
 	  --select E,F,W,I --ignore E501
 	@echo "==> ruff format check"
 	$(RUFF) format --check \
-	  apeiron_flow/src/apeiron_flow/config.py \
-	  apeiron_flow/src/apeiron_flow/labels.py \
-	  apeiron_flow/src/apeiron_flow/main.py \
-	  apeiron_flow/src/apeiron_flow/tools/triage_tools.py \
-	  apeiron_flow/src/apeiron_flow/crews/triage_crew/ \
-	  apeiron_flow/tests/
+	  $(SRC)/apeiron_flow/__init__.py \
+	  $(SRC)/apeiron_flow/github_http.py \
+	  $(SRC)/apeiron_flow/config.py \
+	  $(SRC)/apeiron_flow/labels.py \
+	  $(SRC)/apeiron_flow/main.py \
+	  $(SRC)/apeiron_flow/tools/triage_tools.py \
+	  $(SRC)/apeiron_flow/crews/triage_crew/ \
+	  $(TESTS)/
 
 fmt:
 	@echo "==> ruff format"
 	$(RUFF) format \
-	  apeiron_flow/src/apeiron_flow/config.py \
-	  apeiron_flow/src/apeiron_flow/labels.py \
-	  apeiron_flow/src/apeiron_flow/main.py \
-	  apeiron_flow/src/apeiron_flow/tools/triage_tools.py \
-	  apeiron_flow/src/apeiron_flow/crews/triage_crew/ \
-	  apeiron_flow/tests/
+	  $(SRC)/apeiron_flow/__init__.py \
+	  $(SRC)/apeiron_flow/github_http.py \
+	  $(SRC)/apeiron_flow/config.py \
+	  $(SRC)/apeiron_flow/labels.py \
+	  $(SRC)/apeiron_flow/main.py \
+	  $(SRC)/apeiron_flow/tools/triage_tools.py \
+	  $(SRC)/apeiron_flow/crews/triage_crew/ \
+	  $(TESTS)/
 
 check:
 	@echo "==> pytest"

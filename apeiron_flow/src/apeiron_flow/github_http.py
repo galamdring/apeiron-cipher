@@ -51,6 +51,7 @@ def _gh_headers() -> dict:
 # HTTP helpers
 # ---------------------------------------------------------------------------
 
+
 def _gh_get(path: str, params: dict | None = None) -> dict | list:
     """Single-page GET. Use _gh_get_all for paginated collections."""
     resp = requests.get(
@@ -77,9 +78,7 @@ def _gh_get_all(path: str) -> list:
         resp.raise_for_status()
         page = resp.json()
         if not isinstance(page, list):
-            raise ValueError(
-                f"Expected list from {url}, got {type(page).__name__}: {page}"
-            )
+            raise ValueError(f"Expected list from {url}, got {type(page).__name__}: {page}")
         results.extend(page)
         # Follow GitHub's Link: <url>; rel="next" header
         url = None

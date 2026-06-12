@@ -17,10 +17,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # Helpers to import modules under test without triggering side-effects
 # ---------------------------------------------------------------------------
+
 
 def _set_env_defaults():
     """Set required env vars so module-level code in config/main doesn't blow up."""
@@ -35,11 +35,13 @@ _set_env_defaults()
 # 1. repo.sandbox()
 # ---------------------------------------------------------------------------
 
+
 class TestSandbox:
     """repo.sandbox() — path containment and symlink traversal checks."""
 
     def setup_method(self):
         import apeiron_flow.repo as repo
+
         self.repo = repo
 
     def _use_worktree(self, tmp_path: str):
@@ -77,6 +79,7 @@ class TestSandbox:
 # 2. github_http.safe_login()
 # ---------------------------------------------------------------------------
 
+
 class TestSafeLogin:
     """github_http.safe_login() — null-safe extraction of user.login.
 
@@ -86,6 +89,7 @@ class TestSafeLogin:
 
     def setup_method(self):
         from apeiron_flow.github_http import safe_login
+
         self.safe_login = safe_login
 
     def test_none_input_returns_empty_string(self):
@@ -110,6 +114,7 @@ class TestSafeLogin:
 # ---------------------------------------------------------------------------
 # 3. _cleanup_stale_issue_worktrees()
 # ---------------------------------------------------------------------------
+
 
 class TestCleanupStaleIssueWorktrees:
     """_cleanup_stale_issue_worktrees() — mock filesystem + gh CLI.
@@ -248,6 +253,7 @@ class TestCleanupStaleIssueWorktrees:
 # 4. _classify_pr_state()
 # ---------------------------------------------------------------------------
 
+
 class TestClassifyPrState:
     """_classify_pr_state() state machine — mock _gh_get_all (no live API)."""
 
@@ -348,11 +354,13 @@ class TestClassifyPrState:
 # 5. _fetch_issue()
 # ---------------------------------------------------------------------------
 
+
 class TestFetchIssue:
     """_fetch_issue() — REPO_PATH guard and body truncation."""
 
     def test_repo_path_unset_raises_runtime_error(self):
         import apeiron_flow.main as main
+
         with (
             patch.dict("os.environ", {}, clear=True),
             patch.object(main, "REPO_PATH", ""),
@@ -361,8 +369,9 @@ class TestFetchIssue:
                 main._fetch_issue(1)
 
     def test_body_over_4000_chars_is_truncated(self):
-        import apeiron_flow.main as main
         import json as _json
+
+        import apeiron_flow.main as main
 
         long_body = "x" * 5000
         issue_data = {
