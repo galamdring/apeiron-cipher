@@ -108,10 +108,7 @@ class TestSafeLogin:
     def test_user_dict_with_valid_login_returns_login(self):
         # Caller does safe_login(obj.get('user')) where obj = {'user': {'login': 'bot[bot]'}}
         # So safe_login receives {'login': 'apeiron-cipher-manager[bot]'}
-        assert (
-            self.safe_login({"login": "apeiron-cipher-manager[bot]"})
-            == "apeiron-cipher-manager[bot]"
-        )
+        assert self.safe_login({"login": "apeiron-cipher-manager[bot]"}) == "apeiron-cipher-manager[bot]"
 
 
 # ---------------------------------------------------------------------------
@@ -236,9 +233,7 @@ class TestCleanupStaleIssueWorktrees:
             unpushed_commits="abc1234 wip: first pass\n",  # has commits
             tmp_path=tmp_path,
         )
-        assert len(remove_calls) == 0, (
-            "Worktree with unpushed commits must not be removed"
-        )
+        assert len(remove_calls) == 0, "Worktree with unpushed commits must not be removed"
 
     def test_recent_mtime_is_kept(self, tmp_path):
         """Worktree modified recently → keep regardless of commit state."""
@@ -294,9 +289,7 @@ class TestClassifyPrState:
         # inside the function body, so we patch the source module attribute.
         with (
             patch("apeiron_flow.github_http._gh_get_all", side_effect=fake_gh_get_all),
-            patch(
-                "apeiron_flow.main.SQLiteFlowPersistence", return_value=fake_persistence
-            ),
+            patch("apeiron_flow.main.SQLiteFlowPersistence", return_value=fake_persistence),
             patch.object(main, "BOT_LOGIN", self.BOT_LOGIN),
             patch.object(main, "BOT_HANDLE", self.BOT_HANDLE),
         ):
@@ -333,9 +326,7 @@ class TestClassifyPrState:
 
     def test_bot_review_unreplied_mention_returns_pending_response(self):
         """Bot reviewed; @automation mention by a human has no bot reply → 'pending_response'."""
-        mention = self._user_comment(
-            1, "Can you fix the test? @automation please look at it"
-        )
+        mention = self._user_comment(1, "Can you fix the test? @automation please look at it")
         state, pending = self._run(
             reviews=[self._bot_review()],
             comments=[mention],
@@ -347,9 +338,7 @@ class TestClassifyPrState:
 
     def test_bot_review_all_mentions_replied_returns_up_to_date(self):
         """Bot reviewed; every @automation mention has a reply-tracking tag → 'up_to_date'."""
-        mention = self._user_comment(
-            1, "Can you fix the test? @automation please look at it"
-        )
+        mention = self._user_comment(1, "Can you fix the test? @automation please look at it")
         # Bot reply contains the tracking tag for comment 1
         bot_reply = self._bot_comment(2, "Done! <!-- automation-replied-to: 1 -->")
         state, pending = self._run(
@@ -403,8 +392,6 @@ class TestFetchIssue:
         ):
             result = main._fetch_issue(1)
 
-        assert len(result["body"]) <= 4000 + len(
-            "\n\n[body truncated — see GitHub for full text]"
-        )
+        assert len(result["body"]) <= 4000 + len("\n\n[body truncated — see GitHub for full text]")
         assert result["body"].startswith("x" * 4000)
         assert "truncated" in result["body"]

@@ -1,0 +1,31 @@
+triage_issue:
+  description: >
+    Triage GitHub issue #{issue_number}.
+
+    Steps:
+    1. Fetch the issue details using get_issue_details.
+    2. Read the body carefully. Determine whether it is an Epic or a Story.
+    3. If body is ambiguous or missing scope, post a clarifying comment using
+       post_issue_comment and STOP. Do not transition the label.
+    4. If it is a Story that is already atomic (single PR), transition it directly
+       to status:todo using set_status_label and return a TriageResult with
+       classification="story_atomic", child_issues=[].
+    5. If it is a Story with distinct implementation phases, create 2–4 child issues
+       (status:todo) with clear titles and acceptance criteria in the body. Then
+       transition the parent to status:todo.
+    6. If it is an Epic, create at least 2 child Story issues (status:todo) that
+       cover the full scope described in the Epic body. Each Story must have:
+         - A title starting with "Story: "
+         - Acceptance criteria in the body
+         - A "<!-- child of #{issue_number} -->" reference at the end of the body
+       Transition the Epic itself to status:todo after all children are created.
+    7. Return a TriageResult with the classification and a list of created child
+       issue numbers.
+
+  expected_output: >
+    A TriageResult JSON object with:
+      classification: one of "epic", "story_decomposed", "story_atomic", "blocked_ambiguous"
+      child_issues: list of created child issue numbers (integers); empty for story_atomic
+                    or blocked_ambiguous
+      comment: human-readable summary of what was done or what question was asked
+  agent: issue_analyst

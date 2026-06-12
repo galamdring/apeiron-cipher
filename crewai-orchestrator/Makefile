@@ -28,15 +28,9 @@ PIP       := $(PYTHON) -m pip
 RUFF      := $(VENV)/bin/ruff
 PYTEST    := $(VENV)/bin/pytest
 
-# Modules that are lint-clean. Extend this list as each module is brought up to standard.
-LINT_TARGETS := \
-  $(SRC)/apeiron_flow/__init__.py \
-  $(SRC)/apeiron_flow/github_http.py \
-  $(TESTS)/
+.PHONY: o-check lint fmt check install
 
-.PHONY: o-check check lint fmt install
-
-# Default target — full gate
+# Default target
 o-check: lint check
 
 install:
@@ -44,13 +38,38 @@ install:
 
 lint:
 	@echo "==> ruff check"
-	$(RUFF) check $(LINT_TARGETS) --select E,F,W,I --ignore E501
+	$(RUFF) check \
+	  $(SRC)/apeiron_flow/__init__.py \
+	  $(SRC)/apeiron_flow/github_http.py \
+	  $(SRC)/apeiron_flow/config.py \
+	  $(SRC)/apeiron_flow/labels.py \
+	  $(SRC)/apeiron_flow/main.py \
+	  $(SRC)/apeiron_flow/tools/triage_tools.py \
+	  $(SRC)/apeiron_flow/crews/triage_crew/ \
+	  $(TESTS)/ \
+	  --select E,F,W,I --ignore E501
 	@echo "==> ruff format check"
-	$(RUFF) format --check $(LINT_TARGETS)
+	$(RUFF) format --check \
+	  $(SRC)/apeiron_flow/__init__.py \
+	  $(SRC)/apeiron_flow/github_http.py \
+	  $(SRC)/apeiron_flow/config.py \
+	  $(SRC)/apeiron_flow/labels.py \
+	  $(SRC)/apeiron_flow/main.py \
+	  $(SRC)/apeiron_flow/tools/triage_tools.py \
+	  $(SRC)/apeiron_flow/crews/triage_crew/ \
+	  $(TESTS)/
 
 fmt:
 	@echo "==> ruff format"
-	$(RUFF) format $(LINT_TARGETS)
+	$(RUFF) format \
+	  $(SRC)/apeiron_flow/__init__.py \
+	  $(SRC)/apeiron_flow/github_http.py \
+	  $(SRC)/apeiron_flow/config.py \
+	  $(SRC)/apeiron_flow/labels.py \
+	  $(SRC)/apeiron_flow/main.py \
+	  $(SRC)/apeiron_flow/tools/triage_tools.py \
+	  $(SRC)/apeiron_flow/crews/triage_crew/ \
+	  $(TESTS)/
 
 check:
 	@echo "==> pytest"
