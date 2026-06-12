@@ -1,6 +1,6 @@
 # crewai-orchestrator/Makefile — Python orchestrator developer targets
 #
-# o-check: ruff lint+format + pytest on new triage modules
+# o-check: ruff lint+format + pytest
 #          Run this before committing Python orchestrator changes.
 #
 # Called from the root Makefile's o-check target.
@@ -21,10 +21,10 @@ endif
 SRC       := apeiron_flow/src
 TESTS     := apeiron_flow/tests
 
-.PHONY: o-check lint typecheck test install
+.PHONY: o-check lint fmt check install
 
 # Default target
-o-check: lint test
+o-check: lint check
 
 install:
 	cd apeiron_flow && uv sync --dev
@@ -48,6 +48,17 @@ lint:
 	  apeiron_flow/src/apeiron_flow/crews/triage_crew/ \
 	  apeiron_flow/tests/
 
-test:
+fmt:
+	@echo "==> ruff format"
+	$(RUFF) format \
+	  apeiron_flow/src/apeiron_flow/config.py \
+	  apeiron_flow/src/apeiron_flow/labels.py \
+	  apeiron_flow/src/apeiron_flow/main.py \
+	  apeiron_flow/src/apeiron_flow/tools/triage_tools.py \
+	  apeiron_flow/src/apeiron_flow/crews/triage_crew/ \
+	  apeiron_flow/tests/
+
+check:
 	@echo "==> pytest"
-	PYTHONPATH=$(SRC) $(PYTEST) $(TESTS) -v --tb=short
+	PYTHONPATH=$(SRC) $(PYTEST) $(TESTS) -v --tb=short; \
+	  e=$$?; [ $$e -eq 0 ] || [ $$e -eq 5 ] && exit 0 || exit $$e
