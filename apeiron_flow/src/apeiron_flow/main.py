@@ -463,7 +463,9 @@ class ApeironFlow(Flow[IssueState]):
                     f"Transitioning issue #{self.state.issue_number} to status:blocked."
                 )
                 try:
-                    _labels.transition(self.state.issue_number, from_label=_labels.STATUS_IN_PROGRESS, to_label=_labels.STATUS_BLOCKED)
+                    _labels.transition(
+                        self.state.issue_number, from_label=_labels.STATUS_IN_PROGRESS, to_label=_labels.STATUS_BLOCKED
+                    )
                 except Exception as label_err:
                     print(f"[WARN] Could not transition label: {label_err}")
                 error_body = (
@@ -539,7 +541,9 @@ class ApeironFlow(Flow[IssueState]):
         print("=" * 60)
         print(self.state.blocker or self.state.result)
         try:
-            _labels.transition(self.state.issue_number, from_label=_labels.STATUS_IN_PROGRESS, to_label=_labels.STATUS_BLOCKED)
+            _labels.transition(
+                self.state.issue_number, from_label=_labels.STATUS_IN_PROGRESS, to_label=_labels.STATUS_BLOCKED
+            )
         except Exception as label_err:
             print(f"[WARN] Could not transition label to blocked: {label_err}")
 
@@ -1134,7 +1138,9 @@ class TriageFlow(Flow[TriageState]):
         # and did NOT classify the issue — label must stay as status:triage).
         if result.classification != "blocked_ambiguous":
             try:
-                _labels.transition(self.state.issue_number, from_label=_labels.STATUS_TRIAGE, to_label=_labels.STATUS_TODO)
+                _labels.transition(
+                    self.state.issue_number, from_label=_labels.STATUS_TRIAGE, to_label=_labels.STATUS_TODO
+                )
                 print(f"[TriageFlow] Transitioned #{self.state.issue_number} to {_labels.STATUS_TODO}")
             except Exception as label_err:
                 print(f"[WARN] Could not transition label for #{self.state.issue_number}: {label_err}")

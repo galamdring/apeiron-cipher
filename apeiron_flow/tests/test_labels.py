@@ -27,15 +27,18 @@ os.environ.setdefault("RESPOND_DB", "/tmp/test_respond_sessions.db")
 # Import helpers
 # ---------------------------------------------------------------------------
 
+
 def _import_labels():
     """Import the labels module, isolating it from the test namespace."""
     import apeiron_flow.labels as labels
+
     return labels
 
 
 # ---------------------------------------------------------------------------
 # 1. Constants
 # ---------------------------------------------------------------------------
+
 
 class TestConstants:
     """Status label constants must match the ADR 002 spec exactly."""
@@ -88,6 +91,7 @@ class TestConstants:
 # 2. LabelTransitionError
 # ---------------------------------------------------------------------------
 
+
 class TestLabelTransitionError:
     def setup_method(self):
         self.labels = _import_labels()
@@ -121,6 +125,7 @@ class TestLabelTransitionError:
 # Shared mock factory
 # ---------------------------------------------------------------------------
 
+
 def _make_label_response(names: list[str]) -> list[dict]:
     """Build the list GitHub returns from GET /issues/{n}/labels."""
     return [{"name": n, "color": "ff0000", "description": ""} for n in names]
@@ -129,6 +134,7 @@ def _make_label_response(names: list[str]) -> list[dict]:
 # ---------------------------------------------------------------------------
 # 3. get_status()
 # ---------------------------------------------------------------------------
+
 
 class TestGetStatus:
     def setup_method(self):
@@ -154,14 +160,13 @@ class TestGetStatus:
 
     @patch("apeiron_flow.labels._gh_get")
     def test_raises_on_multiple_status_labels(self, mock_get):
-        mock_get.return_value = _make_label_response(
-            ["status:in-progress", "status:review"]
-        )
+        mock_get.return_value = _make_label_response(["status:in-progress", "status:review"])
         with pytest.raises(self.labels.LabelTransitionError, match="multiple status"):
             self.labels.get_status(42)
 
     def test_calls_correct_api_path(self):
         import apeiron_flow.config as cfg
+
         owner, repo = cfg.REPO.split("/")
         with patch("apeiron_flow.labels._gh_get") as mock_get:
             mock_get.return_value = _make_label_response(["status:todo"])
@@ -173,6 +178,7 @@ class TestGetStatus:
 # 4. transition()
 # ---------------------------------------------------------------------------
 
+
 class TestTransition:
     def setup_method(self):
         self.labels = _import_labels()
@@ -182,6 +188,7 @@ class TestTransition:
     def test_happy_path_adds_then_removes(self, mock_get, mock_post):
         """to_label added first, from_label removed second."""
         import apeiron_flow.config as cfg
+
         owner, repo = cfg.REPO.split("/")
 
         mock_get.return_value = _make_label_response(["status:triage", "priority:low"])
@@ -195,9 +202,7 @@ class TestTransition:
                 {"labels": ["status:todo"]},
             )
             # Remove was called after add
-            mock_delete.assert_called_once_with(
-                f"/repos/{owner}/{repo}/issues/42/labels/status:triage"
-            )
+            mock_delete.assert_called_once_with(f"/repos/{owner}/{repo}/issues/42/labels/status:triage")
 
     @patch("apeiron_flow.labels._gh_post")
     @patch("apeiron_flow.labels._gh_get")
@@ -249,9 +254,7 @@ class TestTransition:
     @patch("apeiron_flow.labels._gh_get")
     def test_non_status_labels_are_not_removed(self, mock_get, mock_post):
         """Only from_label should be removed — other labels on the issue are untouched."""
-        mock_get.return_value = _make_label_response(
-            ["status:ready", "priority:high", "story"]
-        )
+        mock_get.return_value = _make_label_response(["status:ready", "priority:high", "story"])
 
         deleted_paths = []
         with patch("apeiron_flow.labels._gh_delete", side_effect=lambda p: deleted_paths.append(p)):
@@ -266,6 +269,7 @@ class TestTransition:
 # 5. retire_in_review()
 # ---------------------------------------------------------------------------
 
+
 class TestRetireInReview:
     def setup_method(self):
         self.labels = _import_labels()
@@ -275,6 +279,7 @@ class TestRetireInReview:
     def test_migrates_in_review_to_review(self, mock_get, mock_post):
         """status:in-review -> status:review when the label is present."""
         import apeiron_flow.config as cfg
+
         owner, repo = cfg.REPO.split("/")
 
         mock_get.return_value = _make_label_response(["status:in-review", "priority:low"])
@@ -288,9 +293,7 @@ class TestRetireInReview:
                 {"labels": ["status:review"]},
             )
             # remove status:in-review
-            mock_delete.assert_called_once_with(
-                f"/repos/{owner}/{repo}/issues/55/labels/status:in-review"
-            )
+            mock_delete.assert_called_once_with(f"/repos/{owner}/{repo}/issues/55/labels/status:in-review")
 
     @patch("apeiron_flow.labels._gh_post")
     @patch("apeiron_flow.labels._gh_get")
@@ -308,9 +311,11 @@ class TestRetireInReview:
 # 6. _get_issue_labels() edge cases
 # ---------------------------------------------------------------------------
 
+
 class TestGetIssueLabels:
     def setup_method(self):
         import apeiron_flow.labels as labels
+
         self.labels = labels
         self._get_issue_labels = labels._get_issue_labels
 

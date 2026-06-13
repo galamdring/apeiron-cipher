@@ -234,7 +234,9 @@ def test_report_blocker_transitions_to_blocked(mock_labels):
     state.blocker = "some blocker"
     flow = _build_flow(state)
     flow.report_blocker()
-    mock_labels.transition.assert_called_once_with(42, from_label=mock_labels.STATUS_IN_PROGRESS, to_label=mock_labels.STATUS_BLOCKED)
+    mock_labels.transition.assert_called_once_with(
+        42, from_label=mock_labels.STATUS_IN_PROGRESS, to_label=mock_labels.STATUS_BLOCKED
+    )
 
 
 @patch("apeiron_flow.main._labels")

@@ -128,9 +128,7 @@ def _remove_label(issue_number: int, label: str) -> None:
     import requests as _requests  # local import — only for the 404 check
 
     try:
-        _gh_delete(
-            f"/repos/{REPO_OWNER}/{REPO_NAME}/issues/{issue_number}/labels/{label}"
-        )
+        _gh_delete(f"/repos/{REPO_OWNER}/{REPO_NAME}/issues/{issue_number}/labels/{label}")
     except _requests.HTTPError as exc:
         if exc.response is not None and exc.response.status_code == 404:
             # Label was already absent — treat as success

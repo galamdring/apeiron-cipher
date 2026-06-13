@@ -323,7 +323,9 @@ def test_implement_blocks_after_max_retries(
     # check called MAX_CHECK_RETRIES times
     assert mock_check.call_count == MAX_CHECK_RETRIES
     # label transition to blocked
-    mock_labels.transition.assert_called_once_with(state.issue_number, from_label=mock_labels.STATUS_IN_PROGRESS, to_label=mock_labels.STATUS_BLOCKED)
+    mock_labels.transition.assert_called_once_with(
+        state.issue_number, from_label=mock_labels.STATUS_IN_PROGRESS, to_label=mock_labels.STATUS_BLOCKED
+    )
     # blocker comment posted
     mock_post_comment.assert_called_once()
     comment_body = mock_post_comment.call_args[0][1]
