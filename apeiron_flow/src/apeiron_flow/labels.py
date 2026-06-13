@@ -31,7 +31,14 @@ LABEL_REVIEW = "status:review"
 LABEL_DONE = "status:done"
 LABEL_BLOCKED = "status:blocked"
 
-# All status labels — used to remove any stale status before adding the new one
+# Retired label — replaced by status:agent-review and status:review per ADR 002.
+# Kept here as a constant so retire_in_review() and tests can reference it without
+# magic strings.
+LABEL_IN_REVIEW = "status:in-review"
+
+# All status labels — used to remove any stale status before adding the new one.
+# Does NOT include LABEL_IN_REVIEW because that label is being retired; it will
+# be cleaned up explicitly by retire_in_review() rather than through transition().
 ALL_STATUS_LABELS: frozenset[str] = frozenset(
     {
         LABEL_TRIAGE,
@@ -157,3 +164,44 @@ def _remove_label(issue_number: int, label: str) -> None:
     )
     if result.returncode != 0:
         raise RuntimeError(f"Failed to remove label {label!r} from issue #{issue_number}: {result.stderr.strip()}")
+
+
+# ---------------------------------------------------------------------------
+# One-time migration helper (ADR 002)
+# ---------------------------------------------------------------------------
+
+
+def retire_in_review(issue_number: int, has_pr: bool, agent_review_posted: bool = False) -> str:
+    """Migrate a single status:in-review issue to the correct new label per ADR 002.
+
+    Decision table:
+      - No open PR              → status:in-progress
+      - PR open, no agent review posted yet → status:agent-review
+      - PR open, agent review posted, awaiting human → status:review
+
+    Removes status:in-review and applies the chosen target label via transition().
+    Returns the target label that was applied.
+
+    Args:
+        issue_number:         GitHub issue number.
+        has_pr:               True if the issue has an open PR.
+        agent_review_posted:  True if the review crew has already posted a structured
+                              review on the PR. Only meaningful when has_pr=True.
+    """
+    if not has_pr:
+        target = LABEL_IN_PROGRESS
+    elif not agent_review_posted:
+        target = LABEL_AGENT_REVIEW
+    else:
+        target = LABEL_REVIEW
+
+    # Remove the retired label first, then apply the new state via transition().
+    # We bypass the from_label check in transition() because LABEL_IN_REVIEW is not
+    # in the transition table (it is being retired, not a valid from-state).
+    _remove_label(issue_number, LABEL_IN_REVIEW)
+
+    # Apply target without a from_label check — the issue just had its status
+    # cleared, so we add the target directly.
+    _add_label(issue_number, target)
+
+    return target
