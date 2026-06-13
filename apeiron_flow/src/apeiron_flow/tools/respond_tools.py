@@ -20,15 +20,14 @@ import apeiron_flow.repo as repo
 from apeiron_flow.config import REPO, REPO_PATH, WORKTREE_BASE
 from apeiron_flow.github_http import _gh_get, _gh_get_all, _gh_post, safe_login  # noqa: F401
 from apeiron_flow.tools.dev_tools import (
-    patch_file_tool,
     patch_file_global_tool,
+    patch_file_tool,
     read_file_tool,
     run_shell,
     search_files_tool,
     summarize_file_tool,
     write_file_tool,
 )
-
 
 # ---------------------------------------------------------------------------
 # Read tools
@@ -80,7 +79,7 @@ def get_pr_review_comments(pr_number: int) -> str:
 def get_issue_details(issue_number: int) -> str:
     """Fetch the title, body, labels, and state of a GitHub issue."""
     issue = _gh_get(f"/repos/{REPO}/issues/{issue_number}")
-    labels = ", ".join(l["name"] for l in issue.get("labels", []))
+    labels = ", ".join(lbl["name"] for lbl in issue.get("labels", []))
     return (
         f"Issue #{issue_number}: {issue['title']}\n"
         f"State: {issue['state']}\n"

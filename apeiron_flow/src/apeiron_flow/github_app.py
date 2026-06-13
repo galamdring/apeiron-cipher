@@ -23,7 +23,7 @@ import time
 import jwt
 import requests
 
-from apeiron_flow.config import REPO, REPO_OWNER, REPO_NAME  # noqa: F401
+from apeiron_flow.config import REPO, REPO_NAME, REPO_OWNER  # noqa: F401
 
 
 def _load_private_key() -> str:

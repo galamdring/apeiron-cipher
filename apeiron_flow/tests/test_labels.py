@@ -15,8 +15,9 @@ Coverage
 """
 
 import os
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 os.environ.setdefault("APEIRON_REPO_PATH", "/tmp/fake-repo")
 os.environ.setdefault("RESPOND_DB", "/tmp/test_respond_sessions.db")

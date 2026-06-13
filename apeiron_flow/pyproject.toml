@@ -15,6 +15,9 @@ dependencies = [
 apeiron_flow = "apeiron_flow.main:kickoff"
 plot = "apeiron_flow.main:plot"
 
+[project.optional-dependencies]
+dev = ["pytest>=9", "ruff>=0.15"]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

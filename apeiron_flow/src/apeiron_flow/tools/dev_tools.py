@@ -123,7 +123,7 @@ def read_file_tool(path: str, start_line: int = 1, end_line: int = 0) -> str:
         if end_line == 0:
             end_line = len(lines)
         chunk = lines[start_line - 1:end_line]
-        return "".join(f"{start_line + i:>5} | {l}" for i, l in enumerate(chunk))
+        return "".join(f"{start_line + i:>5} | {line}" for i, line in enumerate(chunk))
     except ValueError as e:
         return f"Access denied: {e}"
     except Exception as e:
