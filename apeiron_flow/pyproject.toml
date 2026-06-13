@@ -11,6 +11,12 @@ dependencies = [
     "requests",
 ]
 
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.4",
+]
+
 [project.scripts]
 apeiron_flow = "apeiron_flow.main:kickoff"
 plot = "apeiron_flow.main:plot"
