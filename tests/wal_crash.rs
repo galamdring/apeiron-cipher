@@ -23,7 +23,6 @@
 //! out via a `#[cfg(unix)]` gate.
 
 use std::io::BufRead;
-use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 

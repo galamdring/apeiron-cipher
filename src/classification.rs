@@ -234,14 +234,6 @@ mod tests {
     use super::*;
     use crate::journal::ObservationCategory;
 
-    /// Build a fully-revealed HashMap for ferrite-like properties.
-    fn ferrite_revealed() -> HashMap<ObservationCategory, f32> {
-        let mut m = HashMap::new();
-        m.insert(ObservationCategory::Weight, 0.78_f32); // density
-        m.insert(ObservationCategory::ThermalBehavior, 0.65_f32); // thermal_resistance
-        m
-    }
-
     fn ferrite_entry() -> ClassificationEntry {
         ClassificationEntry {
             name: "ferrite".into(),
