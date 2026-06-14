@@ -15,7 +15,8 @@ use std::{collections::HashMap, fs};
 use tempfile::TempDir;
 
 use apeiron_cipher::mod_manifest::{
-    InstalledMods, ModInfo, ModLicensing, ModManifest, load_mods_from_dir, topological_sort,
+    InstalledMods, ModInfo, ModIntegrity, ModLicensing, ModManifest, load_mods_from_dir,
+    topological_sort,
 };
 
 // ── Fixtures ─────────────────────────────────────────────────────────────────
@@ -69,6 +70,7 @@ fn manifest(id: &str, deps: &[&str]) -> ModManifest {
             spdx_license: "CC-BY-4.0".to_owned(),
             free_distribution_url: String::new(),
         },
+        integrity: ModIntegrity::default(),
     }
 }
 

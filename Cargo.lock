@@ -226,6 +226,7 @@ dependencies = [
  "petgraph 0.6.5",
  "serde",
  "serde_json",
+ "sha2",
  "strum",
  "tempfile",
  "tokio",

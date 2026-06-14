@@ -50,6 +50,8 @@ use std::{
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 
+use crate::mod_validator::{ModValidator, ValidationResult};
+
 // ── Plugin ───────────────────────────────────────────────────────────────────
 
 /// Bevy plugin — scans the `mods/` directory at `PreStartup`, parses all
@@ -96,6 +98,10 @@ pub type SchemaVersion = u32;
 /// [licensing]
 /// spdx_license          = "CC-BY-4.0"
 /// free_distribution_url = ""
+///
+/// [[integrity.files]]
+/// path   = "assets/materials/iron.toml"
+/// sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 /// ```
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ModManifest {
@@ -108,6 +114,15 @@ pub struct ModManifest {
 
     /// Licensing metadata required for workshop discoverability.
     pub licensing: ModLicensing,
+
+    /// Optional integrity block — lists files whose SHA-256 must match
+    /// the declared hash before the mod may be activated.
+    ///
+    /// Defaults to an empty list when the `[integrity]` section is absent
+    /// from `mod.toml`.  Mods without declared hashes pass checksum
+    /// validation unconditionally.
+    #[serde(default)]
+    pub integrity: ModIntegrity,
 }
 
 /// Core identity and metadata block (`[mod]` table in `mod.toml`).
@@ -161,6 +176,48 @@ pub struct ModLicensing {
     /// deferred to Epic 23.
     #[serde(default)]
     pub free_distribution_url: String,
+}
+
+/// A single file hash entry in the `[[integrity.files]]` array.
+///
+/// ```toml
+/// [[integrity.files]]
+/// path   = "assets/materials/iron.toml"
+/// sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+/// ```
+///
+/// `path` is relative to the mod's root directory (i.e. relative to the
+/// directory that contains `mod.toml`).  The loader verifies each file's
+/// actual SHA-256 against the declared value; a mismatch or missing file is a
+/// hard validation error.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct ModFileHash {
+    /// Path to the file, relative to the mod root directory.
+    pub path: String,
+
+    /// Lowercase hex-encoded SHA-256 digest of the file's raw bytes.
+    pub sha256: String,
+}
+
+/// Integrity block (`[integrity]` table + `[[integrity.files]]` array in `mod.toml`).
+///
+/// Optional at the top level: if the section is absent the file is deserialized
+/// as `ModIntegrity::default()` (no declared hashes, no checksum checks).
+///
+/// ```toml
+/// [integrity]
+/// [[integrity.files]]
+/// path   = "assets/materials/iron.toml"
+/// sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+/// ```
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct ModIntegrity {
+    /// Declared file hashes.  The validator checks each entry against the
+    /// actual file on disk when a `mod_root` path is supplied.
+    ///
+    /// An empty list is valid and means "no checksum verification needed."
+    #[serde(default)]
+    pub files: Vec<ModFileHash>,
 }
 
 // ── Resource ─────────────────────────────────────────────────────────────────
@@ -246,6 +303,11 @@ impl InstalledMods {
     /// If the mod is not installed this is a no-op.  If it was already active
     /// this is also a no-op.  Returns `true` if the mod is active after the
     /// call (whether or not a state change occurred).
+    ///
+    /// This method does **not** re-run the validation pipeline — it is intended
+    /// for runtime toggling of a mod that was already validated at discovery
+    /// time.  To activate a mod and run full validation beforehand, use
+    /// [`InstalledMods::validate_and_activate`].
     pub fn activate(&mut self, id: &str) -> bool {
         if !self.is_installed(id) {
             warn!(mod_id = %id, "activate() called for mod that is not installed — ignored");
@@ -254,6 +316,68 @@ impl InstalledMods {
         self.inactive.remove(id);
         info!(mod_id = %id, "mod activated");
         true
+    }
+
+    /// Runs the full validation pipeline against the named mod, then activates
+    /// it only if validation passes.
+    ///
+    /// # Parameters
+    ///
+    /// - `id`: the mod to validate and activate.
+    /// - `game_version`: the running game version string, e.g. `"0.1.0"`.
+    /// - `mod_root`: optional path to the mod's root directory on disk.
+    ///   Supplying this enables entry-point existence checks (directory +
+    ///   `mod.toml` present, directory name matches `mod.id`).  Pass `None`
+    ///   to skip filesystem checks (e.g. in unit tests).
+    ///
+    /// # Returns
+    ///
+    /// The [`ValidationResult`] from the pipeline.  The mod is activated
+    /// (`inactive` set cleared for this id) only when
+    /// [`ValidationResult::is_valid`] returns `true`.  Warnings are logged
+    /// via `warn!` regardless of validity.  Errors are logged via `error!`.
+    ///
+    /// If the mod is not installed the method returns an error result without
+    /// touching the inactive set.
+    pub fn validate_and_activate(
+        &mut self,
+        id: &str,
+        game_version: &str,
+        mod_root: Option<&Path>,
+    ) -> ValidationResult {
+        let Some(manifest) = self.get(id).cloned() else {
+            let mut result = ValidationResult::default();
+            result
+                .errors
+                .push(crate::mod_validator::ValidationError::new(format!(
+                    "mod `{id}` is not installed"
+                )));
+            warn!(mod_id = %id, "validate_and_activate() called for mod that is not installed");
+            return result;
+        };
+
+        // Build the installed-id slice for dependency resolution.
+        let all_ids: Vec<String> = self.all_mods.iter().map(|m| m.info.id.clone()).collect();
+        let id_refs: Vec<&str> = all_ids.iter().map(String::as_str).collect();
+
+        let validator = ModValidator::new(game_version, &id_refs);
+        let result = validator.validate(&manifest, mod_root);
+
+        // Log warnings regardless of overall validity.
+        for w in &result.warnings {
+            warn!(mod_id = %id, warning = %w.message, "mod validation warning");
+        }
+
+        if result.is_valid() {
+            self.inactive.remove(id);
+            info!(mod_id = %id, "mod validated and activated");
+        } else {
+            for e in &result.errors {
+                error!(mod_id = %id, error = %e.message, "mod validation error — activation blocked");
+            }
+        }
+
+        result
     }
 
     /// Deactivates an active mod.
@@ -578,6 +702,7 @@ mod tests {
                 spdx_license: "CC-BY-4.0".to_owned(),
                 free_distribution_url: String::new(),
             },
+            integrity: ModIntegrity::default(),
         }
     }
 
