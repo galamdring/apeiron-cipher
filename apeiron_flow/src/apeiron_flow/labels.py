@@ -123,17 +123,12 @@ def _remove_label(issue_number: int, label: str) -> None:
 
     GitHub returns 200 with remaining labels on success, and 404 if the
     label was not on the issue. Both are treated as successful removal
-    (idempotent).
+    (idempotent) via _gh_delete(ignore_not_found=True).
     """
-    import requests as _requests  # local import — only for the 404 check
-
-    try:
-        _gh_delete(f"/repos/{REPO_OWNER}/{REPO_NAME}/issues/{issue_number}/labels/{label}")
-    except _requests.HTTPError as exc:
-        if exc.response is not None and exc.response.status_code == 404:
-            # Label was already absent — treat as success
-            return
-        raise
+    _gh_delete(
+        f"/repos/{REPO_OWNER}/{REPO_NAME}/issues/{issue_number}/labels/{label}",
+        ignore_not_found=True,
+    )
 
 
 # ---------------------------------------------------------------------------

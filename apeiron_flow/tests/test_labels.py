@@ -15,7 +15,7 @@ Coverage
 """
 
 import os
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -202,7 +202,9 @@ class TestTransition:
                 {"labels": ["status:todo"]},
             )
             # Remove was called after add
-            mock_delete.assert_called_once_with(f"/repos/{owner}/{repo}/issues/42/labels/status:triage")
+            mock_delete.assert_called_once_with(
+                f"/repos/{owner}/{repo}/issues/42/labels/status:triage", ignore_not_found=True
+            )
 
     @patch("apeiron_flow.labels._gh_post")
     @patch("apeiron_flow.labels._gh_get")
@@ -219,11 +221,9 @@ class TestTransition:
     @patch("apeiron_flow.labels._gh_get")
     def test_raises_label_transition_error_when_remove_fails(self, mock_get, mock_post):
         """Add succeeds, remove fails -> LabelTransitionError naming both labels."""
-        import requests as req
-
         mock_get.return_value = _make_label_response(["status:triage"])
 
-        http_error = req.HTTPError(response=MagicMock(status_code=422))
+        http_error = RuntimeError("422 Unprocessable Entity")
 
         with patch("apeiron_flow.labels._gh_delete", side_effect=http_error):
             with pytest.raises(self.labels.LabelTransitionError) as exc_info:
@@ -257,7 +257,7 @@ class TestTransition:
         mock_get.return_value = _make_label_response(["status:ready", "priority:high", "story"])
 
         deleted_paths = []
-        with patch("apeiron_flow.labels._gh_delete", side_effect=lambda p: deleted_paths.append(p)):
+        with patch("apeiron_flow.labels._gh_delete", side_effect=lambda p, **kw: deleted_paths.append(p)):
             self.labels.transition(10, from_label="status:ready", to_label="status:in-progress")
 
         # Only one delete call — the from_label
@@ -293,7 +293,9 @@ class TestRetireInReview:
                 {"labels": ["status:review"]},
             )
             # remove status:in-review
-            mock_delete.assert_called_once_with(f"/repos/{owner}/{repo}/issues/55/labels/status:in-review")
+            mock_delete.assert_called_once_with(
+                f"/repos/{owner}/{repo}/issues/55/labels/status:in-review", ignore_not_found=True
+            )
 
     @patch("apeiron_flow.labels._gh_post")
     @patch("apeiron_flow.labels._gh_get")
