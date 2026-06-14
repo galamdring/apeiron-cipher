@@ -25,7 +25,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::seed_util::{
     MAT_COLOR_B_CHANNEL, MAT_COLOR_G_CHANNEL, MAT_COLOR_R_CHANNEL, MAT_CONDUCTIVITY_CHANNEL,
-    MAT_DENSITY_CHANNEL, MAT_REACTIVITY_CHANNEL, MAT_THERMAL_RESISTANCE_CHANNEL,
+    MAT_CORROSION_RESISTANCE_CHANNEL, MAT_DENSITY_CHANNEL, MAT_ELASTICITY_CHANNEL,
+    MAT_LUMINOSITY_CHANNEL, MAT_REACTIVITY_CHANNEL, MAT_THERMAL_RESISTANCE_CHANNEL,
     MAT_TOXICITY_CHANNEL, mix_seed,
 };
 use crate::world_generation::PlanetSeed;
@@ -46,7 +47,7 @@ pub const MATERIAL_SURFACE_GAP: f32 = 0.01;
 /// Used as the compile-time array size for [`GameMaterial::property_vector`]
 /// so callers never need a magic number and adding a new property automatically
 /// updates the type.
-pub const PROPERTY_DIM: usize = 5;
+pub const PROPERTY_DIM: usize = 8;
 
 // ── Well-known material seeds ────────────────────────────────────────────
 //
@@ -203,7 +204,14 @@ pub const WELL_KNOWN_MATERIAL_SEEDS: &[(&str, u64)] = &[
 
 impl Plugin for MaterialPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(PreStartup, load_material_catalog);
+        app.init_resource::<crate::contextual_materials::ContextualMaterialConfig>()
+            .add_systems(
+                PreStartup,
+                (
+                    load_material_catalog,
+                    crate::contextual_materials::load_contextual_material_config,
+                ),
+            );
 
         // In debug builds, run a per-frame assertion that no GameMaterial entity
         // has more than one of the three mutually-exclusive location markers:
@@ -330,6 +338,18 @@ pub struct GameMaterial {
     pub conductivity: MaterialProperty,
     /// Degree of toxicity when handled or combined.
     pub toxicity: MaterialProperty,
+    /// Flexibility and cold-weather resilience.
+    ///
+    /// Higher values survive thermal shock better. Biased upward on cold/ice planets.
+    pub elasticity: MaterialProperty,
+    /// Light/radiation emission or storage capacity.
+    ///
+    /// Biased upward in radioactive environments; drives journal luminescence notes.
+    pub luminosity: MaterialProperty,
+    /// Durability under chemical and atmospheric attack.
+    ///
+    /// Biased upward on dense-atmosphere planets.
+    pub corrosion_resistance: MaterialProperty,
 }
 
 impl GameMaterial {
@@ -380,19 +400,20 @@ impl GameMaterial {
         }
     }
 
-    /// Returns the material's measured properties as a normalised 5-dimensional
-    /// vector for cosine-similarity comparison (Story 10.5 — `SimilarTo` edges).
+    /// Returns the material's measured properties as a normalised 8-dimensional
+    /// vector for cosine-similarity comparison (Story 10.5 — `SimilarTo` edges).\
     ///
-    /// Component order: `[density, thermal_resistance, reactivity, conductivity, toxicity]`.
+    /// Component order: `[density, thermal_resistance, reactivity, conductivity, toxicity,
+    /// elasticity, luminosity, corrosion_resistance]`.
     ///
     /// All values are in \[0.0, 1.0\] by construction (clamped at creation time
     /// in [`MaterialProperty::new`]), so the cosine similarity between any two
     /// vectors is always non-negative — no centring or normalisation required.
     ///
-    /// The vector includes ALL five properties regardless of their visibility
+    /// The vector includes ALL eight properties regardless of their visibility
     /// state. This is intentional: the knowledge graph is the simulation layer
     /// and operates on ground-truth data; the player only sees the similarity
-    /// when they have sufficient observation confidence (checked at call site).
+    /// score (not the raw vector) and only after sufficient observation confidence.
     pub fn property_vector(&self) -> [f32; PROPERTY_DIM] {
         [
             self.density.value(),
@@ -400,7 +421,73 @@ impl GameMaterial {
             self.reactivity.value(),
             self.conductivity.value(),
             self.toxicity.value(),
+            self.elasticity.value(),
+            self.luminosity.value(),
+            self.corrosion_resistance.value(),
         ]
+    }
+
+    /// Returns an immutable reference to the named property, or `None` when the
+    /// name is not recognised.
+    ///
+    /// Property names match the struct field names exactly (snake_case). Used by
+    /// the contextual-bias system to apply environmental modifiers without
+    /// hardcoding every possible property name at the call site.
+    pub fn get_property(&self, name: &str) -> Option<f32> {
+        match name {
+            "density" => Some(self.density.value()),
+            "thermal_resistance" => Some(self.thermal_resistance.value()),
+            "reactivity" => Some(self.reactivity.value()),
+            "conductivity" => Some(self.conductivity.value()),
+            "toxicity" => Some(self.toxicity.value()),
+            "elasticity" => Some(self.elasticity.value()),
+            "luminosity" => Some(self.luminosity.value()),
+            "corrosion_resistance" => Some(self.corrosion_resistance.value()),
+            _ => None,
+        }
+    }
+
+    /// Applies a clamped value update to the named property.
+    ///
+    /// Returns `true` when the name was recognised and the update applied,
+    /// `false` when the name is unknown (no-op). Used by [`crate::contextual_materials::apply_bias`]
+    /// to apply per-property environmental modifiers.
+    pub fn set_property(&mut self, name: &str, value: f32) -> bool {
+        match name {
+            "density" => {
+                self.density.set_value(value);
+                true
+            }
+            "thermal_resistance" => {
+                self.thermal_resistance.set_value(value);
+                true
+            }
+            "reactivity" => {
+                self.reactivity.set_value(value);
+                true
+            }
+            "conductivity" => {
+                self.conductivity.set_value(value);
+                true
+            }
+            "toxicity" => {
+                self.toxicity.set_value(value);
+                true
+            }
+            "elasticity" => {
+                self.elasticity.set_value(value);
+                true
+            }
+            "luminosity" => {
+                self.luminosity.set_value(value);
+                true
+            }
+            "corrosion_resistance" => {
+                self.corrosion_resistance.set_value(value);
+                true
+            }
+            _ => false,
+        }
     }
 }
 
@@ -454,6 +541,18 @@ pub fn derive_material_from_seed(seed: u64) -> GameMaterial {
         ),
         toxicity: MaterialProperty::new(
             unit_interval_01(mix_seed(seed, MAT_TOXICITY_CHANNEL)),
+            PropertyVisibility::Hidden,
+        ),
+        elasticity: MaterialProperty::new(
+            unit_interval_01(mix_seed(seed, MAT_ELASTICITY_CHANNEL)),
+            PropertyVisibility::Hidden,
+        ),
+        luminosity: MaterialProperty::new(
+            unit_interval_01(mix_seed(seed, MAT_LUMINOSITY_CHANNEL)),
+            PropertyVisibility::Hidden,
+        ),
+        corrosion_resistance: MaterialProperty::new(
+            unit_interval_01(mix_seed(seed, MAT_CORROSION_RESISTANCE_CHANNEL)),
             PropertyVisibility::Hidden,
         ),
     }
@@ -637,6 +736,9 @@ mod tests {
             reactivity: prop(0.35, PropertyVisibility::Hidden),
             conductivity: prop(0.72, PropertyVisibility::Hidden),
             toxicity: prop(0.05, PropertyVisibility::Hidden),
+            elasticity: prop(0.5, PropertyVisibility::Hidden),
+            luminosity: prop(0.5, PropertyVisibility::Hidden),
+            corrosion_resistance: prop(0.5, PropertyVisibility::Hidden),
         }
     }
 
@@ -724,6 +826,18 @@ visibility = "Hidden"
 
 [toxicity]
 value = 0.1
+visibility = "Hidden"
+
+[elasticity]
+value = 0.5
+visibility = "Hidden"
+
+[luminosity]
+value = 0.5
+visibility = "Hidden"
+
+[corrosion_resistance]
+value = 0.5
 visibility = "Hidden"
 "#;
         let first: GameMaterial = toml::from_str(toml_str).expect("first parse");

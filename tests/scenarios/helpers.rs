@@ -24,6 +24,9 @@ pub fn test_material(name: &str, density: f32, seed: u64) -> GameMaterial {
         reactivity: prop(0.5),
         conductivity: prop(0.5),
         toxicity: prop(0.5),
+        elasticity: prop(0.5),
+        luminosity: prop(0.5),
+        corrosion_resistance: prop(0.5),
     }
 }
 

@@ -5710,7 +5710,7 @@ fn journal_entry_shows_confident_language_after_sufficient_observations() {
     );
 
     // Now test that the journal detail display shows confident language
-    let state = JournalUiState {
+    let _state = JournalUiState {
         visible: true,
         selected_index: 0,
         scroll_offset: 0,

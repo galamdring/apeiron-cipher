@@ -4,12 +4,9 @@
 //! determinism, distribution, and coverage guarantees are checked
 //! automatically on every CI run.
 
-mod scenarios;
-
 use apeiron_cipher::materials::{MaterialCatalog, MaterialSeed, derive_material_from_seed};
 use apeiron_cipher::world_generation::{
-    BiomeRegistry, BiomeType, ChunkCoord, PaletteMaterial, WorldGenerationConfig, WorldProfile,
-    derive_chunk_biome,
+    BiomeRegistry, BiomeType, ChunkCoord, WorldGenerationConfig, WorldProfile, derive_chunk_biome,
 };
 use std::collections::{HashMap, HashSet};
 

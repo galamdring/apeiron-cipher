@@ -927,6 +927,9 @@ mod tests {
             reactivity: MaterialProperty::new(0.35, PropertyVisibility::Hidden),
             conductivity: MaterialProperty::new(0.72, PropertyVisibility::Hidden),
             toxicity: MaterialProperty::new(0.05, PropertyVisibility::Hidden),
+            elasticity: MaterialProperty::new(0.5, PropertyVisibility::Hidden),
+            luminosity: MaterialProperty::new(0.5, PropertyVisibility::Hidden),
+            corrosion_resistance: MaterialProperty::new(0.5, PropertyVisibility::Hidden),
         }
     }
 

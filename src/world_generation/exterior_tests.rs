@@ -809,6 +809,9 @@ fn sample_game_material(name: &str) -> GameMaterial {
         reactivity: MaterialProperty::new(0.5, PropertyVisibility::Observable),
         conductivity: MaterialProperty::new(0.5, PropertyVisibility::Observable),
         toxicity: MaterialProperty::new(0.5, PropertyVisibility::Observable),
+        elasticity: MaterialProperty::new(0.5, PropertyVisibility::Observable),
+        luminosity: MaterialProperty::new(0.5, PropertyVisibility::Observable),
+        corrosion_resistance: MaterialProperty::new(0.5, PropertyVisibility::Observable),
     }
 }
 
@@ -2013,7 +2016,7 @@ fn apply_delta_layers_three_independent_layers_are_commutative() {
     };
 
     let reference = {
-        let mut layers = make_layers();
+        let layers = make_layers();
         // Order [A, B, C]
         apply_delta_layers(PlanetSeed(9999), cell_size, &layers)
     };
@@ -2035,7 +2038,7 @@ fn apply_delta_layers_three_independent_layers_are_commutative() {
 
     for perm in permutations {
         // Build layers fresh for each permutation, then reorder by index.
-        let mut all = make_layers();
+        let all = make_layers();
         let permuted: Vec<WorldDeltaLayer> = perm
             .iter()
             .map(|&i| WorldDeltaLayer {

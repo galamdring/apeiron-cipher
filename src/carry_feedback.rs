@@ -357,7 +357,6 @@ fn lerp(start: f32, end: f32, t: f32) -> f32 {
 mod tests {
     use super::*;
     use bevy::window::CursorGrabMode;
-    use leafwing_input_manager::prelude::*;
 
     #[test]
     fn bob_amplitude_increases_with_encumbrance() {

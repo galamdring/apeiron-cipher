@@ -365,6 +365,7 @@ fn reveal_thermal_property(
 mod tests {
     use super::*;
     use crate::materials::{MaterialProperty, MaterialSeed};
+    use crate::world_generation::PlanetSeed;
 
     fn test_material(seed: u64) -> GameMaterial {
         GameMaterial {
@@ -377,6 +378,9 @@ mod tests {
             reactivity: MaterialProperty::new(0.35, PropertyVisibility::Hidden),
             conductivity: MaterialProperty::new(0.4, PropertyVisibility::Hidden),
             toxicity: MaterialProperty::new(0.05, PropertyVisibility::Hidden),
+            elasticity: MaterialProperty::new(0.5, PropertyVisibility::Hidden),
+            luminosity: MaterialProperty::new(0.5, PropertyVisibility::Hidden),
+            corrosion_resistance: MaterialProperty::new(0.5, PropertyVisibility::Hidden),
         }
     }
 
@@ -587,7 +591,7 @@ mod tests {
     /// observation history.
     #[test]
     fn thermal_observation_records_current_planet_seed_from_world_profile() {
-        use crate::world_generation::{PlanetSeed, WorldGenerationConfig, WorldProfile};
+        use crate::world_generation::{WorldGenerationConfig, WorldProfile};
         use bevy::prelude::Messages;
 
         // Build a `WorldProfile` with an explicit, non-default planet seed
