@@ -56,6 +56,7 @@ use std::path::Path;
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 
+use crate::mod_registry::ModRegistry;
 use crate::player::Player;
 use crate::scene::PositionXZ;
 use crate::seed_util::{
@@ -70,13 +71,16 @@ use crate::solar_system::{
     derive_planet_environment, derive_star_profile,
 };
 
-/// Canonical biome identities.
+/// Canonical biome identities for the base game's built-in biomes.
 ///
-/// Each variant corresponds to a biome definition in `biomes.toml` and
-/// serializes as snake_case strings for TOML/JSON compatibility.
+/// Each variant corresponds to a biome definition in `biomes.toml`.
+/// Mod-added biomes are identified by a plain `String` key in
+/// [`BiomeDefinition`] and [`ChunkBiome`]; this enum is retained for
+/// journal filtering and other code that needs to refer to base-game
+/// biomes by name at compile time.
 ///
-/// Adding a new biome type requires both a new variant here and a corresponding
-/// entry in `biomes.toml` with a matching key.
+/// The enum serializes as snake_case so it round-trips through JSON/TOML
+/// matching the string keys used in the asset files.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BiomeType {
@@ -604,7 +608,8 @@ impl Plugin for WorldGenerationPlugin {
             .init_resource::<BiomeRegistry>()
             .add_systems(
                 PreStartup,
-                (load_world_generation_config, load_biome_registry),
+                (load_world_generation_config, load_biome_registry)
+                    .after(crate::mod_registry::ModScanSet::Scan),
             )
             .add_systems(Startup, resolve_system_derived_profile)
             .add_systems(Update, update_active_chunk_neighborhood);
@@ -1779,8 +1784,11 @@ pub struct BiomeRegistry {
     pub moisture_noise_channel: u64,
     /// Key of the biome used when a chunk's (temperature, moisture) pair does
     /// not fall within any defined biome's range.
+    ///
+    /// Stored as a string so mod-added biome types can be used as the fallback.
+    /// The default is `"mineral_steppe"` (the base-game temperate biome).
     #[serde(default = "default_fallback_biome_type")]
-    pub fallback_biome_type: BiomeType,
+    pub fallback_biome_type: String,
     /// Ordered list of biome definitions. The first matching biome wins when
     /// ranges overlap.
     #[serde(default)]
@@ -1796,8 +1804,8 @@ fn default_temperature_noise_channel() -> u64 {
 fn default_moisture_noise_channel() -> u64 {
     0xB10E_0001_0000_0002
 }
-fn default_fallback_biome_type() -> BiomeType {
-    BiomeType::MineralSteppe
+fn default_fallback_biome_type() -> String {
+    "mineral_steppe".to_string()
 }
 
 /// Reasonable default material palette for the hardcoded neutral fallback biome.
@@ -1883,8 +1891,14 @@ pub struct PaletteMaterial {
 /// moisture ranges contain the chunk's sampled values.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BiomeDefinition {
-    /// Canonical biome type identifying this biome.
-    pub biome_type: BiomeType,
+    /// String key identifying this biome (e.g. `"scorched_flats"`).
+    ///
+    /// Using a `String` instead of the `BiomeType` enum makes `BiomeDefinition`
+    /// extensible by mods: a mod can introduce a new biome type without
+    /// changing the engine enum. Base-game biome types (`"scorched_flats"`,
+    /// `"mineral_steppe"`, `"frost_shelf"`) are valid values; any snake_case
+    /// string is accepted.
+    pub biome_type: String,
     /// Minimum temperature value (0.0–1.0) for this biome's range.
     pub temperature_min: f32,
     /// Maximum temperature value (0.0–1.0) for this biome's range.
@@ -1947,7 +1961,7 @@ fn one_f32() -> f32 {
 fn default_biome_definitions() -> Vec<BiomeDefinition> {
     vec![
         BiomeDefinition {
-            biome_type: BiomeType::ScorchedFlats,
+            biome_type: "scorched_flats".to_string(),
             temperature_min: 0.6,
             temperature_max: 1.0,
             temperature_abs_min_k: Some(350.0),
@@ -1985,7 +1999,7 @@ fn default_biome_definitions() -> Vec<BiomeDefinition> {
             ],
         },
         BiomeDefinition {
-            biome_type: BiomeType::MineralSteppe,
+            biome_type: "mineral_steppe".to_string(),
             temperature_min: 0.3,
             temperature_max: 0.7,
             temperature_abs_min_k: Some(220.0),
@@ -1998,7 +2012,7 @@ fn default_biome_definitions() -> Vec<BiomeDefinition> {
             material_palette: default_fallback_material_palette(),
         },
         BiomeDefinition {
-            biome_type: BiomeType::FrostShelf,
+            biome_type: "frost_shelf".to_string(),
             temperature_min: 0.0,
             temperature_max: 0.4,
             temperature_abs_min_k: Some(50.0),
@@ -2046,8 +2060,13 @@ fn default_biome_definitions() -> Vec<BiomeDefinition> {
 /// Component or Resource.
 #[derive(Clone, Debug)]
 pub struct ChunkBiome {
-    /// The biome type for this chunk.
-    pub biome_type: BiomeType,
+    /// The biome type key for this chunk (e.g. `"scorched_flats"`).
+    ///
+    /// Stored as a `String` so mod-added biome types are representable.
+    /// Base-game code that needs to branch on biome identity compares
+    /// against the `BiomeType` snake_case strings (e.g.
+    /// `chunk_biome.biome_type == "mineral_steppe"`).
+    pub biome_type: String,
     /// RGB ground color for this chunk's ground tile.
     pub ground_color: [f32; 3],
     /// Density modifier applied to the deposit spawn threshold.
@@ -2155,7 +2174,7 @@ pub fn derive_chunk_biome(
         }
 
         return ChunkBiome {
-            biome_type: biome_def.biome_type,
+            biome_type: biome_def.biome_type.clone(),
             ground_color: biome_def.ground_color,
             density_modifier: biome_def.density_modifier,
             deposit_weight_modifiers: biome_def.deposit_weight_modifiers.clone(),
@@ -2170,7 +2189,7 @@ pub fn derive_chunk_biome(
         .find(|b| b.biome_type == registry.fallback_biome_type)
     {
         return ChunkBiome {
-            biome_type: fallback.biome_type,
+            biome_type: fallback.biome_type.clone(),
             ground_color: fallback.ground_color,
             density_modifier: fallback.density_modifier,
             deposit_weight_modifiers: fallback.deposit_weight_modifiers.clone(),
@@ -2182,11 +2201,11 @@ pub fn derive_chunk_biome(
     // This should never happen with a well-formed biomes.toml, but we must
     // not panic in generation code.
     warn!(
-        "Biome fallback type '{:?}' not found in registry; using hardcoded neutral default",
+        "Biome fallback type '{}' not found in registry; using hardcoded neutral default",
         registry.fallback_biome_type
     );
     ChunkBiome {
-        biome_type: registry.fallback_biome_type,
+        biome_type: registry.fallback_biome_type.clone(),
         ground_color: [0.26, 0.3, 0.22],
         density_modifier: 1.0,
         deposit_weight_modifiers: HashMap::new(),
@@ -2194,9 +2213,19 @@ pub fn derive_chunk_biome(
     }
 }
 
+/// Minimal TOML shape for a mod's `assets/config/biomes.toml`.
+///
+/// Mods supply only the `[[biomes]]` array; they cannot override global
+/// registry settings like `fallback_biome_type` or noise channels.
+#[derive(Debug, Deserialize)]
+struct BiomeRegistryModFile {
+    #[serde(default)]
+    biomes: Vec<BiomeDefinition>,
+}
+
 /// Load the biome registry from TOML, falling back to hardcoded defaults.
-fn load_biome_registry(mut commands: Commands) {
-    let registry = if Path::new(BIOME_CONFIG_PATH).exists() {
+fn load_biome_registry(mut commands: Commands, mod_registry: Res<ModRegistry>) {
+    let mut registry = if Path::new(BIOME_CONFIG_PATH).exists() {
         match fs::read_to_string(BIOME_CONFIG_PATH) {
             Ok(contents) => match toml::from_str::<BiomeRegistry>(&contents) {
                 Ok(registry) => {
@@ -2220,6 +2249,43 @@ fn load_biome_registry(mut commands: Commands) {
         warn!("{BIOME_CONFIG_PATH} not found, using defaults");
         BiomeRegistry::default()
     };
+
+    // Merge mod biomes (append — later mods can add new biome types but
+    // cannot override existing ones; a duplicate biome_type key is silently
+    // appended; the first match in order wins at chunk-derivation time).
+    for loaded_mod in mod_registry.mods() {
+        let mod_biome_path = loaded_mod.asset_root().join("config").join("biomes.toml");
+        if !mod_biome_path.exists() {
+            continue;
+        }
+        match fs::read_to_string(&mod_biome_path) {
+            Ok(contents) => match toml::from_str::<BiomeRegistryModFile>(&contents) {
+                Ok(mod_file) => {
+                    info!(
+                        "Mod '{}': merged {} biome(s) from {}",
+                        loaded_mod.id(),
+                        mod_file.biomes.len(),
+                        mod_biome_path.display()
+                    );
+                    registry.biomes.extend(mod_file.biomes);
+                }
+                Err(error) => {
+                    warn!(
+                        "Mod '{}': could not parse {}: {error} — skipping",
+                        loaded_mod.id(),
+                        mod_biome_path.display()
+                    );
+                }
+            },
+            Err(error) => {
+                warn!(
+                    "Mod '{}': could not read {}: {error} — skipping",
+                    loaded_mod.id(),
+                    mod_biome_path.display()
+                );
+            }
+        }
+    }
 
     commands.insert_resource(registry);
 }

@@ -58,6 +58,7 @@ use super::{
 use crate::carry::InCarry;
 use crate::interaction::HeldItem;
 use crate::materials::{GameMaterial, MaterialCatalog, MaterialObject, MaterialSeed};
+use crate::mod_registry::ModRegistry;
 use crate::scene::{ExteriorGroundPatch, PositionXZ, RectXZ};
 use crate::seed_util::lerp;
 
@@ -74,7 +75,10 @@ impl Plugin for ExteriorGenerationPlugin {
             .init_resource::<ChunkRemovalDeltas>()
             .init_resource::<ChunkPlayerAdditions>()
             .init_resource::<PlayerAddedIdCounter>()
-            .add_systems(PreStartup, load_surface_mineral_deposit_catalog)
+            .add_systems(
+                PreStartup,
+                load_surface_mineral_deposit_catalog.after(crate::mod_registry::ModScanSet::Scan),
+            )
             .add_systems(
                 Update,
                 (
@@ -466,8 +470,8 @@ struct PlayerAddedExteriorObject {
     pub player_added_id: u64,
 }
 
-fn load_surface_mineral_deposit_catalog(mut commands: Commands) {
-    let catalog = if Path::new(DEPOSIT_CONFIG_PATH).exists() {
+fn load_surface_mineral_deposit_catalog(mut commands: Commands, mod_registry: Res<ModRegistry>) {
+    let mut catalog = if Path::new(DEPOSIT_CONFIG_PATH).exists() {
         match fs::read_to_string(DEPOSIT_CONFIG_PATH) {
             Ok(contents) => match toml::from_str::<SurfaceMineralDepositCatalog>(&contents) {
                 Ok(catalog) => {
@@ -488,6 +492,58 @@ fn load_surface_mineral_deposit_catalog(mut commands: Commands) {
         warn!("{DEPOSIT_CONFIG_PATH} not found, using defaults");
         SurfaceMineralDepositCatalog::default()
     };
+
+    // Merge mod surface mineral deposits (append semantics — mods add deposit
+    // types; duplicate `key` values are allowed since they're only used for
+    // logging/identity and not as keyed deduplication at generation time).
+    for loaded_mod in mod_registry.mods() {
+        let mod_deposit_path = loaded_mod
+            .asset_root()
+            .join("exterior")
+            .join("surface_mineral_deposits.toml");
+        if !mod_deposit_path.exists() {
+            continue;
+        }
+        match fs::read_to_string(&mod_deposit_path) {
+            Ok(contents) => match toml::from_str::<SurfaceMineralDepositCatalog>(&contents) {
+                Ok(mod_catalog) => {
+                    // Warn on key collisions so mod authors know their deposit
+                    // key duplicates an existing entry.
+                    for dep in &mod_catalog.deposits {
+                        if catalog.deposits.iter().any(|d| d.key == dep.key) {
+                            warn!(
+                                "Mod '{}': deposit key '{}' already exists in base catalog \
+                                 — appending anyway (both will appear with shared weight)",
+                                loaded_mod.id(),
+                                dep.key
+                            );
+                        }
+                    }
+                    info!(
+                        "Mod '{}': merged {} deposit(s) from {}",
+                        loaded_mod.id(),
+                        mod_catalog.deposits.len(),
+                        mod_deposit_path.display()
+                    );
+                    catalog.deposits.extend(mod_catalog.deposits);
+                }
+                Err(error) => {
+                    warn!(
+                        "Mod '{}': could not parse {}: {error} — skipping",
+                        loaded_mod.id(),
+                        mod_deposit_path.display()
+                    );
+                }
+            },
+            Err(error) => {
+                warn!(
+                    "Mod '{}': could not read {}: {error} — skipping",
+                    loaded_mod.id(),
+                    mod_deposit_path.display()
+                );
+            }
+        }
+    }
 
     commands.insert_resource(catalog);
 }

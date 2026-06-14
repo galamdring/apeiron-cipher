@@ -18,12 +18,14 @@ use std::path::Path;
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 
+use crate::mod_registry::ModScanSet;
+
 /// Loads combination rules from TOML config for material pair interactions.
 pub struct CombinationPlugin;
 
 impl Plugin for CombinationPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(PreStartup, load_combination_rules);
+        app.add_systems(PreStartup, load_combination_rules.after(ModScanSet::Scan));
     }
 }
 
