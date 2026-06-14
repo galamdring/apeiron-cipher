@@ -1577,6 +1577,43 @@ mod tests {
         assert_eq!(Confidence::new(1.0).tier(), ConfidenceTier::Confident);
     }
 
+    // ── Confidence::new validation tests (issue #376) ───────────────────
+
+    #[test]
+    fn confidence_new_clamps_negative_to_zero() {
+        assert_eq!(Confidence::new(-0.5).value(), 0.0);
+        assert_eq!(Confidence::new(-1.0).value(), 0.0);
+        assert_eq!(Confidence::new(f32::NEG_INFINITY).value(), 0.0);
+    }
+
+    #[test]
+    fn confidence_new_clamps_above_one_to_one() {
+        assert_eq!(Confidence::new(1.5).value(), 1.0);
+        assert_eq!(Confidence::new(2.0).value(), 1.0);
+        assert_eq!(Confidence::new(f32::INFINITY).value(), 1.0);
+    }
+
+    #[test]
+    fn confidence_new_treats_nan_as_zero() {
+        let c = Confidence::new(f32::NAN);
+        assert_eq!(c.value(), 0.0);
+        // NaN must not produce undefined tier behaviour — it must map to Tentative
+        assert_eq!(c.tier(), ConfidenceTier::Tentative);
+    }
+
+    #[test]
+    fn confidence_new_accepts_valid_range() {
+        assert_eq!(Confidence::new(0.0).value(), 0.0);
+        assert_eq!(Confidence::new(0.5).value(), 0.5);
+        assert_eq!(Confidence::new(1.0).value(), 1.0);
+    }
+
+    #[test]
+    fn confidence_value_accessor_matches_inner() {
+        let c = Confidence::new(0.42);
+        assert!((c.value() - 0.42).abs() < f32::EPSILON);
+    }
+
     #[test]
     fn confidence_accumulate_basic() {
         let mut conf = Confidence::new(0.0);
