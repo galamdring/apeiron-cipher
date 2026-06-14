@@ -31,6 +31,24 @@
 
 pub mod exterior;
 
+/// Schema version for world-generation determinism.
+///
+/// Increment this constant whenever **any** change would alter the output of
+/// the deterministic generation pipeline on an existing seed. This includes:
+///
+/// - Noise parameters (octaves, frequency, amplitude, gain, lacunarity, etc.)
+/// - Biome classification rules or biome weight modifiers
+/// - Derivation order for any seeded value (seeds, channel tags, mix order)
+/// - Threshold or rounding changes in placement or surface logic
+/// - Adding or removing a generation step that touches per-chunk outputs
+///
+/// Worlds saved under a previous version are **not** guaranteed to match after
+/// a version bump. The version is recorded in save data so the game can warn
+/// players before loading an older save with mismatched generation.
+///
+/// Start at 1. Do not reset to 0 or 1 after the first real release.
+pub const GENERATION_VERSION: u32 = 1;
+
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;

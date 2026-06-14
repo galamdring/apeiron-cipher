@@ -26,7 +26,7 @@ use crate::carry::{
 use crate::descriptions::describe_density;
 use crate::fabricator::{ActivateIntent, InputSlot, OutputSlot};
 use crate::input::InputAction;
-use crate::materials::{GameMaterial, MATERIAL_SURFACE_GAP, MaterialObject, MaterialSeed};
+use crate::materials::{GameMaterial, MATERIAL_SURFACE_GAP, MaterialObject};
 use crate::observation::Confidence;
 use crate::player::{Player, PlayerCamera, cursor_is_captured};
 use crate::scene::{PlayerSceneConfig, Surface};
@@ -842,7 +842,7 @@ fn build_examine_text(
 ) -> String {
     // Look up what the player has revealed about this material instance.
     let revealed = graph
-        .lookup_material_by_seed(MaterialSeed(mat.seed))
+        .lookup_material_by_seed(mat.seed)
         .and_then(|idx| graph.node_weight(idx))
         .map(|node| &node.revealed_properties);
 
@@ -895,7 +895,7 @@ fn build_examine_text(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::materials::MaterialProperty;
+    use crate::materials::{MaterialProperty, MaterialSeed};
     use crate::scene::SceneConfig;
 
     /// A flat surface at y=0 for unit tests that don't care about terrain.
@@ -919,7 +919,7 @@ mod tests {
         use crate::materials::PropertyVisibility;
         GameMaterial {
             name: "TestMat".into(),
-            seed: 1,
+            seed: MaterialSeed(1),
             color: [0.5, 0.5, 0.5],
             origin_planet_seed: None,
             density: MaterialProperty::new(0.78, PropertyVisibility::Hidden),
@@ -927,6 +927,9 @@ mod tests {
             reactivity: MaterialProperty::new(0.35, PropertyVisibility::Hidden),
             conductivity: MaterialProperty::new(0.72, PropertyVisibility::Hidden),
             toxicity: MaterialProperty::new(0.05, PropertyVisibility::Hidden),
+            elasticity: MaterialProperty::new(0.5, PropertyVisibility::Hidden),
+            luminosity: MaterialProperty::new(0.5, PropertyVisibility::Hidden),
+            corrosion_resistance: MaterialProperty::new(0.5, PropertyVisibility::Hidden),
         }
     }
 
@@ -981,7 +984,7 @@ mod tests {
     fn examine_text_weight_shown_after_weight_observation() {
         let mat = test_material();
         let vocab = crate::observation::DescriptorVocabulary::default();
-        let graph = graph_with_weight_revealed(mat.seed);
+        let graph = graph_with_weight_revealed(mat.seed.0);
         let text = build_examine_text(&mat, &vocab, &graph);
         assert!(!text.contains("Weight: ???"));
         assert!(text.contains("Weight:"));
@@ -1000,7 +1003,7 @@ mod tests {
     fn examine_text_heat_shown_after_thermal_observation() {
         let mat = test_material();
         let vocab = crate::observation::DescriptorVocabulary::default();
-        let graph = graph_with_thermal_revealed(mat.seed);
+        let graph = graph_with_thermal_revealed(mat.seed.0);
         let text = build_examine_text(&mat, &vocab, &graph);
         let heat_line = text.lines().find(|l| l.contains("Heat response:")).unwrap();
         assert!(!heat_line.contains("???"));

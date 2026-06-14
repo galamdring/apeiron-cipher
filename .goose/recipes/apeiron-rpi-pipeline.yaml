@@ -1,0 +1,334 @@
+version: "1.0.0"
+title: "Apeiron RPI Pipeline"
+description: "Automatically chains research, issue planning, plan review, plan iteration, implementation, and implementation review for an Apeiron Cipher GitHub issue with stop-and-ask escape hatches and clarification answer tracking."
+
+parameters:
+  - key: issue_number
+    input_type: number
+    requirement: required
+    description: "GitHub issue number to run through the RPI pipeline"
+
+  - key: repo
+    input_type: string
+    requirement: optional
+    default: "galamdring/apeiron-cipher"
+    description: "GitHub repository in owner/repo format"
+
+  - key: working_directory
+    input_type: string
+    requirement: optional
+    default: "."
+    description: "Directory to start from when resolving the repository root. Defaults to the current directory."
+
+  - key: research_topic
+    input_type: string
+    requirement: optional
+    default: ""
+    description: "Optional explicit research topic. If empty, derive it from the GitHub issue."
+
+  - key: output_dir
+    input_type: string
+    requirement: optional
+    default: "thoughts/plans"
+    description: "Plan output directory relative to the resolved repository root"
+
+  - key: research_dir
+    input_type: string
+    requirement: optional
+    default: "thoughts/research"
+    description: "Research directory relative to the resolved repository root"
+
+  - key: review_dir
+    input_type: string
+    requirement: optional
+    default: "thoughts/reviews"
+    description: "Review output directory relative to the resolved repository root"
+
+  - key: answer_log_path
+    input_type: string
+    requirement: optional
+    default: ""
+    description: "Optional clarification answer-log path. If empty, use thoughts/clarifications/issue-<issue>-answers.md."
+
+  - key: max_plan_review_iterations
+    input_type: number
+    requirement: optional
+    default: "2"
+    description: "Maximum number of plan-review/rpi-iterate loops before stopping for human review"
+
+  - key: implementation_execution_mode
+    input_type: select
+    requirement: optional
+    default: "all_phases_consecutively"
+    description: "How the implementation wrapper should advance through the approved plan"
+    options:
+      - all_phases_consecutively
+      - next_phase_only
+      - plan_default
+
+  - key: implementation_base_ref
+    input_type: string
+    requirement: optional
+    default: "develop"
+    description: "Git ref used by implementation review as the diff baseline"
+
+  - key: verification_command
+    input_type: string
+    requirement: optional
+    default: "make check"
+    description: "Verification command for implementation review"
+
+  - key: extra_context
+    input_type: string
+    requirement: optional
+    default: ""
+    description: "Any extra issue-specific guidance to include throughout the pipeline"
+
+extensions:
+  - type: platform
+    name: summon
+
+  - type: builtin
+    name: developer
+    timeout: 300
+    bundled: true
+
+instructions: |
+  You are the orchestrator for the Apeiron Cipher RPI pipeline.
+
+  Run this chain for the requested GitHub issue:
+  1. rpi-research
+  2. apeiron-rpi-plan-issue
+  3. apeiron-rpi-plan-review
+  4. rpi-iterate, only if plan review returns PLAN_REVISE
+  5. apeiron-rpi-implementation
+  6. apeiron-rpi-implementation-review
+
+  The pipeline is allowed to automate stage-to-stage handoff only while each stage
+  produces an unambiguous success signal and no human clarification is required.
+
+  Escape-hatch rule:
+  - If any stage asks questions, reports ambiguity, returns a revise/blocking
+    decision that cannot be resolved from the existing issue/plan/research, or
+    encounters a plan/code mismatch, stop the pipeline.
+  - Do not skip the stage. Do not invent missing requirements. Do not proceed on
+    assumptions.
+  - Record the questions and documentation target in the clarification answer log
+    before asking the user.
+
+  GitHub Issues are the source of truth for epics, stories, and requirements.
+  Requirement-level answers must be documented on the GitHub issue before the
+  pipeline continues.
+
+  Architecture-impacting answers have a second required documentation target:
+  update the relevant architecture document(s) under
+  docs/bmad/planning-artifacts/architecture/ before implementation is considered
+  ready. The architecture doc update may cite the GitHub issue for traceability,
+  but the issue comment is not a substitute for updating durable architecture
+  guidance.
+
+prompt: |
+  Run the Apeiron RPI pipeline for GitHub issue #{{ issue_number }} in {{ repo }}.
+
+  Resolve repository root first:
+
+  cd "{{ working_directory }}" && git rev-parse --show-toplevel 2>/dev/null || pwd
+
+  Treat the result as REPO_ROOT. All relative paths below are relative to REPO_ROOT.
+
+  Create these directories if needed:
+  - REPO_ROOT/{{ research_dir }}
+  - REPO_ROOT/{{ output_dir }}
+  - REPO_ROOT/{{ review_dir }}
+  - REPO_ROOT/thoughts/clarifications
+
+  Determine ANSWER_LOG:
+  - If answer_log_path is non-empty, resolve it relative to REPO_ROOT unless it is absolute:
+    {{ answer_log_path }}
+  - Otherwise use:
+    REPO_ROOT/thoughts/clarifications/issue-{{ issue_number }}-answers.md
+
+  If ANSWER_LOG does not exist, create it with this structure:
+
+  # Clarification Answer Log: Issue #{{ issue_number }}
+
+  GitHub issue: {{ repo }}#{{ issue_number }}
+
+  ## Purpose
+
+  This file tracks stop-and-ask questions raised by the automated RPI pipeline,
+  the documentation target for each answer, and whether the answer has been
+  captured in the source of truth before the pipeline resumes.
+
+  ## Documentation Target Rules
+
+  | Answer Type | Required Documentation Target |
+  | --- | --- |
+  | Requirements, acceptance criteria, and scope that do not alter architecture | GitHub issue comment |
+  | Naming, event names, component names, fields, public API choices, plugin-boundary choices, data-flow choices, scheduling choices, determinism policy, or any other architecture-impacting decision | GitHub issue comment plus the relevant document(s) under docs/bmad/planning-artifacts/architecture/. The architecture doc may cite issue #{{ issue_number }} for traceability. |
+  | Plan-execution details or implementation sequencing that do not alter architecture | Implementation plan |
+  | Current-codebase facts found during research | Research document |
+  | Verification results or manual-testing confirmations | Plan checklist or review report |
+  | Code rationale that affects requirements or architecture | GitHub issue or plan first, relevant architecture doc if durable guidance changes, then code comments if useful |
+
+  ## Blocking Questions
+
+  | ID | Stage | Question | Why It Blocks | Expected Documentation Target | Status | Answer Reference |
+  | --- | --- | --- | --- | --- | --- | --- |
+
+  ## Answer History
+
+  If ANSWER_LOG exists, read it fully before running any stage.
+
+  Required preflight:
+  1. Fetch the GitHub issue with comments:
+     gh issue view {{ issue_number }} --repo {{ repo }} --comments
+  2. Load Agents.md from REPO_ROOT.
+  3. Load the required repository guidance docs from Agents.md, including at minimum:
+     - docs/bmad/planning-artifacts/architecture/core-principles.md
+     - docs/bmad/planning-artifacts/architecture/agent-context-routing.md
+     - docs/bmad/planning-artifacts/architecture/implementation-patterns-consistency-rules.md
+     - docs/bmad/project-context.md
+     - docs/bmad/agent-workflow.md
+  4. Inspect git state:
+     - git branch --show-current
+     - git status --short
+  5. If the worktree has unexpected existing source changes that could contaminate implementation, stop and ask before continuing beyond research/planning.
+
+  Pipeline stages:
+
+  ## Stage 1: Research
+
+  Run rpi-research for issue #{{ issue_number }}.
+
+  Research topic:
+  - If research_topic is non-empty, use:
+    {{ research_topic }}
+  - Otherwise derive a concise topic from the GitHub issue title/body and include the issue number.
+
+  The research prompt must instruct rpi-research to:
+  - Research the current codebase facts needed to plan issue #{{ issue_number }}.
+  - Read the GitHub issue and comments first.
+  - Preserve Apeiron's stop-and-ask autonomy rules.
+  - Write the research document under REPO_ROOT/{{ research_dir }}.
+  - Document only what exists today, not proposed changes.
+
+  After rpi-research returns:
+  - Identify the research document path from its output.
+  - If it asks questions or cannot write a research doc, append blocking question rows to ANSWER_LOG and stop.
+
+  ## Stage 2: Plan
+
+  Run apeiron-rpi-plan-issue with:
+  - issue_number: {{ issue_number }}
+  - repo: {{ repo }}
+  - working_directory: REPO_ROOT
+  - output_dir: {{ output_dir }}
+  - extra_context containing:
+    - The research document path from Stage 1.
+    - The answer log path ANSWER_LOG.
+    - Extra context from caller:
+      {{ extra_context }}
+
+  After apeiron-rpi-plan-issue returns:
+  - Identify PLAN_PATH from its output.
+  - If it asks questions or cannot produce exactly one plan path, append blocking question rows to ANSWER_LOG and stop.
+
+  ## Stage 3: Plan Review and Iteration Loop
+
+  Set ITERATION_COUNT to 0.
+
+  Run apeiron-rpi-plan-review with:
+  - issue_number: {{ issue_number }}
+  - repo: {{ repo }}
+  - working_directory: REPO_ROOT
+  - plan_path: PLAN_PATH
+  - research_dir: {{ research_dir }}
+  - output_dir: {{ review_dir }}
+  - extra_context containing:
+    - Research document path from Stage 1.
+    - Answer log path ANSWER_LOG.
+    - Extra context from caller:
+      {{ extra_context }}
+
+  Read the review report.
+
+  If the review decision is PLAN_APPROVED:
+  - Continue to Stage 4.
+
+  If the review decision is PLAN_REVISE:
+  - If Required Revisions contain unresolved questions for the user, append blocking question rows to ANSWER_LOG and stop.
+  - If ITERATION_COUNT is greater than or equal to {{ max_plan_review_iterations }}, append a blocking row saying the plan exceeded the automatic iteration limit and stop.
+  - Otherwise increment ITERATION_COUNT and run rpi-iterate with:
+    - the PLAN_PATH
+    - the plan review report path
+    - instructions to apply only the concrete Required Revisions from the review report
+    - instructions to preserve the issue scope and Apeiron autonomy rules
+    - instructions to record any new human questions in ANSWER_LOG and stop instead of editing around them
+  - After rpi-iterate returns, re-run apeiron-rpi-plan-review on the same PLAN_PATH.
+  - Repeat this loop until PLAN_APPROVED or an escape hatch triggers.
+
+  If the review decision is neither PLAN_APPROVED nor PLAN_REVISE, append a blocking row to ANSWER_LOG and stop.
+
+  ## Stage 4: Implementation
+
+  Run apeiron-rpi-implementation with:
+  - issue_number: {{ issue_number }}
+  - repo: {{ repo }}
+  - working_directory: REPO_ROOT
+  - plan_path: PLAN_PATH
+  - execution_mode: {{ implementation_execution_mode }}
+  - answer_log_path: ANSWER_LOG
+  - extra_context containing:
+    - Research document path from Stage 1.
+    - Approved plan review report path.
+    - Extra context from caller:
+      {{ extra_context }}
+
+  After implementation returns:
+  - If it asks questions, reports a plan/code mismatch, or reports unresolved verification failure, ensure ANSWER_LOG has rows for the blocker and stop.
+  - If it completes, continue to Stage 5.
+
+  ## Stage 5: Implementation Review
+
+  Run apeiron-rpi-implementation-review with:
+  - issue_number: {{ issue_number }}
+  - repo: {{ repo }}
+  - working_directory: REPO_ROOT
+  - plan_path: PLAN_PATH
+  - base_ref: {{ implementation_base_ref }}
+  - research_dir: {{ research_dir }}
+  - output_dir: {{ review_dir }}
+  - verification_command: {{ verification_command }}
+  - extra_context containing:
+    - Research document path from Stage 1.
+    - Answer log path ANSWER_LOG.
+    - Extra context from caller:
+      {{ extra_context }}
+
+  Read the implementation review report.
+
+  If the implementation review decision is SHIP:
+  - Print a final pipeline summary with:
+    - Research document path
+    - Plan path
+    - Plan review report path(s)
+    - Implementation review report path
+    - Verification status
+    - Manual verification still required, if any
+    - Current git status summary
+
+  If the implementation review decision is REVISE:
+  - Stop the pipeline.
+  - Print the required fixes and implementation review report path.
+  - Do not auto-run another implementation pass unless the user explicitly asks.
+
+  Clarification row creation rules:
+  - Use IDs with stage prefixes: R-001, P-001, PR-001, I-001, IR-001.
+  - Include enough context that the answer can be pasted into the GitHub issue or plan without guessing.
+  - Set Status to unanswered until the answer is documented in the expected target.
+  - After the user provides an answer, require documentation in the expected target before resuming.
+  - If an answer changes or clarifies durable architecture guidance, require both:
+    1. a GitHub issue comment capturing the decision, and
+    2. an update to the relevant architecture document(s) under docs/bmad/planning-artifacts/architecture/.
+  - Architecture document updates should include a short reference to issue #{{ issue_number }} when useful for traceability, but the issue is not the durable source for architecture guidance.

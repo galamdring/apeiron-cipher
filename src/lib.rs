@@ -14,6 +14,7 @@ pub mod carry;
 pub mod carry_feedback;
 pub mod classification;
 pub mod combination;
+pub mod contextual_materials;
 pub mod debug_overlay;
 pub mod descriptions;
 pub mod diegetic_ui;
@@ -23,16 +24,20 @@ pub mod input;
 pub mod interaction;
 pub mod journal;
 pub mod knowledge_graph;
+pub mod matchmaking;
 pub mod materials;
 pub mod mod_registry;
+pub mod mod_manifest;
 pub mod naming;
 pub mod observation;
+pub mod persistence;
 pub mod player;
 pub mod scene;
 pub mod seed_util;
 pub mod seeds;
 pub mod solar_system;
 pub mod surface;
+pub mod vehicle;
 pub mod world_generation;
 
 #[cfg(test)]
@@ -50,6 +55,8 @@ pub fn add_game_plugins(app: &mut App) {
         .init_resource::<surface::SurfaceOverrideRegistry>()
         // Player: entity hierarchy with camera, movement, stamina.
         .add_plugins(player::PlayerPlugin)
+        // Camera: offset composition system that sums CameraBobOffset etc. in PostUpdate.
+        .add_plugins(camera::CameraPlugin)
         // Carry: config + player carry state foundation for Epic 4.
         .add_plugins(carry::CarryPlugin)
         // Carry feedback: subtle bob / audio cues driven by current encumbrance.
@@ -84,4 +91,8 @@ pub fn add_game_plugins(app: &mut App) {
         .add_plugins(debug_overlay::DebugOverlayPlugin)
         // Mod registry: discovers valid mod directories and exposes ModRegistry (Epic 23 Story 23.2).
         .add_plugins(mod_registry::ModRegistryPlugin);
+        // Mod loader: scans mods/, parses mod.toml manifests, exposes InstalledMods (Epic 23).
+        .add_plugins(mod_manifest::ModManifestPlugin)
+        // Vehicle: derelict scout rover — board, drive, fuel (Story X.1).
+        .add_plugins(vehicle::VehiclePlugin);
 }

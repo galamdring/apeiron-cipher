@@ -25,6 +25,7 @@ use bevy::audio::{
 use bevy::prelude::*;
 use leafwing_input_manager::prelude::*;
 
+use crate::camera::CameraBobOffset;
 use crate::carry::{CarryConfig, CarryCueConfig, CarryMovementState};
 use crate::input::InputAction;
 use crate::player::{Player, PlayerCamera, PlayerSet, cursor_is_captured};
@@ -134,6 +135,9 @@ fn attach_carry_feedback_state(
 
     commands.entity(player).insert(FootstepCueState::default());
     commands.entity(camera).insert(CameraBobState::default());
+    // Insert the CameraBobOffset component so compose_camera_offsets can pick it up.
+    // Without this, the compositor query finds nothing and bob is lost.
+    commands.entity(camera).insert(CameraBobOffset::default());
 
     // Guard: only spawn the breathing loop if one doesn't already exist.
     // Without this, a second call (e.g. player respawn or hot-reload) would
@@ -157,24 +161,25 @@ fn attach_carry_feedback_state(
 /// camera bounce like an arcade sprint system. The point is to make loaded
 /// movement feel just a little more physical than unloaded movement.
 ///
-/// **NOTE:** This system owns `PlayerCamera::Transform::translation`. No other
-/// system should write to it. When a second camera effect is needed (shake,
-/// recoil, cutscene), migrate to a proper offset composition pattern — see
-/// <https://github.com/galamdring/apeiron-cipher/issues/257>.
+/// This system writes to [`CameraBobOffset`] on the camera entity. It does NOT
+/// touch `Transform::translation` directly — the [`crate::camera::compose_camera_offsets`]
+/// system in `PostUpdate` reads all offset components and applies the sum once.
+/// This keeps multiple camera effects (bob, shake, recoil) from clobbering each other.
 fn update_carry_camera_bob(
     time: Res<Time>,
     config: Res<CarryConfig>,
     carry_movement: Res<CarryMovementState>,
     cursor_options: Single<&bevy::window::CursorOptions>,
     player_query: Query<&ActionState<InputAction>, With<Player>>,
-    mut camera_query: Query<(&mut Transform, &mut CameraBobState), With<PlayerCamera>>,
+    mut camera_query: Query<(&mut CameraBobOffset, &mut CameraBobState), With<PlayerCamera>>,
 ) {
-    let Ok((mut camera_transform, mut bob_state)) = camera_query.single_mut() else {
+    let Ok((mut bob_offset, mut bob_state)) = camera_query.single_mut() else {
         return;
     };
 
     let Ok(action_state) = player_query.single() else {
-        camera_transform.translation = Vec3::ZERO;
+        // No player yet — zero the offset so compose produces no translation.
+        bob_offset.0 = Vec3::ZERO;
         return;
     };
 
@@ -182,8 +187,10 @@ fn update_carry_camera_bob(
 
     if !is_moving {
         bob_state.phase_radians = 0.0;
-        camera_transform.translation = decay_toward_zero(
-            camera_transform.translation,
+        // Decay the offset toward zero rather than snapping it away.
+        // The compositor will write this decayed value to translation.
+        bob_offset.0 = decay_toward_zero(
+            bob_offset.0,
             config.weight_cues.bob_decay_rate,
             time.delta_secs(),
         );
@@ -207,7 +214,7 @@ fn update_carry_camera_bob(
     let vertical = bob_state.phase_radians.sin() * amplitude;
     let forward =
         (bob_state.phase_radians * 2.0).cos() * amplitude * config.weight_cues.bob_forward_ratio;
-    camera_transform.translation = Vec3::new(0.0, vertical, forward);
+    bob_offset.0 = Vec3::new(0.0, vertical, forward);
 }
 
 /// Spawn short synthesized footsteps at a configurable cadence.
@@ -350,7 +357,6 @@ fn lerp(start: f32, end: f32, t: f32) -> f32 {
 mod tests {
     use super::*;
     use bevy::window::CursorGrabMode;
-    use leafwing_input_manager::prelude::*;
 
     #[test]
     fn bob_amplitude_increases_with_encumbrance() {

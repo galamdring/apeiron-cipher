@@ -11,10 +11,10 @@ use apeiron_cipher::carry::{
 use apeiron_cipher::interaction::HeldItem;
 use apeiron_cipher::journal::RecordObservation;
 use apeiron_cipher::materials::{
-    GameMaterial, MaterialObject, MaterialProperty, PropertyVisibility,
+    GameMaterial, MaterialObject, MaterialProperty, MaterialSeed, PropertyVisibility,
 };
 use apeiron_cipher::observation::{ConfidenceConfig, DescriptorVocabulary};
-use apeiron_cipher::player::{Player, PlayerCamera, PlayerPlugin};
+use apeiron_cipher::player::{Player, PlayerCamera};
 use bevy::ecs::message::MessageWriter;
 use bevy::ecs::system::RunSystemOnce;
 use bevy::prelude::*;
@@ -24,7 +24,7 @@ fn test_material(name: &str, density: f32, seed: u64) -> GameMaterial {
     let prop = |v| MaterialProperty::new(v, PropertyVisibility::Observable);
     GameMaterial {
         name: name.into(),
-        seed,
+        seed: MaterialSeed(seed),
         color: [0.5, 0.5, 0.5],
         origin_planet_seed: None,
         density: prop(density),
@@ -32,6 +32,9 @@ fn test_material(name: &str, density: f32, seed: u64) -> GameMaterial {
         reactivity: prop(0.5),
         conductivity: prop(0.5),
         toxicity: prop(0.5),
+        elasticity: prop(0.5),
+        luminosity: prop(0.5),
+        corrosion_resistance: prop(0.5),
     }
 }
 
@@ -259,7 +262,7 @@ fn cycle_with_full_hand_swaps() {
 #[test]
 fn cycle_with_empty_carry_does_nothing() {
     let mut app = setup_carry_test_app();
-    let player_entity = spawn_test_player(&mut app);
+    let _player_entity = spawn_test_player(&mut app);
 
     // Run startup (carry starts empty)
     app.update();
@@ -307,7 +310,7 @@ fn stale_despawned_entity_evicted() {
 #[test]
 fn stash_with_nothing_held_does_nothing() {
     let mut app = setup_carry_test_app();
-    let player_entity = spawn_test_player(&mut app);
+    let _player_entity = spawn_test_player(&mut app);
 
     // Run startup (no held item)
     app.update();
@@ -326,7 +329,7 @@ fn stash_with_nothing_held_does_nothing() {
 #[test]
 fn successful_stash_updates_state_and_components() {
     let mut app = setup_carry_test_app();
-    let player_entity = spawn_test_player(&mut app);
+    let _player_entity = spawn_test_player(&mut app);
 
     // Create a held item
     let camera_entity = get_camera_entity(app.world_mut());

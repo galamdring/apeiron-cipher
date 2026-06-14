@@ -119,6 +119,26 @@ pub enum SeedChannel {
     MaterialColorG = 0xA7E1_0001_0000_0007,
     /// Channel for deriving the blue component of material color from a seed.
     MaterialColorB = 0xA7E1_0001_0000_0008,
+    /// Channel for deriving material elasticity from a seed.
+    ///
+    /// Elasticity governs the material's flexibility and cold-weather resilience.
+    /// Higher elasticity → survives thermal shock better; biased upward on cold/ice planets.
+    MaterialElasticity = 0xA7E1_0001_0000_0009,
+    /// Channel for deriving material luminosity from a seed.
+    ///
+    /// Luminosity governs how much light/radiation the material emits or stores.
+    /// Biased upward in radioactive environments.
+    MaterialLuminosity = 0xA7E1_0001_0000_000A,
+    /// Channel for deriving material corrosion resistance from a seed.
+    ///
+    /// Corrosion resistance governs durability under chemical/atmospheric attack.
+    /// Biased upward on dense-atmosphere planets.
+    MaterialCorrosionResistance = 0xA7E1_0001_0000_000B,
+    /// Base channel for deriving exotic material seeds unique to extreme planets.
+    ///
+    /// The i-th exotic seed for a planet is `mix_seed(planet_seed, ExoticBase as u64 + i)`.
+    /// This channel family is reserved for the contextual material generation system only.
+    ExoticMaterialBase = 0xA7E1_0001_0000_0100,
 
     // ── Planet Environment Channels (prefix 0xE1E7_0001) ───────────────────
     /// Channel for deriving planet surface temperature variation from planet seed.
@@ -127,6 +147,12 @@ pub enum SeedChannel {
     PlanetAtmosphere = 0xE1E7_0001_0000_0002,
     /// Channel for deriving planet surface gravity from planet seed.
     PlanetGravity = 0xE1E7_0001_0000_0003,
+
+    // ── Vehicle Placement Channels (prefix 0xB7E1_C001) ─────────────────────
+    /// Channel for deriving the vehicle's initial X position from the planet seed.
+    VehicleSpawnX = 0xB7E1_C001_0000_0001,
+    /// Channel for deriving the vehicle's initial Z position from the planet seed.
+    VehicleSpawnZ = 0xB7E1_C001_0000_0002,
 }
 
 impl SeedChannel {
@@ -252,6 +278,12 @@ pub const MAT_COLOR_R_CHANNEL: u64 = SeedChannel::MaterialColorR as u64;
 pub const MAT_COLOR_G_CHANNEL: u64 = SeedChannel::MaterialColorG as u64;
 /// Channel for deriving the blue component of material color from a seed.
 pub const MAT_COLOR_B_CHANNEL: u64 = SeedChannel::MaterialColorB as u64;
+/// Channel for deriving material elasticity from a seed.
+pub const MAT_ELASTICITY_CHANNEL: u64 = SeedChannel::MaterialElasticity as u64;
+/// Channel for deriving material luminosity from a seed.
+pub const MAT_LUMINOSITY_CHANNEL: u64 = SeedChannel::MaterialLuminosity as u64;
+/// Channel for deriving material corrosion resistance from a seed.
+pub const MAT_CORROSION_RESISTANCE_CHANNEL: u64 = SeedChannel::MaterialCorrosionResistance as u64;
 
 /// Channel for deriving planet surface temperature variation from planet seed.
 pub const PLANET_TEMP_VARIATION_CHANNEL: u64 = SeedChannel::PlanetTempVariation as u64;

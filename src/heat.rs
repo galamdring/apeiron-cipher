@@ -18,7 +18,7 @@ use bevy::prelude::*;
 
 use crate::descriptions::describe_thermal_observation;
 use crate::journal::{JournalKey, Observation, ObservationCategory};
-use crate::materials::{GameMaterial, MaterialObject, MaterialSeed, PropertyVisibility};
+use crate::materials::{GameMaterial, MaterialObject, PropertyVisibility};
 use crate::observation::Confidence;
 use crate::observation::RecordObservation;
 use crate::scene::{FurnitureConfig, HeatSourceConfig, Workbench};
@@ -267,6 +267,7 @@ fn apply_thermal_reaction(
 fn reveal_thermal_property(
     mut commands: Commands,
     hs_cfg: Res<HeatSourceConfig>,
+    conf_cfg: Res<crate::observation::ConfidenceConfig>,
     mut journal_writer: MessageWriter<RecordObservation>,
     descriptor_vocab: Res<crate::observation::DescriptorVocabulary>,
     mut material_query: Query<
@@ -306,14 +307,14 @@ fn reveal_thermal_property(
                 .entity(entity)
                 .insert(ThermalObservationRecordedThisCycle);
 
-            // Use initial confidence for new observations - the journal system
-            // will handle accumulation automatically for repeated observations
-            let initial_confidence = Confidence::new(0.2);
+            // Use initial confidence from ConfidenceConfig so tuning is centralized
+            // in assets/config/confidence.toml rather than hardcoded here.
+            let initial_confidence = Confidence::new(conf_cfg.initial_observation_confidence);
 
             journal_writer.write(RecordObservation {
-                key: JournalKey::MaterialInstance { seed: mat.seed },
+                key: JournalKey::MaterialInstance { seed: mat.seed.0 },
                 name: mat.name.clone(),
-                material_seed: Some(MaterialSeed(mat.seed)),
+                material_seed: Some(mat.seed),
                 planet_seed: mat.origin_planet_seed,
                 observation: Observation {
                     category: ObservationCategory::ThermalBehavior,
@@ -363,12 +364,13 @@ fn reveal_thermal_property(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::materials::MaterialProperty;
+    use crate::materials::{MaterialProperty, MaterialSeed};
+    use crate::world_generation::PlanetSeed;
 
     fn test_material(seed: u64) -> GameMaterial {
         GameMaterial {
             name: format!("TestMat-{seed}"),
-            seed,
+            seed: MaterialSeed(seed),
             color: [0.5, 0.5, 0.5],
             origin_planet_seed: None,
             density: MaterialProperty::new(0.5, PropertyVisibility::Observable),
@@ -376,6 +378,9 @@ mod tests {
             reactivity: MaterialProperty::new(0.35, PropertyVisibility::Hidden),
             conductivity: MaterialProperty::new(0.4, PropertyVisibility::Hidden),
             toxicity: MaterialProperty::new(0.05, PropertyVisibility::Hidden),
+            elasticity: MaterialProperty::new(0.5, PropertyVisibility::Hidden),
+            luminosity: MaterialProperty::new(0.5, PropertyVisibility::Hidden),
+            corrosion_resistance: MaterialProperty::new(0.5, PropertyVisibility::Hidden),
         }
     }
 
@@ -471,6 +476,7 @@ mod tests {
         let mut app = App::new();
         app.add_message::<RecordObservation>();
         app.insert_resource(HeatSourceConfig::default());
+        app.insert_resource(crate::observation::ConfidenceConfig::default());
         // ConfidenceTracker removed - confidence is now tracked per-observation in journal
         app.insert_resource(crate::observation::DescriptorVocabulary::default());
         app.add_systems(Update, reveal_thermal_property);
@@ -537,6 +543,7 @@ mod tests {
         let mut app = App::new();
         app.add_message::<RecordObservation>();
         app.insert_resource(HeatSourceConfig::default());
+        app.insert_resource(crate::observation::ConfidenceConfig::default());
         // ConfidenceTracker removed - confidence is now tracked per-observation in journal
         app.insert_resource(crate::observation::DescriptorVocabulary::default());
         app.add_systems(Update, reveal_thermal_property);
@@ -584,7 +591,7 @@ mod tests {
     /// observation history.
     #[test]
     fn thermal_observation_records_current_planet_seed_from_world_profile() {
-        use crate::world_generation::{PlanetSeed, WorldGenerationConfig, WorldProfile};
+        use crate::world_generation::{WorldGenerationConfig, WorldProfile};
         use bevy::prelude::Messages;
 
         // Build a `WorldProfile` with an explicit, non-default planet seed
@@ -606,6 +613,7 @@ mod tests {
         let mut app = App::new();
         app.add_message::<RecordObservation>();
         app.insert_resource(HeatSourceConfig::default());
+        app.insert_resource(crate::observation::ConfidenceConfig::default());
         // ConfidenceTracker removed - confidence is now tracked per-observation in journal
         app.insert_resource(crate::observation::DescriptorVocabulary::default());
         app.insert_resource(profile);
@@ -661,6 +669,7 @@ mod tests {
         let mut app = App::new();
         app.add_message::<RecordObservation>();
         app.insert_resource(HeatSourceConfig::default());
+        app.insert_resource(crate::observation::ConfidenceConfig::default());
         // ConfidenceTracker removed - confidence is now tracked per-observation in journal
         app.insert_resource(crate::observation::DescriptorVocabulary::default());
         // Deliberately do *not* insert WorldProfile.

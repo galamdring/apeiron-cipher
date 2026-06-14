@@ -1,4 +1,29 @@
 /target
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Environment / secrets
+.env
+*.pem
+*.key
+
+# Databases
+*.db
+*.db-shm
+*.db-wal
+
+# Editor / OS
 .DS_Store
 Thumbs.db
 *.swp
@@ -9,6 +34,7 @@ infra/n8n/.env
 infra/orchestrator/server
 infra/orchestrator/orchestrator
 infra/orchestrator/worker
+infra/orchestrator/signaling
 infra/orchestrator/coverage-*.out
 infra/orchestrator/coverage-*.txt
 infra/orchestrator/gotest-*.log

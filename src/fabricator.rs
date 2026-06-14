@@ -16,9 +16,9 @@ use bevy::prelude::*;
 use crate::journal::{JournalKey, Observation, ObservationCategory};
 use crate::materials::{
     GameMaterial, MATERIAL_SURFACE_GAP, MaterialCatalog, MaterialObject, MaterialProperty,
-    PropertyVisibility,
+    MaterialSeed, PropertyVisibility,
 };
-use crate::observation::RecordObservation;
+use crate::observation::{ConfidenceConfig, RecordObservation};
 use crate::scene::{FabricatorSceneConfig, FurnitureConfig, Workbench};
 
 /// Registers the fabricator workbench systems for combining materials.
@@ -311,6 +311,7 @@ fn tick_processing(
     mut commands: Commands,
     time: Res<Time>,
     cfg: Res<FabricatorSceneConfig>,
+    confidence_config: Res<ConfidenceConfig>,
     mut journal_writer: MessageWriter<RecordObservation>,
     mut state: ResMut<FabricatorState>,
     mut catalog: ResMut<MaterialCatalog>,
@@ -404,23 +405,22 @@ fn tick_processing(
     );
     journal_writer.write(RecordObservation {
         key: JournalKey::Fabrication {
-            output_seed: output_mat.seed,
+            output_seed: output_mat.seed.0,
         },
         name: output_mat.name.clone(),
         material_seed: None,
         observation: Observation {
             category: ObservationCategory::FabricationResult,
-            confidence: crate::observation::Confidence::new(0.8), // High confidence for fabrication results
+            confidence: crate::observation::Confidence::new(
+                confidence_config.initial_observation_confidence,
+            ), // Configured in confidence.toml
             description,
             recorded_at: 0,
         },
         // Pass input material seeds so the knowledge graph can wire DerivedFrom
         // edges from the output concept to each input material (Story 10.5).
         planet_seed: None,
-        input_seeds: input_mats
-            .iter()
-            .map(|m| crate::materials::MaterialSeed(m.seed))
-            .collect(),
+        input_seeds: input_mats.iter().map(|m| m.seed).collect(),
         context_location: None,
     });
 
@@ -541,7 +541,7 @@ fn combined_material_seed(seed_a: u64, seed_b: u64) -> u64 {
 /// All outputs receive a small deterministic perturbation from the combined
 /// seed so results are reproducible but not perfectly clean averages.
 pub fn property_combine(a: &GameMaterial, b: &GameMaterial) -> GameMaterial {
-    let combined_seed = combined_material_seed(a.seed, b.seed);
+    let combined_seed = combined_material_seed(a.seed.0, b.seed.0);
     let name = crate::naming::compositional_name(&a.name, &b.name);
 
     // ── Density: weighted by each input's density (denser dominates) ──
@@ -577,13 +577,36 @@ pub fn property_combine(a: &GameMaterial, b: &GameMaterial) -> GameMaterial {
     // ── Toxicity: max — contamination is worst-case, not averaged ──
     let toxicity_val = perturb(a.toxicity.value().max(b.toxicity.value()), combined_seed, 4);
 
+    // ── Elasticity: averaged — flexibility blends between both materials ──
+    let elasticity_val = perturb(
+        (a.elasticity.value() + b.elasticity.value()) * 0.5,
+        combined_seed,
+        5,
+    );
+
+    // ── Luminosity: max — brightest material dominates the combined emission ──
+    let luminosity_val = perturb(
+        a.luminosity.value().max(b.luminosity.value()),
+        combined_seed,
+        6,
+    );
+
+    // ── Corrosion resistance: min — weakest layer sets the combined durability ──
+    let corrosion_val = perturb(
+        a.corrosion_resistance
+            .value()
+            .min(b.corrosion_resistance.value()),
+        combined_seed,
+        7,
+    );
+
     // ── Reactive pair gets a hue shift so players notice the synergy ──
     let reactive = reactivity_val > 0.6;
     let color = blend_color(&a.color, &b.color, reactive);
 
     GameMaterial {
         name,
-        seed: combined_seed,
+        seed: MaterialSeed(combined_seed),
         color,
         // Fabricated materials have no planet origin.
         origin_planet_seed: None,
@@ -592,6 +615,9 @@ pub fn property_combine(a: &GameMaterial, b: &GameMaterial) -> GameMaterial {
         reactivity: MaterialProperty::new(reactivity_val, PropertyVisibility::Hidden),
         conductivity: MaterialProperty::new(conductivity_val, PropertyVisibility::Hidden),
         toxicity: MaterialProperty::new(toxicity_val, PropertyVisibility::Hidden),
+        elasticity: MaterialProperty::new(elasticity_val, PropertyVisibility::Hidden),
+        luminosity: MaterialProperty::new(luminosity_val, PropertyVisibility::Hidden),
+        corrosion_resistance: MaterialProperty::new(corrosion_val, PropertyVisibility::Hidden),
     }
 }
 
@@ -605,7 +631,7 @@ mod tests {
         let prop = |v: f32| MaterialProperty::new(v, PropertyVisibility::Hidden);
         GameMaterial {
             name: name.into(),
-            seed,
+            seed: MaterialSeed(seed),
             color: [0.5, 0.5, 0.5],
             origin_planet_seed: None,
             density: MaterialProperty::new(density, PropertyVisibility::Observable),
@@ -613,6 +639,9 @@ mod tests {
             reactivity: prop(0.6),
             conductivity: prop(0.3),
             toxicity: prop(0.1),
+            elasticity: prop(0.5),
+            luminosity: prop(0.1),
+            corrosion_resistance: prop(0.5),
         }
     }
 
@@ -843,5 +872,282 @@ mod tests {
         let registered = catalog.register_fabricated(output);
         assert_eq!(registered.seed, seed);
         assert!((registered.density.value() - density).abs() < f32::EPSILON);
+    }
+
+    // ── Chamber containment tests ─────────────────────────────────────────
+
+    /// Verify that the chamber interior footprint (slot_radius) is wide enough
+    /// to contain all material mesh types without horizontal wall clipping.
+    ///
+    /// Each material density tier has a fixed footprint_radius() value. The
+    /// chamber slot_radius must be strictly greater than every footprint so the
+    /// mesh fits inside the walls with at least a small margin.
+    #[test]
+    fn chamber_slot_radius_contains_all_material_footprints() {
+        let config = FabricatorSceneConfig::default();
+
+        // Enumerate representative densities for each tier:
+        //   light  (density < 0.3) → sphere footprint 0.12
+        //   medium (density < 0.7) → capsule footprint 0.10
+        //   heavy  (density >= 0.7) → cube footprint 0.13
+        let tier_densities = [("light", 0.1f32), ("medium", 0.5), ("heavy", 0.9)];
+
+        for (label, density) in tier_densities {
+            let mat = test_material(label, 1, density);
+            let footprint = mat.footprint_radius();
+            assert!(
+                config.slot_radius >= footprint,
+                "slot_radius ({}) must be >= {label} material footprint_radius ({footprint})",
+                config.slot_radius,
+            );
+        }
+    }
+
+    /// Verify that chambers placed at ±slot_spacing_z/2 do not overlap.
+    ///
+    /// Two chambers are centered at z = ±slot_spacing_z/2.  Each chamber's
+    /// outer half-extent is slot_radius + chamber_wall_thickness.  For the
+    /// chambers not to intersect, the gap between their nearest outer edges
+    /// must be non-negative:
+    ///
+    ///   gap = slot_spacing_z - 2 * (slot_radius + chamber_wall_thickness) >= 0
+    #[test]
+    fn chambers_do_not_overlap_at_default_spacing() {
+        let config = FabricatorSceneConfig::default();
+        let outer_half = config.slot_radius + config.chamber_wall_thickness;
+        let gap = config.slot_spacing_z - 2.0 * outer_half;
+        assert!(
+            gap >= 0.0,
+            "chambers overlap by {:.4} m — increase slot_spacing_z or decrease slot_radius",
+            -gap,
+        );
+    }
+
+    /// Verify that the chamber wall height is tall enough to visually enclose
+    /// the bottom half of the heaviest material (cube, half-height 0.09 m).
+    ///
+    /// For the heavy tier the center is placed at:
+    ///   support_height (0.09) + MATERIAL_SURFACE_GAP (0.01) = 0.10 above the floor.
+    /// The cube half-height is 0.09, so the lowest face of the cube sits at
+    /// 0.10 - 0.09 = 0.01 above the floor — just above the floor surface as
+    /// intended.  The chamber wall must be at least as tall as the cube's center
+    /// so the walls surround the lower portion of the mesh.
+    #[test]
+    fn chamber_wall_height_encloses_heavy_material() {
+        let config = FabricatorSceneConfig::default();
+        let heavy = test_material("heavy", 1, 0.9);
+        // Center Y of the heavy cube above the floor interior surface.
+        let center_above_floor = heavy.support_height() + crate::materials::MATERIAL_SURFACE_GAP;
+        assert!(
+            config.chamber_wall_height >= center_above_floor,
+            "chamber_wall_height ({}) must be >= heavy material center height ({center_above_floor})",
+            config.chamber_wall_height,
+        );
+    }
+
+    /// Verify that the floor-placement formula used in interaction.rs produces
+    /// the correct Y for each material density tier.
+    ///
+    /// When a material is seated on the chamber floor, the Transform is set to:
+    ///   y = top_y + support_height() + MATERIAL_SURFACE_GAP
+    ///
+    /// This test checks that formula against known support_height values so
+    /// any future change to `support_height()` or `MATERIAL_SURFACE_GAP`
+    /// triggers a red test rather than a silent visual regression.
+    #[test]
+    fn material_placement_y_sits_on_chamber_floor() {
+        use crate::materials::MATERIAL_SURFACE_GAP;
+
+        let floor_interior_y = 0.5_f32; // arbitrary floor Y for the test
+        let tier_cases = [
+            // (label, density, expected_support_height)
+            ("light", 0.1f32, 0.12f32),
+            ("medium", 0.5, 0.17),
+            ("heavy", 0.9, 0.09),
+        ];
+
+        for (label, density, expected_support) in tier_cases {
+            let mat = test_material(label, 1, density);
+            assert!(
+                (mat.support_height() - expected_support).abs() < f32::EPSILON,
+                "{label} support_height changed: expected {expected_support}, got {}",
+                mat.support_height()
+            );
+            let placed_y = floor_interior_y + mat.support_height() + MATERIAL_SURFACE_GAP;
+            let expected_y = floor_interior_y + expected_support + MATERIAL_SURFACE_GAP;
+            assert!(
+                (placed_y - expected_y).abs() < f32::EPSILON,
+                "{label} placement Y mismatch: expected {expected_y:.4}, got {placed_y:.4}"
+            );
+            // The placed center must be strictly above the floor surface.
+            assert!(
+                placed_y > floor_interior_y,
+                "{label} material center must be above the chamber floor"
+            );
+        }
+    }
+
+    // ── Violet pulse visual feedback tests ───────────────────────────────
+
+    /// Helper: build a minimal headless App wired up for apply_processing_visuals.
+    ///
+    /// The app gets:
+    ///   - Assets<StandardMaterial>  (inserted directly — no AssetPlugin needed)
+    ///   - FabricatorSceneConfig     (default values, including process_seconds = 2.5)
+    ///   - FabricatorState           (caller sets this to Processing or Idle)
+    ///   - apply_processing_visuals  registered in Update
+    fn make_pulse_test_app(state: FabricatorState) -> (App, Entity, Handle<StandardMaterial>) {
+        let mut app = App::new();
+
+        // Insert the resource dependencies the system reads.
+        app.insert_resource(state);
+        app.insert_resource(FabricatorSceneConfig::default());
+        app.insert_resource(Assets::<StandardMaterial>::default());
+
+        // Register the system under test.
+        app.add_systems(Update, apply_processing_visuals);
+
+        // Spawn a ChamberPanel entity backed by a real material handle so the
+        // system can look up and mutate the StandardMaterial.
+        let mat_handle = {
+            let mut std_assets = app.world_mut().resource_mut::<Assets<StandardMaterial>>();
+            std_assets.add(StandardMaterial {
+                emissive: LinearRgba::BLACK,
+                ..Default::default()
+            })
+        };
+
+        let panel_entity = app
+            .world_mut()
+            .spawn((ChamberPanel, MeshMaterial3d(mat_handle.clone())))
+            .id();
+
+        (app, panel_entity, mat_handle)
+    }
+
+    /// During Processing the emissive must be non-zero and violet-tinted on every
+    /// ChamberPanel.
+    ///
+    /// We sample at elapsed = process_seconds / 12 so frac = 1/12 and the pulse
+    /// formula evaluates to sin(pi/2) = 1.0 — the absolute peak brightness.
+    /// At peak, expected emissive channels are (60, 40, 80) — clearly violet
+    /// (blue channel strictly greater than both red and green).
+    #[test]
+    fn violet_pulse_emissive_is_nonzero_during_processing() {
+        let process_seconds = FabricatorSceneConfig::default().process_seconds;
+        let elapsed = process_seconds / 12.0;
+        let (mut app, _, mat_handle) = make_pulse_test_app(FabricatorState::Processing { elapsed });
+
+        app.update();
+
+        let emissive = app
+            .world()
+            .resource::<Assets<StandardMaterial>>()
+            .get(&mat_handle)
+            .expect("material must exist after update")
+            .emissive;
+
+        assert!(
+            emissive.red > 0.0 || emissive.green > 0.0 || emissive.blue > 0.0,
+            "ChamberPanel emissive must be non-zero during Processing; got {emissive:?}"
+        );
+        assert!(
+            emissive.blue > emissive.red,
+            "violet pulse must be blue-dominant (blue={} > red={})",
+            emissive.blue,
+            emissive.red,
+        );
+        assert!(
+            emissive.blue > emissive.green,
+            "violet pulse must be blue-dominant (blue={} > green={})",
+            emissive.blue,
+            emissive.green,
+        );
+    }
+
+    /// At peak pulse the emissive blue channel must be high enough (> 1.0) to
+    /// bloom through HDR post-processing.
+    #[test]
+    fn violet_pulse_peak_emissive_exceeds_hdr_bloom_threshold() {
+        let process_seconds = FabricatorSceneConfig::default().process_seconds;
+        let elapsed = process_seconds / 12.0;
+        let (mut app, _, mat_handle) = make_pulse_test_app(FabricatorState::Processing { elapsed });
+
+        app.update();
+
+        let emissive = app
+            .world()
+            .resource::<Assets<StandardMaterial>>()
+            .get(&mat_handle)
+            .expect("material must exist after update")
+            .emissive;
+
+        assert!(
+            emissive.blue > 1.0,
+            "peak emissive blue ({}) must exceed HDR bloom threshold (1.0)",
+            emissive.blue,
+        );
+    }
+
+    /// When Idle, ChamberPanel emissive must be exactly zero.
+    #[test]
+    fn chamber_panel_emissive_is_zero_when_idle() {
+        let (mut app, _, mat_handle) = make_pulse_test_app(FabricatorState::Idle);
+
+        app.update();
+
+        let emissive = app
+            .world()
+            .resource::<Assets<StandardMaterial>>()
+            .get(&mat_handle)
+            .expect("material must exist after update")
+            .emissive;
+
+        assert!(
+            emissive.red == 0.0 && emissive.green == 0.0 && emissive.blue == 0.0,
+            "ChamberPanel emissive must be zero when Idle; got {emissive:?}"
+        );
+    }
+
+    /// All 5 panels of a single slot must receive the violet pulse uniformly.
+    #[test]
+    fn all_chamber_panels_receive_pulse_uniformly() {
+        let process_seconds = FabricatorSceneConfig::default().process_seconds;
+        let elapsed = process_seconds / 12.0;
+
+        let mut app = App::new();
+        app.insert_resource(FabricatorState::Processing { elapsed });
+        app.insert_resource(FabricatorSceneConfig::default());
+        app.insert_resource(Assets::<StandardMaterial>::default());
+        app.add_systems(Update, apply_processing_visuals);
+
+        let handles: Vec<Handle<StandardMaterial>> = {
+            let mut std_assets = app.world_mut().resource_mut::<Assets<StandardMaterial>>();
+            (0..5)
+                .map(|_| {
+                    std_assets.add(StandardMaterial {
+                        emissive: LinearRgba::BLACK,
+                        ..Default::default()
+                    })
+                })
+                .collect()
+        };
+
+        for h in &handles {
+            app.world_mut()
+                .spawn((ChamberPanel, MeshMaterial3d(h.clone())));
+        }
+
+        app.update();
+
+        let std_assets = app.world().resource::<Assets<StandardMaterial>>();
+        for (i, h) in handles.iter().enumerate() {
+            let emissive = std_assets.get(h).expect("material must exist").emissive;
+            assert!(
+                emissive.blue > 1.0,
+                "panel {i}: emissive blue ({}) must be > 1.0 — all 5 surfaces must receive the pulse",
+                emissive.blue,
+            );
+        }
     }
 }

@@ -64,15 +64,18 @@ y = 0.92
 # Input chambers: left side of bench, spaced apart on the Z axis.
 # Each chamber is a hollow box with an open top — floor + 4 walls.
 slot_offset_x = -0.45
-slot_spacing_z = 0.3
+slot_spacing_z = 0.35
 # Interior half-extent (X and Z) of the square chamber footprint.
-# The outer footprint is slot_radius + chamber_wall_thickness on each side.
-slot_radius = 0.07
+# Must be >= largest material footprint_radius (heavy cube: 0.13) so no mesh
+# clips through the chamber walls when a material is seated on the floor.
+slot_radius = 0.14
 # Floor panel thickness (structural — not the cavity depth).
 slot_height = 0.02
 # Wall height above the floor interior surface (= cavity depth).
-# A typical material object is ~0.06 m tall — walls should exceed that.
-chamber_wall_height = 0.10
+# Set tall enough that the lower portion of any material mesh is enclosed;
+# spheres and capsules will still extend above the rim, which is intentional —
+# the open-top design lets the player see what is seated inside.
+chamber_wall_height = 0.20
 # Thickness of each wall panel.
 chamber_wall_thickness = 0.015
 # Output slot: center of bench, slightly forward.

@@ -24,6 +24,7 @@ pub struct Scenario {
 }
 
 /// A single point on the scenario timeline.
+#[allow(dead_code)]
 pub enum Step {
     /// Fire a world mutation at a specific frame.
     Act(u32, Box<dyn Fn(&mut World)>),

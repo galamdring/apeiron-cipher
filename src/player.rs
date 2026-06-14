@@ -285,7 +285,7 @@ fn calculate_effective_speed(
 /// Translates the player along the XZ plane in the direction they're facing.
 /// Movement is normalised so diagonals aren't faster than cardinals. The player
 /// is clamped to the ground plane boundaries and locked to eye height.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn player_move(
     time: Res<Time>,
     cursor_options: Single<&CursorOptions>,
@@ -297,7 +297,7 @@ fn player_move(
     surface_registry: Res<crate::surface::SurfaceOverrideRegistry>,
     mut player_query: Query<
         (&ActionState<InputAction>, &mut Transform, &mut StaminaState),
-        With<Player>,
+        (With<Player>, Without<crate::vehicle::VehicleOccupant>),
     >,
 ) {
     if !cursor_is_captured(cursor_options.grab_mode) {

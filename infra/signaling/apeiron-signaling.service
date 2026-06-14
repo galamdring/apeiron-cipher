@@ -1,0 +1,70 @@
+# /etc/systemd/system/apeiron-signaling.service
+#
+# Systemd unit for the Apeiron Cipher signaling server on a production VM.
+#
+# INSTALL
+#   sudo cp infra/signaling/apeiron-signaling.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now apeiron-signaling
+#
+# SECRETS
+#   Place environment variables in /etc/apeiron/signaling.env (mode 600, root:root).
+#   That file is sourced by EnvironmentFile= below.
+#   Minimum required variable: TURN_SECRET
+#
+# LOG TAILING
+#   journalctl -u apeiron-signaling -f
+
+[Unit]
+Description=Apeiron Cipher Signaling Server
+Documentation=https://github.com/galamdring/apeiron-cipher
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=apeiron
+Group=apeiron
+
+# Path to the compiled binary — adjust if installed elsewhere.
+ExecStart=/usr/local/bin/apeiron-signaling
+
+# Secrets and tunables live outside the unit file so they can be rotated
+# without touching the service definition.
+# Create: sudo mkdir -p /etc/apeiron && sudo install -m 600 /dev/null /etc/apeiron/signaling.env
+# Then populate with: TURN_SECRET=<your-secret>
+EnvironmentFile=-/etc/apeiron/signaling.env
+
+# Defaults (overridden by EnvironmentFile).
+Environment=PORT=9090
+Environment=LOG_LEVEL=info
+Environment=MAX_SESSIONS=0
+Environment=STUN_SERVERS=stun:stun.l.google.com:19302
+
+# Restart policy: always restart the server on crash or non-zero exit.
+Restart=on-failure
+RestartSec=5s
+StartLimitIntervalSec=120s
+StartLimitBurst=5
+
+# Security hardening.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# If the binary needs to bind a port < 1024 (e.g. 443), add:
+# AmbientCapabilities=CAP_NET_BIND_SERVICE
+
+# Resource limits: prevent runaway memory from WebSocket storms.
+MemoryMax=512M
+TasksMax=256
+
+# Give in-flight WebSocket sessions up to 15 s to drain on shutdown.
+TimeoutStopSec=15s
+
+[Install]
+WantedBy=multi-user.target

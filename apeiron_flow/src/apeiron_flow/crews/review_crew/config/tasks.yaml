@@ -1,0 +1,16 @@
+review_pr:
+  description: >
+    {description}
+  expected_output: >
+    A JSON object with exactly these fields:
+      verdict     — one of: "code_changes_required", "human_feedback_required", "ready_for_merge"
+                    Use "code_changes_required" when there are fixable issues the agent can address.
+                    Use "human_feedback_required" when there are ambiguous architectural or design
+                    decisions that require human judgement — post a COMMENT review in this case.
+                    Use "ready_for_merge" when the change is sound — post an APPROVE review.
+      summary     — the top-level review text that was posted to the PR
+      review_url  — the URL of the posted review confirming it was submitted
+
+    You MUST call post_review before returning. The review_url in your output
+    must come from the actual post_review tool response, not be fabricated.
+  agent: code_reviewer

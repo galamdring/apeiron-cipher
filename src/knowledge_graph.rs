@@ -1135,6 +1135,9 @@ fn property_value_for_category(
         ObservationCategory::SurfaceAppearance => mat.reactivity.value(),
         ObservationCategory::FabricationResult => 0.0,
         ObservationCategory::LocationNote => 0.0,
+        // Exploitation observations are about vehicle/tool usage events — no
+        // direct float property from GameMaterial applies.
+        ObservationCategory::Exploitation => 0.0,
     }
 }
 
@@ -1172,7 +1175,7 @@ pub fn detect_and_wire_similar_materials(
     let new_vec = new_material.property_vector();
 
     for existing in catalog.values() {
-        if existing.seed == new_seed.0 {
+        if existing.seed == new_seed {
             continue;
         }
 
@@ -1183,7 +1186,7 @@ pub fn detect_and_wire_similar_materials(
 
         let new_key = crate::journal::JournalKey::MaterialInstance { seed: new_seed.0 };
         let existing_key = crate::journal::JournalKey::MaterialInstance {
-            seed: existing.seed,
+            seed: existing.seed.0,
         };
 
         let new_confident = is_at_least_observed(graph_read, &new_key);
@@ -1609,6 +1612,7 @@ mod tests {
             domain_recovery_multiplier: 2.0,
             passive_recovery_multiplier: 0.7,
             similarity_threshold: 0.85,
+            initial_observation_confidence: 0.2,
         });
         // Register update_knowledge_graph itself (the private system under test).
         app.add_systems(

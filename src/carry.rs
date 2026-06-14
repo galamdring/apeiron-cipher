@@ -25,10 +25,11 @@ use serde::{Deserialize, Serialize};
 use crate::input::InputAction;
 use crate::interaction::HeldItem;
 use crate::journal::{JournalKey, Observation, ObservationCategory};
-use crate::materials::{GameMaterial, MaterialObject, MaterialSeed};
+use crate::materials::{GameMaterial, MaterialObject};
 use crate::observation::Confidence;
 use crate::observation::RecordObservation;
 use crate::player::{Player, PlayerCamera, cursor_is_captured};
+
 use leafwing_input_manager::prelude::*;
 
 const CONFIG_PATH: &str = "assets/config/carry.toml";
@@ -1494,12 +1495,15 @@ pub fn record_weight_observation(
     material: &GameMaterial,
     carry_strength: f32,
     config: &CarryConfig,
+    confidence_config: &crate::observation::ConfidenceConfig,
     journal_writer: &mut MessageWriter<RecordObservation>,
     descriptor_vocab: &crate::observation::DescriptorVocabulary,
 ) {
-    // Use initial confidence for new observations - the journal system
-    // will handle accumulation automatically for repeated observations
-    let initial_confidence = Confidence::new(0.2);
+    // Use initial confidence from config for new observations — the journal system
+    // will handle accumulation automatically for repeated observations.
+    // The value lives in assets/config/confidence.toml so it can be tuned without
+    // recompiling (core-principle 6: data-driven, no hardcoded tuning values).
+    let initial_confidence = Confidence::new(confidence_config.initial_observation_confidence);
 
     // Generate description using the DescriptorVocabulary system
     let description = descriptor_vocab
@@ -1521,10 +1525,10 @@ pub fn record_weight_observation(
 
     journal_writer.write(RecordObservation {
         key: JournalKey::MaterialInstance {
-            seed: material.seed,
+            seed: material.seed.0,
         },
         name: material.name.clone(),
-        material_seed: Some(MaterialSeed(material.seed)),
+        material_seed: Some(material.seed),
         planet_seed: material.origin_planet_seed,
         observation: Observation {
             category: ObservationCategory::Weight,
@@ -1582,6 +1586,7 @@ fn process_stash_intent(
     mut reject_writer: MessageWriter<CarryActionRejected>,
     mut journal_writer: MessageWriter<RecordObservation>,
     config: Res<CarryConfig>,
+    confidence_config: Res<crate::observation::ConfidenceConfig>,
     descriptor_vocab: Res<crate::observation::DescriptorVocabulary>,
     mut player_query: Query<(&mut CarryState, &CarryStrength), With<Player>>,
     held_query: Query<(Entity, &GameMaterial, Option<&HoldTimer>), With<HeldItem>>,
@@ -1618,6 +1623,7 @@ fn process_stash_intent(
                 held_material,
                 carry_strength.current,
                 &config,
+                &confidence_config,
                 &mut journal_writer,
                 &descriptor_vocab,
             );
@@ -1637,6 +1643,7 @@ fn process_stash_held_for_pickup(
     mut weight_writer: MessageWriter<CarryWeightChanged>,
     mut journal_writer: MessageWriter<RecordObservation>,
     config: Res<CarryConfig>,
+    confidence_config: Res<crate::observation::ConfidenceConfig>,
     descriptor_vocab: Res<crate::observation::DescriptorVocabulary>,
     mut player_query: Query<(&mut CarryState, &CarryStrength), With<Player>>,
     hold_timer_query: Query<&HoldTimer, With<HeldItem>>,
@@ -1664,6 +1671,7 @@ fn process_stash_held_for_pickup(
                 &request.held_material,
                 carry_strength.current,
                 &config,
+                &confidence_config,
                 &mut journal_writer,
                 &descriptor_vocab,
             );
@@ -1675,6 +1683,7 @@ fn process_stash_held_for_pickup(
             &request.picked_material,
             carry_strength.current,
             &config,
+            &confidence_config,
             &mut journal_writer,
             &descriptor_vocab,
         );
@@ -1687,6 +1696,7 @@ fn process_observe_weight(
     mut reader: MessageReader<ObserveWeight>,
     mut journal_writer: MessageWriter<RecordObservation>,
     config: Res<CarryConfig>,
+    confidence_config: Res<crate::observation::ConfidenceConfig>,
     descriptor_vocab: Res<crate::observation::DescriptorVocabulary>,
     player_query: Query<&CarryStrength, With<Player>>,
 ) {
@@ -1698,6 +1708,7 @@ fn process_observe_weight(
             &request.material,
             carry_strength.current,
             &config,
+            &confidence_config,
             &mut journal_writer,
             &descriptor_vocab,
         );
@@ -1758,10 +1769,10 @@ fn process_failed_pickup_observation(
 
         journal_writer.write(RecordObservation {
             key: JournalKey::MaterialInstance {
-                seed: request.material.seed,
+                seed: request.material.seed.0,
             },
             name: request.material.name.clone(),
-            material_seed: Some(MaterialSeed(request.material.seed)),
+            material_seed: Some(request.material.seed),
             planet_seed: request.material.origin_planet_seed,
             observation: crate::journal::Observation {
                 category: ObservationCategory::Weight,
@@ -1789,6 +1800,7 @@ fn process_cycle_carry_intent(
     mut reject_writer: MessageWriter<CarryActionRejected>,
     mut journal_writer: MessageWriter<RecordObservation>,
     config: Res<CarryConfig>,
+    confidence_config: Res<crate::observation::ConfidenceConfig>,
     descriptor_vocab: Res<crate::observation::DescriptorVocabulary>,
     mut player_query: Query<(&mut CarryState, &CarryStrength), With<Player>>,
     camera_query: Query<Entity, With<PlayerCamera>>,
@@ -1845,6 +1857,7 @@ fn process_cycle_carry_intent(
                     held_material,
                     carry_strength.current,
                     &config,
+                    &confidence_config,
                     &mut journal_writer,
                     &descriptor_vocab,
                 );
@@ -1891,7 +1904,7 @@ fn process_cycle_carry_intent(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::materials::{GameMaterial, MaterialProperty, PropertyVisibility};
+    use crate::materials::{GameMaterial, MaterialProperty, MaterialSeed, PropertyVisibility};
 
     fn material_with_density(value: f32) -> GameMaterial {
         let property =
@@ -1899,7 +1912,7 @@ mod tests {
 
         GameMaterial {
             name: "Testite".into(),
-            seed: 7,
+            seed: MaterialSeed(7),
             color: [0.1, 0.2, 0.3],
             origin_planet_seed: None,
             density: property(value),
@@ -1907,6 +1920,9 @@ mod tests {
             reactivity: property(0.5),
             conductivity: property(0.5),
             toxicity: property(0.5),
+            elasticity: property(0.5),
+            luminosity: property(0.5),
+            corrosion_resistance: property(0.5),
         }
     }
 
@@ -2457,11 +2473,19 @@ exponent = 1.0
         fn drive(
             inputs: bevy::ecs::system::In<GameMaterial>,
             mut writer: MessageWriter<RecordObservation>,
+            confidence_config: Res<crate::observation::ConfidenceConfig>,
             descriptor_vocab: Res<crate::observation::DescriptorVocabulary>,
         ) {
             let mat = inputs.0;
             let cfg = CarryConfig::default();
-            record_weight_observation(&mat, 1.0, &cfg, &mut writer, &descriptor_vocab);
+            record_weight_observation(
+                &mat,
+                1.0,
+                &cfg,
+                &confidence_config,
+                &mut writer,
+                &descriptor_vocab,
+            );
         }
 
         for (label, origin_planet_seed, expected) in [
@@ -2477,6 +2501,7 @@ exponent = 1.0
 
             let mut app = App::new();
             app.add_message::<RecordObservation>();
+            app.insert_resource(crate::observation::ConfidenceConfig::default());
             app.insert_resource(crate::observation::DescriptorVocabulary::default());
             app.world_mut()
                 .run_system_cached_with(drive, material.clone())
@@ -2489,7 +2514,7 @@ exponent = 1.0
             assert_eq!(recorded.len(), 1, "{label}: expected one observation");
             match &recorded[0].key {
                 JournalKey::MaterialInstance { seed } => {
-                    assert_eq!(*seed, material.seed, "{label}: material seed must match");
+                    assert_eq!(*seed, material.seed.0, "{label}: material seed must match");
                     assert_eq!(
                         recorded[0].planet_seed, expected,
                         "{label}: planet_seed must come from material.origin_planet_seed"
@@ -2632,7 +2657,7 @@ exponent = 1.0
         match &recorded[0].key {
             JournalKey::MaterialInstance { seed } => {
                 assert_eq!(
-                    *seed, material.seed,
+                    *seed, material.seed.0,
                     "observation key must match target material seed"
                 );
             }
