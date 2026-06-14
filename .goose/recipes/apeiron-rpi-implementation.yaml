@@ -1,0 +1,157 @@
+version: "1.0.0"
+title: "Apeiron RPI Implementation"
+description: "Wrapper recipe that runs rpi-implement for an approved Apeiron Cipher issue plan with repository guidance, plan discovery, and stop-and-ask answer tracking."
+
+parameters:
+  - key: issue_number
+    input_type: number
+    requirement: required
+    description: "GitHub issue number to implement"
+
+  - key: repo
+    input_type: string
+    requirement: optional
+    default: "galamdring/apeiron-cipher"
+    description: "GitHub repository in owner/repo format"
+
+  - key: working_directory
+    input_type: string
+    requirement: optional
+    default: "."
+    description: "Directory to start from when resolving the repository root. Defaults to the current directory."
+
+  - key: plan_path
+    input_type: string
+    requirement: optional
+    default: ""
+    description: "Path to the approved implementation plan. If empty, find likely plans under thoughts/plans/."
+
+  - key: execution_mode
+    input_type: select
+    requirement: optional
+    default: "all_phases_consecutively"
+    description: "How rpi-implement should advance through the plan"
+    options:
+      - all_phases_consecutively
+      - next_phase_only
+      - plan_default
+
+  - key: answer_log_path
+    input_type: string
+    requirement: optional
+    default: ""
+    description: "Optional path to the pipeline clarification answer log. If empty, use thoughts/clarifications/issue-<issue>-answers.md."
+
+  - key: extra_context
+    input_type: string
+    requirement: optional
+    default: ""
+    description: "Additional implementation instructions or context"
+
+extensions:
+  - type: platform
+    name: summon
+
+  - type: builtin
+    name: developer
+    timeout: 300
+    bundled: true
+
+instructions: |
+  You are a thin Apeiron Cipher wrapper around the existing rpi-implement recipe.
+
+  Your job is to resolve the repository root, identify the approved plan for the
+  requested issue, enforce Apeiron stop-and-ask behavior, maintain the pipeline
+  clarification answer log when implementation raises questions, and delegate the
+  actual coding work to rpi-implement.
+
+  Do not silently invent missing component names, event names, public API changes,
+  fields, architectural decisions, or test behavior. If implementation cannot
+  proceed without a human answer, stop and ask.
+
+  Do not close GitHub issues. Do not merge branches. Follow Agents.md as the
+  source of truth for workflow policy.
+
+prompt: |
+  Implement GitHub issue #{{ issue_number }} in {{ repo }} using the approved RPI plan.
+
+  Resolve repository root first:
+
+  cd "{{ working_directory }}" && git rev-parse --show-toplevel 2>/dev/null || pwd
+
+  Treat the result as REPO_ROOT. All relative paths below are relative to REPO_ROOT.
+
+  Required context gathering before delegation:
+  1. Fetch the GitHub issue with comments:
+     gh issue view {{ issue_number }} --repo {{ repo }} --comments
+  2. Load Agents.md from REPO_ROOT and follow its branch workflow. Do not duplicate or reinterpret branch policy; use Agents.md as the source of truth.
+  3. Load the required repository guidance docs from Agents.md, including at minimum:
+     - docs/bmad/planning-artifacts/architecture/core-principles.md
+     - docs/bmad/planning-artifacts/architecture/agent-context-routing.md
+     - docs/bmad/planning-artifacts/architecture/implementation-patterns-consistency-rules.md
+     - docs/bmad/project-context.md
+     - docs/bmad/agent-workflow.md
+  4. Determine ANSWER_LOG:
+     - If answer_log_path is non-empty, resolve it relative to REPO_ROOT unless it is absolute:
+       {{ answer_log_path }}
+     - Otherwise use:
+       REPO_ROOT/thoughts/clarifications/issue-{{ issue_number }}-answers.md
+     - If ANSWER_LOG exists, read it fully before implementation.
+  5. Determine PLAN_PATH:
+     - If plan_path is provided, use: {{ plan_path }}
+     - If plan_path is empty, search REPO_ROOT/thoughts/plans/ for plans relevant to issue #{{ issue_number }}.
+     - If zero or multiple plausible plans exist and you cannot choose safely, update ANSWER_LOG with a blocking question and stop.
+  6. Read PLAN_PATH fully.
+  7. Confirm the plan is implementation-ready:
+     - It has been reviewed or explicitly approved by the caller.
+     - It does not contain unresolved blocking questions.
+     - Any clarification answers needed for implementation are already recorded in ANSWER_LOG and/or the GitHub issue comments.
+    - Any architecture-impacting clarification answers are also captured in the relevant architecture document(s) under docs/bmad/planning-artifacts/architecture/.
+
+  Clarification and answer-log protocol:
+  - If you or rpi-implement need a human answer, stop the pipeline immediately.
+  - Before stopping, create REPO_ROOT/thoughts/clarifications/ if needed and update ANSWER_LOG.
+  - Append a "Blocking Questions" entry with this shape:
+
+    ## Blocking Questions - <timestamp> - implementation
+
+    | ID | Stage | Question | Why It Blocks | Expected Documentation Target | Status |
+    | --- | --- | --- | --- | --- | --- |
+    | I-001 | implementation | <question> | <why implementation cannot safely continue> | <GitHub issue comment / architecture doc / plan section / research doc / code doc> | unanswered |
+
+  - Ask the user the same numbered questions in the final response.
+  - Tell the user where each answer must be documented.
+  - Do not continue implementation until the answer exists in the required documentation target.
+
+  Documentation target rules for answers:
+  - Requirement, acceptance-criteria, and scope answers that do not alter architecture belong on the GitHub issue as a comment, because GitHub Issues are the source of truth for epics, stories, and requirements.
+  - Architecture-impacting answers require two documentation targets before implementation continues:
+    1. a GitHub issue comment capturing the decision, and
+    2. an update to the relevant architecture document(s) under docs/bmad/planning-artifacts/architecture/.
+  - Architecture-impacting answers include naming, event names, component names, fields, public API choices, plugin-boundary choices, data-flow choices, scheduling choices, determinism policy, or any other durable architecture guidance.
+  - Architecture document updates may cite issue #{{ issue_number }} for traceability, but the issue comment is not a substitute for updating architecture docs.
+  - Plan-execution details that do not alter architecture belong in the implementation plan, preferably near the relevant phase or in a "Clarifications Incorporated" section.
+  - Current-codebase facts discovered during research belong in the relevant research document.
+  - Verification/manual-testing answers belong in the plan checklist or the implementation/review report.
+  - Code-level rationale belongs in code comments only after it has already been captured in the issue or plan, and in the relevant architecture document if it changes durable architecture guidance.
+
+  Delegate actual coding to rpi-implement with source: rpi-implement.
+
+  Pass rpi-implement instructions that include:
+  - Plan path: PLAN_PATH
+  - Issue: #{{ issue_number }} in {{ repo }}
+  - Answer log: ANSWER_LOG
+  - Execution mode: {{ execution_mode }}
+  - Extra context:
+    {{ extra_context }}
+
+  Execution mode behavior:
+  - all_phases_consecutively: instruct rpi-implement to execute all plan phases consecutively and pause only for blocking questions, plan/code mismatches, failed verification that cannot be fixed safely, or final manual verification.
+  - next_phase_only: instruct rpi-implement to execute only the next unchecked phase and then pause for verification.
+  - plan_default: let rpi-implement follow its default phase pause behavior.
+
+  After rpi-implement returns:
+  - If it completed implementation, print the plan path, changed-file summary, verification status, and any manual verification still required.
+  - If it stopped for questions, ensure ANSWER_LOG contains those questions with documentation targets, then print the questions and stop.
+  - If it found a plan/code mismatch, ensure ANSWER_LOG or the plan records the mismatch, then stop and ask how to proceed.
+  - If implementation verification failed and cannot be safely fixed, record the failure and stop.

@@ -479,7 +479,6 @@ mod integration_tests {
     use super::*;
     use crate::journal::{JournalKey, ObservationCategory};
     use crate::knowledge_graph::{ConceptCategory, ConceptId, KnowledgeGraph};
-    use std::collections::HashMap;
 
     #[test]
     fn revealed_properties_flow_end_to_end() {

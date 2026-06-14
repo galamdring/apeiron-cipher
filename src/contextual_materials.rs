@@ -29,9 +29,10 @@ use bevy::log::warn;
 use bevy::prelude::{ResMut, Resource};
 use serde::{Deserialize, Serialize};
 
-use crate::materials::{GameMaterial, derive_material_from_seed};
+use crate::materials::{GameMaterial, MaterialSeed, derive_material_from_seed};
 use crate::seed_util::{SeedChannel, mix_seed};
 use crate::solar_system::PlanetEnvironment;
+use crate::world_generation::PlanetSeed;
 
 // ── File path constant ───────────────────────────────────────────────────
 
@@ -156,28 +157,28 @@ pub struct EnvironmentalBias {
 /// **Determinism guarantee:** same `material_seed` + `planet_seed` always
 /// produces identical output.
 pub fn derive_material_in_context(
-    material_seed: u64,
-    planet_seed: u64,
+    material_seed: MaterialSeed,
+    planet_seed: PlanetSeed,
     biome_key: &str,
     planet_env: &PlanetEnvironment,
     config: &ContextualMaterialConfig,
 ) -> GameMaterial {
     // Start with base properties from material_seed (Story 5a.4).
-    let mut material = derive_material_from_seed(material_seed);
+    let mut material = derive_material_from_seed(material_seed.0);
 
     // Compute environmental bias from the planet conditions.
     let bias = compute_environmental_bias(planet_env, config);
 
     // Apply bias with per-property noise derived from the contextual seed so
     // two materials with the same base seed on the same planet still differ.
-    let contextual_seed = mix_seed(material_seed, planet_seed);
-    apply_bias(&mut material, &bias, contextual_seed);
+    let contextual_seed = MaterialSeed(mix_seed(material_seed.0, planet_seed.0));
+    apply_bias(&mut material, &bias, contextual_seed.0);
 
     // The stored seed is the contextual seed — unique per (material, planet) pair.
     material.seed = contextual_seed;
 
     // Name reflects the biome context.
-    material.name = contextual_material_name(contextual_seed, biome_key);
+    material.name = contextual_material_name(contextual_seed.0, biome_key);
 
     // Record the planet of origin.
     material.origin_planet_seed = Some(planet_seed);
@@ -296,10 +297,10 @@ pub fn compute_extremity(env: &PlanetEnvironment) -> f32 {
 /// The returned seeds should be fed to [`derive_material_in_context`] like any
 /// other material seed to produce fully contextual exotic materials.
 pub fn generate_exotic_seeds(
-    planet_seed: u64,
+    planet_seed: PlanetSeed,
     planet_env: &PlanetEnvironment,
     config: &ContextualMaterialConfig,
-) -> Vec<u64> {
+) -> Vec<MaterialSeed> {
     let extremity = compute_extremity(planet_env);
     if extremity <= config.exotic_threshold {
         return Vec::new();
@@ -311,10 +312,10 @@ pub fn generate_exotic_seeds(
 
     (0..num_exotics)
         .map(|i| {
-            mix_seed(
-                planet_seed,
+            MaterialSeed(mix_seed(
+                planet_seed.0,
                 SeedChannel::ExoticMaterialBase as u64 + i as u64,
-            )
+            ))
         })
         .collect()
 }
@@ -457,7 +458,13 @@ mod tests {
             thermal_bias
         );
 
-        let contextual = derive_material_in_context(42, 0xDEAD, "volcanic", &env, &config);
+        let contextual = derive_material_in_context(
+            MaterialSeed(42),
+            PlanetSeed(0xDEAD),
+            "volcanic",
+            &env,
+            &config,
+        );
         assert!(
             contextual.thermal_resistance.value() >= base.thermal_resistance.value() - 0.1,
             "contextual thermal_resistance should be near or above base (bias pushes it up)"
@@ -557,8 +564,20 @@ mod tests {
         let config = default_config();
         let env = volcanic_env();
 
-        let m1 = derive_material_in_context(1234, 5678, "volcanic", &env, &config);
-        let m2 = derive_material_in_context(1234, 5678, "volcanic", &env, &config);
+        let m1 = derive_material_in_context(
+            MaterialSeed(1234),
+            PlanetSeed(5678),
+            "volcanic",
+            &env,
+            &config,
+        );
+        let m2 = derive_material_in_context(
+            MaterialSeed(1234),
+            PlanetSeed(5678),
+            "volcanic",
+            &env,
+            &config,
+        );
 
         assert_eq!(m1.seed, m2.seed, "contextual seed must be deterministic");
         assert_eq!(
@@ -580,8 +599,20 @@ mod tests {
         let env_a = volcanic_env();
         let env_b = radioactive_env();
 
-        let m_a = derive_material_in_context(999, 0xAAAA, "volcanic", &env_a, &config);
-        let m_b = derive_material_in_context(999, 0xBBBB, "rocky", &env_b, &config);
+        let m_a = derive_material_in_context(
+            MaterialSeed(999),
+            PlanetSeed(0xAAAA),
+            "volcanic",
+            &env_a,
+            &config,
+        );
+        let m_b = derive_material_in_context(
+            MaterialSeed(999),
+            PlanetSeed(0xBBBB),
+            "rocky",
+            &env_b,
+            &config,
+        );
 
         assert_ne!(
             m_a.seed, m_b.seed,
@@ -608,7 +639,13 @@ mod tests {
         ];
 
         for (i, env) in envs.iter().enumerate() {
-            let m = derive_material_in_context(i as u64 * 100 + 1, 0xFEED, "test", env, &config);
+            let m = derive_material_in_context(
+                MaterialSeed(i as u64 * 100 + 1),
+                PlanetSeed(0xFEED),
+                "test",
+                env,
+                &config,
+            );
             for val in m.property_vector() {
                 assert!(
                     (0.0..=1.0).contains(&val),
@@ -625,8 +662,20 @@ mod tests {
         let config = default_config();
         let env = volcanic_env();
 
-        let m1 = derive_material_in_context(1, 0xC0DE, "volcanic", &env, &config);
-        let m2 = derive_material_in_context(2, 0xC0DE, "volcanic", &env, &config);
+        let m1 = derive_material_in_context(
+            MaterialSeed(1),
+            PlanetSeed(0xC0DE),
+            "volcanic",
+            &env,
+            &config,
+        );
+        let m2 = derive_material_in_context(
+            MaterialSeed(2),
+            PlanetSeed(0xC0DE),
+            "volcanic",
+            &env,
+            &config,
+        );
 
         // Both are pushed in the same direction, but their base seeds differ
         // and the noise term differs, so they should not be identical.
@@ -643,7 +692,7 @@ mod tests {
     fn earth_like_planet_produces_no_exotics() {
         let config = default_config();
         let env = earth_env();
-        let exotics = generate_exotic_seeds(42, &env, &config);
+        let exotics = generate_exotic_seeds(PlanetSeed(42), &env, &config);
         assert!(
             exotics.is_empty(),
             "earth-like planet should produce no exotic seeds"
@@ -654,7 +703,7 @@ mod tests {
     fn extreme_planet_produces_one_to_max_exotics() {
         let config = default_config();
         let env = volcanic_env();
-        let exotics = generate_exotic_seeds(42, &env, &config);
+        let exotics = generate_exotic_seeds(PlanetSeed(42), &env, &config);
         assert!(
             !exotics.is_empty(),
             "volcanic planet should produce at least one exotic"
@@ -672,8 +721,8 @@ mod tests {
         let config = default_config();
         let env = volcanic_env();
 
-        let exotics_a = generate_exotic_seeds(0xAAAA_0000, &env, &config);
-        let exotics_b = generate_exotic_seeds(0xBBBB_0000, &env, &config);
+        let exotics_a = generate_exotic_seeds(PlanetSeed(0xAAAA_0000), &env, &config);
+        let exotics_b = generate_exotic_seeds(PlanetSeed(0xBBBB_0000), &env, &config);
 
         for (seed_a, seed_b) in exotics_a.iter().zip(exotics_b.iter()) {
             assert_ne!(seed_a, seed_b, "exotic seeds must differ between planets");
@@ -685,8 +734,8 @@ mod tests {
         let config = default_config();
         let env = volcanic_env();
 
-        let exotics_1 = generate_exotic_seeds(0xDEAD_BEEF, &env, &config);
-        let exotics_2 = generate_exotic_seeds(0xDEAD_BEEF, &env, &config);
+        let exotics_1 = generate_exotic_seeds(PlanetSeed(0xDEAD_BEEF), &env, &config);
+        let exotics_2 = generate_exotic_seeds(PlanetSeed(0xDEAD_BEEF), &env, &config);
 
         assert_eq!(
             exotics_1, exotics_2,
@@ -699,9 +748,9 @@ mod tests {
         let config = default_config();
         let env = volcanic_env();
 
-        let exotic_seeds = generate_exotic_seeds(0xCAFE, &env, &config);
+        let exotic_seeds = generate_exotic_seeds(PlanetSeed(0xCAFE), &env, &config);
         for seed in exotic_seeds {
-            let m = derive_material_in_context(seed, 0xCAFE, "volcanic", &env, &config);
+            let m = derive_material_in_context(seed, PlanetSeed(0xCAFE), "volcanic", &env, &config);
             for val in m.property_vector() {
                 assert!(
                     (0.0..=1.0).contains(&val),

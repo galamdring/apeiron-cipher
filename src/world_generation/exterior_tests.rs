@@ -2016,7 +2016,7 @@ fn apply_delta_layers_three_independent_layers_are_commutative() {
     };
 
     let reference = {
-        let mut layers = make_layers();
+        let layers = make_layers();
         // Order [A, B, C]
         apply_delta_layers(PlanetSeed(9999), cell_size, &layers)
     };
@@ -2038,7 +2038,7 @@ fn apply_delta_layers_three_independent_layers_are_commutative() {
 
     for perm in permutations {
         // Build layers fresh for each permutation, then reorder by index.
-        let mut all = make_layers();
+        let all = make_layers();
         let permuted: Vec<WorldDeltaLayer> = perm
             .iter()
             .map(|&i| WorldDeltaLayer {

@@ -29,7 +29,7 @@ use crate::materials::{GameMaterial, MaterialObject};
 use crate::observation::Confidence;
 use crate::observation::RecordObservation;
 use crate::player::{Player, PlayerCamera, cursor_is_captured};
-use crate::world_generation::PlanetSeed;
+
 use leafwing_input_manager::prelude::*;
 
 const CONFIG_PATH: &str = "assets/config/carry.toml";

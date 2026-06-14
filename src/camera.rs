@@ -163,8 +163,6 @@ impl Plugin for CameraPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bevy::prelude::*;
-    use bevy::reflect::Reflect;
 
     // ── trait / type smoke tests ───────────────────────────────────────────
 

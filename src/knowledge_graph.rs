@@ -976,7 +976,7 @@ fn update_knowledge_graph(
             if node.origin_planet_seed.is_none()
                 && let Some(ps) = obs.planet_seed
             {
-                node.origin_planet_seed = Some(ps.0);
+                node.origin_planet_seed = Some(ps);
             }
 
             // ── Record observation with domain-weighted accumulation ───
@@ -1000,7 +1000,7 @@ fn update_knowledge_graph(
             let category = obs.observation.category.clone();
             let prop_value: f32 = obs
                 .material_seed
-                .and_then(|seed| catalog.as_ref()?.get_by_seed(seed.0))
+                .and_then(|seed| catalog.as_ref()?.get_by_seed(seed))
                 .map(|mat| property_value_for_category(mat, &category))
                 .unwrap_or(0.0);
             node.revealed_properties.insert(category, prop_value);
@@ -1010,9 +1010,7 @@ fn update_knowledge_graph(
         // If the observation carries a planet_seed, wire a FoundOn edge
         // from the material to the location concept.
         if let Some(planet_seed) = obs.planet_seed {
-            let location_key = crate::journal::JournalKey::Location {
-                planet_seed: planet_seed.0,
-            };
+            let location_key = crate::journal::JournalKey::Location { planet_seed };
             let location_node =
                 graph.ensure_concept(ConceptId(location_key), ConceptCategory::Location, tick);
             graph.relate(
@@ -1032,7 +1030,7 @@ fn update_knowledge_graph(
         if matches!(&obs.key, crate::journal::JournalKey::Fabrication { .. }) {
             for &input_seed in &obs.input_seeds {
                 let input_node = graph
-                    .lookup_material_by_seed(input_seed.0)
+                    .lookup_material_by_seed(input_seed)
                     .unwrap_or_else(|| {
                         let input_key =
                             crate::journal::JournalKey::MaterialInstance { seed: input_seed.0 };

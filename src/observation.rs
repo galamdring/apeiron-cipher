@@ -3381,8 +3381,8 @@ mod tests {
             .insert_resource(Time::<()>::default());
 
         // Create a player with empty journal
-        let mut journal = crate::journal::Journal::default();
-        let player_entity = app.world_mut().spawn((crate::player::Player, journal)).id();
+        let journal = crate::journal::Journal::default();
+        let _player_entity = app.world_mut().spawn((crate::player::Player, journal)).id();
 
         // Verify no death context initially
         assert!(app.world().get_resource::<DeathContext>().is_none());

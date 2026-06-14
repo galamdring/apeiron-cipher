@@ -22,7 +22,6 @@ use crate::materials::{GameMaterial, MaterialObject, PropertyVisibility};
 use crate::observation::Confidence;
 use crate::observation::RecordObservation;
 use crate::scene::{FurnitureConfig, HeatSourceConfig, Workbench};
-use crate::world_generation::PlanetSeed;
 
 /// Plugin that manages heat sources and temperature-based material interactions.
 pub struct HeatPlugin;
@@ -366,6 +365,7 @@ fn reveal_thermal_property(
 mod tests {
     use super::*;
     use crate::materials::{MaterialProperty, MaterialSeed};
+    use crate::world_generation::PlanetSeed;
 
     fn test_material(seed: u64) -> GameMaterial {
         GameMaterial {

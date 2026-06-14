@@ -42,18 +42,6 @@ pub struct MaterialPlugin;
 /// Small vertical gap between a material object and the surface it rests on.
 pub const MATERIAL_SURFACE_GAP: f32 = 0.01;
 
-/// Stable identity for a procedurally generated material instance.
-///
-/// Wraps the `u64` generation seed as a domain newtype so that material seeds
-/// cannot be accidentally passed where planet, biome, or placement seeds are
-/// expected. The inner value is the raw seed used by [`derive_material_from_seed`]
-/// and all catalog indexing. Convert to/from `u64` only at serialization or
-/// asset-loading edges.
-#[derive(
-    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize,
-)]
-pub struct MaterialSeed(pub u64);
-
 /// Number of properties in a [`GameMaterial`] property vector.
 ///
 /// Used as the compile-time array size for [`GameMaterial::property_vector`]

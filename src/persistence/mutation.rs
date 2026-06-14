@@ -472,6 +472,9 @@ mod tests {
                 reactivity: MaterialProperty::new(0.1, PropertyVisibility::Hidden),
                 conductivity: MaterialProperty::new(0.9, PropertyVisibility::Hidden),
                 toxicity: MaterialProperty::new(0.05, PropertyVisibility::Hidden),
+                elasticity: MaterialProperty::new(0.5, PropertyVisibility::Hidden),
+                luminosity: MaterialProperty::new(0.0, PropertyVisibility::Hidden),
+                corrosion_resistance: MaterialProperty::new(0.5, PropertyVisibility::Hidden),
             },
         };
         assert_bincode_roundtrip(WorldMutation::CarryState(CarryStateSnapshot {
@@ -503,7 +506,6 @@ mod tests {
 
     #[test]
     fn roundtrip_chunk_removals_with_entries() {
-        use crate::materials::MaterialSeed;
         use crate::world_generation::PlanetSeed;
 
         let coord = ChunkCoord { x: 3, z: -2 };
@@ -547,6 +549,9 @@ mod tests {
                 reactivity: MaterialProperty::new(0.5, PropertyVisibility::Hidden),
                 conductivity: MaterialProperty::new(0.5, PropertyVisibility::Hidden),
                 toxicity: MaterialProperty::new(0.5, PropertyVisibility::Hidden),
+                elasticity: MaterialProperty::new(0.5, PropertyVisibility::Hidden),
+                luminosity: MaterialProperty::new(0.0, PropertyVisibility::Hidden),
+                corrosion_resistance: MaterialProperty::new(0.5, PropertyVisibility::Hidden),
             },
             position: [10.0, 0.0, -5.0],
             visual_scale: 1.0,
