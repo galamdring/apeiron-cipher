@@ -23,7 +23,10 @@ import sys
 from apeiron_flow.config import REPO
 from apeiron_flow.labels import (
     LABEL_IN_REVIEW,
-    retire_in_review,
+    STATUS_AGENT_REVIEW,
+    STATUS_IN_PROGRESS,
+    STATUS_REVIEW,
+    transition,
 )
 
 # The bot login that posts structured agent review comments.
@@ -178,18 +181,20 @@ def run_migration(dry_run: bool = False) -> None:
         # Apply migration
         if dry_run:
             if not has_pr:
-                new_label = "status:in-progress"
+                new_label = STATUS_IN_PROGRESS
             elif not agent_review_posted:
-                new_label = "status:agent-review"
+                new_label = STATUS_AGENT_REVIEW
             else:
-                new_label = "status:review"
+                new_label = STATUS_REVIEW
             print(f"  [dry-run] would retire_in_review(#{number}) → {new_label}")
         else:
-            new_label = retire_in_review(
-                number,
-                has_pr=has_pr,
-                agent_review_posted=agent_review_posted,
-            )
+            if not has_pr:
+                new_label = STATUS_IN_PROGRESS
+            elif not agent_review_posted:
+                new_label = STATUS_AGENT_REVIEW
+            else:
+                new_label = STATUS_REVIEW
+            transition(number, from_label=LABEL_IN_REVIEW, to_label=new_label)
             print(f"  Migrated #{number} → {new_label}")
 
         # Post explanatory comment

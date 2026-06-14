@@ -161,15 +161,15 @@ def test_get_issue_for_pr_uses_list_form_no_shell(mock_run):
 @patch("apeiron_flow.main._create_worktree", return_value=("/fake/wt", False))
 @patch("apeiron_flow.main._fetch_issue")
 def test_prepare_transitions_to_in_progress(mock_fetch, mock_create_wt, mock_set_path, mock_labels):
-    """prepare() calls transition(issue_number, LABEL_IN_PROGRESS, from_label=LABEL_READY)."""
+    """prepare() calls transition(issue_number, STATUS_IN_PROGRESS, from_label=STATUS_READY)."""
     mock_fetch.return_value = {"title": "T", "body": "B", "labels": []}
     state = _make_issue_state()
     flow = _build_flow(state)
     flow.prepare()
     mock_labels.transition.assert_called_once_with(
         42,
-        mock_labels.LABEL_IN_PROGRESS,
-        from_label=mock_labels.LABEL_READY,
+        from_label=mock_labels.STATUS_READY,
+        to_label=mock_labels.STATUS_IN_PROGRESS,
     )
 
 
@@ -204,8 +204,8 @@ def test_trigger_review_transitions_to_agent_review(mock_kickoff, mock_labels):
     flow.trigger_review()
     mock_labels.transition.assert_called_once_with(
         42,
-        mock_labels.LABEL_AGENT_REVIEW,
-        from_label=mock_labels.LABEL_IN_PROGRESS,
+        from_label=mock_labels.STATUS_IN_PROGRESS,
+        to_label=mock_labels.STATUS_AGENT_REVIEW,
     )
 
 
@@ -234,7 +234,9 @@ def test_report_blocker_transitions_to_blocked(mock_labels):
     state.blocker = "some blocker"
     flow = _build_flow(state)
     flow.report_blocker()
-    mock_labels.transition.assert_called_once_with(42, mock_labels.LABEL_BLOCKED)
+    mock_labels.transition.assert_called_once_with(
+        42, from_label=mock_labels.STATUS_IN_PROGRESS, to_label=mock_labels.STATUS_BLOCKED
+    )
 
 
 @patch("apeiron_flow.main._labels")
@@ -263,8 +265,8 @@ def test_on_ready_for_merge_transitions_to_review(mock_get_issue, mock_labels):
     flow.on_ready_for_merge()
     mock_labels.transition.assert_called_once_with(
         42,
-        mock_labels.LABEL_REVIEW,
-        from_label=mock_labels.LABEL_AGENT_REVIEW,
+        from_label=mock_labels.STATUS_AGENT_REVIEW,
+        to_label=mock_labels.STATUS_REVIEW,
     )
 
 
@@ -306,8 +308,8 @@ def test_on_code_changes_required_transitions_to_in_progress(mock_get_issue, moc
     flow.on_code_changes_required()
     mock_labels.transition.assert_called_once_with(
         42,
-        mock_labels.LABEL_IN_PROGRESS,
-        from_label=mock_labels.LABEL_AGENT_REVIEW,
+        from_label=mock_labels.STATUS_AGENT_REVIEW,
+        to_label=mock_labels.STATUS_IN_PROGRESS,
     )
 
 
@@ -367,8 +369,8 @@ def test_handle_change_request_transitions_review_to_in_progress(
 
     mock_labels.transition.assert_called_once_with(
         42,
-        mock_labels.LABEL_IN_PROGRESS,
-        from_label=mock_labels.LABEL_REVIEW,
+        from_label=mock_labels.STATUS_REVIEW,
+        to_label=mock_labels.STATUS_IN_PROGRESS,
     )
 
 
