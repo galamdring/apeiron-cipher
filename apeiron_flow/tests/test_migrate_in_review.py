@@ -8,11 +8,10 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from apeiron_flow.labels import (
-    LABEL_AGENT_REVIEW,
-    LABEL_IN_PROGRESS,
     LABEL_IN_REVIEW,
-    LABEL_REVIEW,
-    retire_in_review,
+    STATUS_AGENT_REVIEW,
+    STATUS_IN_PROGRESS,
+    STATUS_REVIEW,
 )
 from apeiron_flow.migrate_in_review import (
     _archive_label,
@@ -41,53 +40,47 @@ def _proc(returncode: int = 0, stdout: str = "", stderr: str = "") -> MagicMock:
 # ---------------------------------------------------------------------------
 
 
-@patch("apeiron_flow.labels.subprocess.run")
-def test_retire_in_review_no_pr_gives_in_progress(mock_run):
-    """No PR open → status:in-progress."""
-    mock_run.side_effect = [
-        _proc(0),  # _remove_label(status:in-review)
-        _proc(0),  # _add_label(status:in-progress)
-    ]
-    result = retire_in_review(42, has_pr=False)
-    assert result == LABEL_IN_PROGRESS
-    # First call removes status:in-review
-    assert "--remove-label" in mock_run.call_args_list[0][0][0]
-    assert LABEL_IN_REVIEW in mock_run.call_args_list[0][0][0]
-    # Second call adds status:in-progress
-    assert "--add-label" in mock_run.call_args_list[1][0][0]
-    assert LABEL_IN_PROGRESS in mock_run.call_args_list[1][0][0]
+@patch("apeiron_flow.labels._gh_delete")
+@patch("apeiron_flow.labels._gh_post")
+@patch("apeiron_flow.labels._gh_get")
+def test_retire_in_review_no_in_review_label_is_noop(mock_get, mock_post, mock_delete):
+    """Issue already migrated (no status:in-review) → no-op."""
+    mock_get.return_value = [{"name": STATUS_REVIEW}]
+    from apeiron_flow.labels import retire_in_review
+
+    retire_in_review(42)
+    mock_post.assert_not_called()
+    mock_delete.assert_not_called()
 
 
-@patch("apeiron_flow.labels.subprocess.run")
-def test_retire_in_review_pr_no_agent_review_gives_agent_review(mock_run):
-    """PR open, no agent review → status:agent-review."""
-    mock_run.side_effect = [
-        _proc(0),  # _remove_label
-        _proc(0),  # _add_label
-    ]
-    result = retire_in_review(7, has_pr=True, agent_review_posted=False)
-    assert result == LABEL_AGENT_REVIEW
-    assert LABEL_AGENT_REVIEW in mock_run.call_args_list[1][0][0]
+@patch("apeiron_flow.labels._gh_delete")
+@patch("apeiron_flow.labels._gh_post")
+@patch("apeiron_flow.labels._gh_get")
+def test_retire_in_review_migrates_to_review(mock_get, mock_post, mock_delete):
+    """Issue has status:in-review → transition to status:review."""
+    mock_get.return_value = [{"name": LABEL_IN_REVIEW}]
+    mock_post.return_value = [{"name": STATUS_REVIEW}]
+    from apeiron_flow.labels import retire_in_review
+
+    retire_in_review(7)
+    # _add_label call goes via _gh_post
+    mock_post.assert_called_once()
+    post_body = mock_post.call_args[0][1]
+    assert STATUS_REVIEW in post_body["labels"]
 
 
-@patch("apeiron_flow.labels.subprocess.run")
-def test_retire_in_review_pr_with_agent_review_gives_review(mock_run):
-    """PR open, agent review posted → status:review."""
-    mock_run.side_effect = [
-        _proc(0),  # _remove_label
-        _proc(0),  # _add_label
-    ]
-    result = retire_in_review(7, has_pr=True, agent_review_posted=True)
-    assert result == LABEL_REVIEW
-    assert LABEL_REVIEW in mock_run.call_args_list[1][0][0]
+@patch("apeiron_flow.labels._gh_delete")
+@patch("apeiron_flow.labels._gh_post")
+@patch("apeiron_flow.labels._gh_get")
+def test_retire_in_review_propagates_remove_failure(mock_get, mock_post, mock_delete):
+    """LabelTransitionError from _remove_label bubbles up."""
+    from apeiron_flow.labels import LabelTransitionError, retire_in_review
 
-
-@patch("apeiron_flow.labels.subprocess.run")
-def test_retire_in_review_propagates_remove_failure(mock_run):
-    """RuntimeError from _remove_label bubbles up."""
-    mock_run.return_value = _proc(1, stderr="not found")
-    with pytest.raises(RuntimeError, match="not found"):
-        retire_in_review(99, has_pr=False)
+    mock_get.return_value = [{"name": LABEL_IN_REVIEW}]
+    mock_post.return_value = [{"name": STATUS_REVIEW}]
+    mock_delete.side_effect = RuntimeError("delete failed")
+    with pytest.raises((LabelTransitionError, RuntimeError)):
+        retire_in_review(99)
 
 
 # ---------------------------------------------------------------------------
@@ -221,64 +214,61 @@ def test_archive_label_dry_run_does_not_call_gh(capsys):
 
 @patch("apeiron_flow.migrate_in_review._archive_label")
 @patch("apeiron_flow.migrate_in_review._post_comment")
-@patch("apeiron_flow.migrate_in_review.retire_in_review")
+@patch("apeiron_flow.migrate_in_review.transition")
 @patch("apeiron_flow.migrate_in_review._has_agent_review")
 @patch("apeiron_flow.migrate_in_review._find_open_pr")
 @patch("apeiron_flow.migrate_in_review._list_in_review_issues")
-def test_run_migration_no_pr(mock_list, mock_find_pr, mock_has_review, mock_retire, mock_comment, mock_archive):
-    """Issue with no PR → retire_in_review called with has_pr=False."""
+def test_run_migration_no_pr(mock_list, mock_find_pr, mock_has_review, mock_transition, mock_comment, mock_archive):
+    """Issue with no PR → transition called with STATUS_IN_PROGRESS."""
     mock_list.return_value = [{"number": 14, "title": "Story 3.3", "labels": []}]
     mock_find_pr.return_value = None
-    mock_retire.return_value = LABEL_IN_PROGRESS
 
     run_migration(dry_run=False)
 
-    mock_retire.assert_called_once_with(14, has_pr=False, agent_review_posted=False)
+    mock_transition.assert_called_once_with(14, from_label=LABEL_IN_REVIEW, to_label=STATUS_IN_PROGRESS)
     mock_comment.assert_called_once()
     comment_body = mock_comment.call_args[0][1]
-    assert LABEL_IN_PROGRESS in comment_body
+    assert STATUS_IN_PROGRESS in comment_body
     mock_archive.assert_called_once_with(False)
 
 
 @patch("apeiron_flow.migrate_in_review._archive_label")
 @patch("apeiron_flow.migrate_in_review._post_comment")
-@patch("apeiron_flow.migrate_in_review.retire_in_review")
+@patch("apeiron_flow.migrate_in_review.transition")
 @patch("apeiron_flow.migrate_in_review._has_agent_review")
 @patch("apeiron_flow.migrate_in_review._find_open_pr")
 @patch("apeiron_flow.migrate_in_review._list_in_review_issues")
 def test_run_migration_pr_no_agent_review(
-    mock_list, mock_find_pr, mock_has_review, mock_retire, mock_comment, mock_archive
+    mock_list, mock_find_pr, mock_has_review, mock_transition, mock_comment, mock_archive
 ):
-    """Issue with open PR, no agent review → retire_in_review with has_pr=True, agent_review_posted=False."""
+    """Issue with open PR, no agent review → transition to STATUS_AGENT_REVIEW."""
     mock_list.return_value = [{"number": 7, "title": "Story X", "labels": []}]
     mock_find_pr.return_value = {"number": 55, "title": "feat", "headRefName": "feat/issue-7"}
     mock_has_review.return_value = False
-    mock_retire.return_value = LABEL_AGENT_REVIEW
 
     run_migration(dry_run=False)
 
-    mock_retire.assert_called_once_with(7, has_pr=True, agent_review_posted=False)
+    mock_transition.assert_called_once_with(7, from_label=LABEL_IN_REVIEW, to_label=STATUS_AGENT_REVIEW)
     mock_archive.assert_called_once_with(False)
 
 
 @patch("apeiron_flow.migrate_in_review._archive_label")
 @patch("apeiron_flow.migrate_in_review._post_comment")
-@patch("apeiron_flow.migrate_in_review.retire_in_review")
+@patch("apeiron_flow.migrate_in_review.transition")
 @patch("apeiron_flow.migrate_in_review._has_agent_review")
 @patch("apeiron_flow.migrate_in_review._find_open_pr")
 @patch("apeiron_flow.migrate_in_review._list_in_review_issues")
 def test_run_migration_pr_with_agent_review(
-    mock_list, mock_find_pr, mock_has_review, mock_retire, mock_comment, mock_archive
+    mock_list, mock_find_pr, mock_has_review, mock_transition, mock_comment, mock_archive
 ):
-    """Issue with open PR, agent review present → retire_in_review with has_pr=True, agent_review_posted=True."""
+    """Issue with open PR, agent review present → transition to STATUS_REVIEW."""
     mock_list.return_value = [{"number": 7, "title": "Story X", "labels": []}]
     mock_find_pr.return_value = {"number": 55, "title": "feat", "headRefName": "feat/issue-7"}
     mock_has_review.return_value = True
-    mock_retire.return_value = LABEL_REVIEW
 
     run_migration(dry_run=False)
 
-    mock_retire.assert_called_once_with(7, has_pr=True, agent_review_posted=True)
+    mock_transition.assert_called_once_with(7, from_label=LABEL_IN_REVIEW, to_label=STATUS_REVIEW)
     mock_archive.assert_called_once_with(False)
 
 
@@ -293,20 +283,20 @@ def test_run_migration_nothing_to_do(mock_list, mock_archive):
 
 @patch("apeiron_flow.migrate_in_review._archive_label")
 @patch("apeiron_flow.migrate_in_review._post_comment")
-@patch("apeiron_flow.migrate_in_review.retire_in_review")
+@patch("apeiron_flow.migrate_in_review.transition")
 @patch("apeiron_flow.migrate_in_review._has_agent_review")
 @patch("apeiron_flow.migrate_in_review._find_open_pr")
 @patch("apeiron_flow.migrate_in_review._list_in_review_issues")
-def test_run_migration_dry_run_does_not_call_retire(
-    mock_list, mock_find_pr, mock_has_review, mock_retire, mock_comment, mock_archive
+def test_run_migration_dry_run_does_not_call_transition(
+    mock_list, mock_find_pr, mock_has_review, mock_transition, mock_comment, mock_archive
 ):
-    """Dry run: retire_in_review is NOT called; comment and archive are called with dry_run=True."""
+    """Dry run: transition is NOT called; comment and archive are called with dry_run=True."""
     mock_list.return_value = [{"number": 14, "title": "Story 3.3", "labels": []}]
     mock_find_pr.return_value = None
 
     run_migration(dry_run=True)
 
-    mock_retire.assert_not_called()
+    mock_transition.assert_not_called()
     mock_comment.assert_called_once()
     # _post_comment(issue_number, body, dry_run=True)
     comment_call_args = mock_comment.call_args

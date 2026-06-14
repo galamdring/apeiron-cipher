@@ -95,7 +95,7 @@ def test_triage_flow_calls_label_transition_on_classified_issue(mock_crew_cls):
     with patch("apeiron_flow.main._labels.transition") as mock_transition:
         result = flow.run_triage()
 
-    mock_transition.assert_called_once_with(42, "status:todo", "status:triage")
+    mock_transition.assert_called_once_with(42, from_label="status:triage", to_label="status:todo")
     assert result.classification == "epic"
 
 
