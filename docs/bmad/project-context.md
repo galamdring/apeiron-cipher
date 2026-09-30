@@ -91,6 +91,7 @@ These rules protect the core design philosophy. Violations are architectural bug
 - **Agent workflow reference:** `docs/bmad/agent-workflow-reference.md` — label taxonomy, issue map, health checks, commands
 - **Game Design Document:** `docs/bmad/gdd.md` — design intent, game pillars, mechanics, the Accretion Model
 - **Game Brief:** `docs/bmad/game-brief.md` — scope decisions, target audience, competitive positioning, technical constraints
+- **Design drift & remediation:** `docs/bmad/design-drift-and-remediation.md` — where implementation diverged from the brief/GDD, and the proposed course correction
 
 ## Usage Guidelines
 
