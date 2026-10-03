@@ -68,7 +68,7 @@ _This file covers technology versions, Rust language rules, Bevy ECS patterns, d
 - **Commit messages (post-0.1):** Conventional Commits with plugin-scoped types for semantic versioning. Format: `feat(materials): add thermal resistance property`, `fix(fabricator): correct slot interaction raycasting`. Breaking changes use `!` suffix: `feat(materials)!: restructure property model`.
 - **One story per branch:** Each story gets its own branch merged to `main` on completion. No multi-story branches.
 - **Story definition of done:** A story is complete when its acceptance criteria from the epics document are satisfied, not just when the code compiles.
-- **Makefile is the contract:** All build verification runs through the Makefile. Granular targets for the dev loop: `make build`, `make test`, `make lint`, `make fmt-check`, `make run`. Full gate: `make check` runs all verification. If a new check is added, it goes into the Makefile first — never CI-only.
+- **Makefile is the contract:** All build verification runs through the Makefile. Granular targets for the dev loop: `make build`, `make test`, `make lint`, `make fmt-check`, `make design-check`, `make run`. Full gate: `make check` runs all verification. If a new check is added, it goes into the Makefile first — never CI-only.
 - **CI/CD:** GitHub Actions for multi-platform builds (macOS, Windows, Linux), invoking the same Makefile targets used locally. The pipeline never does something that `make` can't reproduce on a developer's machine.
 - **No premature optimization:** Build it correct first. Profile before optimizing. The POC performance target is 60fps — don't optimize until you're not hitting it.
 
@@ -76,7 +76,8 @@ _This file covers technology versions, Rust language rules, Bevy ECS patterns, d
 
 These rules protect the core design philosophy. Violations are architectural bugs, not style issues.
 
-- **No numbers in player-facing UI.** No stats screens, no property values, no damage numbers, no progress bars. Journal entries use descriptive language that shifts with confidence — "Seemed to resist heat" → "Reliably withstands heat." Internal values exist; the player never sees them.
+- **No numbers in player-facing UI.** No stats screens, no property values, no damage numbers, no progress bars. Journal entries use descriptive language that shifts with confidence — "Seemed to resist heat" → "Reliably withstands heat." Internal values exist; the player never sees them. Enforced by `make design-check` (Epic 25); existing violations are ratcheted in `scripts/design-principles/baseline.txt`.
+- **The game never confirms.** No `"Confirmed"` stamps, `???` property slots, or observation counts in player-facing copy. New matches fail CI; do not extend the baseline.
 - **Observable consequences:** Every consequence must be eventually traceable by the player back to their action. If two materials with different thermal resistance look the same near the heat source, the system is broken.
 - **Complexity budget:** If it can't be built with data tables, weighted randomness, and event triggers, it's too complex for v1. The magic is in presentation and system interaction, not single-system complexity.
 - **No feature creep beyond POC scope.** The POC is: a room, materials, a fabricator, environmental testing, a journal. No ships, no planets, no aliens, no language, no economy, no automation, no multiplayer. Agents must not add features outside this scope.
@@ -91,6 +92,7 @@ These rules protect the core design philosophy. Violations are architectural bug
 - **Agent workflow reference:** `docs/bmad/agent-workflow-reference.md` — label taxonomy, issue map, health checks, commands
 - **Game Design Document:** `docs/bmad/gdd.md` — design intent, game pillars, mechanics, the Accretion Model
 - **Game Brief:** `docs/bmad/game-brief.md` — scope decisions, target audience, competitive positioning, technical constraints
+- **Design-principle CI:** `docs/bmad/epics/25-design-principle-ci.md` — Epic 25; `make design-check`
 
 ## Usage Guidelines
 

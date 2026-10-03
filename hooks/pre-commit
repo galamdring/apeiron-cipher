@@ -15,8 +15,16 @@ if echo "$STAGED" | grep -qE '(\.rs$|^Cargo\.(toml|lock)$)'; then
   cargo clippy -- -D warnings
   echo "  cargo test"
   cargo test
+  echo "  make design-check"
+  make design-check
 else
   echo "  No Rust files staged — skipping cargo checks."
+fi
+
+# --- Design-principle rules / checker (even without Rust changes) ---
+if echo "$STAGED" | grep -qE '^(scripts/check-design-principles\.py|scripts/design-principles/)'; then
+  echo "  Design-principle checker staged — running design-check."
+  make design-check
 fi
 
 # --- Kanban frontend ---

@@ -58,7 +58,7 @@ gh issue view <number> --repo galamdring/apeiron-cipher
 
 - **Load architecture context:** Consult `docs/bmad/planning-artifacts/architecture/agent-context-routing.md` to determine which architecture shards are relevant to this story's domain. Load those shards before writing code.
 - Implement the story. All acceptance criteria must be satisfied. The GitHub Issue is the canonical source for acceptance criteria.
-- Run `make check` before committing.
+- Run `make check` before committing (fmt, clippy, tests, build, `design-check`).
 - Commit directly to `develop`. Commit messages should follow Conventional Commits: `feat: N.N - short description`.
 
 ### Step 3a — Block (when the agent cannot proceed)

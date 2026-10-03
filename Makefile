@@ -1,4 +1,4 @@
-.PHONY: build test lint fmt-check fmt run check clean install-hooks kb-check o-check coverage coverage-html
+.PHONY: build test lint fmt-check fmt run check design-check clean install-hooks kb-check o-check coverage coverage-html
 
 build:
 	cargo build
@@ -18,7 +18,11 @@ fmt:
 run:
 	cargo run
 
-check: fmt-check lint test build
+design-check:
+	PYTHONDONTWRITEBYTECODE=1 python3 scripts/check-design-principles.py --self-test
+	PYTHONDONTWRITEBYTECODE=1 python3 scripts/check-design-principles.py
+
+check: fmt-check lint test build design-check
 
 clean:
 	cargo clean
