@@ -1,0 +1,35 @@
+{
+  "scan_roots": ["src"],
+  "path_exclude": ["_tests\\.rs$", "/test_support\\.rs$"],
+  "allow_comment_prefix": "design-principle-allow:",
+  "rules": [
+    {
+      "id": "DP-CONFIRM-CONFIRMED",
+      "design_test": "Confirmation",
+      "principle": "The game never confirms, only reveals.",
+      "description": "Player-facing copy must not stamp an observation as Confirmed. Confidence lives in prose (Seemed to / Reliably), not a verdict label.",
+      "line_regex": "Confirmed"
+    },
+    {
+      "id": "DP-CONFIRM-UNKNOWN-SLOT",
+      "design_test": "Skip-learning",
+      "principle": "Unknown properties are omitted, not listed as empty slots.",
+      "description": "??? in player-facing strings is a quest checklist. Show only what has been witnessed.",
+      "line_regex": "\\?\\?\\?"
+    },
+    {
+      "id": "DP-CONFIRM-OBS-COUNT",
+      "design_test": "Confirmation",
+      "principle": "No numbers in player-facing UI.",
+      "description": "Journal list must not show observation counts such as (3 obs).",
+      "line_regex": " obs\\)"
+    },
+    {
+      "id": "DP-HUD-ZERO-RANGE",
+      "design_test": "Confirmation",
+      "principle": "Diegetic surfaces are in the world. Zero-range Readable is a HUD with a marker component.",
+      "description": "perceivable_range / legible_range of 0.0 collapses proximity so a screen overlay can claim to be diegetic.",
+      "line_regex": "(perceivable_range|legible_range): 0\\.0"
+    }
+  ]
+}

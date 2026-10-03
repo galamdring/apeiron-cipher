@@ -27,3 +27,8 @@ kanban/dist/
 # Aider scratch files
 .aider*
 node_modules/
+
+# Python bytecode from scripts/check-design-principles.py
+__pycache__/
+*.pyc
+

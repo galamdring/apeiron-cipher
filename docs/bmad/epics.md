@@ -29,6 +29,7 @@
 | 22 | Multiplayer | #137 | 5 — Scale Up | 5, 9 |
 | 23 | Modding / Community Tools | #138 | 5 — Scale Up | 13 |
 | 24 | Art/Audio Depth | #139 | 5 — Scale Up | 10, 11 |
+| 25 | Design-Principle CI Gates | TBD | Process / Guard Rails | — |
 
 ---
 
@@ -47,6 +48,10 @@ The epic sequence follows a spiral: each system is built to a playable layer, th
 - **Mirror System:** Architectural pattern documented in Epic 10. Each system implements behavioral observation hooks — the mirror deepens the world in the direction of player engagement.
 - **Journal Integration:** Epic 10 sets the architecture. Every subsequent system implements its own journal entries.
 - **Inventory Depth:** Epic 4 delivers MVP carry. Later rings revisit inventory UX as systems mature.
+
+### Process / Guard Rails
+
+- **Epic 25 — Design-Principle CI Gates:** See [25-design-principle-ci.md](./epics/25-design-principle-ci.md). Makes Learning First, diegetic-only, and no-numbers mechanically unskippable via `make design-check`. Does not replace gameplay Phase 1; it ratchets existing violations and fails new drift.
 
 ### Post-1.0
 
@@ -397,3 +402,25 @@ The epic sequence follows a spiral: each system is built to a playable layer, th
 1. **24.1: Procedural audio framework** — Sounds generated from material/environmental properties, not fixed audio files. A new material sounds like what it is.
 2. **24.2: Graceful deferral implementation** — If the system can't deliver the experience at the required quality, it waits until it can. Not degradation — deferral. Includes telemetry to measure deferral frequency.
 3. **24.3: Art asset pipeline for modders** — Same tier system as base game. Documented format. Modders can add visual and audio assets following the established pipeline.
+
+---
+
+## Process / Guard Rails
+
+### Epic 25: Design-Principle CI Gates
+
+**GitHub Issue:** TBD
+**Full spec:** [25-design-principle-ci.md](./epics/25-design-principle-ci.md)
+**Goal:** Make Learning First, diegetic-only, and no-numbers mechanically unskippable. New confirmation UI, `???` slots, observation counts, and zero-range HUD cheats fail CI. Existing violations live in a shrinking baseline.
+**Dependencies:** None
+**Deliverable:** `make design-check` in `make check`, CI job, pre-commit, PR template with the six design tests.
+
+**Stories:**
+1. **25.1: Checker harness and baseline ratchet** — Script, rules catalog, baseline, Makefile, CI, pre-commit. Landed in this epic's opening PR.
+2. **25.2: Confirmation-language rules** — `Confirmed`, `???`, `(N obs)`. First rule set, baseline-recorded until gameplay Phase 1 deletes the rows.
+3. **25.3: Diegetic HUD gate** — Screen-space Text, zero-range Readable (partially in 25.1 via `DP-HUD-ZERO-RANGE`).
+4. **25.4: Skip-learning identity gate** — Spawn-time names, compositional recipe names, legality crosshair.
+5. **25.5: Knowledge-as-power gate** — A simulation system must query KnowledgeGraph, not only the journal.
+6. **25.6: Intent / diegetic-response harness** — Authority ADR marker traits.
+7. **25.7: PR and story definition-of-done** — Six design tests on every game PR.
+

@@ -56,6 +56,8 @@ jobs:
         pkg-config --exists wayland-client
         pkg-config --modversion libudev
         pkg-config --modversion wayland-client
+    - name: Design principles
+      run: make design-check
     - name: Build
       run: cargo build --verbose
     - name: Run tests

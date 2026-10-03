@@ -1,0 +1,19 @@
+# Design-principle baseline — known existing violations.
+# Do not add rows in feature PRs. Shrink this file when gameplay fixes land.
+# format: path:line:rule_id
+src/descriptions.rs:107:DP-CONFIRM-CONFIRMED
+src/interaction.rs:850:DP-CONFIRM-UNKNOWN-SLOT
+src/interaction.rs:871:DP-CONFIRM-UNKNOWN-SLOT
+src/interaction.rs:876:DP-CONFIRM-UNKNOWN-SLOT
+src/interaction.rs:877:DP-CONFIRM-UNKNOWN-SLOT
+src/interaction.rs:878:DP-CONFIRM-UNKNOWN-SLOT
+src/interaction.rs:967:DP-CONFIRM-UNKNOWN-SLOT
+src/interaction.rs:976:DP-CONFIRM-UNKNOWN-SLOT
+src/interaction.rs:986:DP-CONFIRM-UNKNOWN-SLOT
+src/interaction.rs:996:DP-CONFIRM-UNKNOWN-SLOT
+src/journal.rs:1787:DP-CONFIRM-OBS-COUNT
+src/journal.rs:826:DP-HUD-ZERO-RANGE
+src/journal.rs:827:DP-HUD-ZERO-RANGE
+src/observation.rs:133:DP-CONFIRM-CONFIRMED
+src/observation.rs:1535:DP-CONFIRM-CONFIRMED
+src/observation.rs:951:DP-CONFIRM-CONFIRMED
